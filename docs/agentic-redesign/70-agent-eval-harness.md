@@ -1,20 +1,18 @@
 # Agent Eval Harness — Trajectories, Scenarios, Evals
 
-> **Status:** original plan 2026-07-09; **E1–E5 SHIPPED** and reviewed to zero P1
-> (trajectory recording, replay backend + runner, checker engine, live headless runner,
-> metrics/report/diff). **E6 SHIPPED through the first full baseline** (updated 2026-07-15;
-> see the §6 execution log for the detail): the seed suite grew to 13 scenarios across the
-> block-A editing/recovery verbs plus objectmap-verified framing, lighting luma bands,
-> propose-mode, multi-turn context, and long-horizon build; the whole suite was
-> **calibrated** (a whole class of vague-prompt-vs-exact-checkpoint mismatches converted to
-> `param_range`/structural checks), **wall-time completion was added as a first-class
-> metric**, the harness was **hardened via two external-review P1 batches**, and a **first
-> full 8-provider × 13-scenario × 3-repeat baseline (312 runs) completed** with a trustworthy
-> leaderboard. Still outstanding coverage: vision/image-input and adversarial/malformed
-> tool args as their own categories, and repeats 3→5 to tighten the confidence intervals.
-> The body below is the as-designed plan; where it
-> describes intended scope not yet built (e.g. the 12–20 scenario target), that is a target,
-> not the current state. Grounded in two research
+> **Status (updated 2026-11):** **E1–E7 SHIPPED & EXPANDED.** Core infrastructure (trajectory
+> recording, replay backend + runner, checker engine, native `NSURLSession` / `WinHTTP` headless
+> live runner, `tools/eval_report.py` metrics/report/diff, and `document_snapshot` records per
+> [doc 84](84-trajectory-document-snapshots.md)) is live across **5 providers** with current
+> default models (`claude-sonnet-5`, `gemini-4-argon`, `gpt-5.6-terra`, `grok-4.5`, `opencoder`).
+> Since the initial 2026-07-15 E6 baseline (§6: 8-provider × 13-scenario × 3-repeat = 312 runs),
+> the scenario corpus grew to **28 scenarios** in `evals/scenarios/` plus the **`evals/scenarios/battery/`**
+> benchmark suite, adding **vision/image-input coverage**, **`malformed_tool_recovery`**
+> (adversarial/malformed tool-call repair), `reserved_name_clarify`, bare-prompt creative-richness
+> scenarios ([docs 73–75](73-creative-richness-design.md)), and **8+ new checker ops** (`param_range`,
+> creative painter/geometry diversity & scalar-pipe checks, `metricLabel` per-label aggregation,
+> `terminalStatus` gates, etc.). The body below preserves the original 2026-07-09 design and the
+> 2026-07-15 E6 calibration log. Grounded in two research
 > passes: an in-tree audit of the chat loop / drivers / instrumentation, and an external
 > prior-art survey (OTel GenAI conventions, LangSmith/Langfuse/Braintrust trace models,
 > SWE-bench/WebArena/OSWorld scenario design, pass@k practice, LLM-judge pitfalls,
@@ -111,9 +109,10 @@ New in `src/Library/Agent/` (attached to existing files where possible):
   auth-header keys by name AND runs a fixed regex pass (sk-…, AIza…, bearer-shaped) over
   every line regardless of config. Red-prove in tests: a trajectory of a session with a
   known fake key never contains it.
-- **GUI wiring**: both panels gain a "Record trajectories" toggle (default per §5 decision)
-  writing to `evals/runs/gui/<timestamp>-<traceid>.jsonl`. Thin: the drivers already have
-  the request/response/latency in hand; they call RecordHttpRound and hand the loop a
+- **GUI wiring**: both panels gain a "Record trajectories" toggle (default ON per §5 decision)
+  writing to `~/Library/Application Support/RISE/trajectories/gui/<timestamp>-<traceid>.jsonl`
+  (macOS; platform Application Support equivalent on Windows, or `$RISE_TRAJECTORY_DIR` when set).
+  Thin: the drivers already have the request/response/latency in hand; they call RecordHttpRound and hand the loop a
   file-sink.
 
 ### 2.2 The replay backend — the fourth "provider"
@@ -127,13 +126,12 @@ scaffold/regression isolator ("did I break the dispatcher, or did the model get 
 ### 2.3 The headless live runner — `rise --agent-eval <run-config>`
 
 New commandconsole mode: loads a scenario, constructs Job + AgentSession + dispatcher +
-AgentChatLoop in-process, drives the turn loop headlessly. **HTTPS via the system `curl`
-binary** (popen; body via temp file; `-w` for status+timing; env-var keys only, never
-Keychain; the same fork/exec shape four tests already use). Honest failure when curl is
-absent. Budgets enforced per scenario (max tool calls / tokens / wall time). Emits the
+AgentChatLoop in-process, drives the turn loop headlessly. **[SUPERSEDED by §5.1 — native `NSURLSession` / `WinHTTP` shipped]** *(Initial draft proposed HTTPS via the system `curl`
+binary — popen; body via temp file; `-w` for status+timing; env-var keys only, never
+Keychain; the same fork/exec shape four tests already use — with honest failure when curl is
+absent; §5.1 ratified native platform TLS via `IChatHttpTransport` instead.)* Budgets enforced per scenario (max tool calls / tokens / wall time). Emits the
 trajectory + a result line. (Alternative transports considered: a Python driver — rejected
-for codec divergence + no idiom precedent; platform TLS APIs — rejected as per-platform
-work for no gain over curl. Decision point §5.)
+for codec divergence + no idiom precedent; platform TLS APIs — ratified in §5.1.)
 
 ### 2.4 Scenarios + checkers
 
@@ -156,7 +154,9 @@ work for no gain over curl. Decision point §5.)
 
 - Run config: scenarios × provider/model configs × N repeats (default 3), sequential
   (one render slot; also keeps costs legible).
-- `evals/runs/<timestamp>/` (gitignored): trajectories + `results.jsonl` per run. Reporting
+- `evals/runs/<timestamp>/` (gitignored): headless `--agent-eval` trajectories + `results.jsonl`
+  per run (interactive GUI sessions record separately under `~/Library/Application Support/RISE/trajectories/gui/`
+  or `$RISE_TRAJECTORY_DIR`). Reporting
   is a SEPARATE step: `tools/eval_report.py <run-dir>` prints a table to stdout (text, or
   `--format markdown` for a Markdown table); it does not auto-write a `report.md`.
 - Metrics: pass@1 (headline), pass^k, checkpoint fractions, Wilson intervals, tokens by
@@ -190,9 +190,8 @@ E4 unlocks live model comparison.
 
 ## 4. Risks / honest notes
 
-- **curl subprocess** is the plan's one new runtime dependency (a binary, not a library);
-  Windows needs `curl.exe` presence-checked with an honest failure. If this ever chafes,
-  the transport is one narrow interface — swappable later.
+- **[SUPERSEDED by §5.1 — native `NSURLSession` / `WinHTTP` shipped] curl subprocess** was the draft plan's one new runtime dependency (a binary, not a library);
+  Windows would have needed `curl.exe` presence-checked with an honest failure. Ratified §5.1 replaced this with `IChatHttpTransport` (`NSURLSession` on macOS, `WinHTTP` on Windows).
 - **GUI trajectory recording** captures user scene content to disk — default-off toggle
   unless decided otherwise (§5); the redaction pass runs regardless.
 - Render checkers inherit MC tolerance; scenario authors must use bands (the checker API

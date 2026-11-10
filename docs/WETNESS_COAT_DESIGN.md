@@ -10,9 +10,10 @@ coat-wrap, glTF `KHR_materials_clearcoat` re-enabled through
 `coated_material`, HWSS invariant recorded). Every §13 Phase-2 checklist item
 is done; exit-gate items green locally except the census-owned readings
 (§4(g), verb-scope) which remain user-run. Debts 5/6/6a are CLOSED by the
-triad; new debts 12 (near-white `coat_tint` spectral discontinuity — CLOSED
+triad; debts 12 (near-white `coat_tint` spectral discontinuity — CLOSED
 2026-09-02 by Stage C, see §12 item 12) and 13 (Oren-Nayar hemispherical
-albedo at high roughness, still open) were documented.
+albedo at high roughness — CLOSED 2026-09-14 under DL-07, see §12 item 13) were
+documented and subsequently closed.
 Phase 1 record follows.
 Phase 1 landed across
 commits `bd7555ff` (eval instrument — the pre-verb baseline pin), `aa1f0162`
@@ -1848,22 +1849,24 @@ is a property of getting §7.4 right rather than a separate feature.
 
 | parameter | pipe | notes |
 |---|---|---|
-| `base` | material ref | the substrate material — **restricted, see below** |
+| `base` | material ref | the substrate material — **restricted (6-type allowlist, see below)** |
 | `coat_weight` | `IScalarPainter` | **[0,1] coverage — the first-class spatially varying slot; this is the primitive that closes G2 for the wet case** |
 | `coat_ior` | `IScalarPainter` | 1.33 water, 1.5 varnish/lacquer, 1.4–1.6 oil |
 | `coat_roughness` | `IScalarPainter` | GGX α on the coat lobe; 0.01–0.05 for water |
 | `coat_thickness` | `IScalarPainter` | world length, feeds Beer–Lambert |
 | `coat_absorption` | `IScalarPainter` | **scalar pipe, deliberately** — §3.2's routing hazard |
 | `coat_tint` | `IPainter` | genuinely a colour (tinted lacquer); colour pipe is correct here |
+| `coat_normal` | `IPainter` | optional tangent-space normal map dedicated to the coat layer (DL-192) |
+| `coat_normal_scale` | scalar | strength multiplier for `coat_normal` (default 1.0; DL-192) |
 
 **`base` must be restricted, not "any `IMaterial`".** Two independent reasons.
 *Correctness:* the layered model needs the substrate's directional albedo to run
-its recycling series, which a diffuse or microfacet base can supply and an
+its recycling series, which a diffuse, microfacet, or cloth/weave base can supply and an
 arbitrary material (a luminaire, a BSSRDF, a volumetric random-walk) cannot.
 *Budget:* §7.5's lobe arithmetic only closes because the substrate's lobe count is
 known — an unrestricted `base` could exhaust the 6-slot container on its own.
-**Recommended v1 allowlist: `lambertian`, `orennayar`, `ggx`,
-`pbr_metallic_roughness`** — refuse anything else at parse time with a message
+**Shipped allowlist (expanded in DL-23): `lambertian_material`, `orennayar_material`, `ggx_material`,
+`pbr_metallic_roughness_material`, `fabric_material`, `weave_material`** (with thin-weave below-horizon transmission forwarded through `CoatedBRDF`/`CoatedSPF`) — refuse anything else at parse time with a message
 naming the allowlist, rather than rendering something quietly wrong.
 
 Aligning the names with the OpenPBR surface specification is deliberate: it is the

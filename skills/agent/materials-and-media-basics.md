@@ -1326,18 +1326,23 @@ as they would a hand-authored one.
 ## Colors vs physical scalars — why `scalar_painter` matters
 
 RISE has TWO painter pipes.  `IPainter` is the COLOR pipe (reflectance,
-emission, tau tints): its values pass through colorspace conversion and
-spectral uplift.  `IScalarPainter` is the PHYSICAL-SCALAR pipe (IOR,
-roughness, scattering/absorption coefficients, phase asymmetry): values
-are raw magnitudes, NEVER color-converted or uplifted.  Binding a color
-painter into a scalar slot used to silently mangle values in spectral
-renders (e.g. `scattering 1000000` clamped to ~1); today the parser
-REFUSES it with a per-parameter diagnostic at derive time — heed it
-rather than guessing.  Route by physical meaning: tinted
-attenuation/reflectance/emission -> color painter; coefficient
-with units -> `scalar_painter` (forms: `value <x>`, `values <r g b>`,
-`file <spd>`, `sellmeier ...`).  Inline numbers in scalar slots (`ior
-1.5`) are already scalar-safe.
+emission, `translucent_material.tau` colour transmittance): its values
+pass through colorspace conversion and spectral uplift.  `IScalarPainter`
+is the PHYSICAL-SCALAR pipe (IOR, roughness, `dielectric_material.tau` —
+and frozen `polished_material.tau` — per-unit transmittance,
+scattering/absorption coefficients, phase asymmetry): values are raw
+magnitudes, NEVER color-converted or uplifted.  In particular,
+`dielectric_material.tau` takes a `scalar_painter` (e.g. `values <r g b>`)
+or inline transmittance, NOT `uniformcolor_painter`, whereas
+`translucent_material.tau` is on the color pipe (`IPainter`).  Binding a
+color painter into a scalar slot used to silently mangle values in
+spectral renders (e.g. `scattering 1000000` clamped to ~1); today the
+parser REFUSES it with a per-parameter diagnostic at derive time — heed
+it rather than guessing.  Route by physical meaning: surface
+reflectance/emission/`translucent_material.tau` -> color painter;
+physical transmittance or coefficient with units -> `scalar_painter`
+(forms: `value <x>`, `values <r g b>`, `file <spd>`, `sellmeier ...`).
+Inline numbers in scalar slots (`ior 1.5`) are already scalar-safe.
 
 Note that `read_schema` cannot tell the two apart on its own: a colour
 slot and a scalar slot BOTH report `references:["painter"]`, so read the

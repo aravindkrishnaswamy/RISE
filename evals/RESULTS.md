@@ -5,6 +5,8 @@ Running scoreboard for the agent-eval harness. Regenerate any table with
 curated, human-readable snapshot with the findings and caveats that the raw
 report does not carry.
 
+> **Scope note:** The consolidated scoreboard tables in this file stop at **`2026-07-25`**. For August–November 2026 agent, procedural-texture, perception, and battery evaluation measurements, see [`docs/agentic-redesign/`](../docs/agentic-redesign/) (`73`–`91`) and [`docs/PERCEPTION_ATLAS_AB_RESULTS.md`](../docs/PERCEPTION_ATLAS_AB_RESULTS.md).
+
 ---
 
 ## 0. Definitions (what "success" and each metric mean)
@@ -25,12 +27,12 @@ A single run is a **success** only if **both** hold (`AgentEvalRunner.cpp`
 
 So **success = all checkpoints pass AND the model finished on its own terms.**
 
-Checkpoints are typed and each carries a `weight` (default 1.0). The kinds:
-**document** (chunk counts, param equals/ranges, reference-kind), **render**
-(mean-luma bands, `channelBalanceMax`, or `compareToImage` + `rmseMax`),
-**objectmap** (a named object at a pixel), **diagnostics** (clean — no dangling
-references or parse errors), **trajectory** (ended `final_text`, required tools
-in order, no mechanical loop), plus `finalText`, `proposal`, `param_series_orbit`.
+Checkpoints are typed and each carries a `weight` (default 1.0) plus an optional `metricLabel` on metric-emitting checks. The kinds:
+**document** (chunk existence/counts/name-prefix counts, distinct chunk kinds, param equals/ranges/bindings, reference-kind / `any_param_references_kind`, `no_orphan_chunks`, `objects_reaching_kinds`, `param_series_orbit`), **untouched** (byte-identical preservation of named unrelated chunks), **render**
+(mean-luma/RGB bands, `channelBalanceMax`, or `compareToImage` + `rmseMax`),
+**objectmap** (legend/pixel-count or a named/typed object at a pixel), **diagnostics** (clean — no dangling
+references or parse errors — or specific diagnostic code), **trajectory** (ended `final_text`, required tools
+in order, tool outcomes/turn-ordering/call-counts, `ask_user` bounds, autonomy refusal, no mechanical loop), plus **proposal** and **finalText**.
 
 ### Per-run metric
 

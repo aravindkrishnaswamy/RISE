@@ -1,7 +1,8 @@
 # Creative Lighting — Palette and a Clean Room (Arc 81 Design, 2026-08-12)
 
-> **Status:** BUILT 2026-08-12, not yet measured live — §7 records what
-> shipped and the decisions this design left to the build.  User direction
+> **Status: SHIPPED & MEASURED (2026-08-12); SUPERSEDED/EXTENDED BY [DOC 83](83-staged-construction-plan.md) §§8–13**
+> (§7 records what shipped in v1; doc 83 decomposed lighting into `plan_lighting` + per-intent
+> clean-room completions and added `environment_scene`).  User direction
 > 2026-08-09 (*"an arc on creative lighting especially using area lights"*),
 > selected 2026-08-12 over the competing "chase the flat scene" arc.  Depends
 > on arc 80's scene inventory, which is what makes a lighting clean room

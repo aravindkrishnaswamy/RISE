@@ -1,6 +1,6 @@
 # RISE Integrator Refactor Plan
 
-**Status**: PARTIALLY EXECUTED. Phases 0, 1, and 2a have shipped; Phases 2b, 2c, 3, and 4 are deferred. **Read [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md) first for what's actually in the tree today** — this document is the original architectural plan, retained as the design record. Treat the body as historical context for the design choices, not as a to-do list to be re-executed wholesale.
+**Status**: PARTIALLY EXECUTED (CORE COMPLETE). Phases 0, 1, 2a, 2b, 2c, and 4 have shipped; Phases 2d and 3 remain optional/deferred. **Read [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md) first for what's actually in the tree today** — this document is the original architectural plan, retained as the design record. Treat the body as historical context for the design choices, not as a to-do list to be re-executed wholesale.
 **Owner**: Aravind Krishnaswamy
 **Scope**: PathTracingIntegrator, BDPTIntegrator, VCMIntegrator, and their six rasterizers.
 
@@ -596,7 +596,7 @@ Each phase lands as a single squashed commit against master (or a feature branch
 - `IMaterial` / `IBSDF` / `ISPF` interface changes.  The `value` / `valueNM` dual-virtual pattern stays.  The template layer sits above it.
 - `RISE_API.h` / `Job.cpp` factory wiring.
 - Scene-file keywords.  User-facing behavior is identical.
-- `RISEPel = ROMMRGBPel` typedef.
+- `RISEPel` typedef (now `typedef Rec709RGBPel RISEPel;`, migrated from `ROMMRGBPel` on 2026-05-24).
 - Heavyweight `SpectralPacket` class.  Not used by integrators.
 - VCM `LightVertexStore` per-wavelength fidelity.  The `RISEPelToNMProxy` luminance approximation is a v1 architectural debt; fixing it needs a new store layout and is a separate piece of work.
 - MLT core algorithm.  Only touched if the templated BDPT public signature shape changes, which it won't.

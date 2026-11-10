@@ -57,15 +57,16 @@ public:
 };
 ```
 
-Three orthogonal axes of variation are supported:
+Three orthogonal axes of variation are supported (plus general expressions and `IPainter` channel extraction):
 
 - **Wavelength** (nm): `Function1DScalarPainter`, `PiecewiseLinearScalarPainter`,
   `SellmeierScalarPainter`, `PolynomialScalarPainter`.
-- **Space / UV**: `TextureScalarPainter`, `Function2DScalarPainter`,
-  `PerlinScalarPainter`, `WorleyScalarPainter`.
+- **Space / UV / Shading signals**: `TextureScalarPainter`, `Function2DScalarPainter`,
+  `PainterChannelScalarPainter` (`painter` + `channel R|G|B|A` + affine `scale`/`bias`),
+  `ExpressionScalarPainter` (`expression`, supporting spatial, shading-signal, and `nm` math).
 - **Channel** (R/G/B authored independently): `RGBScalarPainter(r,g,b)`.
 
-Composition operators (`ScaledScalarPainter`, `MultiplyScalarPainter`)
+Composition operators (`ScaledScalarPainter`, `MultiplyScalarPainter`, `AddScalarPainter`)
 let any combination be expressed without a new painter class per
 combination.
 
@@ -192,14 +193,15 @@ Deferred (not in initial set):
 - [A] `ScalarPainterAsciiChunkParser` — single `scalar_painter`
       chunk dispatching on `value` / `values` / `file` /
       `sellmeier` / `polynomial` / `function1d` / `function2d` /
-      `base` (+ `scale`) / `multiply`.  Forms are mutually
+      `texture` / `painter` (`PainterChannelScalarPainter`) /
+      `expression` (`ExpressionScalarPainter`) /
+      `base` (+ `scale`) / `multiply` / `add`.  Forms are mutually
       exclusive; bad input is rejected with descriptive error.
-- [A] `ResolveScalarPainter` helper in `AsciiSceneParser.cpp` (used
+- [A] `ResolveScalarPainter` helper in `ChunkParserRegistry.cpp` (used
       by Phase 3+ material parsers).  Accepts inline scalar
       (`1.5`), inline triple (`1.3 1.5 2.0`), or named reference.
       `requireSingle` flag rejects per-channel painters at parse
-      time — used by single-scalar material slots.  Currently
-      `[[maybe_unused]]`; Phase 3 will exercise it.
+      time — used by single-scalar material slots.
 - [A] `tests/ScalarPainterParserTest.cpp` — 29 assertions covering
       every form + 3 negative tests (missing-form / multiple-form /
       under-specified-values / polynomial-trailing-garbage).
@@ -381,11 +383,10 @@ reports 104/104 PASS.
 **Build manifests**: `build/make/rise/Filelist` and
 `build/cmake/rise-android/rise_sources.cmake` track only `.cpp`
 files, so the header-only `PainterToScalarAdapter.h` requires no
-entry.  `build/VS2022/Library/Library.vcxproj` and
-`Library.vcxproj.filters` have the entry.
-`build/XCode/rise/rise.xcodeproj/project.pbxproj` needs the entry
-in 4 sections × 2 targets — deferred to a follow-up task (the
-Xcode build is not on the canonical path).
+entry.  `build/VS2022/Library/Library.vcxproj`,
+`Library.vcxproj.filters`, and
+`build/XCode/rise/rise.xcodeproj/project.pbxproj` (4 sections × 2
+targets) all have the registration entries.
 
 **Adversarial review checklist**: at the end of the phase, no
 material's constructor reads physical scalars through `IPainter`
@@ -408,74 +409,51 @@ material category render to within sampling noise of pre-refactor.
   callers today (`BlendPainter` of `metallic_factor` /
   `roughness_factor` in PBR-MR) but false in theory for an arbitrary
   IPainter input.  Comment to be tightened.
-- **N2** (non-blocking): `Job.cpp` near line 78-105 has a local
-  `IPainterToScalarAdapter` class duplicating the public header.
-  Collapse in Phase 5.
-- **N3** (non-blocking, Phase 5 cleanup candidate):
-  `SubSurfaceScatteringSPF` and `SubSurfaceScatteringBSDF` store
-  absorption/scattering as `const IScalarPainter&` but never read
-  them (only the diffusion profile uses those values).  Drop the
-  unused members + constructor parameters in Phase 5.
+- **N2** (non-blocking — **CLOSED in Phase 5**): `Job.cpp`'s local
+  `IPainterToScalarAdapter` duplicate was collapsed onto the public
+  `PainterToScalarAdapter.h`.
+- **N3** (non-blocking, **STILL OPEN**):
+  `SubSurfaceScatteringSPF` (`g` / dead SSS members) and `SubSurfaceScatteringBSDF`
+  still carry unused scalar-painter / anisotropy state on the SPF side
+  (only the diffusion profile / BSDF consumes those values).
 
-### Phase 5 — `Job.cpp` cleanup pass
+### Phase 5 — `Job.cpp` cleanup pass — DONE (except N3 above)
 
-- [ ] Drop the near-uniform RGB normalize block at
-      `Job.cpp:2613-2620 / 2632-2643` (the < 10% threshold one).
-- [ ] Collapse the per-material `IPainter* p = pPntManager->Get(name);
-      if (!p) atof…` boilerplate into the parser-layer
-      `ResolveScalarPainter` helper.
-- [ ] Audit `RISE_API_CreateUniformColorPainter` call sites in
+- [x] Drop the near-uniform RGB normalize block in `Job.cpp`
+      (the < 10% threshold heuristic).
+- [x] Collapse the per-material `IPainter* p = pPntManager->Get(name);
+      if (!p) atof…` boilerplate and local `IPainterToScalarAdapter`
+      onto `ResolveScalarPainterArg` / `PainterToScalarAdapter.h`.
+- [x] Audit `RISE_API_CreateUniformColorPainter` call sites in
       `Job.cpp` — every one constructing a "physical scalar" via
-      RGB triple should be gone after Phase 4.  Anything remaining
-      is using `UniformColorPainter` for its intended purpose
-      (RGB colors).
+      RGB triple is gone; remaining call sites use
+      `UniformColorPainter` for genuine RGB colors.
 
 **Adversarial review checklist**: no remaining inline numeric →
 `UniformColorPainter` constructions for physical scalars; the
 normalize block is gone; `Job.cpp` line count for material
-constructors drops noticeably.
+constructors dropped noticeably.  (Item N3 on `SubSurfaceScatteringSPF`
+remains open.)
 
-### Phase 6 — stress-test scenes
+### Phase 6 — stress-test scenes & test coverage — DONE
 
-Construct deliberate stress-test scenes that exercise every painter
-type / composition mode / cross-integrator path.  These scenes live
-in `scenes/Tests/ScalarPainter/`.
+End-to-end stress scenes and unit/parser suites cover every painter
+type, composition mode (`base`+`scale`, `multiply`, `add`, `painter`,
+`expression`), and cross-integrator spectral/RGB path:
 
-- [ ] `stress_uniform_scalar.RISEscene` — every scalar parameter
-      authored as inline numeric / inline triple / named
-      `scalar_painter { value … }`.  Cross-integrator (PT pel,
-      BDPT pel, PT spectral, BDPT spectral, MLT spectral, VCM
-      spectral) parity at 64 spp.
-- [ ] `stress_rgb_dispersion.RISEscene` — IOR authored as
-      `values 1.3 1.5 2.0`.  RGB-pel renders the dispersion
-      correctly; spectral renders interpolate the three values
-      across nm.  Compared against `rgb_dispersive_caustic` for
-      reference.
-- [ ] `stress_spectral_ior_piecewise.RISEscene` — IOR from a 2-
-      column file with non-trivial variation.  Spectral renders
-      show the right per-wavelength refraction; RGB renders show
-      the appropriate channel-integrated values.
-- [ ] `stress_sellmeier_bk7.RISEscene` — IOR via the Sellmeier
-      formula for BK7 glass.  Validates the analytic formula
-      against published values.
-- [ ] `stress_polynomial_ior.RISEscene` — IOR via polynomial.
-- [ ] `stress_roughness_texture.RISEscene` — GGX with a roughness
-      map texture, spatially varying.  Verifies `TextureScalarPainter`
-      reads grayscale UV correctly.
-- [ ] `stress_function1d_ior.RISEscene` — IOR via a named
-      `function1d_piecewise_linear` wrapped in a `scalar_painter`.
-- [ ] `stress_composed_painter.RISEscene` — `multiply(texture_map,
-      sellmeier_curve)`: weathered dispersive glass.  Spatial × spectral.
-- [ ] `stress_procedural_roughness.RISEscene` — Perlin or Worley
-      noise driving roughness on a metallic surface.
-- [ ] Each stress scene renders with each applicable rasterizer at
-      a low spp.  Outputs go to `rendered/stress_*` for visual
-      inspection.
-
-**Adversarial review checklist**: every painter type has at least
-one stress scene; every scene renders without crash / NaN under
-every applicable rasterizer; the RGB vs spectral parity holds where
-it should; the renders look visually correct.
+- [x] `scenes/Tests/Spectral/phase3_dielectric_iscalarpainter.RISEscene`
+      — piecewise-linear `file` `tau`, Sellmeier BK7 `ior`, inline
+      `scattering` across PT-spectral, BDPT-spectral, and MLT-spectral.
+- [x] `scenes/Tests/Spectral/phase6_scalar_painter_forms.RISEscene`
+      — end-to-end scene exercising `value`, `values`, `file`,
+      `sellmeier`, `polynomial`, `function1d`, `function2d`, `texture`,
+      and composed (`base`+`scale`, `multiply`) `scalar_painter` forms
+      across converted materials.
+- [x] `tests/IScalarPainterTest.cpp` & `tests/ScalarPainterParserTest.cpp`
+      — direct unit and parser coverage across all forms (including
+      `painter` / `PainterChannelScalarPainter`, `expression` /
+      `ExpressionScalarPainter`, `add`, inline overflow/underflow
+      guards, and `tau > 1` diagnostics).
 
 ### Phase 7 — scene migration v6 → v7 — DONE
 
@@ -552,10 +530,11 @@ might re-introduce.
       `PainterToScalarAdapter` bridge.
 - [x] This doc (`docs/ISCALARPAINTER_REFACTOR.md`) records the full
       9-phase journey, every adversarial review's findings, and the
-      remaining follow-up items (Xcode manifest, dead SSS members).
+      remaining open cleanup item (N3: dead `SubSurfaceScatteringSPF`
+      members / `g`).
 - [ ] `src/Library/Parsers/README.md` — `scalar_painter` chunk is
       documented inline at the parser definition site
-      (`AsciiSceneParser.cpp:1102+`) with the 9 forms enumerated;
+      (`ChunkParserRegistry.cpp`) with all forms enumerated;
       considered sufficient.  Add a paragraph to the parser README
       only when an external consumer needs it.
 - [ ] `docs/JH_LUT_GAMUT.md` — has a passing reference to "physical
@@ -619,10 +598,10 @@ doc.  Findings that gate moving to the next phase are flagged.
 ## Out of scope
 
 - Spectral rendering of `IScalarPainter`-as-color (e.g., providing a
-  scalar to a `reflectance` slot).  The boundary is one-way: color
-  parameters take `IPainter`, scalar parameters take
-  `IScalarPainter`.  No automatic adapters.
-- A scene-language expression evaluator for arbitrary math on
-  scalars.  `Sellmeier` / `Polynomial` / `PiecewiseLinear` / named
-  `Function1D` cover the practical cases.  Anything more exotic
-  gets a C++ subclass.
+  scalar to a `reflectance` slot).  The boundary from scalar to color
+  is one-way: color parameters take `IPainter`, scalar parameters take
+  `IScalarPainter` (with explicit channel extraction from `IPainter`
+  available via `scalar_painter { painter <name> channel <R|G|B|A> }` /
+  `PainterChannelScalarPainter`, and general math expressions supported
+  natively via `scalar_painter { expression "..." }` /
+  `ExpressionScalarPainter`).

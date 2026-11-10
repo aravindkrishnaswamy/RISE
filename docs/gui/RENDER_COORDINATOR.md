@@ -1,43 +1,14 @@
 # RISE GUI — Render Coordinator
 
-**Status:** DESIGN. No code. This is the deep-dive spec for the one missing
-piece an adversarial review of the seven `docs/gui/` specs surfaced: **there is
-no single arbiter for the many render consumers, which all compete for the same
-process-global worker pool and the same mutable scene.** **Hardened 2026-06-20**
-against a *second* adversarial review held against the now-CONFIRMED concurrency
-frame in [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §0 (single-writer; **one
-process-wide worker pool**; readers get an immutable published `SceneSnapshot`).
-That pass found three mechanical defects (§0.1): the coordinator was described as
-*factored from each controller*, so two open documents would each own a
-coordinator and render concurrently — violating the one-render-takes-all-cores
-rule the doc exists to enforce; the anti-starvation claim ("low-priority work runs
-between passes") had no policy implementing it; and the isolated-job model still
-read as if this doc *designed* the snapshot rather than *consuming*
-TRANSACTION_MODEL's.
-**Owner:** Aravind Krishnaswamy
-**Scope:** Design a single process-wide shared-C++ **`RenderCoordinator`** (a
-singleton lease on the one global CPU worker pool) with **per-document clients**,
-that arbitrates *every* full-scene and isolated render across *all open
-documents*: interactive viewport refinement, production render, asset/material
-thumbnails, node-graph previews, the auto-router probe, RMSE references, and
-agent (AI) renders. It unifies the per-spec render policies that today
-contradict each other (thumbnails "queue", node previews "budget", MCP
-"reject-if-busy", agent "stop/restart the viewport"), defines priority +
-exclusivity + a concrete **anti-starvation policy**, cancellation +
-stale-revision rejection, a *safe* isolated preview/thumbnail job model that
-consumes TRANSACTION_MODEL's immutable `SceneSnapshot`, viewport suspend/resume,
-and the API the GUI / MCP / agent call. Excludes scene-state authority,
-document identity, and the snapshot primitive itself (that is
-[TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3) and side-effect-free
-parse/validate (that is [VALIDATION_ARCHITECTURE.md](VALIDATION_ARCHITECTURE.md)).
+**Status:** **PARTIALLY IMPLEMENTED IN `SceneEditController` (Single-Document Admission & FIFO Serialization Shipped); PROCESS-WIDE MULTI-DOCUMENT `RenderCoordinator` & THUMBNAIL QUEUE UNBUILT.**
+- **Shipped inside `SceneEditController` (`src/Library/SceneEditor/SceneEditController.{h,cpp}`):** Single-document render admission and FIFO serialization over the interactive render slot (`RenderJobId`, `RenderClass`, `SubmitAgentRenderAsync` / `SubmitAgentRenderSync`, `SubmitProductionRenderSync`), suspending/resuming interactive viewport refinement safely around production and agent renders, plus synchronous fast analytical/2D previews (`MaterialPreview` / `PainterPreview` under `try_to_lock`).
+- **Unbuilt (still design work in §1–§9 below):** Standalone process-wide multi-document `RenderCoordinator` singleton arbitrating across multiple simultaneously open `SceneEditController` instances, background `Thumbnail` / `RmseReference` priority queues over immutable `SceneSnapshot` copies, and resumable render checkpoints.
 
-This doc sits under [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §9–§11 and honors its
-§1 principles — in particular **#2 "maximize shared C++"** (the coordinator is
-library code; nothing platform-specific) and **#6 "everything routes through one
-mutation path"** (extended here to "everything routes through one *render*
-path"). Status headers in the other specs are treated as suspect; all
-load-bearing claims cite `file:line` against the
-[CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) ground truth.
+This is the deep-dive spec for the full multi-document coordinator design surfaced during review of the `docs/gui/` specs: **when multiple documents or asynchronous background thumbnail/reference jobs exist, a single process-wide arbiter must govern the one `GlobalThreadPool()`.** **Hardened 2026-06-20** against a *second* adversarial review held against the concurrency frame in [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §0 (single-writer; **one process-wide worker pool**; background readers get an immutable published `SceneSnapshot`). That pass found three mechanical defects (§0.1): the coordinator was described as *factored from each controller*, so two open documents would each own a coordinator and render concurrently — violating the one-render-takes-all-cores rule the doc exists to enforce; the anti-starvation claim ("low-priority work runs between passes") had no policy implementing it; and the isolated-job model still read as if this doc *designed* the snapshot rather than *consuming* TRANSACTION_MODEL's.
+**Owner:** Aravind Krishnaswamy
+**Scope:** Design a single process-wide shared-C++ **`RenderCoordinator`** (a singleton lease on the one global CPU worker pool) with **per-document clients**, that arbitrates *every* full-scene and isolated render across *all open documents*: interactive viewport refinement, production render, asset/material thumbnails, node-graph previews, the auto-router probe, RMSE references, and agent (AI) renders. It unifies the per-spec render policies that previously contradicted each other (thumbnails "queue", node previews "budget", MCP "reject-if-busy", agent "stop/restart the viewport"), defines priority + exclusivity + a concrete **anti-starvation policy**, cancellation + stale-revision rejection, a *safe* isolated preview/thumbnail job model that consumes TRANSACTION_MODEL's immutable `SceneSnapshot`, viewport suspend/resume, and the API the GUI / MCP / agent call. Excludes scene-state authority, document identity, and the snapshot primitive itself (that is [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3) and side-effect-free parse/validate (that is [VALIDATION_ARCHITECTURE.md](VALIDATION_ARCHITECTURE.md)).
+
+This doc sits under [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §9–§11 and honors its §1 principles — in particular **#2 "maximize shared C++"** (the coordinator is library code; nothing platform-specific) and **#6 "everything routes through one mutation path"** (extended here to "everything routes through one *render* path"). Pre-cutover `file:line` citations below were anchored to the historical June 2026 baseline ([CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md)).
 
 ---
 

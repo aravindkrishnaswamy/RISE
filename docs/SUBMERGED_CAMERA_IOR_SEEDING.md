@@ -114,9 +114,11 @@ boundary, not bias.
    zero-exitance-light loops; VCM's hand-written strategy functions
    never got one.  A real fix needs an emission model (bbox-disc) plus
    MIS bookkeeping — feature-sized work.
-2. **VCM medium-vertex photon merge gap** — VCM now connects and performs
-   NEE at MEDIUM vertices (DL-218 closed), but photon merges remain
-   surface-only (documented in docs/VCM.md). The "BDPT/VCM ~2x PT in a
+2. **VCM medium-vertex photon merge gap (historical — closed by DL-469)** —
+   at the time of this 2026-08-13 investigation, VCM connected and performed
+   NEE at MEDIUM vertices (DL-218 closed) while photon merges were still
+   surface-only; VCM now supports **both surface and volume merges** (`DL-469`,
+   documented in [VCM.md](VCM.md)). The "BDPT/VCM ~2x PT in a
    global medium" gap (DL-247) was PT's camera-walk surface hand-off
    skipping the medium segment -- fixed for pel/NM (`db71fdfd`) and
    `hwss TRUE` (debt-dl247b) -- plus mismatched `max_volume_bounce`

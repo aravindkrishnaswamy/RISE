@@ -1,15 +1,6 @@
 # RISE GUI Roadmap — From Render Viewer to AI-Operable Creative Tool
 
-**Status:** **PARTIALLY EXECUTED UMBRELLA ROADMAP.** The shared editor,
-CST-native persistence, redesigned macOS/Windows workspaces, start screen,
-entity creation, environment editing, camera/view tools, render modes, N-up
-viewports, and the in-app/external agent surface have shipped. The advanced
-material graph, spectral differentiators, and some orchestration/security
-hardening remain roadmap work. Consult
-[gui/REDESIGN_IMPLEMENTATION.md](gui/REDESIGN_IMPLEMENTATION.md),
-[gui/RENDER_MODES.md](gui/RENDER_MODES.md), and
-[agentic-redesign/50-agentic-surface.md](agentic-redesign/50-agentic-surface.md)
-before treating a phase below as pending.
+**Status:** **SUBSTANTIALLY EXECUTED UMBRELLA ROADMAP.** On macOS and Windows, the shared `SceneEditController`, CST-native lossless persistence (`SaveEngine::Save` / `Cst::SerializeCst`) with **exact-byte CST undo** (`Cst::DocReplaceChunkIfText`), redesigned workspaces, three-path Start Screen (`empty_starter.RISEscene`), entity creation (`EntityTemplates` + `OwnershipClosure`), environment editing, camera/named-view tools, render modes + N-up viewports, **Material Editor Slices 1–6 ALL SHIPPED** (C1 descriptor sliders & inline slot editors, C2 editable `NodeGraphCanvas` with Slice 4 pipe-coloured sockets & scalar adapters, Slice 5 shared 3D `MaterialPreview` shaderball in C1 56×56 header & C2 40×40 Material nodes, and Slice 6 Spectral Differentiators D1 Blackbody Kelvin strip & Sellmeier glass presets/Abbe $V_d$, D2 CC0 Au/Ag/Cu/Al/Cr/Ti measured metals, D3 0°–89° thin-film iridescence strip), sibling **`ObjectGraphCanvas`** (Objects + Geometry + CSG/instancing graph), and the **5-provider `src/Library/Agent/`** chat/MCP/loopback stack (`Anthropic`, `Gemini`, `OpenAI`, `XAI`, `Local`) have all shipped. Remaining backlog: `default_studio.RISEscene` + CC0 asset library (A1/A5) & drag-to-assign (A3), C2 group frames/uber-node polish, C3 MaterialX import, spectral scopes/heatmaps/Light Mix (D5–D7, plus remaining D1 curve/prism widgets), multi-document `RenderCoordinator` / security jailing, and Android parity gaps (§10.4). Consult [gui/REDESIGN_IMPLEMENTATION.md](gui/REDESIGN_IMPLEMENTATION.md), [gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md), [gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md), [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md), and [gui/RENDER_MODES.md](gui/RENDER_MODES.md) before treating any phase below as pending; treat [gui/CURRENT_STATE_AUDIT.md](gui/CURRENT_STATE_AUDIT.md) strictly as a historical June 2026 pre-cutover baseline, never as present-day authority.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Make the RISE GUI (macOS, Windows, and — staged — Android) materially more capable and more *approachable*, without cloning Blender/Maya. Three pillars: (1) an approachability foundation, (2) creative-power features (cameras/views, material editor, spectral-only differentiators), and (3) a first-class **LLM/agent integration** that can fully operate scenes and the engine. All three rest on one architectural spine: **the `.RISEscene` text file is the canonical source of truth, and the shared C++ library owns everything that isn't a native widget.**
 
@@ -54,25 +45,42 @@ Full audit lives in the deep-dive specs; the load-bearing facts:
 
 **The descriptor-driven properties panel is a force multiplier.** Any scene parameter with a `ChunkDescriptor` entry auto-appears as an editable row — no per-parameter UI code. The MCP tool schemas and the AI's grammar view are generated from the same `SceneGrammar::Describe()` source — but the descriptor is *tolerant* (it checks finite-numeric tokens, not cardinality / enum membership), so a generated schema can **over-reject** the real parser; it is a first-pass filter held honest by a conformance test, not a drift-proof oracle ([gui/VALIDATION_ARCHITECTURE.md](gui/VALIDATION_ARCHITECTURE.md)).
 
-**Persistence is now CST-native.** The July 2026 cutover deleted the interim
-byte-splice/managed-override engine described by the older correction that used
-to live here. A `Job` retains the canonical CST `Document`; edits, entity
-insertion/removal, and variants operate on that document, and
-[`SaveEngine`](../src/Library/SceneEditor/SaveEngine.cpp) serializes it
-byte-exactly when unedited and minimal-diff when edited.
+**Persistence and undo are now CST-native and byte-exact.** The July 2026 cutover
+deleted the interim byte-splice/managed-override engine described by the older
+correction that used to live here, and the October 2026 undo slice landed
+exact-byte CST undo ([`Cst::DocReplaceChunkIfText`](../src/Library/Cst/Cst.h) +
+per-object gizmo spelling journal). A `Job` retains the canonical CST `Document`;
+edits, entity insertion/removal (`EntityTemplates` for Light, Object, Material,
+Painter, Medium + camera CRUD), and agent mutations operate on that document,
+and [`SaveEngine`](../src/Library/SceneEditor/SaveEngine.cpp) serializes it
+byte-exactly when unedited (or undone back to loaded text) and minimal-diff when
+edited.
 
-**Major roadmap slices have shipped on both desktop platforms:** redesigned
-workspaces and start screen, outliner/entity creation, environment editing,
-canonical and named camera views, render modes, N-up panes, the C1/C2
-material & painter inspector + node-graph canvas ([gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md),
-doc 88 S11–S23), 2D painter/stage/ramp previews (`PainterPreview` on both macOS and Windows),
-`ParameterSemantics` pipe & legality validation (S17), C1 descriptor soft-range sliders and inline painter slot swatches / quick editors / Shared-Fork (C1 Slices 1–3), and the in-app plus
-external agent surface, including editable region rendering and explicit
-region-only final renders. Current gaps include the 3D shaderball `MaterialPreview` engine, C2 Phase-2 visual polish (pipe-coloured sockets/wires and adapter insertion), C3 MaterialX
-import, spectral-differentiator UX (D1–D3, D5–D7), asset-library workflow, and
-some cross-client orchestration/security hardening. The sections below remain the
-umbrella rationale and backlog; their original phase language is not a
-present-day capability audit.
+**Major roadmap slices have shipped on both desktop platforms (macOS + Windows):**
+redesigned workspaces and start screen (`empty_starter.RISEscene`), outliner/entity
+creation (`EntityTemplates` + `OwnershipClosure`), environment editing, canonical
+and named camera views (note: Windows Qt `NamedViewsPanel` widget is still pending
+wiring over the shipped `ViewportBridge` methods), render modes, N-up panes,
+**Material Editor Slices 1–6 ALL SHIPPED** — C1 inspector (`PropertiesPanel.swift` /
+`ViewportProperties.cpp`) + C2 node-graph canvas ([gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md))
+with 2D `PainterPreview`, Slice 4 pipe-coloured sockets/wires and scalar-to-colour
+adapter insertion, Slice 5 shared 3D [`MaterialPreview`](../src/Library/SceneEditor/MaterialPreview.h)
+shaderball (56×56 in C1 headers, 40×40 on C2 Material nodes), and Slice 6 Spectral
+Differentiators ([gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md):
+D1 Blackbody Kelvin strip & Sellmeier glass presets with computed $n_d$/Abbe $V_d$,
+D2 CC0 Au/Ag/Cu/Al/Cr/Ti measured-metal presets, D3 0°–89° thin-film iridescence
+strip) — plus the sibling **`ObjectGraphCanvas`** (Objects + Geometry + CSG/instancing
+wires on macOS & Windows), the **5-provider `src/Library/Agent/` stack**
+(`AgentChatLoop`, `AgentChatCodecs` for Anthropic/Gemini/OpenAI/XAI/Local,
+`AgentMcpAdapter`, `AgentLoopbackHttpServer`), and editable region rendering +
+explicit region-only final renders. Current gaps include C3 MaterialX import,
+`default_studio.RISEscene` + A3 drag-to-assign + A5 CC0 asset library, remaining
+D1/D4–D7 spectral/scope overlays, Windows `NamedViewsPanel` + Credential Manager
+wiring, Android `.RISEscene` save / missing inspector categories / agent JNI, and
+process-wide multi-document security/orchestration hardening. ([gui/CURRENT_STATE_AUDIT.md](gui/CURRENT_STATE_AUDIT.md)
+is a frozen June 2026 pre-implementation baseline — do **not** read it as
+present-day capability authority.) The sections below remain the umbrella
+rationale and backlog; their original phase language is not a present-day audit.
 
 ---
 
@@ -214,50 +222,42 @@ The principle's pay-off: the **MCP server and the LLM runtime are written once**
 `RISEViewportBridge.mm` and `ViewportBridge.cpp` are already structurally identical. New subsystems should expose one C-ABI header consumed by both, rather than re-implementing per platform. Candidate: extract a shared bridge core so the Obj-C++ / Qt layers shrink to marshaling.
 
 ### 10.4 Android staged fallback
-Android keeps the *core abilities* (it consumes the same C++ via JNI) but gets a **mobile-first UI shell** with different layout + touch interactions, and a feature **tiering**:
-- **Tier A (must-have, incl. LLM):** scene browse/open, render view (HDR where supported), basic parameter edit, timeline scrub, **full LLM chat + agent operation** (chat is mobile-native — a plausible Android headline).
+Android keeps the *core abilities* (it consumes the same C++ via JNI) with a **mobile-first UI shell** and a staged feature **tiering**:
+- **Tier A (must-have, incl. LLM):** scene browse/open, render view (HDR where supported), basic parameter edit, timeline scrub, `.RISEscene` save, **full LLM chat + agent operation** (chat is mobile-native — a plausible Android headline).
 - **Tier B (touch-adapted):** gizmo transforms, named views, camera list, material *instance* sliders.
 - **Tier C (deferred / desktop-first):** node-graph editor, EDR scopes, split view. Present as "edit on desktop" gracefully, never a broken control.
+
+> **Current Android shipping status (honest audit):** Shipped today in `android/app/` + `RiseBridge.cpp`: interactive `Lit` preview viewport, touch camera navigation + gizmo transforms, 6 inspector categories (`Camera`, `Rasterizer`, `Object`, `Light`, `Medium`, `Output`), EV + tone-curve display controls, timeline scrub, and rendered-image export (`nativeSaveAs` writes TGA/PPM/EXR/PNG/HDR images). **Still unbuilt on Android:** `.RISEscene` scene-save UI/JNI (`SaveEngine` exists in shared C++ but has no JNI/Compose save flow yet), the remaining 5 desktop categories (`Material`, `Painter`, `Film`, `SceneVariant`, `Geometry`), non-`Lit` viewport render modes, Named Views UI, and the LLM chat Compose UI / JNI bindings / mobile TLS & Keystore credential plumbing (`AgentLoopbackHttpServer` / `AgentTlsClient` are compiled out under `__ANDROID__`).
 
 Every deep-dive spec must include an "Android tier + interaction" note.
 
 ### 10.5 Net-new shared-library components surfaced by the specs
-The deep-dives converged on a small set of genuinely-new shared-C++ pieces that more than one direction depends on — building these once unblocks several features:
+The deep-dives converged on a small set of genuinely-new shared-C++ pieces that more than one direction depends on:
 
 - **A `ParameterSemantics` structure on `ParameterDescriptor` (Core SHIPPED in S17).** Defined in [`ChunkDescriptor.h`](../src/Library/Parsers/ChunkDescriptor.h) (`struct ParameterSemantics`), carrying `pipe` (`ParameterPipe`: `Color`, `Scalar`, `Material`, `Function1D`, `Function2D`, `Geometry`, `Other`), `requireSingle`, `keywordAllowlist`, `colorAlsoAcceptsScalar` (`DL-16`/`DL-17` dual-pipe rotation slots), and `note`. Consumed by [`ConnectionLegality`](../src/Library/SceneEditor/ConnectionLegality.h) and the C2 node-graph canvas ([gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md), [gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md)). Fine-grained `cardinality`, semantic `units`, `colourSpace`, and `spatialVsSpectral` fields remain optional future enrichments.
-- **Side-effect-free `validate(scene_text)` pass.** The parser has no no-op validation mode today (`ParseAndLoadScene` mutates / logs to the global log). Design: parse into an **isolated throwaway real `Job`** + a command policy (a faithful capturing mock would need 217 pure virtuals, and the real accept/reject logic lives in `Job::ResolveOrDiagnoseScalar`); end-state is `parse → IR → validate IR`. Keystone for AI self-correction ([gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md)); also powers inline editor diagnostics.
-- **Scene-text retention on `Job`.** The `Job` does not retain source text after parse. Buffer-on-parse so the GUI "show me the code" panel, the MCP scene-text resource, and the AI read path share one accessor.
-- **Generated bridge enum mirror** (`tools/gen_bridge_enums.py`). Emit the C-ABI enums (panel mode, category, tool) to Kotlin constants + Obj-C `static_assert` mirrors so the recurring bridge-enum-drift bug (the `case 5:` fall-through) becomes structurally impossible ([gui/CROSS_PLATFORM_ARCHITECTURE.md](gui/CROSS_PLATFORM_ARCHITECTURE.md)).
+- **Side-effect-free `validate(scene_text)` pass (SHIPPED in `AgentSession::ValidateText`; sandbox hardening OPEN).** `Cst::ParseToCst` provides construction-free syntax parsing, and [`AgentSession::ValidateText`](../src/Library/Agent/AgentSession.cpp) runs `ParseToCst` + throwaway-`Job` `DeriveToJob` (with `>`-directive refusal and structured `AgentDiagnostic` line/column reporting) without mutating the live scene ([gui/VALIDATION_ARCHITECTURE.md](gui/VALIDATION_ARCHITECTURE.md)). Inline editor squiggle gutters, `ProjectRootJail` / validation resource caps, and out-of-process asset decode remain open hardening items.
+- **Scene-text retention on `Job` (SHIPPED in the CST cutover).** Every CST-loaded `Job` retains its canonical `Cst::Document` (`GetCstDocument()`), serialized losslessly via `Cst::SerializeCst` so the GUI scene-text editor, `SaveEngine`, and `AgentSession` share one authoritative source of truth.
+- **Generated bridge enum mirror** (`tools/gen_bridge_enums.py` — **OPEN**). Emit the C-ABI enums (panel mode, category, tool) to Kotlin constants + Obj-C `static_assert` mirrors so bridge-enum drift becomes structurally impossible ([gui/CROSS_PLATFORM_ARCHITECTURE.md](gui/CROSS_PLATFORM_ARCHITECTURE.md)). Today `SourceHygieneTest` pins `IJobVtableManifest.txt` and `kNumCategories` is public, while `gen_bridge_enums.py` remains unbuilt.
 
 ---
 
-## 11. Phasing (with the AI spine woven in)
+## 11. Phasing (with shipped status & remaining backlog)
 
 Desktop-shared work lands on macOS + Windows simultaneously (principle 2); Android follows per its tiering (§10.4).
 
-**Foundation critical path (must precede the feature phases below).** The 2026-06 review established that the feature work rests on foundations that have to land first, roughly in order:
+**Foundation status:** Single-document CST authority (`Cst::CstHeadVersion` CAS + exact-byte undo `Cst::DocReplaceChunkIfText` + `EditorUiSnapshot` `try_lock` reads, [gui/ADR_DOCUMENT_FIRST_EDITOR.md](gui/ADR_DOCUMENT_FIRST_EDITOR.md)), single-document FIFO render admission in `SceneEditController` (`SubmitAgentRenderAsync/Sync`, `SubmitProductionRenderSync`), side-effect-free `AgentSession::ValidateText`, loopback auth/proposal gates, and `EntityTemplates` + `OwnershipClosure` CRUD have shipped. Multi-document `SceneSnapshot` RCU / process-wide `RenderCoordinator` and `ProjectRootJail` / `IOutboundUrlPolicy` / C++ `ICredentialStore` remain open v2 hardening ([gui/TRANSACTION_MODEL.md](gui/TRANSACTION_MODEL.md), [gui/RENDER_COORDINATOR.md](gui/RENDER_COORDINATOR.md), [gui/AI_SECURITY_MODEL.md](gui/AI_SECURITY_MODEL.md)).
 
-1. **Document identity + immutable snapshot model** — `(UUID, revision)`; RCU-style published snapshot ([gui/TRANSACTION_MODEL.md](gui/TRANSACTION_MODEL.md)). Everything that reads scene state concurrently (render jobs, thumbnails, external clients) depends on it.
-2. **Transaction correctness** — single-writer, commit-under-lock, drag-as-preview, precondition conflict ([gui/TRANSACTION_MODEL.md](gui/TRANSACTION_MODEL.md)).
-3. **Render coordination** — one process-wide pool lease, priority + anti-starvation, snapshot-backed isolated jobs ([gui/RENDER_COORDINATOR.md](gui/RENDER_COORDINATOR.md)).
-4. **Validation + security** — legacy-tolerant `validate` (IR gutter + sandboxed deep `Job`) + the AI threat model ([gui/VALIDATION_ARCHITECTURE.md](gui/VALIDATION_ARCHITECTURE.md), [gui/AI_SECURITY_MODEL.md](gui/AI_SECURITY_MODEL.md)).
-5. **Entity creation** — outliner + all-family create/delete + tombstone persistence + dependency graph ([gui/ENTITY_CREATION.md](gui/ENTITY_CREATION.md)).
-
-The table below is the *feature* sequencing; it assumes the foundation above is in place (A0's `validate` needs #4; A2's edit tools need #2; thumbnails/previews across Dir A/C/D need #1 + #3).
-
-| Phase | Theme | Depends on |
+| Phase | Theme | Status |
 |---|---|---|
-| **0** | **Re-scoped** (round-trip save already ships — transforms/properties/created-cameras): build the **entity-creation / outliner** workflow + Phase-C persistence for non-camera entities | new `gui/ENTITY_CREATION.md` (§14) |
-| **1** | Approachability foundation (Dir A) | A2 leans on `ResizeFilm`; A1 on auto-router + OIDN |
-| **2** | Cameras & views (Dir B) | multi-camera infra (shipped) |
-| **3** | Material instance editor + spectral widgets (C1 + Dir D subset) | descriptor infra (shipped) |
-| **4** | Full node-graph editor (C2); MaterialX/OpenPBR import (C3) | C2 = new graph-*topology* serialization (material *property* round-trip already ships). **C3 is independent of C2** — RGB→painter via the JH boundary; can land alongside Phase 3. |
-| **AI spine (parallel, starts early)** | | |
-| **A0** | RISE agent server (MCP protocol): read scene + grammar resource + framebuffer + `validate` + render-control | **substantial net-new** — JSON-RPC, 3 transports, schema-gen, safe `validate`, source-text retention, framebuffer encoding, headless lifecycle. The *scene-read/render* capabilities it wraps mostly exist; the protocol layer does not. No round-trip save needed for the text-level loop. |
-| **A1** | In-app chat panel + provider adapters (Claude / Gemini / local); L0→L1 diff-review | A0 |
-| **A2** | Edit/create tools via `SceneEditController`; L2 operate-with-guardrails + scoped permissions | edit/property/created-camera persistence ships **today**; only **non-camera creation** persistence is gated on Phase 0 |
-| **A3** | Vision feedback loop + curated external MCPs (HDRI/asset, spectral n,k, web); L3 autonomous tasks | A1, A2 |
-| **Ongoing** | Marquee spectral: auto-router heatmap (D5), EDR scopes (D6), Light Mix (D7) | D5 → expose the private `ProbeResult` (additive readback); D6 → XYZ-at-film-resolve retention + scope compute; D7 → per-light AOV infra + attribution/denoise contract. All ride the RENDER_COORDINATOR snapshot / isolated-job path (#1, #3). |
+| **0** | **Entity-creation / outliner** workflow + CST persistence for non-camera entities ([gui/ENTITY_CREATION.md](gui/ENTITY_CREATION.md)) | **PARTIALLY SHIPPED:** `EntityTemplates` (Light, Object, Material, Painter, Medium), `OwnershipClosure` reference-safe delete/duplicate/rename, macOS + Windows Outliner CRUD, and agent chunk CRUD shipped. Standalone `Category::Geometry` templates, `Shader`/`Modifier` categories, atomic glTF-into-open-scene import, and Android CRUD UI remain open. |
+| **1** | **Approachability foundation** (Dir A, [gui/APPROACHABILITY_FOUNDATION.md](gui/APPROACHABILITY_FOUNDATION.md)) | **PARTIALLY SHIPPED:** Three-path Start Screen + `empty_starter.RISEscene`, Pause/Resume/Stop progressive viewport (A2), Draw Region / Render Active Region (A4), Environment HDRI editor, and Basic/Advanced disclosure shipped on desktop. `default_studio.RISEscene` (A1), drag-to-assign (A3), and CC0 asset library (A5) remain open. |
+| **2** | **Cameras, views & render modes** (Dir B, [gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md), [gui/RENDER_MODES.md](gui/RENDER_MODES.md)) | **MOSTLY SHIPPED:** Transient `ViewportPose` + fly-then-stamp, axis-ball nav gizmo, `.RISEviews` sidecar + macOS `NamedViewsPanel` + Windows `ViewportBridge`/pane selector, P1–P3 render modes + desktop N-up panes shipped. Windows Qt `NamedViewsPanel` CRUD widget and B4b animation camera-cuts remain open. |
+| **3** | **Material instance editor + spectral widgets** (C1 + Dir D subset, [gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md), [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md)) | **SHIPPED (Slices 1–3, 5, 6):** C1 soft-range sliders, inline 18×18 `PainterPreview` swatches, `Shared (N)`/`Fork`, 56×56 3D `MaterialPreview` shaderball header, D1 Blackbody Kelvin strip & Sellmeier optical glass presets/$n_d$/Abbe $V_d$, D2 CC0 Au/Ag/Cu/Al/Cr/Ti measured metals, and D3 0°–89° thin-film iridescence strip shipped on macOS + Windows. D1 monochromatic/CSV/prism preview remain open. |
+| **4** | **Node-graph editors & MaterialX import** (C2 + sibling Object Graph + C3, [gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md)) | **C2 + Object Graph SHIPPED (S11–S23 + Slices 4–5); C3 OPEN:** Editable `NodeGraphCanvas` with pipe-coloured sockets/wires, 1-click `scalar_painter` adapter insertion, and 40×40 3D `MaterialPreview` swatches + sibling `ObjectGraphCanvas` (Objects + Geometry + CSG/instancing) shipped on macOS + Windows. C2 group frames/uber-node polish and C3 MaterialX import remain open. |
+| **AI spine** | | |
+| **A0** | **RISE agent server** (JSON-RPC / `--mcp` stdio / `--agent-http` loopback): 38+ verbs, schema-gen, `AgentSession::ValidateText`, framebuffer/viewport read, render control ([gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md)) | **SUBSTANTIALLY SHIPPED:** Core 38+ verbs, integer `headVersion` CAS, proposals, and transports shipped. `resources/subscribe`, `prompts/list`, `export_movie`, `ProjectRootJail`, `SecretRedactor`, and `SchemaConformanceTest` remain open. |
+| **A1–A3** | **In-app chat + 5 providers + vision loop** ([gui/LLM_AGENT_RUNTIME.md](gui/LLM_AGENT_RUNTIME.md)) | **CORE SHIPPED (macOS + Windows):** `AgentChatLoop` + 5-provider `AgentChatCodecs` (`Anthropic`, `Gemini`, `OpenAI`, `XAI`, `Local`), `ChatPanel` + `ProposalCard`, tool calling, vision/imagine loop, prompt caching, and compaction shipped. `ExternalServerHub`, C++ `ICredentialStore` / Windows Credential Manager, OAuth, Linux TLS, and Android JNI chat remain open. |
+| **Ongoing** | **Marquee spectral diagnostics & Light Mix** (D5–D7, [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md)) | **OPEN** (top-bar resolved integrator + reason and EDR display + EV + 5 tone curves shipped; D5 probe heatmap/card, D6 cinema scopes, and D7 PT Light Mix remain open). |
 
 ---
 
@@ -277,14 +277,14 @@ The table below is the *feature* sequencing; it assumes the foundation above is 
 
 ## 13. Spikes & resolutions
 
-The deep-dives resolved most of the original open questions. Remaining items needing your decision are under "Still open."
+The deep-dives and 2026-07..2026-10 implementation slices resolved the original architectural questions. Remaining items needing a product decision are under "Still open."
 
-1. **Spectral hover-preview cost** — *Resolved.* Flat spectral swatches (Kelvin/λ/CSV/metal) are a `SpectralPacket::GetXYZ → XYZtoRec709RGB` compute — microseconds, live on drag, no path trace. Only the prism preview and full-object thin-film rim need a commit-time cached thumbnail. Baseline for drag-to-assign is **commit-on-release**; live full-object hover-preview is spike-gated and falls back to RGB-only if it misses budget. ([gui/APPROACHABILITY_FOUNDATION.md](gui/APPROACHABILITY_FOUNDATION.md), [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md))
-2. **Axis/split-view ground truth** — *Resolved (static search).* Neither desktop platform has axis or split views today; Direction B is greenfield and lands symmetrically. Recommend an eyeball confirm before building. ([gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md))
-3. **MCP transport** — *Resolved.* Three transports behind one interface: in-process (in-app client), loopback-HTTP (external clients on a running GUI), `rise --mcp-stdio` (headless/CI). ([gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md))
-4. **Provider-adapter abstraction** — *Resolved.* `ILLMProvider` normalizes Claude tool-use / Gemini function-calling / OpenAI-compatible-local onto one type set, with `ProviderCaps` for capability differences. ([gui/LLM_AGENT_RUNTIME.md](gui/LLM_AGENT_RUNTIME.md))
-5. **`validate` dry-run** — *Resolved.* No side-effect-free pass exists today; design parses into an **isolated throwaway real `Job`** + a command policy (capturing-mock rejected — 217 pure virtuals), with a `parse → IR → validate IR` end-state ([gui/VALIDATION_ARCHITECTURE.md](gui/VALIDATION_ARCHITECTURE.md)).
-6. **Round-trip vs wholesale-rewrite for AI** — *Resolved.* MCP tools are tagged "works today via rewrite-and-reload" (the cheap-start MVP) vs "needs round-trip save" (structured in-place edits). Structured transform/property/created-camera saves ship **today**; only **non-camera creation** persistence remains a Phase-0 item. ([gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md))
+1. **Lossless CST save & spectral preview cost** — **RESOLVED.** Every scene loads into a retained CST `Document` serialized losslessly by `SaveEngine::Save` (`Cst::SerializeCst` — byte-exact when unedited, minimal-diff when edited) with exact-byte undo via `Cst::DocReplaceChunkIfText`. For previews, flat spectral swatches (D1 Kelvin, D2 measured metals, D3 thin-film 0°–89° strip) and headless 2D/3D inspector/node swatches (`PainterPreview`, `MaterialPreview`) evaluate deterministically in shared C++ without touching the live film; drag-to-assign (A3, still open) keeps **commit-on-release** as its baseline. ([gui/ADR_DOCUMENT_FIRST_EDITOR.md](gui/ADR_DOCUMENT_FIRST_EDITOR.md), [gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md), [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md))
+2. **Axis/split-view ground truth** — **RESOLVED & SHIPPED.** Direction B landed symmetrically across shared C++ + desktop bridges (axis-ball gizmo, transient `ViewportPose`, `.RISEviews` sidecar, and P3 N-up panes; Windows Qt `NamedViewsPanel` CRUD widget remains a parity follow-up). ([gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md), [gui/RENDER_MODES.md](gui/RENDER_MODES.md))
+3. **MCP transport** — **RESOLVED & SHIPPED.** Three transports share one `AgentRpc` / `AgentSession` core: in-process (`ChatPanel`), loopback HTTP (`AgentLoopbackHttpServer` / `--agent-http`), and stdio (`--mcp`). ([gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md))
+4. **Provider-adapter abstraction** — **RESOLVED & SHIPPED.** `AgentChatLoop` + `AgentChatCodecs` normalize **5 providers** (`Anthropic`, `Gemini`, `OpenAI`, `XAI`, `Local`) over one tool-call and streaming transcript model. ([gui/LLM_AGENT_RUNTIME.md](gui/LLM_AGENT_RUNTIME.md))
+5. **Side-effect-free `validate` dry-run** — **RESOLVED & SHIPPED.** Implemented in `AgentSession::ValidateText`: runs construction-free `Cst::ParseToCst` plus an isolated throwaway-`Job` `DeriveToJob` pass with `>`-directive refusal and structured `AgentDiagnostic` output, never mutating the live scene. (Sandbox hardening — `ProjectRootJail`, resource caps, out-of-process asset decode — remains open in [gui/VALIDATION_ARCHITECTURE.md](gui/VALIDATION_ARCHITECTURE.md).)
+6. **Structured CST edits vs wholesale-rewrite for AI** — **RESOLVED & SHIPPED.** Both GUI and `src/Library/Agent/` mutate the retained CST `Document` directly via param edits and chunk CRUD (`ApplyAgentParamEdit`, `insert_chunk`, `remove_chunk`, `EntityTemplates`), persisting uniformly through `SaveEngine::Save`. ([gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md), [gui/ENTITY_CREATION.md](gui/ENTITY_CREATION.md))
 
 **Still open — need a decision:**
 - **Seed-asset license + repo-size budget.** A shipped studio HDRI + starter material library is required for drag-to-assign to be useful (A1/A5); needs a license-clean source and a repo-size budget. Proposed home: `scenes/Default/assets/`.
@@ -321,26 +321,38 @@ A third, code-grounded review found several round-3 hardenings are not yet *mech
 
 ---
 
-## 14. Deep-dive spec index (`docs/gui/`)
+## 14. Sub-specifications index (`docs/gui/` — all 23 specs)
 
-Each is a focused design doc spun off from this roadmap. Each must honor §1 principles and include an Android-tier note (§10.4).
+Each is a focused design or implementation doc spun off from this roadmap. Each honors §1 principles and carries an Android-tier note (§10.4) where applicable.
 
-- [gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md) — RISE MCP server: full tool/resource catalog, schema auto-generation from `SceneGrammar`, `validate`, framebuffer resource, permissions/scopes, transport.
-- [gui/LLM_AGENT_RUNTIME.md](gui/LLM_AGENT_RUNTIME.md) — agent loop, provider adapters (Claude/Gemini/local), chat UX, staged autonomy, guardrails/diff-review, "show me the code" panel.
-- [gui/APPROACHABILITY_FOUNDATION.md](gui/APPROACHABILITY_FOUNDATION.md) — default scene, progressive viewport, drag-to-assign, region render, asset libraries, disclosure.
-- [gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md) — named views, axis-ball gizmo, camera list, fly-then-stamp, split view; scene-language vs UI-only split.
-- [gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md) — instance-first view, node graph, serialization, MaterialX import, IPainter/IScalarPainter mapping.
-- [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md) — spectral picker, measured metal, thin-film, gamut warning, auto-router heatmap, EDR scopes, Light Mix.
-- [gui/CROSS_PLATFORM_ARCHITECTURE.md](gui/CROSS_PLATFORM_ARCHITECTURE.md) — shared-core strategy, bridge consolidation, Android staged fallback/tiering.
+**Direction & UX specifications:**
 
-**Foundation & correction docs (2026-06-19 review round):**
+- [gui/APPROACHABILITY_FOUNDATION.md](gui/APPROACHABILITY_FOUNDATION.md) — default scene (`empty_starter.RISEscene` shipped; `default_studio.RISEscene` open), progressive viewport, drag-to-assign (A3), region render (A4), asset libraries (A5), disclosure (A6).
+- [gui/START_SCREEN.md](gui/START_SCREEN.md) — three-path desktop Start Screen ("New Empty Scene", "Open Scene…", recent files).
+- [gui/DESIGN_BRIEF.md](gui/DESIGN_BRIEF.md) — product-principles and requirements brief for the desktop workspace redesign (shipped on macOS + Windows).
+- [gui/REDESIGN_IMPLEMENTATION.md](gui/REDESIGN_IMPLEMENTATION.md) — implementation record of the delivered macOS + Windows workspace redesign.
+- [gui/ENVIRONMENT_SECTION.md](gui/ENVIRONMENT_SECTION.md) — dedicated Environment inspector section (HDRI radiance map, scale, orientation).
+- [gui/PROPERTIES_AND_REFERENCES.md](gui/PROPERTIES_AND_REFERENCES.md) — descriptor-driven property inspector, reference pickers, and C1 review findings.
+- [gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md) — Named Views (`.RISEviews` sidecar; Windows `NamedViewsPanel` widget open), axis-ball gizmo, camera list, fly-then-stamp, split view.
+- [gui/RENDER_MODES.md](gui/RENDER_MODES.md) — interactive viewport shading/debug modes (`Lit`, `Wireframe`, `Normals`, `Depth`, `Albedo`, `ObjectID`) and desktop N-up panes.
+- [gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md) — C1 instance-first inspector, C2 node graph, shared 3D `MaterialPreview` shaderball, C3 MaterialX import (open), `IPainter`/`IScalarPainter` pipe mapping (Slices 1–6 shipped).
+- [gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md) — shared `GraphLayout`/`GraphLayoutSidecar`/`ConnectionLegality`, C2 Material & Painter `NodeGraphCanvas`, and sibling `ObjectGraphCanvas` (Objects + Geometry + CSG/instancing).
+- [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md) — Slice 6 D1 Kelvin/Sellmeier, D2 measured metals (Au/Ag/Cu/Al/Cr/Ti), D3 0°–89° thin-film iridescence strip (shipped), plus D4 EDR/gamut, D5 auto-router probe/heatmap, D6 scopes, D7 Light Mix.
+- [gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md) — RISE agent/MCP server (`AgentRpc`, `AgentMcpAdapter`, `--mcp`, `--agent-http`): 38+ tool/resource verbs, `SceneGrammar` schemas, `validate`, framebuffer observation, permissions/scopes.
+- [gui/LLM_AGENT_RUNTIME.md](gui/LLM_AGENT_RUNTIME.md) — `AgentChatLoop`, 5-provider `AgentChatCodecs` (`Anthropic`, `Gemini`, `OpenAI`, `XAI`, `Local`), `ChatPanel` + `ProposalCard`, vision/imagine loop, staged autonomy.
+- [gui/CROSS_PLATFORM_ARCHITECTURE.md](gui/CROSS_PLATFORM_ARCHITECTURE.md) — shared-core boundary (`src/Library/`), thin desktop/Android bridges, present surfaces, Android staged tiering.
 
-- [gui/CURRENT_STATE_AUDIT.md](gui/CURRENT_STATE_AUDIT.md) — **code-first ground truth** (implemented-in-library vs wired-into-GUI vs absent, per platform, cited to `file:line`). Read this before trusting any other GUI doc's status.
-- [gui/TRANSACTION_MODEL.md](gui/TRANSACTION_MODEL.md) — authoritative state, scene-revision epochs, transactions + preconditions, AI staging, multi-client reconciliation, undo attribution, external-edit reconciliation.
-- [gui/RENDER_COORDINATOR.md](gui/RENDER_COORDINATOR.md) — one coordinator for all render consumers (viewport / production / thumbnails / node previews / probe / agent): priority, exclusivity, cancellation, stale-generation rejection, isolated preview jobs.
-- [gui/VALIDATION_ARCHITECTURE.md](gui/VALIDATION_ARCHITECTURE.md) — safe side-effect-free validation (isolated `Job` + command policy → parse-to-IR); why "parser-identical AND side-effect-free" was impossible as first specified.
-- [gui/ENTITY_CREATION.md](gui/ENTITY_CREATION.md) — outliner + add/delete/duplicate/import + reference-safe deletion + Phase-C persistence beyond cameras (the real Phase-0 gap).
-- [gui/AI_SECURITY_MODEL.md](gui/AI_SECURITY_MODEL.md) — threat model: prompt injection, cloud-data consent, SSRF, path-root enforcement, secret redaction, destructive-command policy, curated external-MCP ownership.
+**Architecture, state, security & tracking docs:**
+
+- [gui/ADR_DOCUMENT_FIRST_EDITOR.md](gui/ADR_DOCUMENT_FIRST_EDITOR.md) — architectural decision record: retained CST `Document` as single source of truth, `EditorUiSnapshot` reads, derived dirty state, exact-byte CST undo.
+- [gui/EDITOR_STATE_AND_TRANSACTION_HARDENING.md](gui/EDITOR_STATE_AND_TRANSACTION_HARDENING.md) — H1–H3 hardening record de-brittling `SceneEditor` state capture, edit walks, and light-topology invalidation.
+- [gui/TRANSACTION_MODEL.md](gui/TRANSACTION_MODEL.md) — single-writer authority, `(uuid, revision)` `headVersion` CAS, staged `AgentProposal` queue, `FileIdentity` guard, vs unbuilt v2 multi-doc `SceneSnapshot`.
+- [gui/RENDER_COORDINATOR.md](gui/RENDER_COORDINATOR.md) — single-document FIFO render admission in `SceneEditController` (`RenderJobId`, `RenderClass`) vs unbuilt process-wide multi-document coordinator & thumbnail queue.
+- [gui/VALIDATION_ARCHITECTURE.md](gui/VALIDATION_ARCHITECTURE.md) — side-effect-free `AgentSession::ValidateText` + `AgentDiagnostic` + `ParameterPipe`, vs unbuilt inline squiggle gutters & `ProjectRootJail`.
+- [gui/ENTITY_CREATION.md](gui/ENTITY_CREATION.md) — `EntityTemplates` (Light/Object/Material/Painter/Medium), `OwnershipClosure` reference-safe CRUD, vs open `Geometry` templates & atomic glTF import.
+- [gui/AI_SECURITY_MODEL.md](gui/AI_SECURITY_MODEL.md) — threat model: loopback auth, proposal gates, `>`-directive refusal, Keychain, vs unbuilt `IOutboundUrlPolicy`, `ProjectRootJail`, `ICredentialStore`, `SecretRedactor`, `ExternalServerHub`.
+- [gui/OPEN_ITEMS.md](gui/OPEN_ITEMS.md) — live engineering tracker for resolved slices (including exact-byte CST undo §3) and remaining platform/parity gaps (§4).
+- [gui/CURRENT_STATE_AUDIT.md](gui/CURRENT_STATE_AUDIT.md) — **frozen 2026-06-30 historical baseline** (pre-CST-cutover, pre-redesign snapshot retained for historical context only; do **not** treat as present-day capability authority).
 
 ---
 

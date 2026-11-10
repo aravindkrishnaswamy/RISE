@@ -1,5 +1,7 @@
 # DL-482 ordinary SSS reflection endpoint accounting
 
+> **Status:** IMPLEMENTED (2026-10-14) — see [BATCH12_DL482_GATES.md](BATCH12_DL482_GATES.md)
+
 The finite SubSurfaceScatteringBSDF contains only front/front GGX reflection; its smooth and back-face values are zero. Diffusion, random-walk and Donner–Jensen skin all bind that BSDF and the reflection-only, back-face-absorbing SubSurfaceScatteringSPF. Every ordinary finite sampled lobe is eRayReflection. Declare that mask and expose the full RGB/NM finite value in the reflection slot, with all other slots zero. This is a single-label partition, so it is reciprocal wherever the original BSDF is reciprocal and adds no density-share approximation.
 
 Do not change sampling, aggregate value, MIS density, jump charging or contact transport. Existing EndpointBounceType excludes isBSSRDFEntry re-emission vertices; retain it. A nonlocal jump remains a separately counted translucent event. Smooth delta events remain the SPF's responsibility; their finite BSDF split is zero.

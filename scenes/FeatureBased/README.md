@@ -30,8 +30,8 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   two omni lights; `glass_pavilion` itself is not edited) with a new camera reframed on cap1's foot
   and a new receiver material, `marble_cap`, whose reflectance is an `expression_painter` mixing the
   pavilion's own white marble toward a dust tint on `proximity(0.02)`. Rendered under
-  `pixelpel_rasterizer` with `DefaultDirectLighting` (direct-only, so a cap pixel's probe/control
-  ratio is exactly its albedo -- no black-out needed, unlike the path-traced showcases). Eleven
+  `pathtracing_pel_rasterizer` with `max_diffuse_bounce 0` (direct-only, so a cap pixel's probe/control
+  ratio is exactly its albedo -- no black-out needed, unlike full-GI path-traced showcases). Eleven
   query stations plus two per-object/cross-check assertions confirm the signal walks the composite's
   real cross-section: an outer ring hugging the column wall, broken at each flute mouth where the
   slot cuts clean through, with a per-object refusal at the mouth's tangent face that the scene-wide
@@ -46,7 +46,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   into the scene's own header; the fuller account is in
   docs/CROSS_OBJECT_PROXIMITY_DESIGN.md Sec 8.5.
 
-- `EnamelWatch/`: the complete vitreous-enamel watch hero
+- `EnamelWatch/`: the complete vitreous-enamel watch hero (`enamel_watch.RISEscene`)
 - `Geometry/`: hero mesh and model scenes, not primitive sanity checks
 - `GeometrySignals/`: the canonical showcase for the geometry-derived shading signals
   (curv/curvR, occlusion(r), thickness(r)) from docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md.
@@ -82,7 +82,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   is a `param` with min/max/step/label; the header comment doubles as a reading
   guide to the five demonstrations.
 - `GlobalIllumination/`: heavyweight GI stress scenes
-- `GuillocheWatch/`: thin-film guilloché watch showcase and authored variants
+- `GuillocheWatch/`: thin-film guilloché watch showcase (`watch_dial.RISEscene`) and authored variants
 - `Hair/`: the hair/fur showcases -- one hero, one variety plate, one macro.
 
   `cottontail_dusk.RISEscene` is a rabbit crouched in dry late-summer grass, shot into a
@@ -146,7 +146,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   backdrop wash faces away from the subject), because a one-pixel filament staying legible
   against a bright ground is the harder test.
 - `MLT/`: visually interesting Metropolis light transport scenes
-- `Materials/`: integrated material showcases (GGX, thin film, glints, enamel, rain-wet coat
+- `Materials/`: integrated material showcases (GGX, thin-film heat-tint / anodize oxide interference in `thinfilm_heattint_showcase.RISEscene`, microfacet discrete glints in `glint_flakes.RISEscene`, vitreous enamel studies in `enamel_depth_glints.RISEscene` and `enamel_grandfeu_opaque.RISEscene`, wool-fuzz shell in `wool_throw_fuzz.RISEscene`, and rain-wet coat
   layering -- `rainwet_cobbles.RISEscene`, the docs/WETNESS_COAT_DESIGN.md section 6.5
   `add_wetness` worked example: a `polished_material` cobblestone patch whose pooled
   joints/damp flats/dry crowns come from one `curv`+`occlusion()` mask prelude shared
@@ -454,7 +454,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   behind the foot's own silhouette from both the camera and the key, which the header
   states as a real limitation of this camera angle rather than a failure of the signal.
   Cost: 1.04x live-vs-`def dust 0`, well under the plank's 1.11-1.13x reference (a
-  path-traced scene's per-sample call rate is not comparable to the `pixelpel_rasterizer`
+  multi-bounce path-traced scene's per-sample call rate is not comparable to the direct-only
   showcases above).
 
   `tidal_stones.RISEscene` is the showcase for `interior(r)`, the SIGNED half of the
@@ -477,7 +477,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   `tests/TidalStonesShowcaseTest.cpp` re-derives every station from the scene's own
   chunk geometry (never a number copied from a render) and proves the painter ramp
   against an in-process probe/control pair built entirely through `Cst::DocSetOrAddParamValue`.
-- `VCM/`: vertex-connection-and-merging showpieces.
+- `VCM/`: vertex-connection-and-merging showpieces, including `vcm_veach_egg_displaced.RISEscene` (displaced Veach glass-egg caustic/SDS showcase) and `vcm_sdf_luminaire_jellyfish.RISEscene`.
   `vcm_sdf_luminaire_jellyfish.RISEscene` is held as a transport torture test rather
   than a picture: emissive SDF geometry inside a dielectric bell inside a scattering
   medium, under a displaced dielectric water surface. It exercises the

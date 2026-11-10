@@ -1,7 +1,10 @@
 # 85 — Geometry Expressiveness: Candidate Survey
 
-**Status: CANDIDATE SURVEY (2026-08-14).  C2 SHIPPED 2026-08-14, C1
-SHIPPED 2026-08-14** — see the C2 and C1 sections below.  C2 shipped as
+**Status (updated 2026-11): C1 (`skeleton_geometry`), C2 (sweep affordances + adoption),
+C3 (`lathe_geometry`), C6 (`superellipsoid` SDF part), [doc 89](89-generic-shape-operators.md)
+per-station loft / `skin_geometry`, and `hair_geometry` SHIPPED; C4 (architectural
+macro-builders), C5 (`branch_geometry`), and `extruded_poly_geometry` remain OPEN.**
+Original 2026-08-14 rollout notes: C2 shipped as
 `profile_circle`/`profile_rect`/`point_scale`/`path_closed` on
 `sweep_geometry` (point_scale was added mid-slice when review proved the
 grammar could not express a round non-linear taper — the headline
@@ -10,13 +13,12 @@ declared `construction == "sweep"` (schema + worked example ride the
 declaration; context-volume law respected).  C1 shipped as the
 `skeleton_geometry` chunk (parse-time expansion into `sdf_geometry`
 `roundcone` parts, one per bone, `smin`-blended), plus the analogous
-adoption wiring gated on `construction == "chain"`.  Both: two review
-rounds to zero P1; adoption is wired but NOT yet measured live — the
-census on the next live runs is the measurement for each.  C6 shipped
+adoption wiring gated on `construction == "chain"`.  C6 shipped
 as the `superellipsoid` SDF part (Barr superquadric, pole axis local
 Y, exponents clamped to [0.1, 2] where the solid stays convex and the
-mixed-norm distance bound stays conservative).  Remaining candidates
-(C3-C5) unstarted.
+mixed-norm distance bound stays conservative).  C3 (`lathe_geometry`),
+[doc 89](89-generic-shape-operators.md)'s per-station loft (`sweep_geometry`) + `skin_geometry`,
+and `hair_geometry` subsequently shipped too; C4, C5, and `extruded_poly_geometry` remain open.
 This is the opening document of the workstream seeded by the
 creative-richness closing verdict ([CREATIVITY_JOURNAL.md](CREATIVITY_JOURNAL.md),
 Closing): *"what limits realism now is what a `part` line can EXPRESS"* —
@@ -84,10 +86,12 @@ exists).
   programmatic emission path: `TriangleMeshGeometryIndexed` +
   `Job::AddPrebuiltTriangleMeshGeometry` + `GeometryUtilities`
   (grid generation, welding, normal recompute). BVH is automatic.
-- Missing entirely: lathe/revolve, loft, L-systems, subdivision
-  surfaces, bevel/inset operators.  (Skeleton→flesh closed by C1's
-  `skeleton_geometry`; superquadrics closed by C6's `superellipsoid`
-  SDF part.)
+- Missing at 2026-08-14 survey time (since partially closed):
+  - **Closed since:** skeleton→flesh (`skeleton_geometry`, C1), superquadrics (`superellipsoid` SDF part, C6),
+    lathe/revolve (`lathe_geometry`, C3), per-station loft (`sweep_geometry` Slice A) + curve-spanning
+    surfaces (`skin_geometry`, [doc 89](89-generic-shape-operators.md)), and strand/fur primitives (`hair_geometry`).
+  - **Still open:** architectural macro-builders (C4), L-system/recursive branching (`branch_geometry`, C5),
+    `extruded_poly_geometry`, subdivision surfaces, and bevel/inset operators.
 
 Two proven, cheap implementation patterns exist:
 
@@ -167,7 +171,7 @@ an LLM from using it one-shot:
 Effort: S. Risk: minimal. Do this first — it is also the measurement
 vehicle that validates the adoption playbook for everything below.
 
-### C3. `lathe_geometry` — surface of revolution (furniture, vessels)
+### C3. `lathe_geometry` — surface of revolution (furniture, vessels) — **SHIPPED**
 
 Profile polyline (2D points, r ≥ 0) revolved about an axis, partial
 `sweep_degrees` supported. Unlocks chair/table legs, lamp bases, vases,
@@ -264,8 +268,8 @@ in `tests/SDFGeometryTest.cpp` tests 33a–33l.
 3. **C6** (superellipsoid) — **SHIPPED** — taken early out of
    satellite order: XS effort, and it widens every existing
    `sdf_geometry` author rather than adding an object class.
-4. **C3** (`lathe_geometry`) → **C4** (first 4–6 macro-builders).
-5. **C5** (branching) as the remaining satellite.
+4. **C3** (`lathe_geometry`) — **SHIPPED** → **C4** (first 4–6 architectural macro-builders — OPEN).
+5. **C5** (`branch_geometry` — OPEN) and **`extruded_poly_geometry`** (2D polygon extrusion — OPEN) as the remaining geometry candidates (meanwhile [doc 89](89-generic-shape-operators.md) shipped per-station loft + `skin_geometry`, and `hair_geometry` shipped for strands/fur).
 
 Each slice = geometry + parser descriptor + one worked example wired
 into the relevant clean-room prompt + a parse/render test scene +

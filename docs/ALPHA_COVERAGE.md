@@ -31,7 +31,9 @@ is carried in the runtime context. Existing raw interfaces remain available
 for geometric queries and compatibility. glTF and Blender producers install
 material coverage, without alpha shader ops. Blender preserves its historical
 `<material>.shader` name with ordinary emission/direct ops. Explicit user-authored
-`alpha_test_shaderop`/`transparency_shaderop` chains retain legacy semantics;
+`alpha_test_shaderop`/`transparency_shaderop` chains retain legacy semantics
+(both shader ops are now **FROZEN** in `kLegacyTierTable` — legacy and unsupported
+since 2026-10-09; material `alpha_coverage` is the supported surface);
 combining one with material coverage deliberately applies two separate effects.
 
 Medium visibility optionally records accepted interior-medium boundaries,

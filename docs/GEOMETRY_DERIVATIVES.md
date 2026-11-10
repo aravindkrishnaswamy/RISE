@@ -126,6 +126,7 @@ Per-geometry maps as shipped:
 | `TorusGeometry` | tube angle, ring angle | `(ring/2π, tube/2π)` | SWAPPED: `dsdv = dtdu = 1/2π` |
 | both mesh classes, `useUVJacobian` | stored per-vertex UV | the same UV | identity, with `dtdv = −1` when the handedness flip negates `dpdv` |
 | both mesh classes, barycentric fallback | triangle edges | unrelated | **`texChartValid = false`** |
+| `BilinearPatchGeometry`, `BezierPatchGeometry` | patch `(u, v)` at intersection (DL-20) | `(u, v)` | **`texChartValid = false`** (`ri.derivatives` populated at intersection; point-only query invalid) |
 | every other geometry | — | — | does not populate `ri.derivatives` at all |
 
 Note the sphere/ellipsoid sign: the texture azimuth runs *backwards*
@@ -157,9 +158,9 @@ all six caps by instrumenting the swap site.
 | `InfinitePlaneGeometry` | world X | world Y | `1` | `1` | `(-∞, ∞)` | `(-∞, ∞)` | ✅ correctly flat |
 | `TriangleMeshGeometry` | stored per-vertex UV | stored per-vertex UV | set by UV-Jacobian inversion | set by UV-Jacobian inversion | `[0, 1]` typical | `[0, 1]` typical | ✅ implemented (UV-Jacobian invert + tangent-plane projection, barycentric-edge fallback) |
 | `TriangleMeshGeometryIndexed` | stored per-vertex UV | stored per-vertex UV | set by UV-Jacobian inversion | set by UV-Jacobian inversion | `[0, 1]` typical | `[0, 1]` typical | ✅ implemented (shared with non-indexed via `ComputeTriangleDerivatives`) |
-| `BilinearPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ❌ **STUB** — flat tangent frame only |
-| `BezierPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ❌ **STUB** — flat tangent frame only (analytical Bezier intersection supplies tangents via `GeometricUtilities::BezierPatchTangentU/V` but they are not wired into `ComputeSurfaceDerivatives` yet) |
-| `DisplacedGeometry` | forwards to wrapped mesh | forwards | forwards | forwards | forwards | forwards | 🔁 forwarder |
+| `BilinearPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ✅ Analytical at intersection (DL-20); point-only query invalid |
+| `BezierPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ✅ Analytical at intersection (DL-20; conservative-reject when ray-facing winding flip fires); point-only query invalid |
+| `DisplacedGeometry` | forwards to baked mesh (or base for `ComputeAnalyticalDerivatives`) | forwards | forwards | forwards | forwards | forwards | 🔁 forwards `IntersectRay` / `ComputeSurfaceDerivatives` to its baked mesh (carrying smooth transported shading normals via `ApplyTransportedShading` on smooth-normal mesh bases) and implements `ComputeAnalyticalDerivatives` (chain-rule composition of base analytical derivatives with `displacement`/`height`, scaled by `1 − smoothing`) |
 
 ### Intersection note — `ClippedPlaneGeometry` / `BilinearPatchGeometry`
 
@@ -224,9 +225,13 @@ exactly three call sites, each applying **its own** object transform once:
   documented as UNREACHABLE ("no analytic geometry sets
   derivatives.valid") are now live, and are covered by
   `tests/CsgSurfacePayloadTest.cpp` Tests 18/19.
-  Planar primitives and the two patch **stubs** deliberately stay
-  unpopulated — a patch reports flat while being genuinely curved, so it
-  must read as an ABSENCE, not as a claim.
+  Planar primitives deliberately stay unpopulated.  **As of 2026-09-17
+  (DL-20)** `BilinearPatchGeometry` and `BezierPatchGeometry` also populate
+  exact analytical Weingarten derivatives (`dpdu`, `dpdv`, `dndu`, `dndv`)
+  at intersection time in `RayElementIntersection`; only their point-only
+  `ComputeSurfaceDerivatives(point, normal)` query (and a Bezier hit that
+  triggered the ray-facing winding-consistency flip) remains conservatively
+  `valid = false` so absence is never misreported as flatness.
 - `Object::ComputeAnalyticalDerivatives` ([Object.cpp](../src/Library/Objects/Object.cpp))
   — the `(u, v)`-keyed analytical query used by the SMS two-stage solver;
   wraps `IGeometry::ComputeAnalyticalDerivatives` (currently implemented by

@@ -74,18 +74,25 @@
 
 ---
 
-> ## Implementation status (reconciled 2026-07-08) — the "Design only / greenfield in code" banner above is HISTORICAL
+> ## Implementation status (reconciled through 2026-11) — the "Design only / greenfield in code" banner above is HISTORICAL
 >
 > Most of this facet has **shipped** on `feature/gui-snapshot-prototype` (merged to `master`
-> 2026-07-08). The §1 "greenfield in code" grounding describes the *pre-implementation* state and
-> is kept for history; the current reality:
+> 2026-07-08) and evolved substantially through Aug–Nov 2026 (`docs 70–91`). The §1 "greenfield in code"
+> grounding describes the *pre-implementation* baseline and is kept for history; the current reality:
 >
-> - **F5 agentic surface — SHIPPED.** The `src/Library/Agent/` module: `read_document` /
->   `read_schema` / `validate` / `propose_patch` / `render` / `read_image` / `read_skill` /
->   `insert_chunk` / `remove_chunk` / `list_proposals` / `resolve_proposal` over JSON-RPC/stdio,
+> - **F5 agentic surface — SHIPPED & EXPANDED.** The `src/Library/Agent/` module: core CST/observe/stage
+>   verbs (`read_document` / `read_schema` / `validate` / `propose_patch` / `render` / `read_image` /
+>   `read_skill` / `insert_chunk` / `remove_chunk` / `list_proposals` / `resolve_proposal` / `read_viewport`,
+>   plus the staged clean-room construction, composition, lighting, population, procedural material/painter,
+>   shape-operator, and iteration-ratchet verbs from `docs 78–91` — **38 chat tools** in
+>   `AgentChatCodecs.cpp`'s `kToolDefs`, plus MCP-only `list_proposals` / `resolve_proposal` /
+>   `read_viewport`) over JSON-RPC/stdio and loopback HTTP,
 >   the live GUI co-edit path (agent edits are render-safe, conflict-safe, save-safe, and
->   **Cmd-Z citizens** via shared undo), an LLM **chat panel** (Mac + Windows) driving the verbs
->   as tools against the live scene, and **three provider codecs** (Anthropic, Gemini, OpenAI/ChatGPT).
+>   **Cmd-Z citizens** via shared undo, including batched single-rederive edits via `ApplyCstEditBatch` /
+>   `AgentEditBatch`), an LLM **chat panel** (Mac + Windows) driving the verbs
+>   as tools against the live scene, and **five chat provider codecs** with current default models:
+>   Anthropic (`claude-sonnet-5`), Gemini (`gemini-4-argon`), OpenAI/ChatGPT (`gpt-5.6-terra`),
+>   xAI (`grok-4.5`), and OpenAI-compatible local/custom (`opencoder`).
 > - **GUI-as-just-another-agent (L2) — REALIZED.** The GUI and the agent are two clients of the
 >   one `Job::ApplyCst*` edit pathway; the same call the property widget makes is the call
 >   `propose_patch` makes.
@@ -182,7 +189,7 @@
 >   perceptual distance degrades at scale, never identity, and reserved background/unknown
 >   bytes can never be assigned). Deterministic ids from the manager's sorted-name order; CSG
 >   legends as the composite root; `grid[i,j]` instance names taught as legend-identifiers
->   whose editable target is the generator chunk. NATIVE-SIZE read only (downscale blends
+>   whose editable target is the generator chunk (`standard_object` `source` + `count_u`/`count_v` after `instance_array` was retired in [doc 87](87-recursive-scene-graph.md) step 3d). NATIVE-SIZE read only (downscale blends
 >   identity colours — taught on every read_image surface + negative-tested). Ephemeral,
 >   structurally isolated, exactness pinned by a permanent kernel-forcing red-prove test.
 >   Three review rounds each caught a distinct real defect (emitter suppression; palette
@@ -221,6 +228,29 @@
 >   four-image/uncompressed-atlas duplicate. Direct/indirect are deliberately left to the
 >   existing on-demand diagnostic modes because their transport split needs an explicit semantic
 >   convention. Full rationale and limits: [`AGENT_PERCEPTION.md`](../AGENT_PERCEPTION.md).
+>
+> ### Post-July 2026 milestones & remaining spec gaps (2026-08 – 2026-11)
+>
+> - **5 chat providers & current default models:** Anthropic (`claude-sonnet-5`), Gemini (`gemini-4-argon`),
+>   OpenAI (`gpt-5.6-terra`), xAI (`grok-4.5`), and OpenAI-compatible local/custom (`opencoder`).
+> - **38 tiered chat tools + MCP-only governance/viewport verbs:** `AgentChatCodecs.cpp` exposes **38**
+>   schema-defined chat tools (`kToolDefs`) spanning CST read/patch, staged clean-room build & composition
+>   ([docs 78–83](83-staged-construction-plan.md)), recursive scene graph & `collapse_to_instances` /
+>   `populate_scene` `source` clones ([docs 82](82-population-arc.md), [87](87-recursive-scene-graph.md)),
+>   procedural material/painter verbs ([doc 88](88-procedural-texture-expressiveness-candidates.md)),
+>   generic shape operators ([doc 89](89-generic-shape-operators.md)), and the iteration ratchet
+>   (`commit_revision` / `revert_to_revision`, [doc 90](90-iteration-ratchet.md)); MCP additionally exposes
+>   `list_proposals`, `resolve_proposal`, and `read_viewport`.
+> - **Reliability, context hygiene, and targeted inspection:** malformed tool-call recovery (structured
+>   repair feedback rather than turn abort); batched single-rederive CST mutations (`Job::ApplyCstEditBatch` +
+>   `SceneEdit::Op::AgentEditBatch` for one undo unit); context/payload lifetime retirement and stage-aware
+>   compaction ([doc 91](91-context-lifetimes-and-visible-detail.md)); `render { isolate, zoom }` focused sub-renders
+>   ([doc 91](91-context-lifetimes-and-visible-detail.md)) composing with the S5 2×2 perception atlas; and
+>   retirement of `instance_array` in favor of `standard_object` `source` + `count_u`/`count_v`
+>   ([doc 87](87-recursive-scene-graph.md) step 3d).
+> - **Unbuilt §2.2 spec verbs & options (still target design only):** `TextPatch` inside `propose_patch`,
+>   `read_node`, `read_graph`, `read_diagnostics`, `derive_preview`, `pause_render` / `resume_render`,
+>   and `awaitFullValidation` (D51).
 
 ---
 
@@ -241,7 +271,7 @@ is Model-A-shaped. Grounding both, with real file citations:
   `presets`, `description`, `defaultValueHint`, `unitLabel`) and `Finalize()`
   ([src/Library/Parsers/README.md](../../src/Library/Parsers/README.md);
   `ChunkDescriptor.h:110` `enum class ValueKind`). `SceneGrammar::Instance()` aggregates all
-  **138 chunk keywords**. **This is charter L6** — descriptors *are* the schema; the agentic
+  **176 chunk keywords** registered in [`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp) (~138 at charter time). **This is charter L6** — descriptors *are* the schema; the agentic
   surface consumes it, never re-declares it. Drift between "what the parser accepts" and "what the
   descriptor advertises" is structurally impossible *within the parser*; whether a *generated JSON
   Schema* matches the parser is a separate, weaker claim (see §5 / VALIDATION_ARCHITECTURE §5).

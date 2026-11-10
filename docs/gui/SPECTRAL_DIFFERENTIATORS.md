@@ -1,10 +1,6 @@
 # Direction D — Spectral Differentiators ("don't replicate")
 
-**Status:** PARTIALLY SHIPPED (Slice 6, 2026-10-31: D1 Blackbody Kelvin & Sellmeier Optical Glass inspector cards, D2 Measured-Metal `(n, k)` preset bar + `colors/conductors/` CC0 optical constants, and D3 Thin-Film Iridescence `0°–89°` Angle-Sweep Strip + interactive View Angle slider are shipped across shared C++, C-ABI, macOS SwiftUI, and Windows Qt; D4–D7 remain design). Deep-dive spec spun off from [GUI_ROADMAP.md](../GUI_ROADMAP.md) §8.
-Ground truth for what *backing* actually ships is [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) (it supersedes
-this header where they disagree). Two backing-state caveats the audit pins: **D5's per-pixel probe buffers are
-private** (a net-new additive readback, not a free read — §5.3) and D3's thin-film backing was on an unpushed branch when this
-was written; it **merged to master on 2026-07-31**, so "already in the tree" for D3 is now literal (§4.2).
+**Status:** **SLICE 6 (`ace0e08d8`, 2026-10-31) SHIPPED ON MACOS + WINDOWS** — **D1 subset** (`blackbody_painter` Kelvin strip & `scalar_painter { sellmeier }` optical glass presets with computed $n_d$ and Abbe $V_d$), **D2** (CC0 measured-metal `(n, k)` presets for Au/Ag/Cu/Al/Cr/Ti under `colors/conductors/`), and **D3** (`fresnel_mode thinfilm` `0°–89°` iridescence angle-sweep strip + interactive View Angle slider) are shipped across shared C++, C-ABI, macOS SwiftUI, and Windows Qt. **Remaining open:** D1 monochromatic slider, CSV SPD import/plot, and prism preview; D4 gamut/clipping overlays (EDR/HDR display + EV + 5 tone curves already ship); D5 pre-render probe card & per-region variance heatmap (top-bar resolved integrator + reason already ship; `ProbeResult` per-pixel buffers remain private, §5.3); D6 cinematography scopes; and D7 Spectral Light Mix. *(Note: [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) is a frozen June 2026 pre-implementation snapshot and is **not** present-day authority; D3's thin-film engine backing merged to `master` on 2026-07-31.)* Deep-dive spec spun off from [GUI_ROADMAP.md](../GUI_ROADMAP.md) §8.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Design the seven GUI features (D1–D7) that an RGB renderer **physically cannot** do, because they
 expose RISE's spectral engine: live spectral colour/curve editing, measured-metal n,k, real thin-film
@@ -38,19 +34,17 @@ they lead the priority order (§9).
 
 | # | Feature | Backing already in tree? | Net-new C++ | ROI rationale |
 |---|---|---|---|---|
-| **1** | **D4 — JH gamut warning** | LUT + residual fully shipped | a const-query helper + a tiny in-gamut test | Near-zero cost; a *uniquely-spectral honesty* badge no RGB tool can show. Rides on every colour pick (D1, material editor). |
-| **2** | **D1 — Spectral picker / curve editor** | all four painters ship | swatch-render helper + curve sampler + named-glass table | Exposes 4 existing painters through one widget; the headline "spectral" UI. Kelvin sub-slider is trivial (`blackbody_painter` exists). |
-| **3** | **D2 — Measured-metal n,k picker** | `scalar_painter { file }` → GGX `ior`/`ext` ships; conductor Fresnel ships | a bundled n,k library + a metal dropdown | Pure data + a dropdown; "gold's colour from physics." Reuses D1's swatch renderer. |
-| **4** | **D3 — Spectral thin-film slider** | **on master since 2026-07-31** — `fresnel_mode thinfilm` + `film_*` slots + introspection all merged (§4.2) | reuse D1/D2 swatch at a few angles | Two sliders (thickness nm, view angle). RISE *beats* glTF here (exact vs RGB approx). No longer blocked. |
-| **5** | **D5 — "Explain the auto-router" heatmap** | probe (`RunProbe`) + per-pixel σ² ship | expose probe AOVs + a heatmap overlay | No competitor can replicate. Medium lift (plumb probe outputs to the GUI). Pair with RMSE per §5.4. |
-| **6** | **D7 — Spectral Light Mix** | partial — NEE picks one light, but emission/env/BDPT-splat/VCM-merge attribution does **not** exist (§7.2a) | **PT** per-light attribution binning (NEE + camera-visible emission + MIS-consistent BSDF-on-emitter) + **Top-K selector** (pilot/scout pass or static-power preselection, §7.3a) + bounded AOV accumulation (Top-K + Environment + other) + re-balance compositor + **single composite-denoise** (§7.2b) | Heaviest engine work (multi-buffer render). **V1 = exact intensity-only re-balance, PT-only** (sound, the V-Ray feature); BDPT/VCM/MLT out of V1 (§7.2a). Top-K chosen up front, frozen for the render (no mid-render swap, §7.3a). Layers stored raw, denoised once on composite (§7.2b). The *spectral* SPD-swap is research-flagged, not v1 (§7.3). |
-| **7** | **D6 — EDR cinematography scopes** | EDR display path (`MetalEDRView`) ships | scope compute (CPU/Metal) + overlays | Read-only over the framebuffer; high polish value, but 4 sub-scopes + the EDR-headroom plumbing make it the biggest UI surface. |
+| **1** | **D4 — JH gamut warning** *(EDR/HDR + EV + 5 tone curves shipped; gamut/clipping overlays open)* | LUT + residual fully shipped (0.0 % unconverged post Stage-C — §4A) | a const-query helper + a tiny in-gamut test | Near-zero cost; see §4A for post-Stage-C re-scoping. |
+| **2** | **D1 — Spectral picker / curve editor** *(Kelvin + Sellmeier glass presets/$n_d$/$V_d$ SHIPPED in Slice 6; monochromatic, CSV SPD, prism preview OPEN)* | all four painters ship | swatch-render helper + curve sampler + named-glass table | Exposes 4 existing painters through one widget; Kelvin + Sellmeier shipped on macOS + Windows. |
+| **3** | **D2 — Measured-metal n,k picker** *(SHIPPED in Slice 6: Au/Ag/Cu/Al/Cr/Ti)* | `scalar_painter { file }` → GGX `ior`/`ext` ships; conductor Fresnel ships | bundled `colors/conductors/` CC0 n,k library + metal preset bar (shipped) | Pure data + preset bar; "gold's colour from physics." |
+| **4** | **D3 — Spectral thin-film slider** *(SHIPPED in Slice 6: 0°–89° iridescence strip + View Angle slider)* | **on master since 2026-07-31** — `fresnel_mode thinfilm` + `film_*` slots + introspection all merged (§4.2) | closed-form `0°–89°` Airy iridescence strip (shipped) | Two sliders (thickness nm, view angle) + live iridescence strip. RISE *beats* glTF here (exact vs RGB approx). |
+| **5** | **D5 — "Explain the auto-router" heatmap** *(resolved integrator + reason SHIPPED in top bar; pre-render probe card & variance heatmap OPEN)* | probe (`RunProbe`) + per-pixel σ² ship | expose probe AOVs + a heatmap overlay | No competitor can replicate. Medium lift (plumb probe outputs to the GUI). Pair with RMSE per §5.4. |
+| **6** | **D7 — Spectral Light Mix** *(OPEN)* | partial — NEE picks one light, but emission/env/BDPT-splat/VCM-merge attribution does **not** exist (§7.2a) | **PT** per-light attribution binning (NEE + camera-visible emission + MIS-consistent BSDF-on-emitter) + **Top-K selector** (pilot/scout pass or static-power preselection, §7.3a) + bounded AOV accumulation (Top-K + Environment + other) + re-balance compositor + **single composite-denoise** (§7.2b) | Heaviest engine work (multi-buffer render). **V1 = exact intensity-only re-balance, PT-only** (sound, the V-Ray feature); BDPT/VCM/MLT out of V1 (§7.2a). Top-K chosen up front, frozen for the render (no mid-render swap, §7.3a). Layers stored raw, denoised once on composite (§7.2b). The *spectral* SPD-swap is research-flagged, not v1 (§7.3). |
+| **7** | **D6 — EDR cinematography scopes** *(OPEN)* | EDR display path (`MetalEDRView` / `HDRRenderWidget`) ships | scope compute (CPU/Metal/D3D) + overlays | Read-only over the framebuffer; high polish value, but 4 sub-scopes + the EDR-headroom plumbing make it the biggest UI surface. |
 
-The ordering is deliberately **engine-debt-ascending**: D4/D1/D2 ship on painters that already exist on master;
-**D3 rides on the thin-film material, which merged to master on 2026-07-31** (§4.2),
-so D3 is now simply "wire a widget to an existing painter/material"; D5/D7/D6 each need a new
-render-output or compute path. Lead with the cheap four (D4/D1/D2/D3) that are "wire a widget to a painter/material
-RISE already has," which also seeds the material editor (Direction C) and the approachability story (Direction A).
+The ordering is deliberately **engine-debt-ascending**: D4/D1/D2/D3 ride on painters and materials on `master`
+(Slice 6 shipped D1 Kelvin & Sellmeier, D2 Au/Ag/Cu/Al/Cr/Ti, and D3 thin-film iridescence strip on macOS + Windows);
+D5/D7/D6 each need a new render-output or compute path and remain open.
 
 ---
 
@@ -58,17 +52,18 @@ RISE already has," which also seeds the material editor (Direction C) and the ap
 
 ### 2.1 What it is
 
+> **Slice 6 status (`ace0e08d8`):** Modes **#1 (Blackbody Kelvin strip)** and **#4 (Sellmeier optical glass presets + computed $n_d$ and Abbe $V_d$)** **SHIPPED** on macOS and Windows. Modes **#2 (monochromatic wavelength slider)**, **#3 (CSV measured SPD import & curve plot)**, and the **live prism-dispersion preview** remain **open**.
+
 A colour-input control that, unlike every RGB picker, can emit a **real spectrum**. Four input modes, all
 writing to a painter chunk the parser already accepts, with a **live spectral swatch** and (for the curve modes)
 **the SPD plotted beside the swatch**:
 
-1. **Kelvin slider** (1000–12000 K) → `blackbody_painter`.
-2. **Monochromatic slider** (380–780 nm) → a single-spike `spectral_painter`.
+1. **Kelvin slider** (1000–12000 K) → `blackbody_painter` *(SHIPPED in Slice 6)*.
+2. **Monochromatic slider** (380–780 nm) → a single-spike `spectral_painter` *(OPEN)*.
 3. **Drag-a-CSV measured SPD** (e.g. a real D65/flash/LED measurement) → a multi-sample `spectral_painter`, with
-   the loaded curve drawn next to the swatch.
+   the loaded curve drawn next to the swatch *(OPEN)*.
 4. **Named-glass dropdown** (BK7 / SF11 / diamond / fused silica …) → `scalar_painter { sellmeier ... }` on a
-   dielectric's `ior` slot, with **Abbe number + n_d auto-filled read-only** and a **live prism-dispersion
-   preview**.
+   dielectric's `ior` slot, with **Abbe number + n_d auto-filled read-only** *(SHIPPED in Slice 6; live prism-dispersion preview OPEN)*.
 
 ### 2.2 Backing painters (all already in tree)
 
@@ -170,6 +165,8 @@ import. The prism preview is a cached thumbnail (Tier B), not interactive.
 
 ### 3.1 What it is
 
+> **Slice 6 status (`ace0e08d8`):** **SHIPPED on macOS + Windows.** CC0 optical constants for **Au, Ag, Cu, Al, Cr, and Ti** ship under `colors/conductors/` with provenance citations, wired into the C1 conductor preset bar across shared C++, C-ABI, SwiftUI, and Qt. (Custom CSV/YAML n,k import + curve plot remain optional future polish.)
+
 A dropdown of real metals (gold, silver, copper, aluminium, chromium, titanium, …) whose **colour comes from
 measured physics** — selecting "gold" loads its spectral complex index of refraction (n + ik) from measured
 data into a GGX conductor material. Gold looks gold because its n,k *make* it gold at 4 hero wavelengths, not
@@ -195,7 +192,7 @@ No new math — the dropdown writes two `scalar_painter { file }` chunks plus a 
 conductor ior <name>_n extinction <name>_k }`. The **swatch is computed** from the conductor Fresnel at normal
 incidence integrated against the CMFs (reuse D1's compute-not-render swatch path).
 
-**Data sourcing — refractiveindex.info, CC0.** Bundle a curated metal set under `colors/metals/<Metal>.{n,k}`,
+**Data sourcing — refractiveindex.info, CC0.** Bundle a curated metal set under `colors/conductors/` (originally sketched as `colors/metals/<Metal>.{n,k}`),
 generated from [refractiveindex.info][rii] the same way `colors/thinfilm/` was. Licensing is settled and
 favourable (this is a **load-bearing fact, not a guess**): the refractiveindex.info database is released by its
 maintainer (M. N. Polyanskiy) under **CC0 1.0 Universal (public-domain dedication)** — "copy, modify and
@@ -246,6 +243,8 @@ static plot.
 
 ### 4.1 What it is
 
+> **Slice 6 status (`ace0e08d8`):** **SHIPPED on macOS + Windows.** The C1 thin-film inspector card renders a live closed-form **`0°–89°` iridescence angle-sweep strip** plus an interactive **View Angle** slider alongside `film_thickness` / `film_ior` / `film_extinction`.
+
 Two sliders — **film thickness (nm)** and **view angle** — over a live **angle-reactive swatch** that shows real
 soap-bubble / anodized-titanium iridescence shifting hue with both thickness and incidence. This is the feature
 where **RISE visibly beats the RGB tools**: [glTF KHR_materials_iridescence][gltf-irid] is an *RGB
@@ -254,11 +253,9 @@ model" that exists *because* real-time RGB renderers can't carry wavelengths), w
 reflectance **exactly per hero wavelength** on the spectral path ([THIN_FILM_INTERFERENCE.md](../THIN_FILM_INTERFERENCE.md)
 §7, "Spectral path — primary, exact").
 
-### 4.2 Backing feature (Phases 1–3 complete on a branch — not yet master)
+### 4.2 Backing feature (shipped on `master` since 2026-07-31; GUI widget shipped in Slice 6)
 
-The thin-film material is **on the `feature/thin-film-interference` branch, not yet merged to master**
-([CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) punch-list) — so "already in the tree" below means *that branch*,
-and D3 ships only once it lands:
+The thin-film material merged to `master` on **2026-07-31**, and Slice 6 (`ace0e08d8`) wired the D3 iridescence strip and View Angle slider across shared C++, C-ABI, macOS SwiftUI, and Windows Qt:
 
 - GGX `fresnel_mode thinfilm` + the `film_ior` / `film_extinction` / `film_thickness` slots (all `IScalarPainter`),
   with exact per-hero-λ evaluation in `ScatterNM`/`valueNM` ([GGXMaterial.h:53–55, 146–161](../../src/Library/Materials/GGXMaterial.h);
@@ -266,9 +263,8 @@ and D3 ships only once it lands:
 - The Airy evaluator `ThinFilm::ReflectanceConductor` (`src/Library/Utilities/ThinFilm.h`), N-layer-capable,
   cross-checked against a TMM reference to ~1e-15.
 - **Material introspection already surfaces the film slots** — `MaterialIntrospection` exposes `film_thickness`
-  as live-editable plus a read-only `fresnel_mode` row ([THIN_FILM_INTERFERENCE.md](../THIN_FILM_INTERFERENCE.md)
-  adversarial-review outcome, commit `48d99f04`). So the property panel can *already* edit thickness; D3 is the
-  purpose-built widget on top.
+  as live-editable plus `fresnel_mode` ([THIN_FILM_INTERFERENCE.md](../THIN_FILM_INTERFERENCE.md)
+  adversarial-review outcome, commit `48d99f04`), and Slice 6 adds the live `0°–89°` angle-sweep iridescence strip on top.
 - glTF parameter mapping is ~1:1 (`iridescenceIor`→`film_ior`, `iridescenceThickness`→`film_thickness`); the
   glTF defaults give the UI sensible ranges: **IOR default 1.3**, **thickness 100–400 nm** mapping texture
   0.0→1.0 ([glTF spec][gltf-irid]).
@@ -312,8 +308,10 @@ and D3 ships only once it lands:
 
 ---
 
-## 4A. D4 — Jakob–Hanika gamut-honesty warning
+## 4A. D4 — Jakob–Hanika gamut-honesty warning & display gamut/clipping overlays
 
+> **Display vs. gamut-overlay status:** Desktop EDR/HDR display (`MetalEDRView` on macOS, scRGB `HDRRenderWidget` on Windows), EV exposure compensation, and 5 tone-mapping curves (Linear, Reinhard, ACES Filmic, AgX, Khronos PBR Neutral) **already ship** (EV + 5 tone curves on Android SDR too); **gamut-warning and highlight-clipping viewport/swatch overlays remain open.**
+>
 > **STALE (2026-09-02) — trigger condition no longer exists; not implemented in src/.**
 > This whole spec (§4A.1–§4A.6, and the D4 references at §10A and §11) is built on the
 > pre-Stage-C LUT's per-cell residuals exceeding the `1 × 10⁻⁴` tolerance in the deep-blue
@@ -403,6 +401,8 @@ on device. No separate Android work beyond drawing the indicator.
 ## 5. D5 — "Explain the auto-router" per-region variance heatmap
 
 ### 5.1 What it is
+
+> **Status:** Top-bar resolved integrator + rationale badge ("Auto → PT/BDPT/VCM") **SHIPPED** across desktop and Android; **the pre-render/post-probe scalar "Why this integrator?" card and the per-region variance/caustic heatmap overlay remain OPEN** (as do D6 scopes in §6 and D7 Spectral Light Mix in §7).
 
 When the integrator is **Auto** (the shipped `auto_rasterizer` / `auto_spectral_rasterizer`,
 [AUTO_RASTERIZER_DESIGN.md](../AUTO_RASTERIZER_DESIGN.md)), surface *why* it chose PT/BDPT/VCM: a **per-region
@@ -934,10 +934,10 @@ never need a path trace at all), and it composes with the single-render-slot inv
 ## 10. Non-goals
 
 - **Re-implementing the painters.** D1–D2 are UIs over `spectral_painter` / `blackbody_painter` /
-  `scalar_painter` (sellmeier + file) — all shipped on master. D3 is a UI over `fresnel_mode thinfilm`, which is
-  **branch-only** (`feature/thin-film-interference`, not yet merged — §4.2). No new painter type either way.
-- **A new Fresnel/material model for D3.** The thin-film material exists **on the `feature/thin-film-interference`
-  branch (not master — §4.2)**; D3 is a slider over it, not new optics, and ships only once that branch lands. Do
+  `scalar_painter` (sellmeier + file) — all shipped on `master`. D3 is a UI over `fresnel_mode thinfilm`, which
+  merged to `master` on 2026-07-31 (§4.2) and whose C1 iridescence strip shipped in Slice 6 (`ace0e08d8`). No new painter type either way.
+- **A new Fresnel/material model for D3.** The thin-film material ships on `master` (§4.2), and D3's widget is a
+  closed-form angle-sweep strip + slider over it, not new optics. Do
   not add a `GetColorNM` to `IScalarPainter` (the whole point of that interface is the *absence* of JH uplift —
   CLAUDE.md `IScalarPainter` fact).
 - **Touching integrator code for D5.** The auto-router maintains a byte-identical-to-HEAD integrator constraint;
@@ -1036,18 +1036,16 @@ net-new engine read-back this spec identified.
 - **Accessibility** — sliders keyboard-reachable with numeric entry (no drag-only); the D4 badge and any scope
   state must not be **colour-only** (pair the badge with an icon/label, the false-color legend with text IRE
   values); curve/SPD plots need a text/numeric read-out alternative. No numpad dependence.
-- **Packaging** — D2 bundles `colors/metals/*.{n,k}` (CC0 constants; **per-file provenance README** mirroring
+- **Packaging** — D2 bundles `colors/conductors/*.{n,k}` (CC0 constants; **per-file provenance README** mirroring
   `colors/thinfilm/README.md` — §3.5, §9 #1). No other seed assets. Any new shared `.cpp/.h` (D5 read-back
   helper, D6 scope-math helper, D7 accumulator) must be registered in **all five build projects** per CLAUDE.md
   (Filelist, Android cmake, VS2022 `.vcxproj` + `.filters`, Xcode pbxproj). New C-ABI entry points go to the END
-  of `RISE_API.h` (ABI rule; the [abi-preserving-api-evolution](../../.claude/skills/abi-preserving-api-evolution/SKILL.md)
-  skill).
+  of `RISE_API.h` (ABI rule; see `.claude/skills/abi-preserving-api-evolution/SKILL.md`).
 - **Migration** — **No scene-format change** (D1–D3 write painter chunks the parser already accepts; D4–D6 are
   read-only over render outputs; D7 V1 "bake to scene" writes existing light-chunk fields). **No public-ABI
   break** if the D5/D6/D7 read-backs are introduced as additive accessors/overloads rather than signature changes
-  (follow the [abi-preserving-api-evolution](../../.claude/skills/abi-preserving-api-evolution/SKILL.md)
-  discipline). (Historical caveat: D3 thin-film facts were on an unpushed branch when written; merged to master 2026-07-31)
-  ([CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) punch-list) — D3 ships only once that branch lands.
+  (follow `.claude/skills/abi-preserving-api-evolution/SKILL.md`).
+  (D3's thin-film engine backing merged to `master` on 2026-07-31 and its C1 widget shipped in Slice 6, `ace0e08d8`.)
 - **Rollback** — Each widget is independently toggleable and additive; removing a D-feature widget leaves the
   shipped painters/LUT/probe untouched. The engine read-backs (D5 probe buffers, D6 XYZ retention, D7
   accumulation) are **off by default** and gated, so disabling them restores the exact current render path and
@@ -1061,9 +1059,9 @@ net-new engine read-back this spec identified.
 - [GUI_ROADMAP.md](../GUI_ROADMAP.md) §8 (this spec's parent), §10.4 (Android tiering), §13 (spikes), §15
   (acceptance template — filled in at §10A), §16 (confirmed `pipe`-field decision, relevant to D4's IPainter-vs-
   IScalarPainter scoping).
-- [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) — code-verified ground truth (supersedes any `Status:` header
-  here); §11 confirms the `ProbeResult` per-pixel buffers are **private** (D5 net-new readback) and the punch-list
-  noted D3 thin-film as branch-only; it merged to master on 2026-07-31.
+- [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) — frozen June 2026 pre-implementation snapshot (historical context
+  only; do not treat as present-day authority); §11 notes that `ProbeResult` per-pixel buffers are **private** (D5
+  net-new readback), while D3 thin-film merged to `master` on 2026-07-31 and shipped in Slice 6 (`ace0e08d8`).
 - [RENDER_COORDINATOR.md](RENDER_COORDINATOR.md) — the isolated preview/thumbnail job model + single render slot;
   D1 prism / D3 full-object previews, D5 RMSE reference, and D7's multi-buffer pass all route through it (§2.5,
   §5.6, §7.5, §8.2).

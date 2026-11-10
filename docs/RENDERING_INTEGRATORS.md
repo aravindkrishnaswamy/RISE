@@ -1,13 +1,19 @@
 # Rendering Integrators — Selection Guide
 
-RISE ships ten rasterizer chunks plus an interactive viewport. They
-implement five distinct light-transport algorithms (PT, BDPT, VCM,
-MLT, and the legacy shader-op pipeline) across two colour modes (RGB
-"pel" and spectral) — and not all combinations exist. This doc
-explains **which to pick for which scene**, the architectural split
-between the two render pipelines, and the support matrix for the
-optional features (path guiding, adaptive sampling, SMS, optimal MIS,
-OIDN denoising).
+RISE ships twelve rasterizer chunks (eight active: `auto_rasterizer`,
+`auto_spectral_rasterizer`, `pathtracing_pel_rasterizer`,
+`pathtracing_spectral_rasterizer`, `bdpt_pel_rasterizer`,
+`bdpt_spectral_rasterizer`, `vcm_pel_rasterizer`, and
+`vcm_spectral_rasterizer`; four **FROZEN** legacy chunks:
+`pixelpel_rasterizer`, `pixelintegratingspectral_rasterizer`,
+`mlt_rasterizer`, and `mlt_spectral_rasterizer`) plus an interactive
+viewport. They implement five distinct light-transport algorithms (PT,
+BDPT, VCM, frozen MLT, and the frozen shader-op pipeline) plus the
+auto-routing dispatcher across two colour modes (RGB "pel" and
+spectral). This doc explains **which to pick for which scene**, the
+architectural split between the two render pipelines, and the support
+matrix for the optional features (path guiding, adaptive sampling, SMS,
+optimal MIS, OIDN denoising).
 
 It is a selection guide, not a tutorial. Per-parameter behaviour lives
 in [src/Library/Parsers/README.md](../src/Library/Parsers/README.md);
@@ -29,9 +35,10 @@ themselves.
 ## 1. Two render pipelines
 
 RISE has two coexisting render-loop architectures. New scenes should
-use the **pure-integrator** pipeline whenever it covers the workload;
-the **shader-dispatch** pipeline is retained for the configurations
-only it supports.
+always use the **pure-integrator** pipeline (`auto_*`, `pathtracing_*`,
+`bdpt_*`, or `vcm_*`); the **shader-dispatch** pipeline's user-facing
+chunks are **FROZEN** (legacy and unsupported) and kept only so historical
+scenes still render bit-identically.
 
 ### 1.1 Shader-dispatch (legacy / extensible) -- FROZEN 2026-10-09
 
@@ -47,35 +54,40 @@ where path tracing, ambient occlusion, photon-map gather, final-gather,
 direct lighting, transparency, alpha-test, and SMS all live as
 composable building blocks.
 
-**Rasterizer chunks**: `pixelpel_rasterizer`,
+**Rasterizer chunks (FROZEN)**: `pixelpel_rasterizer`,
 `pixelintegratingspectral_rasterizer`.
 
-**Pick this when** you need:
-- Photon-mapping or final-gather hybrids
-- Ambient occlusion as a standalone pass
-- Custom shader-op chains (e.g. transparency + alpha test composed
-  with PT)
-- Anything that needs to run a non-PT integrator at hit points
+**Historical workloads (FROZEN — do not author in new scenes)**:
+- Photon-mapping or final-gather hybrids (use `vcm_*_rasterizer` or `bdpt_*_rasterizer` for new scenes)
+- Standalone ambient-occlusion shader-op passes (use `occlusion()` in `expression_painter` for procedural masks)
+- Legacy custom shader-op chains (use material `alpha_coverage` + `pathtracing_*` / `bdpt_*` / `vcm_*` / `auto_*` for cutouts and transparency)
 
 ### 1.2 Pure integrator (modern)
 
 The rasterizer holds an integrator object directly
 ([`PathTracingIntegrator`](../src/Library/Shaders/PathTracingIntegrator.h),
 [`BDPTIntegrator`](../src/Library/Shaders/BDPTIntegrator.h),
-[`VCMIntegrator`](../src/Library/Shaders/VCMIntegrator.h)) and calls
+[`VCMIntegrator`](../src/Library/Shaders/VCMIntegrator.h), or the
+[`AutoRasterizer`](../src/Library/Rendering/AutoRasterizer.h) dispatcher
+delegating to one of those three) and calls
 it from the per-pixel loop. No shader-op chain. This is faster,
 clearer, and the only path that wires up modern features (path
 guiding, adaptive sampling, optimal MIS, OIDN).
 
-**Rasterizer chunks**: `pathtracing_pel_rasterizer`,
+**Active rasterizer chunks (8)**: `auto_rasterizer`,
+`auto_spectral_rasterizer`, `pathtracing_pel_rasterizer`,
 `pathtracing_spectral_rasterizer`, `bdpt_pel_rasterizer`,
 `bdpt_spectral_rasterizer`, `vcm_pel_rasterizer`,
-`vcm_spectral_rasterizer`, `mlt_rasterizer`, `mlt_spectral_rasterizer`.
+`vcm_spectral_rasterizer`.
 
-**Pick this when** the scene's lighting is well-served by PT, BDPT,
-VCM, or MLT and you don't need a custom shader-op chain. The pure
-PT rasterizers (`pathtracing_*_rasterizer`) are the closest replacement
-for `pixelpel_rasterizer` with a default PT shader-op chain — they
+**Frozen pure-integrator chunks (2)**: `mlt_rasterizer`,
+`mlt_spectral_rasterizer` (**FROZEN** 2026-10-09 — use `bdpt_*`, `vcm_*`, or `auto_*`).
+
+**Pick this for all new scenes.** Use `auto_rasterizer` / `auto_spectral_rasterizer`
+when you want automatic scene-regime routing across PT, BDPT, and VCM, or pick
+`pathtracing_*`, `bdpt_*`, or `vcm_*` directly per §2. The pure
+PT rasterizers (`pathtracing_*_rasterizer`) are the direct modern replacement
+for `pixelpel_rasterizer` / `pixelintegratingspectral_rasterizer` — they
 ship better defaults, OIDN integration, and access to the optional-feature
 matrix (§4).
 
@@ -92,42 +104,52 @@ GUI bridges (macOS / Windows / Android) — see
 - **Default → PT** (`pathtracing_pel_rasterizer`) — wins σ²·T on 10/13 converged classes (diffuse, glossy-metal, mixed, many-light, most env); **3–7× cheaper per sample** than BDPT, which outweighs BDPT/VCM's lower *raw* variance on the bulk.
 - **Strong-indirect / glossy interreflection → BDPT** (`bdpt_pel_rasterizer`) — the only regime where BDPT's connections beat its 3–7× per-sample penalty: gi_spheres-class (**56× σ²·T** over PT), alchemists, env+mesh. Signal: indirect dominates direct; glossy bounces; enclosed geometry.
 - **Caustic / refractive / dispersive → VCM** (`vcm_pel_rasterizer`) — the *only* integrator reaching SDS / dielectric-caustic transport (PT/BDPT miss **44–78%** of the energy). Accept its finite-radius bias + photon cost **here only**; contraindicated as a default (loses σ²·T 3–40× off-caustics; ±63–76% env/volume bias).
-- **Depth caps differ per integrator (DL-351, 2026-10-09)** -- BDPT/MLT's `max_eye_depth` / `max_light_depth` bound surface hits per subpath and, since DL-351, `BDPTIntegrator::MISWeight` drops every strategy past them, so BDPT/MLT estimate exactly the paths that have at least one connectible split within the caps; in an all-diffuse scene that is at most `max_eye_depth + max_light_depth` scattering surfaces and only the sum matters (a delta vertex cannot be a split point, so e.g. camera -> mirror -> floor -> light needs the eye cap alone); PT has no surface-depth knob; VCM's recurrence weights honour the same caps since DL-467 (each side's levels are windowed by the other walk's caps, a merge's light side since DL-470); per-type caps (`max_diffuse_bounce` & co.) are per PATH in every integrator since DL-471 (PT since DL-467, where a non-delta continuation past the cap is traced for its MIS-weighted emission only): BDPT/VCM/MLT count the joined path's lobe types at every strategy (`BDPTUtilities::JoinedTypeCapStatus`), only caps below `max_eye_depth + max_light_depth` can bind, and BDPT/MLT drop a strategy whose counted connection endpoint's material has several possible lobe types one of which is capped (`IMaterial::ConnectionScatterTypes`), while VCM estimates such a path with S0 + NEE only -- a path no other strategy reaches (a point-light caustic onto a GGX floor under `max_glossy_bounce 0`) is then LOST (DL-481).  Table and author guidance: [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) §8.10.
+- **Depth caps differ per integrator (DL-351, 2026-10-09)** -- BDPT/MLT's `max_eye_depth` / `max_light_depth` bound surface hits per subpath and, since DL-351, `BDPTIntegrator::MISWeight` drops every strategy past them, so BDPT/MLT estimate exactly the paths that have at least one connectible split within the caps; in an all-diffuse scene that is at most `max_eye_depth + max_light_depth` scattering surfaces and only the sum matters (a delta vertex cannot be a split point, so e.g. camera -> mirror -> floor -> light needs the eye cap alone); PT has no surface-depth knob; VCM's recurrence weights honour the same caps since DL-467 (each side's levels are windowed by the other walk's caps, a merge's light side since DL-470); per-type caps (`max_diffuse_bounce` & co.) are per PATH in PT, BDPT, and VCM since DL-471/DL-482 (frozen MLT has no per-type cap parameters; in PT since DL-467, a non-delta continuation past the cap is traced for its MIS-weighted emission only): BDPT and VCM count the joined path's lobe types at every strategy (`BDPTUtilities::JoinedTypeCapStatus`), only caps below `max_eye_depth + max_light_depth` can bind, and since DL-481/DL-482 most multi-lobe materials split their connection value by allowed lobe label (`IMaterial::HasConnectionTypeSplit`), so only an unsplit multi-lobe material (`weave_material` or positive-coat `coated_material`, DL-502) still causes BDPT to drop strategies connecting at it and VCM to estimate such a path with S0 + NEE only -- a path no other strategy reaches (e.g. a point-light caustic onto a `weave_material` or positive-coat `coated_material` floor under `max_glossy_bounce 0`) is then LOST (DL-502).  Table and author guidance: [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) §8.10.
 - **Spectral / dispersion** → the `*_spectral_` variant of the above (BDPT-spectral is HWSS-correct since the 2026-06-04 Bug-3 fix).
-- **Scattering-medium and directional-light caveats for VCM (2026-08-13, [SUBMERGED_CAMERA_IOR_SEEDING.md](SUBMERGED_CAMERA_IOR_SEEDING.md))** — VCM now evaluates NEE, camera splatting, and interior connections at MEDIUM vertices (DL-218 closed; BDPT connects there since DL-200, 2026-09-18; VCM photon merges remain surface-only; the "BDPT/VCM ~2x PT in a global medium" gap was PT's own camera-walk defect -- a phase continuation reaching a surface skipped the medium in front of it -- fixed for pel/NM and, in the debt-dl247b slice, for `hwss TRUE`; `max_volume_bounce` now truncates the medium Neumann series at the same order in PT, BDPT and VCM (DL-247, 2026-09-27), so in a DENSE medium all three read the same TRUNCATED answer, below the untruncated one -- raise `max_volume_bounce` when the expected scatter count approaches it; e.g. a zero-absorption sigma_s-2 slab 20 units thick behind ior-1.5 glass keeps only 64 % / 96 % / ~100 % of its radiance at caps 64 / 1024 / 4096, DL-284), so light reaching mid-volume scatter points via direct illumination or bidirectional connections is resolved, while **VCM cannot sample directional lights at all** (no zero-exitance NEE loop, no photon emission — PT and BDPT both have the deterministic fallback).  On medium-heavy or sun-lit scenes, weigh these against VCM's caustic reach; PT is now a trustworthy reference on enclosed-camera scenes (the 2026-08-13 eye-ray IOR-seeding fix — pre-fix PT silently dropped transmission lobes when the camera sat inside a dielectric).
+- **Scattering-medium and directional-light caveats for VCM (2026-08-13, [SUBMERGED_CAMERA_IOR_SEEDING.md](SUBMERGED_CAMERA_IOR_SEEDING.md))** — VCM now evaluates NEE, camera splatting, and interior connections at MEDIUM vertices (DL-218 closed; BDPT connects there since DL-200, 2026-09-18; VCM performs both surface and volume merges since DL-469; the "BDPT/VCM ~2x PT in a global medium" gap was PT's own camera-walk defect -- a phase continuation reaching a surface skipped the medium in front of it -- fixed for pel/NM and, in the debt-dl247b slice, for `hwss TRUE`; `max_volume_bounce` now truncates the medium Neumann series at the same order in PT, BDPT and VCM (DL-247, 2026-09-27), so in a DENSE medium all three read the same TRUNCATED answer, below the untruncated one -- raise `max_volume_bounce` when the expected scatter count approaches it; e.g. a zero-absorption sigma_s-2 slab 20 units thick behind ior-1.5 glass keeps only 64 % / 96 % / ~100 % of its radiance at caps 64 / 1024 / 4096, DL-284), so light reaching mid-volume scatter points via direct illumination or bidirectional connections is resolved, while **VCM cannot sample directional lights at all** (no zero-exitance NEE loop, no photon emission — PT and BDPT both have the deterministic fallback).  On medium-heavy or sun-lit scenes, weigh these against VCM's caustic reach; PT is now a trustworthy reference on enclosed-camera scenes (the 2026-08-13 eye-ray IOR-seeding fix — pre-fix PT silently dropped transmission lobes when the camera sat inside a dielectric).
 
 **Do NOT default to BDPT or VCM** — the data is decisive that PT is the efficient default on the bulk. The longer-form flowchart:
 
 ```
 Need real-time interactive viewport?            → InteractivePelRasterizer (automatic; not a chunk)
 
+Want automatic per-scene routing (PT / BDPT / VCM)?
+  → auto_rasterizer (or auto_spectral_rasterizer for spectral / dispersion)
+
 Need spectral / dispersion / per-wavelength IOR?
-  → Use the *_spectral_ variant of whichever choice below
+  → Use the *_spectral_ variant of whichever active choice below
 
 Most paths reach lights directly?               → pathtracing_pel_rasterizer
-                                                   (or pixelpel_rasterizer if you need a custom shader-op chain)
 
 Caustics or specular chains carry significant energy?
   Mix of caustics + diffuse interreflection?    → vcm_pel_rasterizer (BDPT + photon merging)
   Caustics dominate, scene is glossy/dielectric? → vcm_pel_rasterizer
   Reflective/refractive chains, no merging needed? → bdpt_pel_rasterizer
 
-Sparse important paths (light through keyhole, SDS, hard caustics
-through long glass chains)?                     → mlt_rasterizer
+Strong indirect / glossy interreflection?       → bdpt_pel_rasterizer
 
-Need photon-map gather, final-gather, AO, or shader-op composition? → pixelpel_rasterizer
+Legacy / FROZEN (existing scenes only; do not author in new scenes):
+  PSSMLT Markov-chain exploration               → mlt_rasterizer / mlt_spectral_rasterizer [FROZEN]
+  Custom shader-op chains / photon maps / IC    → pixelpel_rasterizer / pixelintegratingspectral_rasterizer [FROZEN]
 ```
 
 ## 3. Catalogue
 
-The ten rasterizer chunks, grouped by algorithm.
+The twelve rasterizer chunks (eight active, four **FROZEN**), grouped by algorithm.
+
+### Auto-routing dispatcher
+
+| Chunk | Pipeline | Notes |
+|---|---|---|
+| `auto_rasterizer` | pure integrator | RGB. Thin-shell dispatcher ([AUTO_RASTERIZER_DESIGN.md](AUTO_RASTERIZER_DESIGN.md)) that routes each render to `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, or `vcm_pel_rasterizer` via `integrator` pin (`auto` / `pt` / `bdpt` / `vcm`), Tier-1 static scene inspection, or opt-in Tier-2 reduced-res probe (`probe TRUE`). |
+| `auto_spectral_rasterizer` | pure integrator | Spectral analogue. Routes across `pathtracing_spectral_rasterizer`, `bdpt_spectral_rasterizer`, and `vcm_spectral_rasterizer` (`hwss` supported). |
 
 ### Path tracing (unidirectional)
 
 | Chunk | Pipeline | Notes |
 |---|---|---|
 | `pixelpel_rasterizer` | shader-dispatch | **FROZEN (legacy, unsupported) 2026-10-09.** RGB. Runs the `defaultshader` chain (PT shader-op + others) at every hit. Use `pathtracing_pel_rasterizer` (`max_diffuse_bounce 0` for a direct-only look). |
-| `pixelintegratingspectral_rasterizer` | shader-dispatch | **FROZEN (legacy, unsupported) 2026-10-09** (was soft-deprecated). Spectral analogue of `pixelpel_rasterizer`. RGB→SPD conversion happens in the painter pipeline.  Modern features (path guiding, adaptive sampling, optimal MIS, full inline OIDN AOV) are not wired here; new scenes should prefer `pathtracing_spectral_rasterizer`.  Still renders existing scenes; removal on hold.  See [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5. |
+| `pixelintegratingspectral_rasterizer` | shader-dispatch | **FROZEN (legacy, unsupported) 2026-10-09.** Spectral analogue of `pixelpel_rasterizer`. RGB→SPD conversion happens in the painter pipeline.  Modern features (path guiding, adaptive sampling, optimal MIS) are not wired here, though inline OIDN AOV accumulation is present; new scenes should use `pathtracing_spectral_rasterizer`.  Still renders existing scenes; removal on hold.  See [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.1–§2.6. |
 | `pathtracing_pel_rasterizer` | pure integrator | RGB. Calls `PathTracingIntegrator` directly. Bypasses shader-op chain. **Default modern PT.** Wires OIDN with the filtered-film resolve correctly skipped (raw MC noise feeds OIDN). |
 | `pathtracing_spectral_rasterizer` | pure integrator | Spectral. NM and HWSS modes both available.  Inline OIDN AOV wired 2026-06-02 (audit §2.6) — both the pure-integrator path and the shader-dispatch `pixelintegratingspectral_rasterizer` allocate AOV buffers and accumulate Albedo/Normal per camera sample; the `CollectFirstHitAOVs` retrace fallback is now bypassed when inline data is present.  Through-glass scenes (the canonical retrace-misnames-glass-as-white case) now record the through-glass surface albedo. |
 
@@ -179,49 +201,64 @@ wired, partial = subset.
 
 | Chunk | Path guiding | Adaptive sampling | SMS | Optimal MIS | OIDN denoise |
 |---|---|---|---|---|---|
-| `pixelpel_rasterizer` | ✓ | ✓ | (via shader-op) | ✓ | ✓ |
-| `pixelintegratingspectral_rasterizer` ¹ | ✗ | ✗ | (via shader-op) | ✗ | (limited) |
+| `auto_rasterizer` | ✓ (PT/BDPT delegates) | ✓ | ✗ | ✓ (PT delegate) | ✓ |
+| `auto_spectral_rasterizer` | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `pathtracing_pel_rasterizer` | ✓ | ✓ | ✓ | ✓ | ✓ (full filtered-film bypass) |
 | `pathtracing_spectral_rasterizer` | ✗ | ✓ | ✓ | ✗ | ✓ |
 | `bdpt_pel_rasterizer` | ✓ | ✓ | ✗ | ✗ | ✓ |
-| `bdpt_spectral_rasterizer` | ✓ | ✓ | ✗ | ✗ | (limited) |
+| `bdpt_spectral_rasterizer` | ✓ | ✓ | ✗ | ✗ | ✓ |
 | `vcm_pel_rasterizer` | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `vcm_spectral_rasterizer` ² | ✗ | ✓ | ✗ | ✗ | (limited) |
-| `mlt_rasterizer` | ✗ | ✗ | ✗ | ✗ | ✗ (default off — splat film) |
-| `mlt_spectral_rasterizer` | ✗ | ✗ | ✗ | ✗ | ✗ (default off — splat film) |
+| `vcm_spectral_rasterizer` ² | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `pixelpel_rasterizer` *(FROZEN)* | ✓ | ✓ | (via shader-op) | ✓ | ✓ |
+| `pixelintegratingspectral_rasterizer` ¹ *(FROZEN)* | ✗ | ✗ | (via shader-op) | ✗ | ✓ |
+| `mlt_rasterizer` *(FROZEN)* | ✗ | ✗ | ✗ | ✗ | ✗ (default off — splat film; retrace fallback if forced on) |
+| `mlt_spectral_rasterizer` *(FROZEN)* | ✗ | ✗ | ✗ | ✗ | ✗ (default off — splat film; retrace fallback if forced on) |
 
-¹ **`pixelintegratingspectral_rasterizer` is soft-deprecated.** It is
-the legacy shader-dispatch spectral chunk; modern features (path
-guiding, adaptive sampling, optimal MIS, full inline OIDN AOV)
-require the per-integrator pipeline and are not wired here. New
-scenes should prefer `pathtracing_spectral_rasterizer`. The chunk is
-retained for custom spectral shader-op chains; no removal date.
+¹ **`pixelintegratingspectral_rasterizer` is FROZEN** (legacy and
+unsupported since 2026-10-09). Modern optional features (path guiding,
+adaptive sampling, optimal MIS) are not wired into the shader-dispatch
+spectral pipeline (inline OIDN AOV accumulation is present). New scenes
+should use `pathtracing_spectral_rasterizer` or `auto_spectral_rasterizer`;
+the legacy chunk is retained on hold so historical custom spectral
+shader-op chains continue to render bit-identically.
 
-² **VCM-spectral merging uses a luminance proxy** on a Pel-only
-photon store — see [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
-§3 for the correctness implications on dispersive caustics and the
-per-wavelength-photon-store remediation plan.
+² **VCM-spectral merging caches a Jakob–Hanika illuminant uplift**
+(`LightVertex::throughputSpectrum`, constructed via
+`RGBIlluminantSpectrum::FromRGB` at photon deposit time and evaluated per
+wavelength in `EvaluateMergesNM`) on the shared Pel-traced photon store —
+replacing the older scalar luminance proxy (`LightThroughputRadianceNM`).
+Residual approximation applies only to non-RGB SPDs (e.g. narrowband
+spectral emitters/filters) and dispersive photon paths whose geometry
+varies with wavelength; see
+[VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md)
+and [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §3.
 
 A few cross-cutting facts to keep this matrix honest:
 
-- **OIDN + filtered-film bypass** is implemented in
-  `PixelBasedRasterizerHelper`; rasterizers that go through it inherit
-  the bypass. MLT does its own splat/resolve loop and does not
-  integrate with OIDN.
-- **OIDN AOV "(limited)" on spectral rows** means: PT-spectral and
-  pixelintegratingspectral have *no* inline AOV at all (rely on the
-  `CollectFirstHitAOVs` retrace fallback, which records at first hit
-  through glass / mirror).  BDPT-spectral and VCM-spectral *do* walk
-  the eye subpath inline and call `BSDF->albedo(rig)` against a
-  helper-populated `RayIntersectionGeometric` (matching the Pel-side
-  pattern as of the 2026-05-07 spectral parity fix; the prior
-  `BSDF->value(N,rig) * π` Lambertian-normal-incidence proxy was
-  retired).  See [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
-  §4 for the per-row decode and §2.11 / §2.17 for the proxy fix.
-- **Adaptive sampling** integrates with PT (pel + spectral) and VCM
-  (pel + spectral) but not BDPT spectral or MLT — BDPT spectral has
-  not had the per-pixel Welford loop ported (deferred plumbing, see
-  audit §2.8); MLT has non-pixel-local sample placement.
+- **OIDN + filtered-film bypass** is implemented in both
+  `PixelBasedRasterizerHelper` and `BDPTRasterizerBase` (inherited by
+  BDPT and VCM); all active rasterizers skip `FilteredFilm::Resolve`
+  when `bWillDenoise` is true, and BDPT/VCM denoise the non-splat
+  primary image before compositing the `t=1` `SplatFilm`. Frozen MLT
+  does its own splat/resolve loop and defaults `oidn_denoise` to `false`.
+- **Inline OIDN AOV accumulation**: all Pel and Spectral PT
+  (`pathtracing_pel_rasterizer`, `pathtracing_spectral_rasterizer`),
+  shader-dispatch (`pixelpel_rasterizer`,
+  `pixelintegratingspectral_rasterizer`), BDPT (`bdpt_pel_rasterizer`,
+  `bdpt_spectral_rasterizer`), and VCM (`vcm_pel_rasterizer`,
+  `vcm_spectral_rasterizer`) rasterizers — and therefore `auto_*` —
+  accumulate inline per-sample Albedo/Normal AOVs (wired for spectral PT
+  and `pixelintegratingspectral` on 2026-06-02, audit §2.6, and using
+  `BSDF->albedo(rig)` on spectral BDPT/VCM since 2026-05-07, audit
+  §2.11 / §2.17). Only frozen MLT (`mlt_rasterizer`,
+  `mlt_spectral_rasterizer`) lacks inline AOVs and falls back to
+  `CollectFirstHitAOVs` when denoising or agent perception requests guides.
+- **Adaptive sampling** integrates with PT (pel + spectral), BDPT
+  (pel + spectral — `bdpt_spectral_rasterizer` wired on 2026-05-24,
+  audit §2.8), VCM (pel + spectral), `auto_*` (pel + spectral), and
+  frozen `pixelpel_rasterizer`. Only frozen
+  `pixelintegratingspectral_rasterizer` and frozen MLT (pel + spectral,
+  which has non-pixel-local sample placement) lack adaptive sampling.
 - **Path guiding** requires per-pixel directional density estimation
   via OpenPGL. The VCM merging pass and MLT mutation pass do not
   cooperate with that; they are not wired.  BDPT-spectral wires the
@@ -384,11 +421,12 @@ Two practical considerations:
   weighting the others through a velvet noise process. Defaults to off;
   set `hwss TRUE` on any spectral rasterizer for dispersive scenes.
 - **`pixelintegratingspectral_rasterizer` is the shader-dispatch
-  variant and is soft-deprecated.** Modern optional features (path
-  guiding, adaptive sampling, optimal MIS, full inline OIDN AOV)
-  are not wired into the shader-dispatch pipeline.  Prefer
-  `pathtracing_spectral_rasterizer` for new scenes; the legacy
-  chunk stays around for custom spectral shader-op chains.
+  variant and is FROZEN** (legacy and unsupported since 2026-10-09).
+  Modern optional features (path guiding, adaptive sampling, optimal MIS)
+  are not wired into the shader-dispatch spectral pipeline (inline OIDN
+  AOV accumulation is present).  Use `pathtracing_spectral_rasterizer` or
+  `auto_spectral_rasterizer` for new scenes; the frozen chunk stays on
+  hold for historical custom spectral shader-op chains.
 
 ## 6.1 The camera path vertex under a finite aperture
 

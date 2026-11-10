@@ -1,5 +1,16 @@
 # Normal-Usage Audit: `vNormal` vs `vGeomNormal`
 
+> **HISTORICAL POINT-IN-TIME AUDIT (2026-05-04 @ `597c750`):** Preserved for the
+> literature rules and site inventory at the time `vGeomNormal` was introduced.
+> Nearly all Tier-1 carrier extensions and cosine/measure/side-test bugs listed
+> below — including `BDPTVertex::geomNormal`, `SMSPhotonChainVertex::geomNormal`,
+> `RandomWalkSSS` / `BSSRDFSampling` `vGeomNormal` propagation,
+> `PathVertexEval::PopulateRIGFromVertex` + bidirectional shading-normal factors
+> ([`DL-224`](DL224_RELIEF_BIDIRECTIONAL_COSINE.md)), NEE area-PDF Jacobians,
+> `IORStackSeeding`, `ManifoldSolver` chain side tests, and medium-stack walks —
+> were subsequently implemented and closed on `master` (see
+> [DEBT_LEDGER.md](DEBT_LEDGER.md)).
+
 *Audit date: 2026-05-04. Branch: `claude/romantic-hofstadter-bf260a` (worktree off
 `master` @ 597c750).*
 
@@ -228,41 +239,41 @@ only one normal. The prerequisite refactor is mechanical but invasive:
 
 ## Fixes recommended (priority-ordered)
 
-### Tier 1 — high-confidence correctness bugs
+### Tier 1 — high-confidence correctness bugs *(historical 2026-05-04 list; items 1–11 subsequently fixed on `master`)*
 
-1. **BDPT/VCM `cosAtGen` and `SolidAngleToArea` Jacobian** uses shading normal
+1. **BDPT/VCM `cosAtGen` and `SolidAngleToArea` Jacobian** *(subsequently FIXED via `BDPTVertex::geomNormal` + [`DL-224`](DL224_RELIEF_BIDIRECTIONAL_COSINE.md))* — uses shading normal
    ([BDPTIntegrator.cpp:1750](../src/Library/Shaders/BDPTIntegrator.cpp), 2883,
    5424; VCM mirrors 762/939/1177). Biases every interior path-pdf factor.
    Requires `BDPTVertex.geomNormal` extension.
-2. **PT NEE area-pdf MIS denominator** uses shading normal
+2. **PT NEE area-pdf MIS denominator** *(subsequently FIXED)* — uses shading normal
    (PT 1413/3231/4499; [EmissionShaderOp.cpp:63/110](../src/Library/Shaders/EmissionShaderOp.cpp)).
    Biases BSDF-vs-light MIS at every sampled emission hit.
-3. **`SMSPhotonChainVertex` lacks `geomNormal`** —
+3. **`SMSPhotonChainVertex` lacks `geomNormal`** *(subsequently FIXED)* —
    [SMSPhotonMap.cpp:337](../src/Library/Utilities/SMSPhotonMap.cpp). Silently
    disables the `ValidateChainPhysics` fix on every photon-aided chain in
    exactly the regime photons are supposed to help.
-4. **`BuildSeedChain` and `BuildSeedChainBranching` entering/exiting decision**
+4. **`BuildSeedChain` and `BuildSeedChainBranching` entering/exiting decision** *(subsequently FIXED)* —
    on shading normal ([ManifoldSolver.cpp:3353/3672](../src/Library/Utilities/ManifoldSolver.cpp)).
    Upstream half of the validator-fix bug; produces wrong `etaI/etaT`.
-5. **`SMSPhotonMap` photon emit side test** on shading normal
+5. **`SMSPhotonMap` photon emit side test** *(subsequently FIXED)* — on shading normal
    ([SMSPhotonMap.cpp:327](../src/Library/Utilities/SMSPhotonMap.cpp)).
    Wrong `bEntering` propagates into the chain record on bumpy reflections.
-6. **`IORStackSeeding::SeedFromPoint` exit test** on shading normal
+6. **`IORStackSeeding::SeedFromPoint` exit test** *(subsequently FIXED)* — on shading normal
    ([IORStackSeeding.h:142](../src/Library/Utilities/IORStackSeeding.h)).
    Photons emitted from inside a bumpy enclosure can mis-seed the stack.
-7. **BDPT connection-walk and LightSampler shadow-walk medium-stack push/pop**
+7. **BDPT connection-walk and LightSampler shadow-walk medium-stack push/pop** *(subsequently FIXED)* —
    on shading normal (BDPT 1114/1251; LightSampler 247/394). Mis-orders medium
    stack on connection rays through dielectrics.
-8. **PolishedSPF / PolishedBRDF dielectric side flip** uses shading normal
+8. **PolishedSPF / PolishedBRDF dielectric side flip** *(subsequently FIXED)* — uses shading normal
    (PolishedSPF.cpp 137/197/248/349/375; PolishedBRDF.cpp 50/68). Wrong
    front-back decision can invert Fresnel direction or spuriously trigger TIR.
-9. **PT/BDPT BSSRDF entry front-face gate** on shading normal (PT 1508/1623/3314/3435,
+9. **PT/BDPT BSSRDF entry front-face gate** *(subsequently FIXED)* — on shading normal (PT 1508/1623/3314/3435,
    BDPT 1923/1986/3050/3106/5588/5643). Leaks subsurface contribution on bumpy
    skin / leaves where the comment claims it defends against exactly that.
-10. **`TransparencyShaderOp` one-sided alpha** on shading normal
+10. **`TransparencyShaderOp` one-sided alpha** *(subsequently FIXED)* — on shading normal
     ([TransparencyShaderOp.cpp:56/90](../src/Library/Shaders/TransparencyShaderOp.cpp)).
     Speckle along bumpy foliage / hair-card silhouettes.
-11. **`RandomWalkSSS` boundary refraction** on shading normal
+11. **`RandomWalkSSS` boundary refraction** *(subsequently FIXED via `vGeomNormal` propagation)* — on shading normal
     ([RandomWalkSSS.cpp:64/283](../src/Library/Utilities/RandomWalkSSS.cpp)).
     Energy leakage on bumpy SSS surfaces.
 

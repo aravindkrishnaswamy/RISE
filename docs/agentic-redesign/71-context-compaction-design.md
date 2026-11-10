@@ -1,8 +1,11 @@
 # 71 — Long-Session Text Compaction (design)
 
-Status: **SHIPPED.** `AgentChatLoop::CompactTranscript` and
-`WouldCompactNow` implement the compaction policy; prompt-cache breakpoints live
-in `AgentChatCodecs.cpp`. This file is the executed design record.
+Status: **S1, S2 (Option C), §6b, and §6c SHIPPED; S3 (Option B hybrid) & S4 DEFERRED.**
+`AgentChatLoop::CompactTranscript` and `WouldCompactNow` implement the structural
+span-dropper compaction policy, with prompt-cache breakpoints in `AgentChatCodecs.cpp`
+(subsequently extended with stage-aware / payload-lifetime retirement in
+[91-context-lifetimes-and-visible-detail.md](91-context-lifetimes-and-visible-detail.md)). This file
+is the executed design record.
 
 ## 1. Problem
 

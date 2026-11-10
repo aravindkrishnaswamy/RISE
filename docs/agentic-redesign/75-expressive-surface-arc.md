@@ -1,9 +1,10 @@
 # Expressive-Surface Adoption via Authoring-Surface Structure — Arc 75 Design (2026-07-31)
 
-> **Status:** design APPROVED by the user 2026-07-31 (sequencing confirmed;
-> preset composite materials REJECTED — monoculture worry — and replaced by
-> the §3 expanding-scaffold design; the 74-log false-fact correction landed
-> as `435df037`).  S0 (instrument phase) in flight.  Successor to
+> **Status: ARC CLOSED (2026-08-04); Post-arc E1–E4, R1–R2, G1–G2 SHIPPED (`file_part_plan` superseded by `file_build_plan` in [doc 78](78-staged-build-protocol.md)).**
+> Originally approved 2026-07-31 (preset composite materials REJECTED — monoculture worry — and
+> replaced by the §3 expanding-scaffold design; the 74-log false-fact correction landed as
+> `435df037`); execution log in [76-expressive-surface-arc-log.md](76-expressive-surface-arc-log.md).
+> Successor to
 > [74-creative-richness-arc-log.md](74-creative-richness-arc-log.md) /
 > [73-creative-richness-design.md](73-creative-richness-design.md); builds
 > on every settled result there and re-litigates exactly one — on new

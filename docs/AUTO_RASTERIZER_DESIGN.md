@@ -1,9 +1,12 @@
 # Auto-Rasterizer (Integrator Dispatcher) — Design & Plan
 
-**Status:** **SHIPPED.** `auto_rasterizer` and
+**Status:** **IMPLEMENTED.** Phases 1–4 have shipped: `auto_rasterizer` and
 `auto_spectral_rasterizer` are registered scene chunks backed by
-[`AutoRasterizer`](../src/Library/Rendering/AutoRasterizer.cpp), with policy
-coverage in
+[`AutoRasterizer`](../src/Library/Rendering/AutoRasterizer.cpp), including the
+two-gate render-time probe with `DL-167` `vcmMergeShare` caustic-reach
+discrimination, the `DL-475` transmissive `interior_medium` VCM routing and
+medium-support guard, and cross-GUI `autoResolvedIntegrator` surfacing (macOS,
+Windows/Qt, Android, and `FrameStore` metadata), with policy coverage in
 [`AutoRasterizerTest.cpp`](../tests/AutoRasterizerTest.cpp). The body is the
 executed design record; section-level status notes record later probe and
 spectral landings. See
@@ -362,7 +365,7 @@ Ran the experiment over a 10-scene regime spread (both static blind spots
 included): 512 probe renders (M=8 trials × {PT,BDPT,VCM} × spp{1,2,4}), all
 EXR float32 (FP16-clip-free, cross-checked with an independent Python OpenEXR
 reader ≡ HDRVarianceTest to < 3e-5). Full data + tables + repro:
-[var_test/PHASE3_PROBE_EXPERIMENT.md](../var_test/PHASE3_PROBE_EXPERIMENT.md);
+`var_test/PHASE3_PROBE_EXPERIMENT.md`;
 scripts `var_test/phase3_{probe,analyze,cost}.py`.
 
 **Headline:** a refined probe picks the matrix winner **10/10, incl. 4/4 blind

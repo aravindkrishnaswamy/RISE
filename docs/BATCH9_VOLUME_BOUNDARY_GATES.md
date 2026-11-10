@@ -71,8 +71,8 @@ A subsequently scheduled large-radius run used a stale executable and was
 explicitly discarded. The valid red above came from a completed named build
 whose executable asserts K=1 and footprint=64. Its return code was checked.
 
-Related named builds return rc0. Existing gates: VCMRecurrenceTest103/0,
-VCMLightPostPassTest72/0, VCMEyePostPassTest38/0 and VCMSpectralRecurrenceTest38/0.
+Related named builds return rc 0. Existing gates: VCMRecurrenceTest 103/0,
+VCMLightPostPassTest 72/0, VCMEyePostPassTest 38/0 and VCMSpectralRecurrenceTest 38/0.
 VCMVolumeMergeTest A: VCM/PT .993360, ratio sample SD .0354785, n8, 2/0.
 E: q=.01/q=1 VCM .939128, ratio sample SD .202783, n16, 2/0; its existing .2
 band remains. That broad E check does not establish removal of all thinning bias.
@@ -90,13 +90,17 @@ kernel comparison, not a claim that the entire executable is an old-master build
 Additional strict E-PT check: q=.01 VCM512/PT512, n16 distinct salts,
 ratio .951280, paired-ratio sample SD .222365. VCM mean .139086, sample SD
 .032492; PT mean .146210, sample SD .000218493. Paired difference -.00712340,
-sample SD .0325077, within unchanged 3SE .0243807: 2/0, rc0. This is a noisy
+sample SD .0325077, within unchanged 3SE .0243807: 2/0, rc 0. This is a noisy
 agreement gate, not proof that the unsupported floor/corner bias is gone.
-All final named builds return rc0 with no warnings. Fresh review is required
+All final named builds return rc 0 with no warnings. Fresh review is required
 on the committed state before merge.
 
 Fresh independent reviews found zero P1. P2 coverage: transformed primitives,
 anisotropic/transparent/multiple-object refusals and a ball containing the
 whole excluded sphere need direct unit cases. The no-boundary hash comparison
 currently relies on the saved external comparison artifact; a committed
-comparison wrapper would preserve that gate automatically.
+comparison wrapper would preserve that gate automatically. (Follow-up note:
+the initial `#define main` test-TU self-inclusion P2 in
+`VCMVolumeNoBoundaryHashTest.cpp` (`#include "VCMVolumeMergeTest.cpp"`) was
+superseded by commit `589182817`, which extracted the shared fog-box/capture
+helpers into `tests/VCMVolumeMergeFixture.h`.)

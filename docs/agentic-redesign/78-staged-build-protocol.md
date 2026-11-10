@@ -1,6 +1,7 @@
 # Staged Build Protocol — Decompose, Focus, Compose (Arc 78 Design, 2026-08-11)
 
-> **Status:** DESIGN — approved in intent by the user 2026-08-11: *"force the
+> **Status: SHIPPED (2026-08-11; extended by [docs 79](79-clean-room-construction.md), [80](80-composition-arc.md), [83](83-staged-construction-plan.md), [87](87-recursive-scene-graph.md), [91](91-context-lifetimes-and-visible-detail.md)).**
+> Approved in intent by the user 2026-08-11: *"force the
 > model to break down each element in the scene it needs to build into
 > pieces, then force it to put attention on each piece and flesh it out.
 > Then when everything is done have it do a pass to make sure arrangement
@@ -67,6 +68,8 @@ convention, no volunteered field, no heuristic.  This is the single biggest
 structural win of the design and it comes free.
 
 ### 2.3 What is refused, and what is not
+
+> *(Evolution notes: [doc 80](80-composition-arc.md) §4 extended COMPOSE to also refuse removing form-bearing chunks — with a light-object exemption — and attached the visibility census; [doc 83](83-staged-construction-plan.md) §4 scoped all construction gates to the initial `BUILDING` session mode on empty/starter scenes so subsequent `REFINING` turns never refuse user-directed edits.)*
 
 | During an element window | |
 |---|---|

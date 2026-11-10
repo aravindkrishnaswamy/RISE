@@ -1,3 +1,5 @@
+> **HISTORICAL SNAPSHOT (2026-06-30, frozen pre-implementation baseline) — DO NOT treat §3–§13 as current state; see [../GUI_ROADMAP.md](../GUI_ROADMAP.md) and sibling `docs/gui/*.md` headers.**
+
 # RISE GUI / Editor Stack — Current-State Capability Audit
 
 > **⚠ ERRATUM (2026-07-02) — the Model-B P5 CST cutover (completed 2026-07-01) invalidates this audit's save/load/parse findings.** This audit was code-verified on **2026-06-19**, *before* the CST cutover landed. Three things changed underneath it:

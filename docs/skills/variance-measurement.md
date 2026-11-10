@@ -61,7 +61,10 @@ benchmarks:
 
 ### 2. Build a low-SPP no-denoise EXR-output test scene
 
-Strip three things from the upstream scene:
+Strip three things from the upstream scene (and for any wall-time / ROI
+benchmark, set `render_thread_reserve_count 0` in your options file via
+`RISE_OPTIONS_FILE` so every CPU core participates rather than leaving
+one E-core reserved for interactive desktop headroom):
 
 ```awk
 # In the rasterizer block:
@@ -71,6 +74,9 @@ adaptive_max_samples 0  # disable adaptive — variance must be pure SPP
 
 # In the file_rasterizeroutput block:
 type EXR             # NOT HDR — see "Pitfalls" #2
+
+# In RISE.options / RISE_OPTIONS_FILE (for wall-time / ROI benchmarks):
+render_thread_reserve_count 0
 ```
 
 Drop any `file_rasterizeroutput { type PNG ... }` blocks — PNG output
@@ -224,7 +230,7 @@ a high one, freezing those pixels mid-render while pixels that hit
 a firefly continue to refine.  Bias scales with pass count: ~1% per
 pass, ~5.4% at 32 passes (1024 SPP / 32 spp-per-pass).
 
-Fixed in commit `<tbd>` by gating the Welford accumulator,
+Fixed in commit `908873116` by gating the Welford accumulator,
 convergence check, and `AddAdaptiveSamples` on the `adaptive` flag
 alone (not `adaptive || pProgFilm`) in `BDPTPelRasterizer`,
 `PathTracingPelRasterizer`, `PathTracingSpectralRasterizer`,
@@ -247,13 +253,14 @@ re-open the convergence-bias investigation.
    small variance differences.  Always use EXR for the actual
    measurement.
 
-2. **RISE's HDRReader has a bug in old-format RLE.** Lines 200–203 of
-   [HDRReader.cpp](../../src/Library/RasterImages/HDRReader.cpp)
-   write from the stale `buf` instead of the just-read `col`.  RISE
-   scene output uses old-format RLE for HDR, so RISE can't reliably
-   read its own .hdr files and pixel exponents come out garbage (1e-24
-   instead of 1e-2).  Use `type EXR` not `type HDR` for variance work.
-   This is a real RISE bug — fix it separately if you have cycles.
+2. **Prefer `type EXR` over `type HDR` (RGBE quantization + historical
+   RLE bug).**  Historically, [HDRReader.cpp](../../src/Library/RasterImages/HDRReader.cpp)
+   had an old-format RLE bug where repeat runs read from a stale `buf`
+   instead of `col` (fixed in commit `589c1cb4d`).  Even with that bug
+   fixed, Radiance `.hdr` stores shared-exponent 8-bit mantissas (RGBE,
+   ~1% quantization step per channel), whereas `EXR` preserves IEEE float
+   precision without shared-exponent quantization.  Always use `type EXR`
+   for variance and RMSE measurements.
 
 3. **`/p:SolutionDir=` is mandatory for direct .vcxproj builds.**
    Without it, `$(SolutionDir)..\..\bin\` resolves to
@@ -290,21 +297,20 @@ re-open the convergence-bias investigation.
 
 9. **If guided wall time ≈ unguided wall time, guiding probably
    isn't running at all.**  Sanity-check before believing any
-   variance ratio.  Training (`pathguiding_iterations × pathguiding_spp`
-   passes plus the configured render SPP) should make guided
-   substantially slower than unguided — typically 30%–500%
-   depending on integrator.  When the times match within ~5%, look
-   for an `#ifdef RISE_ENABLE_OPENPGL` that's silently disabled —
-   the VS2022 Library.vcxproj historically did not include the
-   define, so the entire OpenPGL integration was dead code on
-   Windows even though the parser accepted `pathguiding TRUE`.
-   The fix is to add `RISE_ENABLE_OPENPGL` to the
-   `<PreprocessorDefinitions>` of `build/VS2022/Library/Library.vcxproj`
-   (Release + Debug), add `C:\Dev\openpgl-install\include` to
-   `<AdditionalIncludeDirectories>`, and add `openpgl.lib` +
-   `C:\Dev\openpgl-install\lib\` to RISE-CLI's link line.  Verify
-   with: `bin/RISE_Log.txt` should contain a `PathGuidingField::
-   Initialized` line after a guided render.
+   variance ratio (and ensure `render_thread_reserve_count 0` is set
+   for wall-time runs so all cores participate).  Training
+   (`pathguiding_iterations × pathguiding_spp` passes plus the
+   configured render SPP) should make guided substantially slower
+   than unguided — typically 30%–500% depending on integrator.  When
+   the times match within ~5%, look for an `#ifdef RISE_ENABLE_OPENPGL`
+   that's silently disabled — historically (before commit `09be84b`),
+   the VS2022 `Library.vcxproj` omitted `RISE_ENABLE_OPENPGL` from
+   `<PreprocessorDefinitions>`, so the entire OpenPGL integration was
+   compiled out on Windows even though the parser accepted `pathguiding
+   TRUE`.  Commit `09be84b` wired `RISE_ENABLE_OPENPGL` and the OpenPGL
+   include/library paths into the VS2022 projects; always verify in a
+   new build environment that `bin/RISE_Log.txt` contains a
+   `PathGuidingField::Initialized` line after a guided render.
 
 10. **Build the OpenPGL dependency once via its CMake superbuild**
     (`cd /c/Dev/openpgl-0.7.1 && mkdir build && cd build && cmake -G

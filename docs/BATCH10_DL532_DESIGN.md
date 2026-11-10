@@ -18,18 +18,18 @@ Gate: count allocations for 4999 interpolated position samples, compare their
 bits with the independent legacy expression, retain custom-target lifetime
 test. One-thread TimeIndexedMotionBlurTest hashes, AnimationRasterizerParityTest,
 MotionBlurTimeAverageTest; alternating old/new renders on a preserved baseline,
-reserve0, n8 ValueSalts, no overlapping own build/render jobs during timing.
+reserve 0, n=8 ValueSalts, no overlapping own build/render jobs during timing.
 
 ## Exact counter evidence
 
-`ObjectKeyframeAllocationTest` counts C++ operator-new calls: production master9998 allocations for4999
-interpolated position evaluations, zero bit mismatches, rc1; copying-target
-scratch0 allocations, zero bit mismatches, rc0. Independent legacy interpolation
+`ObjectKeyframeAllocationTest` counts C++ operator-new calls: production master 9998 allocations for 4999
+interpolated position evaluations, zero bit mismatches, rc 1; copying-target
+scratch 0 allocations, zero bit mismatches, rc 0. Independent legacy interpolation
 computes the comparison before the measured window; object finalization is
 outside the allocation window. This measures Timeline evaluation, not all pose
-work. Existing generic Scalar counter remains9998 and its retained results
+work. Existing generic Scalar counter remains 9998 and its retained results
 survive later evaluations and Timeline destruction; its zero-allocation strict
-pin remains rc1. Focused ASan/UBSan on Timeline.cpp and the Object counter rc0;
+pin remains rc 1. Focused ASan/UBSan on Timeline.cpp and the Object counter rc 0;
 other linked library objects are not instrumented.
 
 Self-review checked exact dynamic type (subclasses cannot opt in accidentally),
@@ -38,6 +38,6 @@ No camera/light/custom-target ownership, interpolation mode, sampler, map lookup
 or transform-finalization change is made. The class whitelist is intentionally
 narrow; direct non-Object final-result allocations remain open.
 
-Full named gates returned0: TimeIndexedMotionBlurTest96/0, AnimationRasterizerParityTest102/0, MotionBlurTimeAverageTest77/0. All five named builds returned0 without compiler warnings. Interleaved old/new combo_big PT8spp, reserve0, one thread, n8 ValueSalts: .631439937s SD.011153423 -> .590364870s SD.017041092, paired1.070041825x SD.023260946. All eight benchmark RGBA hashes match exactly. The timing measures the whole frame, not a claimed allocation-only cost. No other own build/render job overlapped the timing pairs.
+Full named gates returned 0: TimeIndexedMotionBlurTest 96/0, AnimationRasterizerParityTest 102/0, MotionBlurTimeAverageTest 77/0. All five named builds returned 0 without compiler warnings. Interleaved old/new combo_big PT 8spp, reserve 0, one thread, n=8 ValueSalts: .631439937s SD .011153423 -> .590364870s SD .017041092, paired 1.070041825x SD .023260946. All eight benchmark RGBA hashes match exactly. The timing measures the whole frame, not a claimed allocation-only cost. No other own build/render job overlapped the timing pairs.
 
 P2 direct-counter coverage is position/Point3 only; orientation/scale rely on rendered hashes. Exact Object subclasses remain refused by the dynamic-type guard, with arbitrary retaining targets covered by the existing lifetime test.

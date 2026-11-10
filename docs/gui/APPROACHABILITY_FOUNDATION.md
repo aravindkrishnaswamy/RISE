@@ -1,12 +1,8 @@
 # RISE GUI — Approachability Foundation (Direction A)
 
-**Status:** **PARTIALLY IMPLEMENTED.** The redesigned desktop workspaces,
-three-path start screen, automatic preview/render transport, entity creation,
-and environment editor have shipped. Asset-browser/drag-and-drop workflows and
-the full Direction-A polish remain design work. See
-[REDESIGN_IMPLEMENTATION.md](REDESIGN_IMPLEMENTATION.md),
-[START_SCREEN.md](START_SCREEN.md), and
-[ENVIRONMENT_SECTION.md](ENVIRONMENT_SECTION.md).
+**Status:** **PARTIALLY IMPLEMENTED.**
+- **Shipped:** Redesigned desktop workspaces ([REDESIGN_IMPLEMENTATION.md](REDESIGN_IMPLEMENTATION.md)), the three-path Start Screen ([START_SCREEN.md](START_SCREEN.md)) wired to the minimal starter scene [`scenes/Templates/empty_starter.RISEscene`](../../scenes/Templates/empty_starter.RISEscene) ("New Empty Scene"), automatic progressive preview/render transport (A2 core), interactive ROI / **Render Active Region** (A4 on macOS & Windows), entity creation (`EntityTemplates`), and the environment editor ([ENVIRONMENT_SECTION.md](ENVIRONMENT_SECTION.md)).
+- **Unbuilt:** Full A1 zero-click studio scene (`default_studio.RISEscene` / `scenes/Default/studio.RISEscene` with shaderball + CC0 studio HDRI + `auto_rasterizer`), A3 drag-to-assign material/HDRI (hover preview + commit-on-release), A5 browsable CC0 thumbnail asset library (`AssetLibrary` + `ThumbnailRenderer`), and A6 `Basic`/`Advanced` `ChunkDescriptor` disclosure tags.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Make a freshly-opened RISE produce a good image with zero clicks, make the viewport behave like the renderer (progressive, pause-on-navigation, restart-on-edit), and let users *assign* materials/HDRIs by dragging thumbnails — all built so macOS, Windows, and (staged) Android stay in lock-step by construction. This is the interaction-and-approachability layer the roadmap calls the highest-leverage gap. It leans on engine pieces RISE already owns: the `auto_rasterizer` integrator dispatcher, always-on OIDN, the shipped `SceneEditController` cancel-restart render loop, the multi-level adaptive preview scaler, `IJobPriv::ScaleFilmToFit` / `IScenePriv::ResizeFilm`, and the `IRasterizer::RasterizeScene(scene, const Rect* pRect, …)` region parameter that is already plumbed but always passed `nullptr` today.
 
@@ -44,10 +40,10 @@ Confirmed by reading the tree (ignoring `.claude/worktrees/`):
 - **`IScenePriv::ResizeFilm(w,h,pixelAR)`** ([src/Library/Interfaces/IScenePriv.h:240](../../src/Library/Interfaces/IScenePriv.h)) mutates Film dims in place and re-syncs every camera's `Frame`. Its **concurrency contract is explicit**: it writes non-atomic stores, so it must NOT run concurrently with rendering — callers `Stop()` the editor render thread first. `IJobPriv::ScaleFilmToFit` ([src/Library/Interfaces/IJob.h:3033](../../src/Library/Interfaces/IJob.h)) wraps it for the "fit preview to screen" case the bridges already call at scene-load.
 - **The `pRect` region parameter is already in the rasterizer interface AND already has a library entry point.** `IRasterizer::RasterizeScene(scene, const Rect* pRect, seq)` ([IRasterizer.h:72](../../src/Library/Interfaces/IRasterizer.h)) — *"Region in the scene to rasterize; if NULL, rasterizes the entire scene"* — and `Job::RasterizeRegion` ([Job.cpp:8806](../../src/Library/Job.cpp)) already builds a `Rect` and forwards it. The **pixel** integrators honor it (via `PixelBasedRasterizerHelper::BoundsFromRect`); the gap is purely **GUI wiring** — every controller `RasterizeScene` call passes `nullptr` today ([CURRENT_STATE_AUDIT.md §5](CURRENT_STATE_AUDIT.md)). A4 is "stop passing nullptr," not new engine code. (Region caveat under MLT: §8.)
 - **`AutoRasterizer` already does a film-resize round-trip** ([src/Library/Rendering/AutoRasterizer.cpp:489-540](../../src/Library/Rendering/AutoRasterizer.cpp)): it `ResizeFilm`s down to a probe resolution, renders, and `ResizeFilm`s back to the original. It is a working *sizing* template for A2's preview-resolution control. **It is NOT the architecture to copy for A3/A5 thumbnails:** that live-film round-trip is safe only because it runs single-threaded inside a single render's `call_once`, pre-fan-out — a thumbnail that did it alongside a live viewport would tear the film and double-book the pool. Thumbnails/previews are isolated coordinator jobs (snapshot scene + private film), per [RENDER_COORDINATOR.md §5](RENDER_COORDINATOR.md).
-- **No drag-drop, asset-library, or thumbnail code exists yet** in either GUI — A3/A5 are greenfield (the only grep hit, `FilmIntrospection.cpp`, is unrelated).
+- **No drag-drop, asset-library, or thumbnail code exists yet** in either GUI — A3 (drag-to-assign) and A5 (CC0 asset library) remain greenfield / unbuilt (`FilmIntrospection.cpp` is unrelated; note that the C1/C2 material & painter previews in `MaterialPreview` / `PainterPreview` are inspector/node swatches, not A5's `AssetLibrary`). For A1, the desktop Start Screen currently ships **"New Empty Scene"** backed by [`scenes/Templates/empty_starter.RISEscene`](../../scenes/Templates/empty_starter.RISEscene), while the richer zero-click studio showcase (`default_studio.RISEscene` / `scenes/Default/studio.RISEscene` with shaderball + studio HDRI + `auto_rasterizer`) remains unbuilt.
 - **`PixelBasedRasterizerHelper::GetLastRenderedImage()`** persists the last framebuffer ([INTERACTIVE_EDITOR_PLAN.md](../INTERACTIVE_EDITOR_PLAN.md) §19.8) — reusable for "save the swatch I just rendered" in A5.
 
-The pay-off of this audit: **A2 and A4 add almost no engine code; A1/A5/A6 are data + orchestration; A3 is the only item with a genuine open feasibility question.** That question is the spectral hover-preview (§13 #1), addressed head-on in §5.
+The pay-off of this audit: **A2 and A4 have largely shipped on desktop; A1's minimal starter (`empty_starter.RISEscene`) is wired while `default_studio.RISEscene`, A3, A5, and A6 remain to build; A3 is the only item with a genuine open feasibility question.** That question is the spectral hover-preview (§13 #1), addressed head-on in §7.
 
 ---
 
@@ -86,6 +82,8 @@ The descriptor-driven properties panel is the lever for A6: a row already auto-a
 ---
 
 ## 5. A1 — Sensible default scene
+
+> **Shipping note:** Desktop Start Screen ([START_SCREEN.md](START_SCREEN.md)) currently ships **"New Empty Scene"** wired to [`scenes/Templates/empty_starter.RISEscene`](../../scenes/Templates/empty_starter.RISEscene) (minimal camera + directional light + ground/starter setup, no external HDRI dependency). The full studio showcase described below (`default_studio.RISEscene` / `scenes/Default/studio.RISEscene` with shaderball + CC0 studio HDRI + `auto_rasterizer`) remains **unbuilt**.
 
 ### Interaction
 On launch with no file, the app is not blank: a **"New from Default"** action (and the empty-state placeholder's primary button) loads a shipped studio scene that renders a good image immediately — neutral dielectric/again-metal control object on a ground plane, a studio HDRI environment, `auto_rasterizer` (→ resolves to PT for this diffuse-ish scene), always-on OIDN, and auto-exposure. Zero further clicks to a believable frame. This is the [NN/g "skip onboarding / sensible defaults"](https://www.nngroup.com/videos/onboarding-skip-it-when-possible/) posture: the first win costs no decisions.
@@ -203,7 +201,7 @@ Region render is honored by **all pixel integrators** (PT / BDPT / VCM, pel + sp
 - **Platform:** the Draw Region action and expert shortcut, crosshair + in-canvas instruction, editable overlay and measurements, and the explicit Render Active Region command. Both desktop shells capture the same inclusive controller bounds and invoke their existing coordinated `RasterizeRegion` path; neither may bypass the render coordinator.
 
 ### Android tier
-**Tier B.** Two-finger or long-press-drag to draw the region; ordinary finals remain full-frame and a regional final stays explicit. Lower priority than A1–A3 on mobile.
+**Tier B (interactive region unbuilt on Android today).** Two-finger or long-press-drag to draw the region; ordinary finals remain full-frame and a regional final stays explicit. Lower priority than A1–A3 on mobile. *(Current Android shipping status: interactive progressive viewport, camera/object gizmo transforms, 6 of 11 inspector categories, EV + 5 tone-curve display controls, and image export ship today; interactive ROI drawing, `.RISEscene` save UI/JNI, the remaining 5 categories, and LLM chat JNI remain unbuilt.)*
 
 ### Non-goals
 No multiple simultaneous regions; no per-region integrator override (that is the auto-router-heatmap territory of Direction D). A region never silently affects an ordinary final (§12 spirit); a regional final happens only through the explicitly named command.

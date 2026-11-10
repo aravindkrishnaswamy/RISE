@@ -101,7 +101,7 @@ The implementation matches the original design intent in §3–§7, with these m
 3. **Observer dispatch with in-flight counter + thread-local depth**: the snapshot-then-iterate pattern from §3.6 is augmented with (a) `observerDispatchInFlight_` + `observerDispatchDone_` cv so cross-thread `RemoveObserver` waits for in-flight callbacks before returning (P2), (b) thread-local depth counter so same-thread self-detach skips the wait without deadlock (P2), (c) per-iteration recheck of `observers_` in the dispatch loop so observer A removing-and-destroying observer B in the same snapshot doesn't UAF on B's freed pointer (P2 round 3).
 4. **`ChannelTraits<Alpha>::Type = Chel`**, not `float`: the original design said float, but L2 review HIGH-1 found that the double→float→double roundtrip breaks byte-identity for non-1.0 alpha values. Now stored as Chel (double); 4-byte-per-pixel cost is acceptable.
 5. **`TransferFunction::Linear` is true identity**: original design had it Sanitise-clamped (NaN/Inf/negatives → 0), which is wrong for HDR archival. L1 round 2 P3 fixed this — Linear now passes through bit-identically; sanitise responsibility shifts to the LDR-fixed quantisation step in `EncodePixel`.
-6. **Two new `TargetFormat` values**: `RGBA32F_ROMM_Linear` and `RGB32F_ROMM_Linear` for true bit-identical scene-referred archival in RISE's native ROMM primaries (the existing `*_Linear` variants use sRGB primaries, the industry-default for EXR archival).
+6. **Two new `TargetFormat` values**: `RGBA32F_ROMM_Linear` and `RGB32F_ROMM_Linear` for explicit wide-gamut scene-referred archival in ROMM RGB linear primaries. Since 2026-05-24, RISE's native `RISEPel` working space is `Rec709RGBPel` (`ColorSpace::sRGB_Linear`), so `RGBA32F_Linear` and `RGB32F_Linear` are direct working-space pass-throughs (the industry-default sRGB/Rec.709 primaries for EXR archival) while `*_ROMM_Linear` converts to ROMM primaries when requested.
 7. **`cameraExposureEV` consumed via `FrameStore::Meta()`**: encoders read `store.Meta().cameraExposureEV` and add to `opts.viewTransform.exposureEV` to mirror legacy `FileRasterizerOutput.cpp:231`'s `staticEV + cameraEV` sum. L2 review HIGH-2 fix.
 
 ---
@@ -209,9 +209,9 @@ The canonical artifact.
 
 ```cpp
 enum class ChannelId : uint32_t {
-    Beauty,         // RISEPel, ROMM RGB linear, always present
+    Beauty,         // RISEPel, Rec709RGBPel (ColorSpace::sRGB_Linear, migrated 2026-05-24), always present
     Alpha,          // float, [0,1]
-    Albedo,         // RISEPel, ROMM RGB linear (denoiser AOV / export)
+    Albedo,         // RISEPel, Rec709RGBPel (ColorSpace::sRGB_Linear, migrated 2026-05-24; denoiser AOV / export)
     Normal,         // Vector3, world space, unit length
     Depth,          // float, camera-space distance
     ObjectId,       // uint32_t
@@ -339,12 +339,12 @@ struct ViewTransform {
 Pipeline ordering (immutable contract, encoded in `FrameStore::Render`):
 
 ```
-ROMM-linear pixel  → exposure (multiply by 2^EV)
-                   → white balance (3×3 matrix in ROMM)
-                   → ROMM → target color space matrix    [from TargetFormat]
-                   → tone curve                          [iff TargetFormat is LDR-fixed]
-                   → output transfer (sRGB / PQ / Linear) [from TargetFormat]
-                   → quantise into TargetFormat pixel layout
+Rec709RGBPel (sRGB-linear) pixel → exposure (multiply by 2^EV)
+                                 → white balance (3×3 matrix in linear Rec.709 / sRGB)
+                                 → sRGB_Linear → target color space matrix [from TargetFormat]
+                                 → tone curve                              [iff TargetFormat is LDR-fixed]
+                                 → output transfer (sRGB / PQ / Linear)    [from TargetFormat]
+                                 → quantise into TargetFormat pixel layout
 ```
 
 ### 3.4 `TargetFormat` and `ColorSpace`

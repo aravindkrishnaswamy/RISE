@@ -1,7 +1,9 @@
 # SMS Future Directions: Literature & Candidate Extensions
 
-**Status:** **LITERATURE/BACKLOG SNAPSHOT.** Option A shipped; Option B and
-beyond remain candidate research. The body preserves the pre-landing framing.
+**Status:** **LITERATURE/BACKLOG SNAPSHOT.**
+- **Option A** (`SMS_UNIFORM_SEEDING_PLAN.md`) — **Shipped.**
+- **Extended SMS (`sms_extended`, Phases 1–4, October 2026)** — **Shipped** ([SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md)). Solves native R/T below-TIR event proposals, per-channel RGB / per-wavelength NM / per-lane HWSS geometry & medium replay, unbiased root-level delta-light estimation (Estimator A), and topology-level area-emitter estimation with a canonical shared PT/SMS ownership partition (Estimator B).
+- **Still-open candidate research (Option B and beyond):** deterministic polynomial root-finding (`sms_solver "polynomial"`, Mo 2024), Manifold Path Guiding (MPG, Fan 2023) for long $k \ge 3$ chains, rough/glossy manifold sampling ( Zeltner 2020 glossy half-vectors / finite-scattering dielectrics beyond the parked `DL-379` delta limit), and bidirectional BDPT/VCM manifold integration. The body below preserves the pre-landing survey framing.
 
 This doc captures the post-2020 SMS literature surveyed during the planning of `docs/SMS_UNIFORM_SEEDING_PLAN.md` (Option A), plus the candidate future extensions (Option B and beyond) considered and deferred. Future work may revisit any of the candidates below.
 

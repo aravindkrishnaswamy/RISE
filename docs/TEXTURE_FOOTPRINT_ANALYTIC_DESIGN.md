@@ -1,5 +1,7 @@
 # Texture Footprint on Analytic Geometry — and the Exact Instance-Scale Fold
 
+**Status:** SHIPPED (2026-09-06; `Po` domain fade addendum 2026-09-06 in §11; thin-lens, orthographic, and fisheye camera differentials 2026-09-10 in §12).
+
 ## 1. The question, and the answer
 
 **Question.** `RayIntersectionGeometric::txFootprint` is the renderer's only
@@ -241,7 +243,7 @@ showed it.
 ## 5. Tests
 
 New suite `TextureFootprintTest.cpp` (add to all five build projects per
-CLAUDE.md), driving real `Object::IntersectRay` calls with a
+[AGENTS.md](../AGENTS.md)), driving real `Object::IntersectRay` calls with a
 `PinholeCamera`-generated ray.
 
 Closed form for the oracle. `PinholeCamera::ComputeScaleFromFOV` stretches
@@ -507,7 +509,7 @@ enumerates `tests/*.cpp` directly. §9 item 11's "register it in all five
 build projects" is over-cautious: `ReliefModifierTest` appears in none of
 `run_all_tests.sh`, `run_all_tests.ps1`, `build/make/rise/Filelist`,
 `build/cmake/rise-android/rise_sources.cmake`, the two VS2022 files or the
-Xcode project. The five-project rule in CLAUDE.md is about `src/Library/`,
+Xcode project. The five-project rule in [AGENTS.md](../AGENTS.md) is about `src/Library/`,
 not `tests/`. Nothing was registered.
 
 10 tests / 54 checks, all green. Counts on the gate suites moved as

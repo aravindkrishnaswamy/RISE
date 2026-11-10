@@ -1,6 +1,7 @@
 # Harness-Driven Construction — Units, Budgets, and Refinement (Arc 83 Plan, 2026-08-12)
 
-> **Status:** PLAN FOR DISCUSSION.  Nothing built.  User direction 2026-08-12:
+> **Status: SHIPPED (§§7–15.10); §5 step 4 (`plan_population` / `place_group`) superseded by [doc 87](87-recursive-scene-graph.md) `source` instancing + [doc 82](82-population-arc.md) `populate_scene` `source` clones.**
+> User direction 2026-08-12:
 > *"let's step back and apply this holistically, the harness now has to
 > maintain the context and drive the build step by step.  What other aspects
 > of scenes should have its own construction step and associated budget?

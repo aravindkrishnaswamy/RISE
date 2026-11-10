@@ -1844,10 +1844,11 @@ Per the project's observed-need rule (the precedent is
 were **declined** for lack of a driving scene): take these up **only** when a
 real scene or user need appears.
 
-- **Patch derivative stubs fixed** (`BezierPatchGeometry.cpp:402-414`,
-  `BilinearPatchGeometry.cpp:397-409`) — closed-form second partials exist and
-  are unwired; this is the one item that removes an outright falsehood from the
-  signal.
+- **Patch derivative stubs fixed — DONE (2026-09-17, DL-20):**
+  `BezierPatchGeometry` and `BilinearPatchGeometry::RayElementIntersection`
+  now stamp closed-form analytical Weingarten derivatives at intersection time
+  (point-only `ComputeSurfaceDerivatives` remains conservatively `valid = false`;
+  see §14 item 2).
 - **Sampled (radius-parameterized) curvature** — the Arnold shape, tunable to a
   feature size. The real answer to §5.3's first limit.
 - **Gaussian curvature `curvK`** and an Arnold-style convex/concave split
@@ -1855,9 +1856,8 @@ real scene or user need appears.
 - **Bent normals** — the natural companion output of an AO bake.
 - **Scene-wide (cross-object) AO** — §8; **re-measured and declined again
   2026-09-07, §8.1** (numbers there). Its honest successor, the cross-object
-  *proximity* signal, is **no longer gated**: designed and ACCEPTED FOR PHASE 1
-  on 2026-09-08 ([CROSS_OBJECT_PROXIMITY_DESIGN.md](CROSS_OBJECT_PROXIMITY_DESIGN.md)),
-  Phase 1 in progress.
+  *proximity* signal (`proximity(r)` and `interior(r)`), **SHIPPED (Phases 1–3,
+  Sept 2026)** — see [CROSS_OBJECT_PROXIMITY_DESIGN.md](CROSS_OBJECT_PROXIMITY_DESIGN.md).
 - **An `add_wear`-class verb** — the C-VERB escalation if the Phase-1/2 census
   misses. **BUILT 2026-08-30**, census-driven: the §11 CENSUS RUN block is the
   evidence that earned it (delivery 6/6, adoption 1/6, position proxies shipped
@@ -1882,10 +1882,11 @@ undo step, no staged-proposal form under External authority.
    space — a blackbody, a spectral painter, or a non-default `colorspace` is a
    base it must not invent; and
 3. is bound by at least one `standard_object` (following `source` links, bounded
-   at 8 hops) whose geometry chunk is **not** curv-barren — the barren set is
+   at 256 hops) whose geometry chunk is **not** curv-barren — the barren set is
    stated as a negative (`CurvBarrenGeometryKind_`) so a future geometry kind
-   defaults to "assume it curves": `bezierpatch` / `bilinearpatch` (the §13
-   stubs, 0 as *absence*), `infiniteplane` / `clippedplane` / `circulardisk` /
+   defaults to "assume it curves": `bezierpatch` / `bilinearpatch` (still
+   conservatively blocked by `CurvBarrenGeometryKind_`, even after DL-20 wired
+   intersection derivatives), `infiniteplane` / `clippedplane` / `circulardisk` /
    `box` / `cartesian_disk` (genuinely planar, 0 is the true answer); and
 4. does not already bind an expression reading `curv` / `curvR` / `occlusion` /
    `thickness` — a second pass would stack two wear layers, and this clause is
@@ -1951,13 +1952,6 @@ is the comparison to beat.
    exercises the exit-designated branch with a curved (sphere) operand,
    mutation-red-proofed against the existing dot-product re-pairing; see
    [DEBT_LEDGER.md](DEBT_LEDGER.md) DL-30.
-2. **Patch geometries report flat while genuinely curved.** Until Phase 4, keep
-   them on the `valid = false` path so `curv` reads 0 as *absence*, not as a
-   claim of flatness. An expression cannot distinguish the two without a
-   companion validity variable — decide whether one is warranted or whether
-   `fw`'s honest-zero convention suffices.
-
-   nested-CSG construction no test could produce).
 2. ~~**Patch geometries report flat while genuinely curved.**~~ **CLOSED
    2026-09-17 (DL-20, `debt-geom2`).** `BezierPatchGeometry` /
    `BilinearPatchGeometry::RayElementIntersection` now stamp the real

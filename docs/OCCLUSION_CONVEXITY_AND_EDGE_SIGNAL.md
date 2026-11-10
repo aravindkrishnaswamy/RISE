@@ -723,7 +723,7 @@ L1 and 320.3 M L2 probes): **L1 96.2 %, L2 82.7 %**. L1 saturates at two ways
 across the two 4-way tables
 ([CROSS_OBJECT_PROXIMITY_DESIGN.md](CROSS_OBJECT_PROXIMITY_DESIGN.md) §5.1).
 All kB figures are decimal, not KiB; `ExpressionMemoTest` (g) prints the live
-figure and asserts a 2048-byte ceiling rather than any of them.
+figure and asserts a 2048-byte ceiling rather than any of them. *(2026-09-09 update: `kL1Ways` doubled from 4 to 8, bringing per-worker TLS storage to **2976 bytes** / **53.6 kB** across 18 workers.)*
 
 **The image check is a NOISE-FLOOR COMPARISON, not a bit comparison, and it
 cannot be anything else: there is no render seed to pin.** The CLI seeds the

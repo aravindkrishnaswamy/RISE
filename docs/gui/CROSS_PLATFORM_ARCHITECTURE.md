@@ -1,9 +1,8 @@
 # RISE GUI — Cross-Platform Architecture & Code-Sharing Strategy
 
-**Status:** **PARTIALLY IMPLEMENTED ARCHITECTURE.** The shared C++ editor,
-rendering, CST, and agent cores with thin macOS/Windows/Android bridges are the
-shipped shape. The unified render coordinator, credential backends, auxiliary
-GPU abstractions, and some generated bridge tooling remain design work.
+**Status:** **PARTIALLY IMPLEMENTED ARCHITECTURE.**
+- **Shipped in shared C++ (`src/Library/`):** `SceneEditController`, CST `Document` + `SaveEngine` + exact-byte undo (`Cst::DocReplaceChunkIfText`), `MaterialPreview` (3D shaderball) & `PainterPreview` (2D swatches), `GraphLayout` & `GraphLayoutSidecar`, `ConnectionLegality`, `OwnershipClosure`, `EntityTemplates`, and the 5-provider `src/Library/Agent/` stack (`AgentSession`, `AgentRpc`, `AgentMcpAdapter`, `AgentChatLoop`, `AgentChatCodecs`, `AgentLoopbackHttpServer`), consumed by macOS + Windows shells (including both `NodeGraphCanvas` and `ObjectGraphCanvas`) and partially by Android JNI.
+- **Still open / unbuilt:** `tools/gen_bridge_enums.py` codegen, process-wide multi-document `RenderCoordinator`, shared C++ `ICredentialStore` + Windows Credential Manager (`ChatPanel.cpp` is in-memory/env-var today), `IAuxGpuBackend` (B5 GPU wireframe / D6 GPU scopes), and Android `.RISEscene` save UI/JNI, missing 5 inspector categories, & LLM chat JNI.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Make `GUI_ROADMAP.md` §10 (and principles §1.2 "maximize shared C++" + §1.3 "Android is not left behind") concrete and authoritative. Defines, with code-confirmed facts: what *must* be shared C++, the small set that is genuinely forced platform-specific, the plan to consolidate the duplicated viewport bridges into one C-ABI core, the secure-credential and GPU-present-surface abstractions, the Android staged-fallback tiering (P3), and where new code should land given the 5-build-project registration cost. The other deep-dives (`MCP_TOOL_SURFACE`, `LLM_AGENT_RUNTIME`, `APPROACHABILITY_FOUNDATION`, `CAMERAS_AND_VIEWS`, `MATERIAL_EDITOR`, `SPECTRAL_DIFFERENTIATORS`, and the foundational [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) / [RENDER_COORDINATOR.md](RENDER_COORDINATOR.md) / [ENTITY_CREATION.md](ENTITY_CREATION.md)) each carry an "Android tier + interaction" note that this doc governs.
 
@@ -41,7 +40,8 @@ These already are, or must be, in `src/Library/`. None of them may be reimplemen
 | **Agent tool surface (MCP protocol) server + tool/resource dispatch** (shipped core) | `src/Library/Agent/` (§16: avoid the bare `MCP` dir/type token — `src/DRISE/MCPClientConnection` already means *Master Control Program*) | The single definition of what an LLM can do to RISE. |
 | **LLM agent loop + provider adapters** (shipped core) | `src/Library/Agent/` | Agent state machine, streaming, and provider tool-call translation, written once. |
 | **Chat transcript model** (shipped) | `src/Library/Agent/` | Turns, tool calls, diffs, approval state, compaction, and trajectories are data models, not views. |
-| Asset-library index (planned), named-views model (planned), material-graph model + serialization (planned) | new `src/Library/` files | All data models with platform-invariant behavior. |
+| **Material/painter previews, graph layout & entity CRUD** (shipped) | `src/Library/SceneEditor/` (`MaterialPreview`, `PainterPreview`, `GraphLayout`, `GraphLayoutSidecar`, `ConnectionLegality`, `OwnershipClosure`, `EntityTemplates`, `NamedViewStore`) | Shared C++ backing both `NodeGraphCanvas` and `ObjectGraphCanvas`, C1/C2 swatches, Named Views, and Outliner CRUD. |
+| **Asset-library index + C3 MaterialX import** (planned / unbuilt) | new `src/Library/` files | Data models with platform-invariant behavior. |
 
 ### 1.2 The small set that is forced platform-specific
 
@@ -59,9 +59,11 @@ Everything in this list shares a property: it is an *OS capability surface*, not
 
 ---
 
-## 2. Current state (code-confirmed, 2026-06)
+## 2. Historical baseline (2026-06) & shipped shared-core update
 
-The audit's central claim is confirmed by direct reading:
+> **2026-11 update:** Since the 2026-06 baseline below, `src/Library/SceneEditor/` and `src/Library/Agent/` added `MaterialPreview`, `PainterPreview`, `GraphLayout`, `GraphLayoutSidecar`, `ConnectionLegality`, `OwnershipClosure`, `EntityTemplates`, `NamedViewStore`, `AgentSession`, `AgentRpc`, `AgentMcpAdapter`, `AgentChatLoop`, `AgentChatCodecs` (5 providers), and `AgentLoopbackHttpServer`, plus both `NodeGraphCanvas` and `ObjectGraphCanvas` on macOS & Windows. Still open: `tools/gen_bridge_enums.py` (§3.2), process-wide multi-doc `RenderCoordinator`, C++ `ICredentialStore` (§4), `IAuxGpuBackend` (§5.4), and Android `.RISEscene` save UI/JNI, missing 5 inspector categories, & chat JNI (§6).
+
+The original June 2026 audit's central claim was confirmed by direct reading:
 
 - **`RISEViewportBridge` (macOS, Obj-C++) and `ViewportBridge` (Windows, Qt) are structurally identical.** Same method set (`start`/`stop`, `scaleFilmToFit`, `setTool`/`currentTool`, `categoryForTool`, gizmo handle array, `pointerDown/Move/Up`, `cameraSurfaceDimensions`, animation options, scrub triplet, property-scrub bracket, undo/redo, save triplet, panel-mode/header/property snapshot, per-category snapshot+selection, accordion entities, `addCameraFromActive`, `sceneEpoch`). Same enums (`Tool`, `ToolCategory`, `GizmoKind`, `PanelMode`/`Category`) with the **same numeric values**, each documented as "part of the C-API contract." The only differences are the marshaling vocabulary: `NS_ENUM`/`NSArray`/blocks vs `enum class`/`QVector`/signals.
 - **Android's `RiseBridge` (JNI) is the same surface again**, prefixed `viewport*`, calling the identical `RISE_API_SceneEditController_*` C-ABI functions. Its method bodies are one-liners that forward to the C-ABI (see `RiseBridge.cpp:1033–1271`). It carries extra plumbing (JNI global-ref mutex, manual RGBA8 framebuffer, `ScopedLocalFrame`) but **zero extra domain logic**.

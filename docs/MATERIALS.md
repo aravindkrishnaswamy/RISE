@@ -59,17 +59,25 @@ PDF (via the SPF) must agree with each other.
 ## 3. Spectral variants: every method has an `NM` form
 
 Spectral rasterizers (`bdpt_spectral_rasterizer`, `vcm_spectral_rasterizer`,
-`pixelintegratingspectral_rasterizer`, `pathtracing_spectral_rasterizer`,
-`mlt_spectral_rasterizer`) call the wavelength-tagged variants
-`valueNM(...)` / `ScatterNM(...)` / `PdfNM(...)` / `GetSpecularInfoNM(...)` /
-`GetRandomWalkSSSParamsNM(...)`. RGB rasterizers call the un-suffixed
-form. The default implementation of `*NM` typically delegates to the
-RGB form for materials that don't disperse (everything except
-`DielectricMaterial`'s wavelength-dependent IOR and `BioSpecSkin`'s
-spectral RW SSS).
+`pathtracing_spectral_rasterizer`, `auto_spectral_rasterizer`, and frozen
+legacy `pixelintegratingspectral_rasterizer` / `mlt_spectral_rasterizer`) call
+the wavelength-tagged variants `valueNM(...)` / `ScatterNM(...)` / `PdfNM(...)` /
+`EvaluateKrayNM(...)` / `GetSpecularInfoNM(...)` /
+`GetRandomWalkSSSParamsNM(...)`. RGB rasterizers call the un-suffixed form.
 
-When adding a new BSDF, implement both forms. If the lobe is achromatic,
-the `NM` form is one line that delegates.
+All modern materials and media (`GGX`, `Hair`, `Coated`, `Fabric`, `Weave`,
+`Dielectric`, `SubSurfaceScattering`, `RandomWalkSSS`, `BioSpecSkin`,
+`HomogeneousMedium`, etc.) implement native per-wavelength `*NM` evaluation and
+sampling, querying painters via `IPainter::GetColorNM(ri, nm)` backed by
+Jakob-Hanika sigmoid polynomial spectral uplifting for RGB colours/textures
+(see [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) and
+[SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md)). Only
+strictly achromatic terms or simple legacy fallbacks delegate directly to a
+wavelength-independent scalar.
+
+When adding a new BSDF, implement both RGB and `NM` forms (plus `EvaluateKrayNM`
+on `ISPF` if any lobe's throughput differs from `BSDF::valueNM * cos / pdf`
+under HWSS companion evaluation).
 
 ## 4. Delta vs. continuum lobes — `SpecularInfo`
 
@@ -109,31 +117,28 @@ companion test for energy conservation is the
 [BSSRDFFurnace](../scenes/Tests/BSSRDFFurnace/) scene set; the unit test
 is [`BSSRDFSamplingTest.cpp`](../tests/BSSRDFSamplingTest.cpp).
 
-## 6. Layered materials via `composite_material`
+## 6. Layered materials via `composite_material` (FROZEN)
+
+> **Status: FROZEN** (`kLegacyTierTable` in [`ChunkParserRegistry.cpp`](../src/Library/Parsers/ChunkParserRegistry.cpp)). Existing scenes continue to parse and render unchanged, but new scenes should use `coated_material` (§6.1) for dielectric coats/films and `fabric_material` (§6.2) for sheen/fuzz over cloth.
 
 [`CompositeMaterial`](../src/Library/Materials/CompositeMaterial.h)
 synthesises a single `IMaterial` from a `top` and `bottom` material plus
 a thickness, an extinction scalar painter (inline scalar or `scalar_painter`
 reference — a colour painter is rejected), and per-lobe recursion budgets. The
-construction merges sub-interfaces independently:
+construction merges sub-interfaces:
 
-- The `BSDF` is taken from whichever of `top` / `bottom` provides one
-  (top wins when both do — there's no per-lobe blend at the BSDF level).
+- The `BSDF` is [`CompositeBSDF`](../src/Library/Materials/CompositeMaterial.h) (closed DL-24), which combines `top` and Beer-Lambert-attenuated `bottom` BSDF evaluations rather than dropping the bottom layer (historically `CompositeMaterial` took `top`'s BSDF alone with no bottom blend).
 - The `SPF` becomes a `CompositeSPF` that stochastically transmits the
   ray through the top, evaluates the bottom, and returns. Per-lobe
   recursion budgets bound the cost.
 - The `Emitter` similarly composites if both layers emit.
 
-This is the classic "varnished wood" / "skin over fat" / "metal flake
-under clearcoat" idiom. `composite_material` is the general
-layer-stacking primitive; PBR-style additive lobes (sheen + base)
-are expressed as their own dedicated materials (`sheen_material`).
-
-**But for a transparent film over an opaque substrate — water, oil,
-lacquer, clearcoat — reach for `coated_material` (§6.1) instead, and for
-cloth — a sheen lobe over a diffuse or microfacet weave — reach for
-`fabric_material` (§6.2). Both exist because the composite route does
-not merely approximate those cases, it evaluates the wrong BSDF.**
+**For new scenes, prefer the dedicated closed-form layered materials:** for a
+transparent film over a substrate — water, oil, lacquer, clearcoat — reach for
+`coated_material` (§6.1), and for cloth — an energy-compensated sheen lobe over
+a diffuse, microfacet, or woven base — reach for `fabric_material` (§6.2). Both
+solve inter-layer energy conservation and Saunderson/Kulla-Conty multiple
+scattering analytically rather than via bounded random-walk recursion.
 
 ## 6.1 `coated_material` — a film with *coverage*, and a real layered BSDF
 
@@ -143,38 +148,44 @@ not merely approximate those cases, it evaluates the wrong BSDF.**
 algebra in [`CoatedLayer.h`](../src/Library/Materials/CoatedLayer.h).
 Full design: [WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md) §7.
 
-**Why it exists rather than reusing §6.** Both existing routes to a
-coated surface answer direct lighting with the *wrong* BSDF:
-`composite_material` forwards one sub-material's BSDF (top wins), and
-`polished_material` returns a bare `LambertianBRDF` for a
+**Why it exists rather than reusing §6.** Historically, both older routes to a
+coated surface answered direct lighting with the *wrong* BSDF:
+`composite_material` (now FROZEN; DL-24 later added `CompositeBSDF`, though without Saunderson recycling or coverage) originally forwarded only `top`'s BSDF, and
+`polished_material` (now FROZEN) returns a bare `LambertianBRDF` for a
 Fresnel-coated surface. So NEE, BDPT vertex connections, and MIS
-denominators all saw an **uncoated** substrate.
-`CoatedBRDF::value`/`valueNM` is the closed-form *combined* response,
-which is the point of the material.
+denominators saw an **uncoated** substrate.
+`CoatedBRDF::value`/`valueNM` is the closed-form *combined* response with
+analytic Saunderson interreflection and sub-pixel coverage, which is the point
+of the material.
 
 | parameter | pipe | notes |
 |---|---|---|
-| `base` | material ref | **allowlisted** — see below |
+| `base` | material ref | **allowlisted** (6 substrate types — see below) |
 | `coat_weight` | `IScalarPainter` | [0,1] sub-pixel **coverage** fraction; the spatially varying slot |
 | `coat_ior` | `IScalarPainter` | 1.33 water, 1.5 varnish; clamped to [1, 3] |
 | `coat_roughness` | `IScalarPainter` | coat lobe's GGX α; clamped to [1e-3, 1] |
 | `coat_thickness` | `IScalarPainter` | world length; feeds Beer–Lambert |
 | `coat_absorption` | `IScalarPainter` | 1/length; **scalar pipe deliberately** (a large coefficient on the colour pipe would be clamped by the JH uplift) |
 | `coat_tint` | `IPainter` | colour of one normal-incidence traversal; genuinely a colour |
+| `coat_normal` | `IPainter` | optional tangent-space normal map dedicated to the coat layer (DL-192) |
+| `coat_normal_scale` | scalar | strength multiplier for `coat_normal` (default 1.0; DL-192) |
 
 Names follow the OpenPBR surface spec so a future MaterialX/OpenPBR
 import is a rename rather than a redesign.
 
-**The substrate allowlist.** `base` accepts only `lambertian_material`,
-`orennayar_material`, `ggx_material`, and
-`pbr_metallic_roughness_material` (which resolves to a `ggx_material`
-at scene-build time), and refuses anything that emits. Two independent
-reasons: the layered model needs the substrate's *directional albedo*
-to run its interreflection series, which a luminaire / BSSRDF /
-volumetric random walk cannot supply; and §7.5's lobe budget only
-closes because the substrate's lobe count is known. Refusal happens at
-**parse time** with a diagnostic naming the allowlist, in both
-`Job::AddCoatedMaterial` and `RISE_API_CreateCoatedMaterial`.
+**The substrate allowlist (6 types, DL-23).** `base` accepts
+`lambertian_material`, `orennayar_material`, `ggx_material`,
+`pbr_metallic_roughness_material` (which resolves to a `ggx_material` at
+scene-build time), `fabric_material`, and `weave_material`, and refuses
+anything that emits. Two independent reasons: the layered model needs the
+substrate's *directional albedo* to run its interreflection series, which a
+luminaire / BSSRDF / volumetric random walk cannot supply; and §7.5's lobe
+budget only closes because the substrate's lobe count is known. Over a
+`weave_material` (or `fabric_material` wrapping one) with `transmission thin`,
+`CoatedBRDF` and `CoatedSPF` also forward and modulate below-horizon thin
+transmission through the coat layer (DL-23). Refusal happens at **parse time**
+with a diagnostic naming the allowlist, in both `Job::AddCoatedMaterial` and
+`RISE_API_CreateCoatedMaterial`.
 
 **Three things worth knowing before extending it:**
 
@@ -332,9 +343,14 @@ isotropic (Charlie's `D` normaliser and its Λ visibility are both
 isotropic-only fits, and a 2-D `E(α, cosθ)` table cannot compensate a 4-D
 anisotropic albedo). `weave_rotation` instead rotates the tangent frame
 handed to the substrate, via the same `MicrofacetUtils::RotateTangent`
-helper GGX's own `tangent_rotation` uses — so the two simply add, and
-`ward_*` / `ashikminshirley_*` gain a rotation input they do not have on
-their own.
+helper GGX's own `tangent_rotation` uses — so on `ggx_material` (or
+`pbr_metallic_roughness_material`) and `weave_material` the rotations compose
+cleanly. (Note: only `lambertian_material`, `orennayar_material`,
+`ggx_material`, `pbr_metallic_roughness_material`, and `weave_material` are
+accepted bases — legacy `ward_*` / `ashikminshirley_*` are FROZEN and rejected
+by `FabricMaterial::IsSupportedSubstrate`.) When wrapping a `weave_material`
+with `transmission thin`, `FabricBRDF` and `FabricSPF` forward the substrate's
+delta-gap and diffuse yarn transmission attenuated by the sheen layer.
 
 **Presets.** `fabric cotton|linen|denim|wool|silk|satin|velvet|custom`
 seeds every slot the author did not write — RISE's first *multi-slot*
@@ -521,17 +537,23 @@ the unit story.
 
 ## 8. Material catalogue (parser keywords)
 
-These are the 25 material chunks registered in
+These are the **29** material chunks registered in
 [`CreateAllChunkParsers()`](../src/Library/Parsers/ChunkParserRegistry.cpp).
 Grouped by primary lobe shape — see the corresponding `*Material.h`
 file for parameter-by-parameter behaviour.
+
+**Universal material parameters** (injected onto every material chunk):
+- `alpha_coverage` (`IScalarPainter`), `alpha_mode` (`opaque` | `mask` | `blend`), and `alpha_cutoff` (scalar, default `0.5`) — wrapped centrally by `AlphaMaterialParser` in `ChunkParserRegistry.cpp` and honoured across PT, BDPT, VCM, and interactive preview (DL-214).
+- `variant` (string) — added via `AddVariantTagParam`; overrides the same-named base material when `active_scene_variant <name>` matches at CST derive time.
 
 **Ideal / delta lobes** (`SpecularInfo` non-trivial):
 - `perfectreflector_material` — perfect mirror (delta reflection).
 - `perfectrefractor_material` — perfect refraction with Fresnel split.
 - `dielectric_material` — full Fresnel dielectric with optional
-  wavelength-dependent IOR for dispersion.
-- `polished_material` — **DEPRECATED** (use `coated_material` over a
+  wavelength-dependent IOR for dispersion and repeatable `ar_layer`
+  (`thickness_nm ior`) quarter-wave / multi-layer anti-reflective interference
+  coatings (up to `DielectricSPF::kMaxARLayers`).
+- `polished_material` — **FROZEN** (`MarkFrozen`; use `coated_material` over a
   `lambertian_material`; see [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md)
   "Deprecated materials"). Lambertian base with a delta specular layer
   weighted by Fresnel.
@@ -541,19 +563,24 @@ file for parameter-by-parameter behaviour.
 - `orennayar_material` — rough-diffuse Oren-Nayar generalisation.
 
 **Microfacet:**
-- `ggx_material` — anisotropic GGX with two Fresnel modes
+- `ggx_material` — anisotropic GGX with three Fresnel modes
   ([`FresnelMode`](../src/Library/Interfaces/IMaterial.h)):
-  `eFresnelConductor` (default; multiplies real `ior`/`ext` Fresnel by a
-  `specular` painter as a tint) and `eFresnelSchlickF0` (treats `specular`
-  as F0; required by glTF metallicRoughness).
+  `conductor` (`eFresnelConductor`, default; multiplies real `ior`/`extinction`
+  Fresnel by `rs` as a tint), `schlick` (`eFresnelSchlickF0`; treats `rs` as
+  F0, required by glTF metallicRoughness), and `thinfilm` (Airy thin-film
+  interference parameterized by `film_ior`, `film_extinction`, and
+  `film_thickness` in nm; see [THIN_FILM_INTERFERENCE.md](THIN_FILM_INTERFERENCE.md)).
+  Also accepts `tangent_rotation` (painter) or `tangent_rotation_scalar`
+  (`IScalarPainter`) to rotate the anisotropic frame, plus optional emission.
 - `pbr_metallic_roughness_material` — glTF-spec composition. Not its own
   material class; resolved at scene-build time in
   [`Job::AddPBRMetallicRoughnessMaterial`](../src/Library/Job.cpp) into
   a painter graph + a single `ggx_material` in `eFresnelSchlickF0` mode.
-- **DEPRECATED legacy microfacet/lobe materials** (still load and render
-  exactly as before; a scene load logs one warning per type; replacement
-  and parameter translation in [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md)
-  "Deprecated materials"):
+- **FROZEN legacy analytic microfacet/lobe materials** (`MarkFrozen` in
+  `ChunkParserRegistry.cpp` — still load and render identically for historical
+  scenes, log a frozen-tier warning, and are refused on the agent insertion
+  surface; replacement and parameter translation in
+  [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) "Deprecated materials"):
   - `cooktorrance_material` — Cook-Torrance microfacet -> `ggx_material`.
   - `ward_isotropic_material`, `ward_anisotropic_material` — Ward ->
     `ggx_material`.
@@ -561,11 +588,19 @@ file for parameter-by-parameter behaviour.
     `ggx_material`.
   - `isotropic_phong_material` — classic Phong -> `ggx_material`.
 
+**Hair / curves & fibers:**
+- `hair_material` — Chiang et al. (2016) / d'Eon longitudinal `Mp` +
+  trimmed-logistic azimuthal fiber BSDF (`HairBSDF` / `HairMaterial`),
+  supporting melanin (`eumelanin`, `pheomelanin`), absorption, or base-color
+  parameterizations, cuticle `tilt`, near-field `h`, and optional scattering
+  medulla (`HairMedullaProfile`); see [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md).
+
 **Layered / additive lobes:**
 - `coated_material` — a transparent dielectric film over a
-  **restricted** substrate, with the film's *coverage* as a first-class
-  spatially varying slot (§6.1). The wetness / clearcoat / varnish /
-  oil-film material.
+  **restricted** 6-type substrate (`lambertian`, `orennayar`, `ggx`,
+  `pbr_metallic_roughness`, `fabric`, `weave`), with sub-pixel *coverage*
+  (`coat_weight`), independent `coat_normal` / `coat_normal_scale` (DL-192),
+  and thin-weave transmission forwarding (§6.1).
 - `fabric_material` — an **energy-compensated** Charlie sheen lobe over
   a **restricted** substrate, with the weave direction delivered as a
   rotation of the frame the *substrate* is evaluated in (§6.2). The
@@ -578,14 +613,14 @@ file for parameter-by-parameter behaviour.
   and weft, each with their own direction, dye and pair of fibre lobes,
   mixed by a weave-draft coverage field (§6.3). It is what makes satin's
   float sheen and denim's twill wale; it has no sheen term of its own,
-  and it is an accepted `fabric_material` substrate, which is the
-  physical stack (fuzz over weave).
-- `composite_material` — top/bottom layered composition (§6).
+  and it is an accepted `fabric_material` and `coated_material` substrate.
+- `composite_material` — **FROZEN** (`kLegacyTierTable`; use `coated_material`
+  or `fabric_material`). Top/bottom layered composition with `CompositeBSDF`
+  (DL-24) and `CompositeSPF` (§6).
 - `sheen_material` — Charlie sheen lobe, **uncompensated and standalone**
-  (intended to layer over a base via `composite_material`, which does
-  not actually reach the base — see §6.2). Prefer `fabric_material`.
-- `schlick_material` — **DEPRECATED** (-> `ggx_material`, see the table
-  above). Schlick approximation as a standalone material.
+  (prefer `fabric_material`, see §6.2).
+- `schlick_material` — **FROZEN** (`MarkFrozen`; -> `ggx_material`).
+  Schlick approximation as a standalone material.
 
 **Subsurface scattering:**
 - `subsurfacescattering_material` — diffusion-profile BSSRDF (§5).
@@ -602,8 +637,8 @@ file for parameter-by-parameter behaviour.
 - `translucent_material` — thin translucent surfaces (paper, leaves).
 
 **Luminaires** (§7):
-- `lambertian_luminaire_material`
-- `phong_luminaire_material`
+- `lambertian_luminaire_material` — cosine area emission.
+- `phong_luminaire_material` — **FROZEN** (`kLegacyTierTable`; -> `lambertian_luminaire_material`).
 
 **Data-driven:**
 - `datadriven_material` — measured BRDF (MERL / Matusik).  Reflection-only tabulated BRDF; its `DataDrivenSPF` samples the table cosine-weighted over the front hemisphere (`kray = pi f` from the BSDF itself, `Pdf = cos/pi`), so PT, BDPT and VCM agree on it (DL-325).
@@ -628,14 +663,14 @@ file for parameter-by-parameter behaviour.
 5. **Override `IsVolumetric`** if the SPF embeds Beer-Lambert attenuation
    in `kray` (random-walk SSS, participating media bounded by surfaces).
 6. **Wire up parser + API + Job:**
-   - New `RISE_API_AddXxxMaterial` (preserve ABI;
+   - New `RISE_API_CreateXxxMaterial` (preserve ABI;
      [AGENTS.md change checklist](../AGENTS.md))
    - New `Job::AddXxxMaterial` and `IJob::AddXxxMaterial`
    - New `XxxMaterialAsciiChunkParser` registered via `add(...)` in
      `CreateAllChunkParsers()` ([Parsers/README.md](../src/Library/Parsers/README.md)
      §"Adding A New Chunk Parser")
-   - All five build projects updated ([../CLAUDE.md](../CLAUDE.md) §
-     "Source-file add/remove — touch ALL five build projects")
+   - All five build projects updated ([../AGENTS.md](../AGENTS.md) §
+     "Change Checklist")
 7. **Add a test** under [tests/](../tests/) that exercises the closed
    form against a known reference (white furnace, energy conservation,
    reciprocity) and add a regression scene under

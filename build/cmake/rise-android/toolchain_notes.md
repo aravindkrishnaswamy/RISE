@@ -29,14 +29,20 @@ cmake -B _out \
   -DCMAKE_TOOLCHAIN_FILE="$RISE_ANDROID_NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-29 \
-  -DANDROID_STL=c++_shared
+  -DANDROID_STL=c++_shared \
+  -DRISE_JNI_SOURCES_DIR="$(cd ../../../android/app/src/main/cpp && pwd)"
 cmake --build _out --target rise -j8
 ```
 
-Expected output: a `librise.a` archive under `_out/` containing about 340
-object files, with no compiler warnings or errors. A warning or error means
-the source list in `rise_sources.cmake`, the compile flags in
-`CMakeLists.txt`, or the affected source needs correction.
+(`-DRISE_JNI_SOURCES_DIR=...` wires the `rise_jni` shared-library target as
+`app/build.gradle.kts` does; omitting it still lets `--target rise` build
+`librise.a` on its own.)
+
+Expected output: a `librise.a` archive under `_out/` containing about 380
+object files (377 library TUs plus vendored zlib/libpng), with no compiler
+warnings or errors. A warning or error means the source list in
+`rise_sources.cmake`, the compile flags in `CMakeLists.txt`, or the affected
+source needs correction.
 
 ## Source list synchronization
 

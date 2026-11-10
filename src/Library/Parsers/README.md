@@ -186,7 +186,8 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Functions | 3 | `piecewise_linear_function`, `piecewise_linear_function2d`, `expression_function2d` |
 | Materials | 29 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material`, `coated_material`, `fabric_material`, `weave_material` |
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
-| Geometry | 24 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `path_instances_geometry` |
+| Geometry | 27 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry` |
+| Hair guides | 1 | `hair_guides` |
 | Modifiers | 4 | `relief_modifier`, `modifier_stack`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
 | Media | 4 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `global_medium` |
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
@@ -202,7 +203,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
 | Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 174 unique chunk keywords** -- counted directly from `add(...)` calls in `CreateAllChunkParsers()` (REVIEW_P2R5.md P2-1: the previous "167" was stale even before this diff, which then widened the drift by adding `weave_material` without re-summing). The Materials row above is corrected to the same recount (29, not 27 -- `lambertian_luminaire_material`/`phong_luminaire_material`/`isotropic_phong_material`/etc. were undercounted). The other rows were NOT independently re-audited in this pass and may carry their own pre-existing drift; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth, and its per-family counts should be treated as approximate until fully re-audited.
+**Total: 176 unique chunk keywords** -- counted directly from the 176 `add(...)` registrations in `CreateAllChunkParsers()`. Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above (`40 + 3 = 43`), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
 
 ### Composite chunks (parse-time sugar)
 
@@ -426,20 +427,26 @@ Parameter sets shared across many chunks live in [ChunkParserRegistry.cpp](Chunk
 | Helper | Used by | Adds |
 |--------|---------|------|
 | `AddCameraCommonParams` | All 5 cameras | `location`, `lookat`, `up`, `exposure`, `pitch`, `yaw`, `roll`, `target_orientation`, … (raster dims — `width`, `height`, `pixelAR` — moved to the top-level `film` chunk in scene format v6 / Phase B2) |
-| `AddPixelFilterParams` | All 10 rasterizers | `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA/B` |
-| `AddSpectralCoreParams` | All 5 spectral rasterizers | `spectral_samples`, `nmbegin`, `nmend`, `num_wavelengths`, `hwss` |
-| `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only (soft-deprecated, see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5) | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |
-| `AddStabilityConfigParams` | All non-MLT rasterizers | `direct_clamp`, `indirect_clamp`, `rr_min_depth`, `rr_threshold`, `max_*_bounce`, `light_bvh` |
-| `AddPathGuidingParams` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer` (full set; BDPT-spectral switched from a hand-rolled subset to the helper 2026-05-07, see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.7).  Path guiding is **not** wired on `pathtracing_spectral_rasterizer`, VCM (pel + spectral), MLT, or `pixelintegratingspectral_rasterizer` — `pathguiding_*` lines authored against those chunks hard-fail at parse time. | `pathguiding`, `pathguiding_iterations`, `pathguiding_spp`, `pathguiding_alpha`, `pathguiding_max_depth`, … |
-| `AddAdaptiveSamplingParams` | `pixelpel_rasterizer`, `pathtracing_{pel,spectral}_rasterizer`, `bdpt_pel_rasterizer`, `vcm_{pel,spectral}_rasterizer` (BDPT-spectral not yet wired — see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.8) | `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` |
-| `AddRadianceMapParams` | All non-MLT rasterizers | `radiance_map`, `radiance_scale`, `radiance_orient` |
+| `AddPixelFilterParams` | All 12 rasterizers | `pixel_sampler`, `pixel_sampler_param`, `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA`, `pixel_filter_paramB`, `blue_noise_sampler` |
+| `AddSpectralCoreParams` | All 6 spectral rasterizers (`pixelintegratingspectral` [FROZEN], `bdpt_spectral`, `vcm_spectral`, `pathtracing_spectral`, `auto_spectral`, `mlt_spectral` [FROZEN]) | `spectral_samples`, `nmbegin`, `nmend`, `num_wavelengths`, `hwss` |
+| `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only (FROZEN since 2026-10-09; see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5 and [docs/SCENE_CONVENTIONS.md](../../../docs/SCENE_CONVENTIONS.md) §11.4) | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |
+| `AddStabilityConfigParams` | All 10 non-MLT rasterizers | `direct_clamp`, `indirect_clamp`, `rr_min_depth`, `rr_threshold`, `max_*_bounce`, `light_bvh`, `branching_threshold`, … |
+| `AddPathGuidingParams` | 5 rasterizers: `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `auto_rasterizer`.  Path guiding is **not** wired on `pathtracing_spectral_rasterizer`, `auto_spectral_rasterizer`, VCM (pel + spectral), MLT, or `pixelintegratingspectral_rasterizer` — `pathguiding_*` lines authored against those chunks hard-fail at parse time. | `pathguiding`, `pathguiding_iterations`, `pathguiding_spp`, `pathguiding_alpha`, `pathguiding_max_depth`, … |
+| `AddAdaptiveSamplingParams` | 9 rasterizers: `pixelpel_rasterizer` [FROZEN], `pathtracing_{pel,spectral}_rasterizer`, `bdpt_{pel,spectral}_rasterizer`, `vcm_{pel,spectral}_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` | `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` |
+| `AddRadianceMapParams` | All 10 non-MLT rasterizers | `radiance_map`, `radiance_scale`, `radiance_orient`, `radiance_background` |
 | `AddProgressiveParams` | All progressive rasterizers | `progressive_rendering`, `progressive_samples_per_pass` |
-| `AddSMSConfigParams` | PT pel + PT spectral only | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count`, `sms_two_stage`, `sms_seeding`, `sms_target_bounces`, `sms_extended` (BDPT lost SMS support 2026-05-07; see [CLAUDE.md](../../../CLAUDE.md) High-Value Facts) |
-| `AddOptimalMISParams` | `pixelpel_rasterizer` + `pathtracing_pel_rasterizer` only.  BDPT pel/spectral and PT spectral previously called this helper but the underlying integrators do not consume `rc.pOptimalMIS` (research not extended to BDPT's per-strategy-pair MIS; spectral parent never allocates the accumulator).  Wiring removed 2026-05-07 so the parser hard-fails on `optimal_mis*` lines authored against those chunks rather than silently dropping them; see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4, §2.10. | `optimal_mis`, `optimal_mis_training_iterations`, `optimal_mis_tile_size` |
+| `AddSMSConfigParams` | `pathtracing_pel_rasterizer` + `pathtracing_spectral_rasterizer` only | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count`, `sms_two_stage`, `sms_seeding`, `sms_target_bounces`, `sms_extended` (BDPT lost SMS support 2026-05-07; see [CLAUDE.md](../../../CLAUDE.md) High-Value Facts) |
+| `AddOptimalMISParams` | 3 rasterizers: `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `auto_rasterizer`.  BDPT pel/spectral and PT spectral do not consume `rc.pOptimalMIS` (research not extended to BDPT's per-strategy-pair MIS; spectral parent never allocates the accumulator), so `optimal_mis*` lines authored against those chunks hard-fail at parse time; see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4, §2.10. | `optimal_mis`, `optimal_mis_training_iterations`, `optimal_mis_tile_size` |
 | `AddBaseRasterizerParams` | All rasterizers | `defaultshader`, `oidn_denoise`, `show_luminaires`, … |
-| `AddNoisePainterCommonParams` | All Perlin/Worley/Simplex/Gabor 3D painters | `frequency`, `octaves`, `persistence`, `lacunarity`, `seed`, … |
+| `AddNoisePainterCommonParams` | Perlin / Turbulence / Wavelet / Worley / Simplex / Gabor 3D noise painters | `name`, `colora`, `colorb`, `persistence`, `octaves`, `scale`, `shift` |
+| `AddVariantTagParam` | All 29 material chunks (plus variant-participating chunks) | `variant` (CST `scene_variant` named-overlay tag; `none` = base) |
 | `AddPhotonMapGenerateCommonParams` | All 6 photon-map generate parsers | `num`, `power_scale`, `max_recursion`, `min_importance`, `branch`, `reflect`, `refract`, … |
 | `AddPhotonMapGatherCommonParams` | All 6 photon-map gather parsers | `radius`, `ellipse_ratio`, `min_photons`, `max_photons` |
+
+Registry-level parser wrappers in `CreateAllChunkParsers()` also decorate descriptors uniformly:
+
+- **`AlphaMaterialParser`**: wraps every `ChunkCategory::Material` parser (all 29 material chunks) to add `alpha_mode` (`opaque|mask|blend`), `alpha_coverage` (`IScalarPainter` reference or inline scalar), and `alpha_cutoff` without duplicating them per material class (see `docs/ALPHA_COVERAGE.md`).
+- **`LegacyTierParser`** (`MarkFrozen` / `MarkDeprecated`): wraps chunks listed in `kLegacyTierTable` with a descriptor copy carrying their legacy tier and replacement guidance so the CST validator and editor surface frozen/deprecated diagnostics while keeping `Finalize` bit-identical.
 
 ## Where Agent Authors Usually Get Tripped Up
 
@@ -449,13 +456,13 @@ Parameter sets shared across many chunks live in [ChunkParserRegistry.cpp](Chunk
 
 ## MIS Weight Parameters (Rasterizer Blocks)
 
-The following parameters control advanced MIS weight computation. They are **only accepted on `pixelpel_rasterizer` and `pathtracing_pel_rasterizer`** — the parser hard-fails on `optimal_mis*` lines authored against any other chunk. Both default-off and fall back to the standard power heuristic. See [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4 / §2.10 for why BDPT, VCM, MLT, and the spectral PT/BDPT chunks reject these params (Kondapaneni 2019's single-step BSDF-vs-NEE formulation has not been extended to per-strategy-pair MIS or to the dVCM/dVC/dVM recurrence; spectral parents do not allocate the accumulator).
+The following parameters control advanced MIS weight computation. They are **only accepted on `pixelpel_rasterizer` (FROZEN), `pathtracing_pel_rasterizer`, and `auto_rasterizer`** — the parser hard-fails on `optimal_mis*` lines authored against any other chunk. All default-off and fall back to the standard power heuristic. See [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4 / §2.10 for why BDPT, VCM, MLT, and the spectral PT/BDPT/auto chunks reject these params (Kondapaneni 2019's single-step BSDF-vs-NEE formulation has not been extended to per-strategy-pair MIS or to the dVCM/dVC/dVM recurrence; spectral parents do not allocate the accumulator).
 
 | Parameter | Rasterizers | Type | Default | Description |
 |-----------|-------------|------|---------|-------------|
-| `optimal_mis` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer` | bool | FALSE | Run training passes to compute variance-minimizing MIS weights for direct illumination (Kondapaneni et al. 2019) |
-| `optimal_mis_training_iterations` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer` | uint | 4 | Number of 1-SPP training passes |
-| `optimal_mis_tile_size` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer` | uint | 16 | Spatial tile size for second-moment binning |
+| `optimal_mis` | `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `auto_rasterizer` | bool | FALSE | Run training passes to compute variance-minimizing MIS weights for direct illumination (Kondapaneni et al. 2019) |
+| `optimal_mis_training_iterations` | `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `auto_rasterizer` | uint | 4 | Number of 1-SPP training passes |
+| `optimal_mis_tile_size` | `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `auto_rasterizer` | uint | 16 | Spatial tile size for second-moment binning |
 
 ## Pure PT Rasterizer Chunks
 
@@ -466,7 +473,7 @@ Two rasterizer chunks bypass the shader-op dispatch chain and call `PathTracingI
 | `pathtracing_pel_rasterizer` | Iterative PT, RGB output, per-sample OIDN AOVs |
 | `pathtracing_spectral_rasterizer` | Iterative PT, spectral output, NM or HWSS modes |
 
-These accept all the same parameters as their shader-dispatch counterparts (`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer`) plus SMS controls (`sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`). The pure PT rasterizers do not use or require a `defaultshader` because they bypass the shader pipeline entirely.
+These accept all the same parameters as their frozen shader-dispatch counterparts (`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer`) plus the full `AddSMSConfigParams` suite (`sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count`, `sms_two_stage`, `sms_seeding`, `sms_target_bounces`, `sms_extended`). The pure PT rasterizers do not use or require a `defaultshader` because they bypass the shader pipeline entirely.
 
 When `oidn_denoise TRUE` is set on `pathtracing_pel_rasterizer`, the filtered film resolve is automatically skipped to preserve raw MC noise for OIDN. See `docs/ARCHITECTURE.md` for details.
 

@@ -1,11 +1,20 @@
 # Scene-Language Scripting: What It Takes to Retire the Python Generators
 
-**Status: B1 + B2 SHIPPED (2026-06-11).**  The texture bakers are now native
+> **HISTORICAL (pre-July-2026 CST cutover):** §1 and §4 describe the legacy
+> streaming scene language (`DEFINE` / `@NAME`, `$(...)`, `FOR` / `ENDFOR`, and
+> render-affecting `>` directives), which was retired in the July 2026 CST
+> cutover in favor of native `RISE ASCII SCENE 7` documents with `let` constants
+> and `expr(...)` values (see [src/Library/Parsers/README.md](../src/Library/Parsers/README.md)).
+> Named multi-camera / multi-variant scene selection is also natively supported
+> via `scene_variant` and `active_scene_variant` in
+> [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp).
+
+**Status: B1 + B2 SHIPPED (2026-06-11), followed by `expression_function2d` migration (2026-06-12).**  The texture bakers are now native
 painters (`guilloche_oxide_painter` + the `scalar_painter function2d scale/bias`
-form) and the mesh bakers native chunks (`guilloche_disk_geometry`, and the strap decomposed into the fully
+form) and the mesh bakers native chunks (`cartesian_disk_geometry` + `expression_function2d` + `displaced_geometry` — superseding the intermediate `guilloche_disk_geometry` chunk excised on 2026-06-12, see bottom section — and the strap decomposed into the fully
 general `sweep_geometry` + `path_instances_geometry`) — see `src/Library/Painters/GuillocheField.h`, the
 factories in `src/Library/RISE_API.cpp`, and the golden tests
-`tests/GuillocheFieldTest.cpp` / `tests/ProceduralMeshTest.cpp`.  Chunk names
+`tests/GuillocheFieldTest.cpp` / `tests/ProceduralMeshTest.cpp` / `tests/ExpressionFunction2DTest.cpp`.  Chunk names
 differ slightly from the proposals below (kept as authored).  Orchestration
 (C) stays external by decision; `sdf_gen.py` replacement (A-class, needs
 in-chunk `FOR`) is deferred.
@@ -17,8 +26,8 @@ features, and what should stay external.
 
 ## 1. What the scene language can already do
 
-Three scripting layers exist today (all in
-[AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) /
+Three scripting layers existed at the time of writing (in
+[ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) /
 [AsciiCommandParser.cpp](../src/Library/Parsers/AsciiCommandParser.cpp) /
 [AsciiScriptParser.cpp](../src/Library/Parsers/AsciiScriptParser.cpp)):
 

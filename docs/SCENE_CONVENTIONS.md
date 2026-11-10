@@ -382,8 +382,10 @@ above and names `shape_light` beside `rect_light` first, then this
 four-chunk chain as the general form.  The same surface, the same
 routes, and the same unconditional treatment (not part of the
 build-phase machinery, no phase-refusal budget consumed, survives
-`--agent-build-protocol=off`) apply the 2-per-scene `omni_light` /
-`spot_light` / `directional_light` budget above.  Everything else in
+`--agent-build-protocol=off`) enforce the zero-allowance first-request
+confirmation gate on `omni_light` / `spot_light` / `directional_light`
+above (every creation request is refused once and lands only when
+re-issued unchanged).  Everything else in
 this section is convention, not enforcement: the CLI, the GUI and the
 scene loader will all happily author and load any light kind or any
 number of them.
@@ -1115,7 +1117,9 @@ Consequences worth knowing:
   a light dark, turned away or elsewhere at the frame time stays selectable
   (DL-463).
 
+---
 
+## 8.7. Repeating geometry and procedural placement
 
 A weave, a tile course, a brick bond — the natural way to author any of them is
 the cell formula: `floor(u*N)` for the cell index, `mod(i + k*j, 5)` for the
@@ -1285,7 +1289,7 @@ integrator since DL-247).
 | Setting | PT | BDPT / MLT | VCM |
 |---|---|---|---|
 | surface depth | no scene knob: a fixed 128-vertex loop | `max_eye_depth` / `max_light_depth` bound SURFACE hits per SUBPATH; since DL-351 the MIS weights know it, so the render estimates exactly the paths that have at least one CONNECTIBLE split (eye part <= `max_eye_depth`, light part <= `max_light_depth`, joined at non-delta, connectible vertices); in an all-diffuse scene that is **K <= max_eye_depth + max_light_depth** and only the sum matters | same path set; since DL-467 its recurrence MIS drops every connection / merge strategy past the caps too (closed box at (1,1): 0.0643 -> 0.0845, BDPT 0.0839), including, since DL-470, a MERGE's light-side levels (the connections / merges whose eye part would cover the light subpath behind the merge point past `max_eye_depth`) |
-| `max_diffuse_bounce` & co. | per PATH: at most N continuations of that type; NEE at the last vertex is free, so N = 0 is direct lighting; since DL-467 a non-delta continuation past the cap is traced for its MIS-weighted EMISSION only (as PBRT-v4 / Cycles do), so the last vertex's direct light keeps its full MIS partition -- in an all-diffuse scene `max_diffuse_bounce N` = BDPT's (N+1, 0); a DELTA continuation past the cap is cut (the vertex next to the light counts when its scatter is delta) | per PATH since DL-471, the same paths as PT: every strategy counts the lobe types of the JOINED path's x_1 .. x_{K-1} (x_K, the vertex next to the light, free unless its scatter is delta or it has no BSDF); only caps below `max_eye_depth + max_light_depth` can bind and the others are ignored; a connection endpoint counts its material's lobe type when it has one possible type (Lambertian, Oren-Nayar, data-driven) or none of its types is capped (GGX under `max_translucent_bounce`); otherwise, since DL-481, it keeps only its ALLOWED lobe types (GGX, Cook-Torrance, Schlick, Ward, Phong, Ashikhmin, polished, translucent split their value by lobe label), and only a material with no split (coated, composite, fabric, weave, hair, ...) still has the strategy dropped from the estimate AND every MIS denominator -- which LOSES a path no other strategy reaches, e.g. a point-light caustic onto a coated floor under `max_glossy_bounce 0` (DL-502). MLT has no per-type cap parameters | as BDPT (connections, splats and merges price a split endpoint by its allowed types), except that a path with an UNSPLIT such vertex at a counted position is estimated by the emitter hit and NEE alone (VCM's running-sum weights cannot drop one strategy); the same caustic is lost (DL-502) |
+| `max_diffuse_bounce` & co. | per PATH: at most N continuations of that type; NEE at the last vertex is free, so N = 0 is direct lighting; since DL-467 a non-delta continuation past the cap is traced for its MIS-weighted EMISSION only (as PBRT-v4 / Cycles do), so the last vertex's direct light keeps its full MIS partition -- in an all-diffuse scene `max_diffuse_bounce N` = BDPT's (N+1, 0); a DELTA continuation past the cap is cut (the vertex next to the light counts when its scatter is delta) | per PATH since DL-471, the same paths as PT: every strategy counts the lobe types of the JOINED path's x_1 .. x_{K-1} (x_K, the vertex next to the light, free unless its scatter is delta or it has no BSDF); only caps below `max_eye_depth + max_light_depth` can bind and the others are ignored; a connection endpoint counts its material's lobe type when it has one possible type (Lambertian, Oren-Nayar, data-driven, hair) or none of its types is capped (GGX under `max_translucent_bounce`); otherwise, since DL-481 / DL-482 / partial DL-502, it keeps only its ALLOWED lobe types (GGX, Cook-Torrance, Schlick, Ward, Phong, Ashikhmin, polished, translucent, hair, diffusion SSS, random-walk SSS, Donner-Jensen skin, plus zero-coat `coated_material` and Lambertian-base `fabric_material` split their value by lobe label via `HasConnectionTypeSplit()`), and only a material with no split (positive-coat `coated_material`, non-Lambertian `fabric_material`, `weave_material`, and frozen `composite_material`) still has the strategy dropped from the estimate AND every MIS denominator -- which LOSES a path no other strategy reaches, e.g. a point-light caustic onto a positive-coat floor under `max_glossy_bounce 0` (DL-502). Frozen MLT has no per-type cap parameters | as BDPT (connections, splats and merges price a split endpoint by its allowed types), except that a path with an UNSPLIT such vertex at a counted position is estimated by the emitter hit and NEE alone (VCM's running-sum weights cannot drop one strategy); the same caustic is lost (DL-502) |
 
 Consequences for authors:
 
@@ -1305,16 +1309,21 @@ Consequences for authors:
   `max_eye_depth + max_light_depth` cannot bind and changes nothing.  A
   binding cap on a lobe type of a multi-lobe material is honoured at a
   BDPT/VCM connection by keeping only the material's allowed lobes
-  (DL-481: GGX, Cook-Torrance, Schlick, Ward, Phong, Ashikhmin, polished,
-  translucent); on a multi-lobe material WITHOUT such a split (coated,
-  composite, fabric, weave, hair, ...) it still drops the strategies that
+  (DL-481 / DL-482 / partial DL-502: GGX, Cook-Torrance, Schlick, Ward,
+  Phong, Ashikhmin, polished, translucent, hair, diffusion SSS,
+  random-walk SSS, Donner-Jensen skin, zero-coat `coated_material`, and
+  Lambertian-base `fabric_material` all report `HasConnectionTypeSplit() == true`);
+  on a multi-lobe material WITHOUT such a split (positive-coat
+  `coated_material`, non-Lambertian `fabric_material`, `weave_material`,
+  and frozen `composite_material`) it still drops the strategies that
   connect at it, so a path only they reach -- a point-light caustic onto
   such a surface -- goes dark (DL-502).
-  Further exceptions, open debts: paths through a SUBSURFACE material (PT counts the
-  jump as a translucent bounce, the bidirectional walks do not -- DL-482)
-  and a DL-330 see-through connection or a guided continuation (the
-  strategies of one path count its delta gaps / guide draws differently
-  -- DL-483).
+  Since DL-482 closed, PT, BDPT and VCM also agree on subsurface paths:
+  each nonlocal SSS jump charges 1 `max_translucent_bounce` and ordinary
+  SSS surface reflection endpoints charge `eRayReflection` (only frozen
+  MLT ignores per-type caps).  Remaining open/parked exception: a DL-330
+  see-through connection or a guided continuation (the strategies of one
+  path count its delta gaps / guide draws differently -- DL-483).
 - A capped scene can change brightness when `auto_rasterizer` changes
   its route.
 
@@ -1649,11 +1658,11 @@ keeps the deprecated `iridescent_painter` (`translucent_material` has no thin fi
 
 ## 11.5. Deprecated materials (DL-323 follow-through, 2026-10-02)
 
-**Update 2026-10-09:** these seven chunks are now **FROZEN** (owner ruling
-#9, section 11.4): the warning reads "LEGACY and UNSUPPORTED", the agent
+**Update 2026-10-09:** these seven chunks, along with `composite_material`
+and `phong_luminaire_material`, are now **FROZEN** (owner ruling #9,
+section 11.4): the warning reads "LEGACY and UNSUPPORTED", the agent
 refuses to insert them, and their ledger rows close won't-fix.  They still
-render bit-identically.  `composite_material` and `phong_luminaire_material`
-are frozen too (the table below predates that).
+render bit-identically.
 
 **Ruling (user, 2026-10-02):** the legacy non-physically-based material
 chunks are being DEPRECATED, not retrofitted.  A deprecated chunk **keeps
@@ -1682,10 +1691,11 @@ section is the legacy -> modern table.
 
 | chunk | verdict | why |
 |---|---|---|
-| `cooktorrance_material`, `isotropic_phong_material`, `ashikminshirley_anisotropicphong_material`, `schlick_material`, `ward_isotropic_material`, `ward_anisotropic_material`, `polished_material` | **DEPRECATED** | legacy lobe models, each fully covered by `ggx_material` (+ `coated_material` for polished); see the table below |
-| `ggx_material`, `pbr_metallic_roughness_material`, `coated_material`, `fabric_material`, `weave_material`, `composite_material`, `sheen_material`, `hair_material`, `lambertian_material`, `orennayar_material`, `dielectric_material`, `perfectreflector_material`, `perfectrefractor_material`, the SSS / skin / tissue family, `lambertian_luminaire_material`, `datadriven_material` | modern / specialised -- keep | physically based, or an ideal/measured model with no deprecated twin (Oren-Nayar is a physically derived rough-diffuse whose albedo is baked exactly, DL-07; `datadriven_material` is measured data) |
+| `cooktorrance_material`, `isotropic_phong_material`, `ashikminshirley_anisotropicphong_material`, `schlick_material`, `ward_isotropic_material`, `ward_anisotropic_material`, `polished_material` | **FROZEN** | legacy lobe models, each fully covered by `ggx_material` (+ `coated_material` for polished); see the table below |
+| `composite_material` | **FROZEN** | legacy arbitrary two-material combiner (unbounded energy / uncoupled lobes); covered in practice by `coated_material`, `ggx_material`, and `sheen_material` |
+| `phong_luminaire_material` | **FROZEN** | legacy emission PROFILE (`cos^N` directional exitance) over another material; `lambertian_luminaire_material` has no equivalent shaping and `spot_light` is a different entity, so no direct single-chunk replacement exists, but the chunk is frozen under owner ruling #9 |
+| `ggx_material`, `pbr_metallic_roughness_material`, `coated_material`, `fabric_material`, `weave_material`, `sheen_material`, `hair_material`, `lambertian_material`, `orennayar_material`, `dielectric_material`, `perfectreflector_material`, `perfectrefractor_material`, the SSS / skin / tissue family, `lambertian_luminaire_material`, `datadriven_material` | modern / specialised -- keep | physically based, or an ideal/measured model with no deprecated twin (Oren-Nayar is a physically derived rough-diffuse whose albedo is baked exactly, DL-07; `datadriven_material` is measured data) |
 | `translucent_material` | **NOT deprecated** (no real replacement) | the only two-sided diffuse-transmitting THIN-sheet model (leaf, paper, lampshade) with per-side `ref`/`tau` and Beer extinction.  Considered and rejected as replacements: `dielectric_material` (a Fresnel interface with an IOR-stack, no per-side diffuse reflect/transmit split), `subsurfacescattering_material` / `randomwalk_sss_material` (volumetric SOLIDS that need a closed body and a mean free path), `weave_material transmission thin` (cloth gap).  It was also rebuilt as one consistent sampler/density/evaluator in DL-157/DL-41.  Revisit if a thin-sheet material is added |
-| `phong_luminaire_material` | **NOT deprecated** (no real replacement) | an emission PROFILE (`cos^N` directional exitance) over another material; `lambertian_luminaire_material` has no equivalent shaping, and `spot_light` is a different entity |
 
 **Legacy -> modern mapping.**  The translations are *starting points*:
 the modern model is energy-bounded and multiple-scattering-compensated, so

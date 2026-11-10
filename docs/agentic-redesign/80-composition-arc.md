@@ -1,6 +1,6 @@
 # Composition — Stop Destroying Good Work (Arc 80 Design, 2026-08-12)
 
-> **Status:** BUILDING.  User direction 2026-08-12: *"for the composition
+> **Status: SHIPPED (2026-08-12; light-object exemption 2026-08-13).**  User direction 2026-08-12: *"for the composition
 > phase we need to not allow deletes and only placement of objects"* and
 > *"the object map tooling should be built"*.  Successor to arc 79, whose
 > §8.2 result is the entire reason this exists.
@@ -77,8 +77,9 @@ consultation surface ever shipped here measures ~0 uses** (0/64 across arcs
 in a loaded context does not go looking for a diagnostic; it acts on what
 arrives in front of it.
 
-So arc 80 builds no new verb.  It moves an existing fact to where the model
-will actually meet it.
+So arc 80 relies on no voluntary call — it moves an existing fact onto the
+render payload where the model will actually meet it, while also exposing the
+same code path as one read-only verb (`scene_inventory`, §2.1 / §3).
 
 ## 2.1 "Where is everything" beats "what is at this pixel"
 
@@ -152,7 +153,7 @@ not an assumption — see §6.
 
 ## 5. What this does NOT do
 
-No new tools.  No automatic fixing of framing or placement.  No judgement of
+No new mutating tools (`scene_inventory` is the sole new read-only verb, sharing one code path with the render payload).  No automatic fixing of framing or placement.  No judgement of
 composition quality.  No change to the builders or the local-frame contract.
 The census reports; the model decides.
 

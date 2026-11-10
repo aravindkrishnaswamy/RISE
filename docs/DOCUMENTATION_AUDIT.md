@@ -1,4 +1,75 @@
-# Documentation Audit — 2026-07-24
+# Documentation Audit
+
+This document tracks repository-wide audits of RISE's first-party documentation.
+The consolidated implementation backlog produced alongside the November 2026
+audit lives in [ROADMAP.md](ROADMAP.md).
+
+---
+
+## Audit — 2026-11-10 (`6946c4c82`)
+
+Between the 2026-07-24 audit (`1514297d`) and `6946c4c82` (3,738 commits),
+first-party documentation grew from 142 files to **311+ tracked Markdown files**
+alongside **523 standalone C++ test suites**, **176 scene chunk keywords**,
+**38 agent/MCP tools**, and **13 runtime agent skills**.
+
+### Major accuracy corrections applied
+
+1. **Root & workflow guides (`README.md`, `AGENTS.md`, `CLAUDE.md`):**
+   - Removed the obsolete `branching_threshold` invariant from `AGENTS.md`
+     (multi-lobe path-tree splitting was completely excised in 2026-05 in favor
+     of single-lobe `RandomlySelect` + aggregate `ISPF::Pdf()` MIS partners).
+   - Removed the stale `CLAUDE.md` note claiming `shapes.RISEscene` still used
+     frozen `pixelpel_rasterizer`, deduplicated repeated `DL-25` / `DL-103` /
+     `DL-127` entries, updated `DL-41` / `DL-103` / `DL-161` / ABI v17 /
+     Legacy Phase 2 status claims, moved trailing bullets back above
+     `## Thread priority`, and replaced stale Makefile header-tracking caveats
+     with current `-MMD -MP` `.d` sidecar + `--tier` / `--filter` /
+     `tools/red_prove.sh` / `--mcp` / `--agent-eval` instructions.
+2. **Core rendering, materials, spectral & legacy tier docs:**
+   - Updated [IMPROVEMENTS.md](IMPROVEMENTS.md), [MATERIALS.md](MATERIALS.md),
+     [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md),
+     [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md),
+     [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md),
+     [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md), [SMS.md](SMS.md),
+     [SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md), [VCM.md](VCM.md),
+     [OIDN.md](OIDN.md), [FRAMESTORE_DESIGN.md](FRAMESTORE_DESIGN.md), and
+     [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) to reflect shipped Hair BSDF +
+     medulla + Phase 4 LOD, Stage C D65 Jakob-Hanika LUT (`100 %` convergence),
+     `sms_extended` Phases 1–4, VCM volume merging (`DL-469`), scalar material
+     `alpha_coverage` (`DL-214`), `AgXScalar` placeholder scope, and Legacy
+     Phase 2 scene migrations.
+3. **GUI, editor, importers & agentic-redesign docs:**
+   - Updated [GUI_ROADMAP.md](GUI_ROADMAP.md) and `docs/gui/*.md` for shipped
+     Material Editor Slices 4–6 (`MaterialPreview` 3D shaderball, pipe-coloured
+     sockets/adapters, Kelvin/Sellmeier, measured metals, thin-film strip),
+     `ObjectGraphCanvas`, exact-byte CST undo, and Windows Qt `NamedViewsPanel` /
+     Credential Manager parity gaps.
+   - Added accurate status headers across `docs/agentic-redesign/00..91`,
+     subsystem `README.md`s (`src/Library`, `Parsers`, `Blender`, `android`,
+     `tests`, `scenes`, `evals`), and `docs/skills/*.md`.
+4. **Debt Ledger & link hygiene:**
+   - Repaired misplaced/headerless table blocks in
+     [DEBT_LEDGER.md](DEBT_LEDGER.md) and reconciled exact row counts (**357**
+     numeric `DL-*` rows: **332 closed**, **18 parked**, **7 active open**:
+     `DL-626..DL-632`), plus shipped status banners on `BATCH8..12_*.md`.
+   - Fixed all residual broken repository-relative Markdown links across all
+     tracked `.md` files (unbackticked `[Rd Ft](lc)` / `[...](float)` /
+     `[...](d)` / `[...](ray,)` code expressions, untracked `var_test` link in
+     `AUTO_RASTERIZER_DESIGN.md`, and local `.claude/skills` link in
+     `gui/SPECTRAL_DIFFERENTIATORS.md`).
+
+### Status of 2026-07-24 removal candidates
+
+Nine earlier transient phase/audit fragments were removed prior to `6946c4c82`;
+the four high-confidence candidates listed in the July 2026 table below
+(`CONSOLIDATION_MANUAL_GUI_CHECKLIST.md`, `CONSOLIDATION_WINDOWS_PASS.md`,
+`_audit_memory.md`, `PRE_PHASE1_OPTION_C_DESIGN.md`) remain tracked with
+explicit historical banners until their remaining prose references are retired.
+
+---
+
+## Audit — 2026-07-24 (`1514297d`)
 
 This report records a repository-wide audit of RISE's first-party
 documentation at commit `1514297d`. It is both a snapshot of the work

@@ -1,10 +1,27 @@
 # Facet 2 — Derivation Engine (CST → Scene, incremental)
 
-> **Status:** **PARTIALLY IMPLEMENTED.** Full and incremental CST-to-`Job`
-> derivation, recorded reference graphs, stable-object apply, closure tracking,
-> and TLAS-aware invalidation have shipped. The complete immutable
-> `DerivedScene` → `PreparedRenderState` build/seal/publish architecture
-> described below has not.
+> **Status (refreshed 2026-11):** **PARTIALLY IMPLEMENTED.** Full (`DeriveToJob`)
+> and incremental (`DeriveToJobIncremental`) CST-to-`Job` derivation, recorded
+> reference graphs, stable-object apply, closure tracking (`MaintainedReferenceGraph`),
+> and TLAS-aware invalidation have shipped in [`Cst.cpp`](../../src/Library/Cst/Cst.cpp)
+> and [`Job.cpp`](../../src/Library/Job.cpp) over [`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp).
+> Post-July 2026 derivation invariants in tree:
+> - **PASS-2 continuation (2026-08-28):** PASS-1 descriptor validation remains
+>   refuse-all, while PASS-2 (`Finalize`) continues past individual chunk failures
+>   so one derive surfaces diagnostics across every independent chunk while callers
+>   still treat non-empty `diagnostics` as an overall derive failure.
+> - **Single-rederive batched edits (2026-10-16):** `Job::ApplyCstEditBatch` /
+>   `SceneEditController::ApplyAgentEditBatch` realizes multi-edit agent batches
+>   (`propose_patches`, `insert_chunks`) in one full re-derive rather than N.
+> - **`DeriveToJobIncremental` refusal guards:** whole-plan preflight + per-parser
+>   reversibility refuses non-single-manager categories (painters, cameras,
+>   functions), composed materials, `translucent_material`, `gltf_import`,
+>   non-`standard_object`/`csg_object` object chunks, CSG operand-reference
+>   changes, documents with `sourceInstanceCount > 0` (`standard_object.source`,
+>   doc 87), animations/timelines, or `override_object`, falling back cleanly to
+>   full `DeriveToJob` (and rolling back on any unforeseen `Finalize` failure).
+> The complete two-layer immutable `DerivedScene` → `PreparedRenderState`
+> build/seal/publish architecture described below remains unbuilt target design.
 >
 > **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6, D1–D51).** The
 > decision record is authoritative; where this doc once conflicted it now conforms
@@ -153,16 +170,17 @@ a mutable `Job`, and interactive edits mutate the resulting live `Scene` in plac
 There is no "derivation function" — there is a *loader* and a separate *in-place
 mutator*. Facet 2 unifies them. The raw materials already in the tree:
 
-### 1.1 The loader (`CST→Scene`, today: whole-file, non-incremental)
+### 1.1 The loader (`CST→Scene`, pre-cutover: whole-file, non-incremental)
+
+*(Historical pre-cutover baseline — `AsciiSceneParser.cpp` was retired in the July 2026 P5 cutover; chunk registration and `DispatchChunkParameters` now live in [`src/Library/Parsers/ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp) and CST derivation in [`src/Library/Cst/Cst.cpp`](../../src/Library/Cst/Cst.cpp).)*
 
 `AsciiSceneParser::ParseAndLoadScene(IJob&)`
-(`src/Library/Parsers/AsciiSceneParser.cpp:10431`, ~560 lines) is the entire
-"derivation" today. It is **strictly whole-file**: it reads the file into a
-buffer, tokenizes, expands `FOR`/macros/`$(...)`, then for each chunk looks up an
-`IAsciiChunkParser` in the registry and calls `ParseChunk → Finalize`, which emits
-one or more `pJob.AddX(...)` / `pJob.SetX(...)` calls
-(`AsciiSceneParser.cpp:10804-10911`). There is **no partial-parse / no incremental
-re-derive** path. A one-character edit re-reads and re-dispatches the whole file.
+(historically `ChunkParserRegistry.cpp` / retired `AsciiSceneParser`, ~560 lines) was the entire
+"derivation" before Model B. It was **strictly whole-file**: it read the file into a
+buffer, tokenized, expanded `FOR`/macros/`$(...)`, then for each chunk looked up an
+`IAsciiChunkParser` in the registry and called `ParseChunk → Finalize`, which emitted
+one or more `pJob.AddX(...)` / `pJob.SetX(...)` calls. There was **no partial-parse / no incremental
+re-derive** path. A one-character edit re-read and re-dispatched the whole file.
 
 The chunk parsers are **descriptor-driven** (L6): each overrides only `Describe()`
 (the schema) and `Finalize(const ParseStateBag&, IJob&)` (the emit). The default
@@ -1225,7 +1243,7 @@ sample and owns the **render-local mutable** irradiance/accumulation caches. Ani
 
 | Component (file) | Fate | Rationale |
 |---|---|---|
-| `AsciiSceneParser::ParseAndLoadScene` whole-file loader (`AsciiSceneParser.cpp:10431`) | **Evolve** | Becomes the *full-derive special case* (incremental derive vs empty cache). The chunk-walk + `Finalize→AddX` is retained as the **REBUILD backend**, driven from the CST instead of re-tokenizing text. The `FOR`/`DEFINE`/`hal`/`$(...)` macro front-end is removed by Facet 1 (L3); Facet 2 consumes the post-evaluation CST. |
+| `AsciiSceneParser::ParseAndLoadScene` whole-file loader (retired; replaced by `Cst::DeriveToJob` in `Cst.cpp` + `ChunkParserRegistry.cpp`) | **Evolve** | Becomes the *full-derive special case* (incremental derive vs empty cache). The chunk-walk + `Finalize→AddX` is retained as the **REBUILD backend**, driven from the CST instead of re-tokenizing text. The `FOR`/`DEFINE`/`hal`/`$(...)` macro front-end is removed by Facet 1 (L3); Facet 2 consumes the post-evaluation CST. |
 | `IAsciiChunkParser::Finalize` per chunk | **Reuse (re-homed)** | This *is* the per-node L1 derivation rule. Keep verbatim as the rebuild emitter; it now runs per dirty node, not per file. |
 | `IJob::AddX/SetX` surface + `Job.cpp` | **Reuse, with order-independence fixes** | The construction API stays; §4 lists the specific ordering effects to remove. |
 | `GenericManager<T>` (name-key + identity version/serial) | **Reuse** | Already the order-independent store + freshness token Facet 2 needs (§2.6). It uses a mutable `std::map`, so the O(closure)/O(log N) snapshot claims are **gated on making the manager roots persistent immutable containers (D23)**; the honest v1 fallback (copy-on-snapshot) is O(N_entities)/snapshot (§2.1/§2.3/§6.1). |

@@ -271,7 +271,7 @@ Slice record is [75-expressive-surface-arc.md](75-expressive-surface-arc.md)
 
 ## 7. Post-arc G-series + arc-77 (2026-08-10) — process notes
 
-Slice records: 75-arc §7 "POST-ARC G-SERIES"; design =
+Slice records: 75-arc §7 "POST-ARC G-SERIES" *(note: G2's `file_part_plan` was superseded by `file_build_plan` in [78-staged-build-protocol.md](78-staged-build-protocol.md) §3)*; design =
 [77-imagination-target-design.md](77-imagination-target-design.md).
 What earned recording:
 
@@ -342,7 +342,7 @@ wrong — stop building on it and go measure a different one.**
   and arrangement started.**  Cost doubled (38 → 76 turns) buying that trade.
 - **A precondition inherited from a neighbouring arc ate a whole provider
   call.**  `build_element`'s insertion goes through `InsertChunks`, which
-  carries arc-77's "no target, no insert" rule; the first builder produced
+  carries arc-77's "no target, no insert" rule *(from `file_part_plan` / `imagine_scene`, superseded on the plan side by `file_build_plan` in [78-staged-build-protocol.md](78-staged-build-protocol.md) and bypassed for `build_element` post-run)*; the first builder produced
   real geometry and had every chunk refused for a reason unrelated to
   building.  The transplanted-idiom class again, in its inverse form: not a
   guard copied where its precondition is absent, but a guard INHERITED where

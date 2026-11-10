@@ -174,12 +174,12 @@ light hits that SMS already covers.  Audit:
   Reference-free check: on a scene with NO SMS caster, PT with
   `sms_enabled TRUE` must equal PT without it
   (`WeaveGapShadowTransmittanceTest` section `sms`, which runs
-  single-threaded so its bands mean something).  Open relatives: DL-340
-  (a medium vertex still counts as an anchor; the HWSS medium-walk
-  hand-off still passes a constant), DL-339 (an anchored refractive
-  caster's REFLECTION is left to SMS, which never estimates it), DL-372
-  (SMS's own refraction-chain coverage: turning SMS on loses 8.3 % of
-  shipped `sms_visibility_unoccluded`, 61 % over its caustic) and DL-373.
+  single-threaded so its bands mean something).  Historical / parked
+  relatives: ~~DL-340~~ (CLOSED — medium vertices and the HWSS medium-walk
+  hand-off no longer count as SMS anchors), DL-339 (**PARKED** — an
+  anchored refractive caster's reflection outside exact split-suppression
+  modes), ~~DL-372~~ (CLOSED — exact split-suppression classifier covers
+  deterministic refraction chains, below) and ~~DL-373~~ (CLOSED).
 - The split rule (2026-10-01, DL-372 / DL-336,
   docs/SMS_ENERGY_LOSS_INVESTIGATION.md section 7): where SMS is
   deterministic in (anchor, emitter point) -- snell, biased, no photons,
@@ -314,14 +314,18 @@ three times.  Always search for the twin in the same file; if the
 file has a `*NM` function parallel to the RGB one, the fix usually
 needs to go into both.
 
-### Editing `src/Library/Parsers/AsciiSceneParser.cpp` and not doing a clean Library build
+### Editing `ChunkParserRegistry.cpp` / `Cst.cpp` without relinking the binary under test
 
-Stale `.obj` for the parser silently keeps the old chunk handler
-behaviour.  Symptom: scenes that should parse give a mysterious
-"Failed to parse parameter name `X`" for a parameter the CURRENT
-source clearly accepts.  Resolution: delete the `Library.obj`
-artefacts and full-rebuild.  This swallowed an hour on the teapot
-scene added in this session.
+(Historical note: the legacy `AsciiSceneParser.cpp` was retired in the
+July 2026 CST cutover; scene chunks now live in
+`src/Library/Parsers/ChunkParserRegistry.cpp` and CST derivation in
+`src/Library/Cst/Cst.cpp`, and the `make` build tracks header
+dependencies via `-MMD -MP`.)  If `bin/rise` or a test binary was not
+rebuilt after editing parser descriptors (`make -C build/make/rise -j8
+all`), the old binary silently keeps the previous chunk parameter list
+and fails with `"Failed to parse parameter name X"` for a parameter the
+current source accepts.  Rebuild `all` (or the named `build-test/<Name>`
+target) before re-running.
 
 ## Concrete Examples (from this repo's history)
 

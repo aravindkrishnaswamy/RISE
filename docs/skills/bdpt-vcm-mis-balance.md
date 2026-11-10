@@ -254,7 +254,7 @@ minutes to check; do them before any integrator instrumentation:
    **The mechanism is the scene's shader chain, not the rasterizer.**
    A legacy `pixel*_rasterizer` executes the scene's `standard_shader`
    op chain literally.  `Job::AddStandardShader`
-   ([Job.cpp](../../src/Library/Job.cpp), ~L8549) auto-prepends
+   ([Job.cpp](../../src/Library/Job.cpp)) auto-prepends
    `DefaultEmission` and ONLY that op, so `shaderop DefaultDirectLighting`
    really runs `[EmissionShaderOp, DirectLightingShaderOp]`.  Neither
    casts a continuation ray, and neither declares `RequireSPF()` — so
@@ -413,10 +413,15 @@ minutes to check; do them before any integrator instrumentation:
    plane-distance band already use — see the discriminators below and
    the full sweep in
    [CLOTH_FABRIC_DESIGN.md §15 debt 25](../CLOTH_FABRIC_DESIGN.md)'s
-   "Sibling audit" sub-block. One sibling did NOT close: the torus's
-   mild PT-over residual (0.89 unit scale / 0.85 at 1000×, light
-   behind; clean with the light inside) survived the same floor and
-   was reverted there — recorded as open, mechanism unknown.
+   "Sibling audit" sub-block. (Historically, the torus initially kept the
+   generic `NEARZERO` floor when `IGeometry::SelfHitRootFloor` was
+   introduced, which missed its 133× wider `|C[4]| <= 1e-10 · quartScale`
+   quartic-deflation band; **subsequently fixed** as a positive worked
+   example in `TorusGeometry::SelfHitRootFloor`,
+   `src/Library/Geometry/TorusGeometry.h`, commit `7923bf2f`, which
+   returns the directional width `2 · 1e-10 · quartScale / max(|∇F · dir|,
+   0.05 · |∇F|)` — while phantom central-hole/tangency quartic roots were
+   separately closed in `DL-226` / `DL-273..DL-275`.)
    **Discriminators, reusable on the next suspect primitive:** treat
    BDPT (or VCM) as the reference, since both `Advance()` their shadow
    and continuation rays and so never see the self-root; independently,
@@ -530,9 +535,10 @@ LIGHT changes the noise floor even when nothing else moves.
 For BDPT, the canonical bias modes are:
 
 1. A strategy excluded from the MIS denominator that should be
-   included (e.g. NEE through a delta light skipped at line 4807-
-   class skip rules).  Symptom: `misWeight=1` for a strategy that
-   should be `< 1`, contributions add without partition.
+   included (e.g. NEE through a delta light skipped by
+   `BDPTIntegrator::MISWeight`'s `lightVerts[i-1].isDelta` skip rule).
+   Symptom: `misWeight=1` for a strategy that should be `< 1`,
+   contributions add without partition.
 2. A strategy contribution computed against the wrong reference
    measure (area vs solid angle), off by a `cos / dist²` factor.
 3. `pdfRev` at the connection vertex not being updated correctly
@@ -687,7 +693,7 @@ manually.
 
 ### BDPT — delta-light NEE skipped from MIS denominator
 
-`BDPTIntegrator::MISWeight` (line 4804 area) walked the light-side
+`BDPTIntegrator::MISWeight` (`src/Library/Shaders/BDPTIntegrator.cpp`) walked the light-side
 ratios and applied a PBRT-convention skip rule:
 
 ```cpp
@@ -1036,7 +1042,8 @@ box: below `NEARZERO` the whole box (including the genuine far face)
 vanished, so a light behind the box shone through the front face
 unoccluded; above it, the box occluded its own origin face, self-
 shadowing every NEE toward a light inside it.  PT's NEE shadow ray is
-cast unadvanced from the published hit point (`LightSampler.cpp` ~1839)
+cast unadvanced from the published hit point (`LightSampler::EvaluateDirectLighting` /
+`ShadowOccludedRGB` in `LightSampler.cpp`)
 and saw both; BDPT/VCM `Advance()` theirs by 1e-6 (`BDPT_RAY_EPSILON` /
 `VCM_RAY_EPSILON`) first and saw neither.
 
@@ -1068,7 +1075,10 @@ fix.  Full writeup: [CLOTH_FABRIC_DESIGN.md §15 debt
 class on sphere, ellipsoid, cylinder, disk, infinite plane and triangle
 mesh — see step 0 cause 7's "Sibling primitives" paragraph above and
 CLOTH_FABRIC_DESIGN.md §15 debt 25's "Sibling audit" sub-block for the
-full before/after sweep; the torus did not close and stays open.
+full before/after sweep; the torus self-hit floor was subsequently fixed via
+`TorusGeometry::SelfHitRootFloor` (`src/Library/Geometry/TorusGeometry.h`,
+commit `7923bf2f`, accounting for `RayTorusIntersection`'s `1e-10 * quartScale`
+quartic-deflation band).
 
 ## Mental model for delta lights and MIS
 

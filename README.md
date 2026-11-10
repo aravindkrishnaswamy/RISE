@@ -5,14 +5,16 @@ Contributor map for the Realistic Image Synthesis Engine.
 The frozen 2006 user manual remains in [README.txt](README.txt) for historical
 context; its version numbers, platform notes, and commands are not current.
 This file is the landing page for humans; [AGENTS.md](AGENTS.md) is the shared
-agent quickstart, [CLAUDE.md](CLAUDE.md) is the Claude-compatible shim, and
-[docs/README.md](docs/README.md) indexes current references, active plans, and
-historical design records.
+agent quickstart, [CLAUDE.md](CLAUDE.md) is the Claude companion and running
+invariant/debt-closure log, [docs/ROADMAP.md](docs/ROADMAP.md) is the current
+next-steps implementation roadmap, and [docs/README.md](docs/README.md) indexes
+current references, active plans, and historical design records.
 
 ## Start Here
 
 - Repo and workflow map: [README.md](README.md)
 - Agent quickstart and invariants: [AGENTS.md](AGENTS.md)
+- Implementation roadmap: [docs/ROADMAP.md](docs/ROADMAP.md)
 - Docs catalog and deep dives: [docs/README.md](docs/README.md)
 - Scene taxonomy: [scenes/README.md](scenes/README.md)
 - Core library overview: [src/Library/README.md](src/Library/README.md)
@@ -21,27 +23,33 @@ historical design records.
 - Curated showcase scenes: [scenes/FeatureBased/README.md](scenes/FeatureBased/README.md)
 - Regression and validation scenes: [scenes/Tests/README.md](scenes/Tests/README.md)
 - Executable tests: [tests/README.md](tests/README.md)
+- Agent eval suite: [evals/README.md](evals/README.md)
 
 ## Doc Roles
 
 - `README.md`: top-level repo map, canonical read order, and common commands
 - `AGENTS.md`: concise working model and invariants for LLM contributors
-- `CLAUDE.md`: thin tool-specific companion that points back to the shared docs
-- `docs/*.md`: focused deep dives and forward-looking plans
-- `src/**/README.md`, `scenes/**/README.md`, `tests/README.md`: subsystem-local reference docs
+- `CLAUDE.md`: Claude-specific companion plus chronological invariant and correctness-debt closure notes
+- `docs/ROADMAP.md`: prioritized next-steps roadmap grounded in current repository state
+- `docs/*.md`: focused deep dives, design records, and subsystem plans
+- `src/**/README.md`, `scenes/**/README.md`, `tests/README.md`, `evals/README.md`: subsystem-local reference docs
 
 ## Layout
 
-- `src/Library/`: active core rendering library
-- `src/RISE/`: main CLI and conversion tools
+- `src/Library/`: active core rendering, CST/parser, editor, and agent library
+- `src/RISE/`: main CLI (`bin/rise`) and conversion tools
 - `scenes/FeatureBased/`: curated showcase and torture scenes
 - `scenes/Tests/`: isolated regression, comparison, and validation scenes
-- `tests/`: standalone executable tests
-- `docs/`: focused design notes and roadmaps
-- `build/make/rise/`: current GNU make build
-- `textures/`, `models/`, `colors/`, `volume/`, `lightprobes/`, `media/`: scene data and media
-- `tools/`: helper utilities and scripts outside the core runtime
-- `src/Blender/`: Blender add-on and native bridge
+- `tests/`: standalone executable tests (`fast` and `extended` tiers)
+- `evals/`: deterministic and live LLM scene-authoring evaluation harness
+- `skills/agent/`: runtime scene-authoring and viewport-observation skills loaded by the RISE agent
+- `docs/`: focused design notes, debt closure records, engineering skills (`docs/skills/`), and roadmaps
+- `build/make/rise/`: canonical GNU make build; `build/XCode/rise/`, `build/VS2022/`, `build/cmake/`: macOS GUI, Windows GUI/CLI, and Android/Windows-test CMake projects
+- `android/`: Android Kotlin/Compose + NDK viewport and editor app
+- `src/Blender/`: Blender 4.x render-engine add-on and native C ABI bridge
+- `textures/`, `models/`, `colors/`, `volume/`, `lightprobes/`, `media/`: scene data, spectral/thin-film curves, and media
+- `extlib/`: third-party dependencies and submodules (including OIDN and Jakob-Hanika spectral uplift LUTs)
+- `tools/` and `scripts/`: offline LUT generators, migration/validation scripts, red-proof runner, and release packaging
 - `src/DRISE/`, `src/PRISE/`, `src/3DSMax/`, `build/VS2005/` and the SGI / Solaris make configs: FROZEN legacy surfaces (kept in the tree, unsupported, may not build; see each one's README / header and [docs/LEGACY_DEPRECATION_ASSESSMENT.md](docs/LEGACY_DEPRECATION_ASSESSMENT.md) §13)
 
 ## Main Flow
@@ -61,14 +69,24 @@ historical design records.
 
 ```sh
 make -C build/make/rise -j8 all
-make -C build/make/rise tests
-./run_all_tests.sh
+make -C build/make/rise -j8 tests
+./run_all_tests.sh                                  # default: fast tier
+./run_all_tests.sh --tier all                       # fast + extended tiers
+./run_all_tests.sh --filter "*GGX*" --timeout 180   # targeted subset
+make -C build/make/rise build-test/SourceHygieneTest && ./bin/tests/SourceHygieneTest
+tools/red_prove.sh <base-ref> <TestName> -- src/Library/...  # worktree-isolated red-proof
+
 export RISE_MEDIA_PATH="$(pwd)/"
 # ~1 s: path-traced (direct light only) shapes -> rendered/shapes.png + shapes_denoised.png
 # (`mkdir -p rendered` first in a fresh checkout or worktree; the directory is gitignored)
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ./run_scenes.sh
 ```
+
+Headless CLI flags include resolution overrides (`--width N`, `--height N`,
+`--pixel-ar X`) and agent/MCP/eval modes (`--mcp` / `--agent-stdio`,
+`--agent-http[=PORT]`, `--agent-autonomy=observe-only|edit-and-preview|full`,
+`--agent-eval --scenario <path>`).
 
 ### macOS release DMG
 
@@ -120,6 +138,7 @@ before a release will complete.
 cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64
 cmake --build build/cmake/rise-tests/_out --config Release --target rise_all_tests --parallel
 .\run_all_tests.ps1
+.\run_all_tests.ps1 -Tier all -Filter "*GGX*"
 .\run_all_tests.ps1 -Config Debug
 ```
 
@@ -129,4 +148,7 @@ and runs them through [run_all_tests.ps1](run_all_tests.ps1). The CMake test
 project links against the prebuilt `RISE.lib` from the VS2022 Library project,
 so build the Windows library/CLI once first.
 
-If you changed only header files, run a clean rebuild first. The makefile does not track header dependencies reliably.
+Note on incremental builds: the Unix GNU `Makefile` tracks header dependencies
+automatically via `-MMD -MP` `.d` sidecars and rebuilds `librise.a` before test
+targets. On Windows, rebuild the VS2022 `Library` project (`RISE.lib`) before
+re-linking CMake test targets after `src/Library/` header or source edits.

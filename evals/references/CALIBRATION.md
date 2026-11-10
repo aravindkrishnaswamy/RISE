@@ -372,9 +372,9 @@ fully observable there.
 
 **Fix: two-tier caps for `image_reconstruct_single` only.**
 
-- **view1 stays STRICT: `rmseMax` 0.015** (unchanged from §5/§7) — it is the
+- **view1 stays STRICT: `rmseMax` 0.015** (unchanged from §5/§7; subsequently raised `0.015 → 0.02` in the `2026-08-18` cross-platform MSVC amendment at §5, lines 149–162) — it is the
   ONE fully-observable view (the model's own attached photo), so nothing
-  about its grading is relaxed.
+  about its grading is relaxed here.
 - **views 2/3/4 become SHAPE-PLAUSIBILITY caps: `rmseMax` 0.04 each**
   (relaxed from 0.012/0.012/0.015). This admits a reconstruction whose
   hidden-side geometry is a *plausible smooth continuation* of the visible

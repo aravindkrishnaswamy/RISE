@@ -42,14 +42,14 @@ interface and a substrate), not by the specific watch.
 > license to ship known-wrong physics on the path the scene exercises. **§11
 > re-examines every deferral below against this principle.**
 
-**Decisions locked (2026-06-30):** build the spectral medium-coefficients
+**Decisions locked (2026-06-30) & execution summary:** build the spectral medium-coefficients
 feature (G1) and the conductor ambient-IOR fix (G6); stand up the layerlab +
 analytic-slab oracles; model flexible for both grand-feu and flinqué with
 grand-feu fumé as the hero; the crystalline texture is authored **procedurally**
-(generated, not baked from the footage) — but as **real microgeometry on the
-physical layer first classified in §10.2**, not a fixed top-interface
-normal-map. **Status: holding at planning for user review of this doc before any
-Phase-2 code.**
+(generated, not baked from the footage) — as **real microgeometry on the
+physical layer classified in §10.2**, not a fixed top-interface normal-map.
+- **Shipped:** hero and opaque grand-feu showcase scenes (`scenes/FeatureBased/EnamelWatch/`, `scenes/FeatureBased/Materials/enamel_grandfeu_opaque.RISEscene`) plus calibration/regression scenes (`scenes/Tests/Materials/Enamel/`); **G1** spectral `HomogeneousMedium` (`absorption_spectral` / `scattering_spectral` `IFunction1D` curves + non-HWSS and HWSS free-flight survival reweighting, §10.12–§10.13); and **G6** conductor + thin-film ambient-IOR coupling via `ri.ambientIOR` stamped from `ior_stack.top()` (§10.6, §10.8).
+- **Still open (sequenced follow-ups):** **G2** rough-dielectric GGX transmission (BTDF), **§10.5** wavelength-dependent `IPhaseFunction` + Mie phase authoring, and **§10.7** spatially-varying spectral `HeterogeneousMedium`.
 
 ---
 
@@ -395,7 +395,7 @@ Lambertian backing under the glass (§10.10).
 
 | # | Gap | Load-bearing? | Resolution |
 |---|---|---|---|
-| **G1** | **Without a spectral curve, the medium collapses to gray luminance.** `HomogeneousMedium::GetCoefficientsNM()` falls back to `Luminance(m_sigma_t)` ([HomogeneousMedium.cpp:139](../src/Library/Materials/HomogeneousMedium.cpp)) for RGB-authored media — so a red enamel with no `σ(λ)` curve renders **achromatic** under `*_spectral_*`; it's not merely "RGB-approximated." **G1-a shipped the fix** (curve path [HomogeneousMedium.cpp:121](../src/Library/Materials/HomogeneousMedium.cpp)); see §10.13 for the increment breakdown and current state. | **YES — the core fidelity item (LOCKED: build it).** A green-absorbing gold-ruby red, cobalt's triple notch, etc. cannot exist at all in spectral mode without this. | **Cross-cutting fix — see §10.13 for the a/b/c/d decomposition and status, plus the "Net" paragraph + §11:** spectral **storage + distance sampling + majorant + transmittance** in `HomogeneousMedium` (**G1-a DONE**, commit `7b77082a`); the **pure-absorber double-attenuation + HWSS free-flight reweighting** estimator work (§10.3, §10.13 **G1-c**); and a **spectral-curve authoring path** (§10.13 **G1-b**) — the chunk advertises `DoubleVec3` ([AsciiSceneParser.cpp:5996](../src/Library/Parsers/ChunkParserRegistry.cpp)) and `IJob`/`RISE_API` took RGB, so the authoring surface gains a λ-curve binding via the existing coordinate-free named `IFunction1D` — plus the analytic-slab spectral gate (**G1-d**). Hero needs only a **position-independent λ-curve** (gradient is geometry, §2.1). Spatial-×-spectral is a **separate, bigger build** (§10.7, §11): a volume-coordinate mapping (`IMedium` queries by `Point3` [IMedium.h:85](../src/Library/Interfaces/IMedium.h), not a surface painter) **plus** fixing `HeterogeneousMedium`'s luminance collapse — **built, sequenced after the hero**, not abandoned. |
+| **G1** | **Without a spectral curve, the medium collapses to gray luminance.** `HomogeneousMedium::GetCoefficientsNM()` falls back to `Luminance(m_sigma_t)` ([HomogeneousMedium.cpp:139](../src/Library/Materials/HomogeneousMedium.cpp)) for RGB-authored media — so a red enamel with no `σ(λ)` curve renders **achromatic** under `*_spectral_*`; it's not merely "RGB-approximated." **G1-a shipped the fix** (curve path [HomogeneousMedium.cpp:121](../src/Library/Materials/HomogeneousMedium.cpp)); see §10.13 for the increment breakdown and current state. | **YES — the core fidelity item (LOCKED: build it).** A green-absorbing gold-ruby red, cobalt's triple notch, etc. cannot exist at all in spectral mode without this. | **Cross-cutting fix — see §10.13 for the a/b/c/d decomposition and status, plus the "Net" paragraph + §11:** spectral **storage + distance sampling + majorant + transmittance** in `HomogeneousMedium` (**G1-a DONE**, commit `7b77082a`); the **pure-absorber double-attenuation + HWSS free-flight reweighting** estimator work (§10.3, §10.13 **G1-c**); and a **spectral-curve authoring path** (§10.13 **G1-b**) — the chunk advertises `DoubleVec3` ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)) and `IJob`/`RISE_API` took RGB, so the authoring surface gains a λ-curve binding via the existing coordinate-free named `IFunction1D` — plus the analytic-slab spectral gate (**G1-d**). Hero needs only a **position-independent λ-curve** (gradient is geometry, §2.1). Spatial-×-spectral is a **separate, bigger build** (§10.7, §11): a volume-coordinate mapping (`IMedium` queries by `Point3` [IMedium.h:85](../src/Library/Interfaces/IMedium.h), not a surface painter) **plus** fixing `HeterogeneousMedium`'s luminance collapse — **built, sequenced after the hero**, not abandoned. |
 | G2 | **No rough-dielectric GGX transmission (BTDF).** | No for the hero (fire-polished); surface relief is real displacement, not a rough BTDF. | Sequenced on need (§11): if any enamel reads satin, **build a proper GGX dielectric BTDF**, not the `scattering`-Phong-widening heuristic. Distinct from the §10.2 crystalline relief (real microgeometry). |
 | G3 | **BSSRDF is semi-infinite** (wrong for thin slab over mirror). | N/A — design decision, not a code gap. | Use bounded `interior_medium`, per §4. |
 | G4 | Thin-film is **single-layer** (>1-layer interference absent). | No — only for multi-stack optical coatings / strong opalescence. | Genuinely out of scope (§11 "S"). The *single*-layer thin-film **ambient-IOR** under enamel is covered by G6/§10.8, not this. |
@@ -407,8 +407,8 @@ Lambertian backing under the glass (§10.10).
 and lighting, but its *physics* requires two coordinated, cross-cutting RISE changes,
 not "two small features":
 - **G1 (chromatic medium) spans the whole construction stack**, because medium
-  coefficients are RGB-only end to end today: the scene chunk advertises
-  `DoubleVec3` `absorption`/`scattering` ([AsciiSceneParser.cpp:5996](../src/Library/Parsers/ChunkParserRegistry.cpp)),
+  coefficients were RGB-only end to end prior to G1: the scene chunk advertised
+  `DoubleVec3` `absorption`/`scattering` ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)),
   `IJob::AddHomogeneousMedium` takes `double[3]` ([IJob.h:1450](../src/Library/Interfaces/IJob.h)),
   `RISE_API_CreateHomogeneousMedium` takes `RISEPel` ([RISE_API.h:3216](../src/Library/RISE_API.h)),
   and `GetCoefficientsNM` collapses to luminance. So G1 = **spectral storage +
@@ -760,7 +760,7 @@ spectral-bundle-bias notes in CLAUDE.md.)
 **Settled by the code:** `HomogeneousMedium::EvalTransmittance` evaluates
 `exp(−σ_t · dist)` on the **raw** ray distance ([HomogeneousMedium.cpp:200](../src/Library/Materials/HomogeneousMedium.cpp)),
 `SampleDistance` likewise; `scene_unit` is parser/camera state and is **not**
-consumed by the medium path ([AsciiSceneParser.cpp:564](../src/Library/Parsers/ChunkParserRegistry.cpp)).
+consumed by the medium path ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)).
 Therefore **all σ values are in inverse scene units** (the doc-comment "[1/m]" is
 nominal). **Authoring rule:** convert a physical coefficient to renderer units by
 `σ[1/scene-unit] = σ[1/m] × scene_unit[m/unit]`. For watch_dial
@@ -815,7 +815,7 @@ this isn't a hero blocker) — but when built it is threaded **everywhere**, not
 the hero path, or it's a corner cut.
 
 **Authoring path is also missing, not just the interface (review).** Today a medium's
-phase is a **string** `phase = isotropic | hg <g>` ([AsciiSceneParser.cpp:5998](../src/Library/Parsers/ChunkParserRegistry.cpp));
+phase is a **string** `phase = isotropic | hg <g>` ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp));
 `IJob::AddHomogeneousMedium` takes only `(phase_type, phase_g)` ([IJob.h:1454](../src/Library/Interfaces/IJob.h));
 and `Job::AddHomogeneousMedium` constructs **only** isotropic/HG ([Job.cpp:5371](../src/Library/Job.cpp)).
 There is **no way to bind a tabulated/measured phase function to a medium.** So the
@@ -970,7 +970,7 @@ applies its **own** Beer transmittance over the same path. So a colored top-diel
 **Hard rule:** author the top dielectric's `tau` as an **explicit `tau 1.0`** (or a
 named `scalar_painter { value 1.0 }`); **all colour absorption lives in
 `HomogeneousMedium` σ_a(λ)**. **Do NOT omit `tau` and do NOT use `none`:** omitting
-it defaults to `"none"` ([AsciiSceneParser.cpp:3223](../src/Library/Parsers/ChunkParserRegistry.cpp)),
+it defaults to `"none"` ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)),
 which resolves to the **black legacy `IPainter`** that the scalar resolver **rejects**
 ([Job.cpp:2745](../src/Library/Job.cpp)) → the material **fails to construct**; and
 `tau` is a **scalar** applied as `pow(tau, distance)`, so any value < 1 attenuates and
@@ -1012,7 +1012,7 @@ approximation, which the principle rejects.)
 > ratio-of-random-estimates for heterogeneous media. `HeterogeneousMedium::EvalDistancePdf`
 > is **deterministic** (Simpson-quadrature optical depth) and its own comment warns
 > against the `EvalTransmittance` path. **Fix:** the survival weight is `Tr / pSurvival`
-> with `pSurvival = IMedium::EvalDistancePdf[NM](ray, dist, false, dist)` (numerator stays
+> with `pSurvival = IMedium::EvalDistancePdf{,NM}(ray, dist, false, dist)` (numerator stays
 > the per-channel unbiased `Tr`). Byte-identical for homogeneous (the IMedium default
 > returns `exp(-σ_t_max·d) = MinValue(Tr)`; NM default = `EvalTransmittanceNM`, weight
 > exactly 1 — the RayCaster NM sites removed as "=1" are restored as `Tr/EvalDistancePdfNM`).

@@ -79,8 +79,8 @@ Tangent; this table is not a whitelist for its corner-direction graph.
 | `ShaderNodeMixRGB` (legacy) | `blend_painter` | Identical to ShaderNodeMix in Color mode |
 | `ShaderNodeMath` (Add/Multiply/Multiply Add when one input is constant) | folded inline at export time | Math nodes that fold to scaling / offsetting of a single value are inlined into the downstream painter (e.g. a Multiply on a noise output absorbed into a ColorRamp position).  The classifier admits Math regardless of operation; this does not promise direct translation of every operation or automatic manual-bake routing. |
 | `ShaderNodeRGBCurve` / `ShaderNodeHueSaturation` / `ShaderNodeBrightContrast` / `ShaderNodeGamma` / `ShaderNodeInvert` | pass-through (currently lossy) | Existing bridge walks through these and ignores the filter; future work could honour them via a remap painter. |
-| `ShaderNodeBump` | `BumpModifier` on the material | Driven by a painter (which must itself be a supported chain) |
-| `ShaderNodeNormalMap` | `NormalMapModifier` on the material | Requires a `ROMM_Linear` image painter (tangent vectors must bypass colour-space conversion) |
+| `ShaderNodeBump` | `ReliefModifier` attached to the **object** (`IObject`) | Driven by a scalar height painter from a supported chain (`ReliefModifier` replaced the retired `BumpMap`; in RISE, ray-intersection modifiers attach to `standard_object` — via `modifier_stack` when combined — rather than to `IMaterial`) |
+| `ShaderNodeNormalMap` | `NormalMapModifier` attached to the **object** (`IObject`) | Attached to the exported `IObject` (not `IMaterial`, except Principled `Coat Normal` which lives on `CoatedMaterial`). Note: `exporter.py`/bridge currently tag normal-map painters `RISE_BLENDER_COLOR_ROMM_LINEAR` (`ROMMRGB_Linear`, `colorSpace = 2`) as a Stage-A holdover from when ROMM was RISE's working space; post-Stage-B (`RISEPel = Rec709RGBPel`), RISE's native linear passthrough is `Rec709RGB_Linear` (`RISE_BLENDER_COLOR_LINEAR = 0`). |
 
 ## Force-bake list
 
@@ -270,7 +270,7 @@ in the same commit.
 | Base Color (diffuse) | `sRGB` (Cycles' default) |
 | Roughness | `Linear` (`Rec709RGB_Linear`) — scalar data |
 | Metallic | `Linear` — scalar data |
-| Normal map | `ROMM_Linear` — bypasses gamma + colour matrix, preserves tangent vectors bit-exactly |
+| Normal map | `ROMM_Linear` (`RISE_BLENDER_COLOR_ROMM_LINEAR = 2`) — **Stage-A holdover** in `exporter.py`/bridge from when ROMM was RISE's internal working space; post-Stage-B (`RISEPel = Rec709RGBPel`), native linear passthrough in RISE core is `Rec709RGB_Linear` (`RISE_BLENDER_COLOR_LINEAR = 0`). |
 | Emission Color | `sRGB` |
 | Transmission Weight | `Linear` |
 
@@ -586,11 +586,12 @@ every other RISE normal-map slot — RGB[0,1] -> [-1,1], Z reconstructed
 via `sqrt(1 - nx^2 - ny^2)`) and `coat_normal_scale` (a numeric-only
 strength multiplier — there is no per-texel "normal scale texture"
 concept in RISE or Blender, so this stays a plain scalar with no
-texture-exception field).  Both are consumed only when Coat wraps the
-PBR base directly (`hasCoat && !hasSheen` — see the layering rule
-above; a coat that lost to sheen never reaches `coated_material` at
-all, so a coat normal on such a material is warned and dropped along
-with the rest of the coat).
+texture-exception field).  Both are forwarded through the shared
+`BuildCoatWrap` helper whenever Coat contributes — **both** when Coat
+wraps the PBR base directly (`hasCoat && !hasSheen`) **and** when Coat
+composes over Sheen (`hasCoat && hasSheen`, wrapping the
+`fabric_material` substrate since DL-23 / 2026-09-27; see the layering
+rule above).
 
 Engine side, this is a genuine `CoatedMaterial`-internal change, not
 just an ABI field: `CoatedBRDF`/`CoatedSPF`/`CoatedMaterial` all gained
@@ -729,9 +730,9 @@ retains the documented complex/material fallback behavior.
 Global glTF/Indexed3 `Tangent4` xyz/sign still defines the authored UV basis,
 including normal-map decode and chart/mirror handedness. Blender's Principled
 Tangent socket is a different signal: it controls anisotropy independently of
-Normal Map and Coat Normal UV axes. ABI16 tail flag `tangent_is_shader_direction`
-is 1 for the exporter's per-triangle-corner `tangent_attribute`; 0 retains the
-ABI15 global tangent convention. Native/Python versions must both be16.
+Normal Map and Coat Normal UV axes. Tail flag `tangent_is_shader_direction`
+(introduced in ABI v16) is 1 for the exporter's per-triangle-corner `tangent_attribute`; 0 retains the
+ABI15 global tangent convention. Native/Python ABI versions must match in lockstep (currently **ABI v17**, `RISE_BLENDER_API_VERSION = 17`).
 Corner expansion preserves normal/UV/material seams. The Indexed4 shader
 array is separate from Tangent4. Object and CSG promote it with the forward
 matrix into a canonical world `cross(N,T)` frame, while preserving the
@@ -1097,7 +1098,7 @@ at the end of the struct, so every v8 field keeps its offset).
 `bridge.py` mirrors both structs and marshals `SceneData.hair_objects`
 / `SceneData.hair_materials` into them; its `_EXPECTED_API_VERSION` is
 bumped in lockstep with `RISE_BLENDER_API_VERSION` (9 at that slice, 10
-since the texture-driven scalar slots below landed), and the
+when the texture-driven scalar slots below landed, and **v17** at HEAD), and the
 existing hard-mismatch behaviour is unchanged (a stale add-on against a
 newer bridge, or the reverse, raises `BridgeError` telling you to
 rebuild — it does not attempt a partial load).

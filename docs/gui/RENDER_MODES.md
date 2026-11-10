@@ -1263,3 +1263,7 @@ statements in §7.1's audit table and §7.5).
   or idle. This is intentional (a variant render at full interactive
   resolution would defeat its own cost budget), not a bug in the adaptive
   ladder.
+- **Android parity note:** Android's interactive viewport (`ViewportPane.kt` /
+  `RiseBridge.cpp`) currently exposes only the default `Lit` (`preview`)
+  interactive shading mode; the desktop shading/diagnostic mode switcher and
+  N-up pane layouts are not yet wired on Android.

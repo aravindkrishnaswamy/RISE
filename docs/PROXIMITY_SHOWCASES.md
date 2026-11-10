@@ -1,6 +1,6 @@
 # Cross-object signal showcases — three composed scenes for `proximity(r)` and `interior(r)`
 
-Status: SPEC, 2026-09-10, CONVERGED at round 20 (zero P1) after twenty
+Status: SHIPPED (Sept 2026) — originally specified 2026-09-10, CONVERGED at round 20 (zero P1) after twenty
 adversarial rounds and 53 P1s (round 19, 1 P1: stripping a relief modifier by
 erasing its chunk leaves the object's `modifier` name dangling and
 `Job::AddObject` fails the object. Round 18, 2 P1s: `DocIndexOfNodeId`'s absent value is
@@ -377,12 +377,13 @@ stations below prove liveness anyway.
   overwrite the tracked pavilion's render. The shipped `samples` is
   stated per scene (64 in showcase 1; 32, the descriptor default, in
   showcases 2 and 3 — the probe copies set 512).
-- **Ledgers**: `CstDeriveGoldenTest` gains one row per NEW scene (no tracked
-  scene is edited by this spec, so no existing row drifts); the
-  `scenes/FeatureBased/README.md` entry follows the plank entry's shape; the
-  scene header records every measured number and every deviation from this
-  spec; a NEW §8.5 "Showcases" in the design doc (it ends at §8.4 today)
-  gets one paragraph per showcase pointing here.
+- **Ledgers**: `CstDeriveGoldenTest` gained one row per showcase scene (no
+  pre-existing tracked scene was edited by this spec, so no existing row
+  drifted); the `scenes/FeatureBased/README.md` entries follow the plank
+  entry's shape; each scene header records every measured number and every
+  deviation from this spec; and §8.5 "Showcases" in
+  `docs/CROSS_OBJECT_PROXIMITY_DESIGN.md` carries one paragraph per showcase
+  pointing here.
 
 ## 1. `pavilion_colonnade` — contact dust at the foot of a fluted column (Phase 3, CSG neighbour)
 

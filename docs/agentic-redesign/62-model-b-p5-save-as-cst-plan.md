@@ -2,8 +2,12 @@
 
 > **Status:** **COMPLETED EXECUTION PLAN.** `Job` retains the CST `Document`,
 > editor mutations update it, and `SaveEngine` serializes it; the byte-splice
-> save engine and span indexes were deleted. The body captures the prerequisite
-> analysis and landing sequence.
+> save engine and span indexes were deleted. *(Shipped hybrid note: G2's CST undo
+> landed inside the retained `SceneEdit` / `EditHistory` stack using exact-byte
+> CST chunk replacement — `DocReplaceChunkIfText` and `mObjectSpellingJournal` —
+> rather than replacing `SceneEditor` / `EditHistory` with a separate persistent
+> CST version DAG; see [30-edit-model-and-history.md](30-edit-model-and-history.md).)*
+> The body captures the prerequisite analysis and landing sequence.
 
 Scopes the gated prerequisite for the v6→v7 cutover's Phase C/D (see
 [61-v6v7-parser-cutover-execution-plan.md](61-v6v7-parser-cutover-execution-plan.md) §"Phase C/D"). **P5 =

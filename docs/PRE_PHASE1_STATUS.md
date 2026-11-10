@@ -992,7 +992,7 @@ What happens at the env vertex in the env+omni / env+mesh (envSelectProb = 0) ca
 
 The sentinel was load-bearing precisely because it sidestepped `remap0`, not because of any property of the MIS weighting itself.
 
-PBRT-v4 has the **identical** `auto remap0 = [](float f) -> Float { return f != 0 ? f : 1; };` line (chip spec §2.7), so the difference is NOT in remap0 semantics — it's that PBRT-v4 also ships a coordinated set of overrides at D2 (light-init `pdfFwd[0]`), D3 (`path[1]` projected-disc-area), and a `Vertex::PDF` dispatch via `ConvertDensity` (D6) that together make `pdfFwd_env / pdfRev_env` stay dimensionally and numerically balanced.  RISE has migrated only D4 in this session, so the balance is broken.
+PBRT-v4 has the **identical** `auto remap0 = [] (float f) -> Float { return f != 0 ? f : 1; };` line (chip spec §2.7), so the difference is NOT in remap0 semantics — it's that PBRT-v4 also ships a coordinated set of overrides at D2 (light-init `pdfFwd[0]`), D3 (`path[1]` projected-disc-area), and a `Vertex::PDF` dispatch via `ConvertDensity` (D6) that together make `pdfFwd_env / pdfRev_env` stay dimensionally and numerically balanced.  RISE has migrated only D4 in this session, so the balance is broken.
 
 ### Why env-only Lambertian (RGB) also worsens (Gate 4 wrong-way)
 

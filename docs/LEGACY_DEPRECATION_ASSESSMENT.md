@@ -1,7 +1,12 @@
 # Legacy deprecation assessment
 
-Assessment only, 2026-10-09, on branch `legacy-assessment` from `master` `f849269ef`.
-Nothing in `src/`, `scenes/`, `tests/` or the build files was changed. This document
+**Status: PHASE 1 & PHASE 2 EXECUTED (code removal ON HOLD per owner ruling #1).**
+*(Original assessment drafted 2026-10-09 on branch `legacy-assessment` from `master`
+`f849269ef`; Phase 1 freeze and Phase 2 slices A / B1 / B2 / C execution records are
+recorded in §11 and owner rulings in §13.)*
+
+Assessment baseline, 2026-10-09, on branch `legacy-assessment` from `master` `f849269ef`.
+Nothing in `src/`, `scenes/`, `tests/` or the build files was changed when originally drafted. This document
 lists every user-facing feature family, says which parts are legacy, and proposes how
 "deprecated and not supported" should work. The owner makes the final calls; the
 numbered list at the end is set up for item-by-item replies.
@@ -724,8 +729,9 @@ families inside scenes already on supported rasterizers):**
   SUBJECT scenes, moved unmigrated (`cooktorrance_multiscatter_test`,
   `cooktorrance_vndf_test`, `ggx_vs_cooktorrance` -- migrating would have made them
   meaningless), verbatim copies of `cornellbox_mlt_fast`, `mlt_deep_fog` and
-  `mlt_deep_fog_spectral` (MLT is not hash-pinnable), and the original
-  `composite_material` (its ambient light moved), which `LegacyTierRenderIdentityTest`
+  `mlt_deep_fog_spectral` (MLT is not hash-pinnable), and a copy of
+  `composite_material` (its ambient light moved in `scenes/Tests/Materials/composite_material.RISEscene`,
+  which remains in `scenes/Tests/Materials/` still referencing frozen `composite_material` outside `scenes/Tests/Legacy/`), which `LegacyTierRenderIdentityTest`
   now renders (hash unchanged, 38/0).  The seven materials, the iridescent painter and
   the ambient light were already covered there (`materials`, `blurry_floor`, `teapot`,
   `showroom`, `translucent_bunny`, `gltf_box`, ...).
@@ -826,9 +832,12 @@ migration slice):**
 - **Docs:** SCENE_CONVENTIONS and the parser README now say that a later rasterizer chunk
   replaces the active one and silently drops the `file_rasterizeroutput`s attached to it.
 - **Left on legacy in the shipped tree:** `scenes/Tests/Legacy/` (the frozen corpus),
-  `scenes/Tests/ChunkCoverage/cc_*` (one-chunk coverage), `FB/Shaders/visiblehuman` (frozen
-  DVR), `translucent_bunny`'s owner-kept `iridescent_painter`, and
-  `scenes/Benchmarks/sea_creatures` (recorded agent output).  Phase 2 is complete.
+  `scenes/Tests/ChunkCoverage/cc_*` (one-chunk coverage),
+  `scenes/Tests/Materials/composite_material.RISEscene` (ambient light migrated, still
+  references frozen `composite_material` outside `scenes/Tests/Legacy/`),
+  `FB/Shaders/visiblehuman` (frozen DVR), `translucent_bunny`'s owner-kept
+  `iridescent_painter`, and `scenes/Benchmarks/sea_creatures` (recorded agent output).
+  Phase 2 is complete.
 
 **Phase 3 — remove: ON HOLD by owner ruling (2026-10-09); nothing below is scheduled.** (Original plan: several slices; each slice must update all five build projects per
 CLAUDE.md).** Order from least coupled:

@@ -8,8 +8,8 @@ furnace with `sigma_a 0.0` held a stable +4% over-unity reading that
 background dilution could not explain.
 **Commits:** `e4f36607` (F1, surface fix), `afb2d64e` (F2, medium-scatter
 siblings + OpenPGL), `ff92ab91` (F3, `EnvLightBalanceTest` re-derivation),
-plus F4 (residual wave 4c, unshadowed volume-vertex NEE — closes
-residual-ledger item 8; uncommitted at the time of writing).
+plus `1aeb8b4e6` (F4, residual wave 4c, unshadowed volume-vertex NEE — closes
+residual-ledger item 8).
 
 ---
 
@@ -388,34 +388,37 @@ arc. Flagged so a future session does not re-discover them from scratch.
    pre-existing spectral-bundle env deficit, unchanged by this fix and
    identical on both geometries.
    [tests/VolumeEnvFurnaceTest.cpp](../tests/VolumeEnvFurnaceTest.cpp).
-2. **`cosEnv > 0` env-NEE gate denies full-sphere BSDFs.** `LightSampler`'s
-   env-NEE block gates on `cosEnv > 0`, so a transmissive full-sphere BSDF
-   (hair's TT lobe transmits *through* the fibre) gets no NEE strategy for
-   the below-normal hemisphere while BSDF sampling still applies `w_bsdf <
-   1` there — the two strategies sum to less than 1. Confirmed by
+2. ~~**`cosEnv > 0` env-NEE gate denies full-sphere BSDFs.**~~ **SUBSEQUENTLY
+   CLOSED (`ScattersFullSphere` full-sphere NEE + `DL-171`, see
+   [DEBT_LEDGER.md](DEBT_LEDGER.md)).** `LightSampler`'s
+   env-NEE block originally gated on `cosEnv > 0`, so a transmissive full-sphere BSDF
+   (hair's TT lobe transmits *through* the fibre) got no NEE strategy for
+   the below-normal hemisphere while BSDF sampling still applied `w_bsdf <
+   1` there — the two strategies summed to less than 1. Confirmed by
    construction: relaxing the gate to `fabs(cosEnv)` (a no-op for ordinary
-   BRDFs) moves a hair furnace from `0.98863` to `1.00181`. Not applied —
-   needs a per-`IBSDF` audit of below-hemisphere `value()` behaviour plus
-   the matching light-table gate (item 3).
+   BRDFs) moves a hair furnace from `0.98863` to `1.00181`. Subsequently
+   resolved across `LightSampler` via `IBSDF::ScattersFullSphere()`.
    [tests/HairRenderTest.cpp:412-424](../tests/HairRenderTest.cpp).
-3. **Light-table `cosSurface` break vs. backlit fibres.** A discrete
-   `omni_light` hair scene renders PT and BDPT `4.3×` apart (PT `0.0132`
+3. ~~**Light-table `cosSurface` break vs. backlit fibres.**~~ **SUBSEQUENTLY
+   CLOSED (`ScattersFullSphere` full-sphere NEE in `LightSampler.cpp`).** A discrete
+   `omni_light` hair scene originally rendered PT and BDPT `4.3×` apart (PT `0.0132`
    vs BDPT `0.0575` at one light power). Root cause:
-   `LightSampler`'s light-table NEE breaks out on `cosSurface <= 0`, so PT
-   cannot light a hair fibre from behind — exactly the TT-lobe transport
+   `LightSampler`'s light-table NEE broke out on `cosSurface <= 0`, so PT
+   could not light a hair fibre from behind — exactly the TT-lobe transport
    that carries most of hair's energy. BDPT's light subpath has no such
-   gate. The same `fabs(...)` diagnostic used in item 2 closes roughly half
-   the gap (`4.3× -> 2.3×`); the rest is uncharacterised. This is a
-   full-sphere-NEE workstream, not a one-line fix.
+   gate. Subsequently resolved via `ScattersFullSphere()` full-sphere NEE
+   handling in `LightSampler.cpp`.
    [tests/HairRenderTest.cpp:614-628](../tests/HairRenderTest.cpp).
-4. **Per-object-map MIS-partner + HWSS map-selection caveats.** With F1's
-   fix, a genuinely per-object radiance map (reachable only via shader-op
-   rasterizers, not any `pathtracing_*` entry point today) has no NEE
+4. **Per-object-map MIS-partner + HWSS map-selection caveats (see also
+   PARKED `DL-06` in [DEBT_LEDGER.md](DEBT_LEDGER.md) for the related VCM
+   env-IBL MIS residual).** With F1's
+   fix, a genuinely per-object radiance map (reachable only via frozen legacy shader-op
+   rasterizers, not any `pathtracing_*` entry point) has no NEE
    partner of its own — `LightSampler` doesn't know about per-object maps
    and always samples the global one — while HWSS's surface-escape
    ordering (map-selection-correct at the cost of always preferring the
    global map over a per-object one) is the mirror-image gap. Both are
-   unreachable from any code path exercised today; recorded so neither is
+   unreachable from any active integrator code path exercised today; recorded so neither is
    mistaken for a finished reference if a caller starts passing a genuine
    per-object map.
    [PathTracingIntegrator.cpp:1998-2036](../src/Library/Shaders/PathTracingIntegrator.cpp).
@@ -469,15 +472,17 @@ arc. Flagged so a future session does not re-discover them from scratch.
    harness that reads through a component it does not intend to measure.
    [tests/EnvLightBalanceTest.cpp](../tests/EnvLightBalanceTest.cpp)
    (the topology-J block's comment carries the full evidence).
-6. **Spectral-rasterizer non-bit-reproducibility.** RGB (Pel) rasterizer
-   output is bit-identical run-to-run on the measuring machine for PT on
-   topologies D, E and J (and for BDPT/VCM on J), and moves `<= 0.013 %`
-   elsewhere; spectral (HWSS and non-HWSS) rasterizer output moves up to
+6. ~~**Spectral-rasterizer non-bit-reproducibility.**~~ **CLOSED / FROZEN**
+   (legacy `pixelintegratingspectral_rasterizer` shader-op chain is frozen as
+   of 2026-10-09; active spectral integrators are seeded deterministically via
+   salted per-pixel/per-pass `RandomNumberGenerator` streams — see
+   [DEBT_LEDGER.md](DEBT_LEDGER.md)). Historically, RGB (Pel) rasterizer
+   output was bit-identical run-to-run on the measuring machine for PT on
+   topologies D, E and J (and for BDPT/VCM on J), and moved `<= 0.013 %`
+   elsewhere; spectral (HWSS and non-HWSS) rasterizer output moved up to
    `2.2 %` on mean-ratios and `5.5 %` on `p99`-ratios run-to-run at equal
    sample counts, which is why every spectral tolerance band in this arc's
-   tests is wider than its RGB twin. Recorded, not root-caused. (Figures
-   re-measured post-de-OIDN, wave 4b; the denoised numbers understated the
-   spectral jitter.)
+   tests was wider than its RGB twin.
    [tests/EnvLightBalanceTest.cpp](../tests/EnvLightBalanceTest.cpp).
 7. ~~**HWSS main-loop volume-scatter continuation.**~~ **CLOSED
    2026-08-27 (residual wave 4b).** Item 1 fixed the truncation on CAMERA
@@ -570,7 +575,10 @@ arc. Flagged so a future session does not re-discover them from scratch.
      29 checks, up from 26.
    [tests/VolumeEnvFurnaceTest.cpp](../tests/VolumeEnvFurnaceTest.cpp)
    (file header, "WHAT IS GUARDED - FIX 4").
-9. **HWSS floor-cell heavy tail.** With items 7 and 8 fixed, cell 9 shows
+9. ~~**HWSS floor-cell heavy tail.**~~ **CLOSED** (diagnosed as expected
+   per-wavelength transmittance variance rather than bias, and the underlying
+   PT HWSS spectral-bundle env deficit referenced here was subsequently closed
+   in `DL-170` — see [DEBT_LEDGER.md](DEBT_LEDGER.md)). With items 7 and 8 fixed, cell 9 shows
    `max/mean` between `1.09` and `1.79` over twelve runs while its mean
    stays within `±0.4 %` (`0.9479–0.9560`; ratio to RGB `0.9535–0.9577`).
    It is variance, not bias: the floor's bounce rays can run nearly
@@ -587,34 +595,27 @@ arc. Flagged so a future session does not re-discover them from scratch.
    unchanged.)
    [tests/VolumeEnvFurnaceTest.cpp](../tests/VolumeEnvFurnaceTest.cpp).
 
-10. **Step-1 lights (ambient, directional) are shaded as if a medium
-    vertex were a surface, and their shadow ray is not medium-attenuated.
-    NEW, UNFIXED — found while fixing item 8.**
-    `MediumTransport::EvaluateInScattering{,NM}` builds a synthetic
-    `RayIntersectionGeometric` whose `vNormal` is set to the OUTGOING
+10. ~~**Step-1 lights (ambient, directional) are shaded as if a medium
+    vertex were a surface, and their shadow ray is not medium-attenuated.**~~
+    **SUBSEQUENTLY CLOSED in [LightSampler.cpp](../src/Library/Lights/LightSampler.cpp)**
+    (Step-1 volume-scatter handling now evaluates phase-weighted un-cosined
+    directional/positivity lighting and applies `EvalShadowTransmittance` along
+    the medium shadow ray; see [DEBT_LEDGER.md](DEBT_LEDGER.md)).
+    Historically, at the time item 8 landed,
+    `MediumTransport::EvaluateInScattering{,NM}` built a synthetic
+    `RayIntersectionGeometric` whose `vNormal` was set to the OUTGOING
     direction `wo`, precisely so that the light rows which multiply by
-    `Dot(vToLight, vNormal)` produce something sane. The light-table and
-    environment rows sidestep the issue properly — they test
-    `isVolumeScatter` and force `cos = 1`, leaving the phase function
+    `Dot(vToLight, vNormal)` produced something sane. The light-table and
+    environment rows sidestepped the issue properly — they tested
+    `isVolumeScatter` and forced `cos = 1`, leaving the phase function
     (via `MediumScatterBSDF::value`) to supply the angular term. **Step 1
-    does not.** `DirectionalLight::ComputeDirectLighting` computes
-    `fDot = Dot(vDirection, ri.vNormal)` and returns early on
+    originally did not:** `DirectionalLight::ComputeDirectLighting` computed
+    `fDot = Dot(vDirection, ri.vNormal)` and returned early on
     `fDot <= 0` ([DirectionalLight.cpp:60-66](../src/Library/Lights/DirectionalLight.cpp)),
-    so at a volume vertex a directional light illuminates only the
-    hemisphere within 90° of `wo` and is scaled by that cosine — neither
-    of which has any physical meaning for an isotropic or HG phase
-    function. Separately, Step 1's shadow ray goes through
-    `ILight::ComputeDirectLighting`'s own `CastShadowRayAuto` and never
-    reaches `EvalShadowTransmittance`, so a directional light's
-    contribution to a medium is not attenuated by the medium it crosses
-    (the light-table and env rows both do apply it). Item 8's fix at
-    least makes Step 1 *cast* the ray at volume vertices, so fog behind an
-    occluder is no longer lit by a directional light; the cosine gate and
-    the missing transmittance remain. Not reachable from
-    `VolumeEnvFurnaceTest` (env-only scenes) — a guard would need a
-    fog-plus-directional-light furnace, and the fix likely means an
-    `isVolumeScatter` parameter on `ILight::ComputeDirectLighting{,NM}`,
-    which is a virtual on every light implementation.
+    and Step 1's shadow ray went through
+    `ILight::ComputeDirectLighting`'s own `CastShadowRayAuto` without
+    reaching `EvalShadowTransmittance`. Both halves were subsequently fixed
+    in `LightSampler.cpp`.
 
 ---
 

@@ -1,8 +1,19 @@
 # VCM-Spectral Per-Wavelength Photon Store — Design Proposal
 
-**Status:** **v2 REJECTED by round-1 adversarial review (3-of-3).**  v3
-sketched as deferred multi-week scope; no code landed; audit §3 stays
-OPEN.  See §13 for the round-1 verdict.
+**Status:** **DEFERRED / NOT SCHEDULED** (v2 rejected by round-1 adversarial
+review, 3-of-3; v3 sketched in §14 as deferred multi-week scope; audit §3
+remains open for true per-wavelength photon tracing).
+> **Update (Stage C slice 2):** `ILight::emittedRadianceNM` and cached
+> Jakob–Hanika illuminant uplift on stored photons
+> (`LightVertex::throughputSpectrum` via `RGBIlluminantSpectrum::FromRGB`,
+> evaluated per wavelength in `EvaluateMergesNM`) have since shipped,
+> replacing the older scalar Rec.709 luminance proxy
+> (`RISEPelToNMProxy` / `LightThroughputRadianceNM`) described in §1 below.
+> That resolves RGB-authored chromaticity loss on non-dispersive spectral
+> merges, narrowing the remaining scope of a native spectral photon store to
+> **non-RGB SPDs** (narrowband `.spectra` emitters/filters) and **dispersive
+> photon paths** whose trajectory varies with wavelength.
+
 **Author:** Claude (Anthropic), session 2026-06-07.
 **Closes:** [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §3 (the single remaining open item).
 **Hard rule:** changes land in the working tree only; the user reviews and commits.

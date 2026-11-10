@@ -779,7 +779,7 @@ continuation stack from the accepted direction: an outward guided exit preserves
 the input stack. Training, radiance eta and continuation consumers use that
 same state. Guide sampling and PDF values are unchanged. Guide-created
 entry transmission from a null-stack reflection proposal still lacks
-state generation and is tracked separately as DL-47.
+state generation and is tracked separately as DL-47 (subsequently CLOSED — see [DEBT_LEDGER.md](DEBT_LEDGER.md)).
 
 The real trained PT RGB/NM regression failed four assertions on unfixed
 `00bdcef5` (`d3a5e732` test). Each pipe recorded 45 outward substitutions
@@ -841,8 +841,8 @@ CLOSED 2026-09-12 — `a041e51d`, `TranslucentSpectralParityTest: 1918 checks,
 0 failures` (red: 324 failures).** The evaluator now uses the sampled
 positive shading hemisphere, and NM exit sampling is cosine like RGB.
 See [DL-02 closure](DL02_TRANSLUCENT_EXIT_DENSITY.md). Stateful BSDF/HWSS
-amplitudes remain DL-38; full mixture/reverse densities and NEE state
-remain DL-41. Local exit-density agreement does not prove renderer parity.
+amplitudes were tracked as DL-38 (subsequently CLOSED — see [DEBT_LEDGER.md](DEBT_LEDGER.md)); full mixture/reverse densities and NEE state
+were tracked as DL-41 (subsequently CLOSED — see [DEBT_LEDGER.md](DEBT_LEDGER.md)). Local exit-density agreement alone did not prove renderer parity prior to those closures.
 
 ### 10.4 DL-09 closure: the interior-segment factor (2026-09-28, slice `debt-dl09`)
 
@@ -882,7 +882,7 @@ mutations (2.25168× and 0.444645×).
 
 **Residuals.** DL-292 (walks that do not Advance — legacy shader-op chain,
 photon tracers, SMS, `RayCaster`'s own volume walk — and `ior` forms not
-recognised as world-position fields) and DL-293 (straight rays: the exit
+recognised as world-position fields; subsequently CLOSED — see [DEBT_LEDGER.md](DEBT_LEDGER.md)) and DL-293 (PARKED — straight rays: the exit
 Snell trace is now consistent with the tracked index but geometrically wrong
 for a stratified slab, and solid angles do not collimate).
 
@@ -1026,13 +1026,13 @@ DL-247b and DL-283 reviews do not depend on depth.  They are BDPT-only,
 under an environment light, in a SCATTERING medium: a scattering-only box
 reads 0.954.  With no medium it reads 1.000, and with an interior area
 light instead of the environment BDPT equals VCM.  Refraction and this
-section's mechanism play no part.  Filed as DL-346 (at merge).  The
+section's mechanism play no part.  Filed as DL-346 at merge (subsequently CLOSED — see [DEBT_LEDGER.md](DEBT_LEDGER.md)).  The
 review's discriminator: VCM with merging OFF -- BDPT's own subpath
 generators and connection code -- reads 0.9996 of PT on the same box, so
 the defect is in BDPT's MIS walk or a BDPT-only environment strategy at
 medium vertices.
 
-**Also recorded (DL-351, filed at merge): the depth caps do not mean the
+**Also recorded (DL-351, filed at merge; subsequently CLOSED — see [DEBT_LEDGER.md](DEBT_LEDGER.md)): the depth caps do not mean the
 same paths in PT and BDPT/VCM.**  PT has no scene-level surface-depth
 setting (its path cap is a fixed 128), and BDPT's `max_eye_depth` /
 `max_light_depth` have no PT counterpart.  The shared per-type caps

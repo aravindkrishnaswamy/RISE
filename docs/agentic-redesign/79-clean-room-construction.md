@@ -102,6 +102,11 @@ element — the operation the local frame exists to make possible, and the one
 RISE's flat scene graph cannot express natively.  Composes with the existing
 per-object params rather than replacing them.  Legal in PIECES and COMPOSE.
 
+> **Evolution note ([doc 87](87-recursive-scene-graph.md) step 5, 2026-08-18):** once the recursive
+> scene graph shipped, each clean-room element gained a container root `<element>_element_root`, and
+> `place_element` now edits `<element>_element_root`'s local transform directly rather than rewriting
+> every attributed child `standard_object`.
+
 ## 4. Where construction is forced through the clean room
 
 Voluntary tools measure zero in this workstream (0/64 for every consultation
@@ -212,7 +217,11 @@ elements that were being skimped, not the one already getting attention.
   single retry — under the 50% stop rule, and the contract's honest-report
   behaviour worked exactly as designed (no silent drops, reasons named).
 
-### 7.3 The defect this run exposed
+### 7.3 The defect this run exposed *(FIXED)*
+
+> **Update:** Fixed immediately after this run — `build_element`'s validated insertion bypasses the
+> orchestrator's `imagine_scene` target precondition (`mInBuildElementInsert` guard), so host-mediated
+> clean-room builders are no longer refused when `imagine_scene` has not run yet.
 
 `build_element`'s FIRST call returned **zero chunks**: its validated insertion
 goes through `InsertChunks`, which inherits arc-77's precondition that a

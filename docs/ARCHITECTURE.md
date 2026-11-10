@@ -38,9 +38,9 @@ Multiple threads rasterize pixels concurrently. All scene access is through `con
 
 `RuntimeContext` (`src/Library/Utilities/RuntimeContext.h`) is allocated per-thread by the rasterizer. Its `mutable` fields are correct because each thread has its own instance. It is not part of the shared scene graph.
 
-### Thread-Local Mailboxing
+### Thread-Local State
 
-Triangle mesh intersection uses `thread_local` mailbox state (`src/Library/Geometry/TriangleMeshGeometryIndexed.cpp`) to avoid redundant intersection tests during BSP traversal. Each thread maintains its own ray ID counter and stamp vector per geometry, eliminating the data race that would occur with shared mutable mailbox state.
+Triangle-mesh intersection uses `BVH<>` (`pPtrBVH` in `src/Library/Geometry/TriangleMeshGeometryIndexed.cpp`; runtime BSP/octree mesh traversal was retired 2026-04-27). Optional `#ifdef RISE_ENABLE_MAILBOXING` `thread_local` mailbox state (per-thread ray ID counter and stamp vector per geometry) is retained in `TriangleMeshGeometryIndexed.cpp` as a compile-time holdover.
 
 ## Acceptable Mutable Patterns
 
@@ -48,7 +48,7 @@ Triangle mesh intersection uses `thread_local` mailbox state (`src/Library/Geome
 |---------|----------|-----------|
 | Reference counting | `IReference` / `Reference` | Atomic increment/decrement, thread-safe by design |
 | Per-thread RuntimeContext | `RuntimeContext` | Each thread owns its own instance |
-| Thread-local mailboxes | `TriangleMeshGeometryIndexed` | Per-thread, no sharing |
+| Thread-local mailboxes | `TriangleMeshGeometryIndexed` | Per-thread, no sharing (`#ifdef RISE_ENABLE_MAILBOXING` compile-time holdover; default mesh traversal uses `BVH<>`) |
 | Thread-local expression memo | `ExpressionMemo` (`Utilities/ExpressionMemo.h`) | Per-thread fixed-size tables, no heap and no sharing; caches only pure functions of (program, context) and (provider, hit, query).  Never scene state: the hit record is untouched and no `mutable` is added.  A process-wide generation counter, bumped at every render-pass entry and at each scene-mutation seam (always AFTER the mutation, and before it too wherever the seam itself evaluates painters), drops every thread's tables between passes; within a pass the scene is immutable so nothing invalidates.  Kill switch `expression_memo` in `RISE_OPTIONS_FILE`.  **Sizing (2026-09-17): `kL1Ways` is 8 and the per-thread `Tables` is 2976 bytes (53.6 kB across 18 workers), with `ExpressionMemoTest` (g) asserting both the exact number and a 4096-byte ceiling.  It was 2432 from 2026-09-09 until DL-25's review added `PainterSampleHitKey` to the L2 key, which is what lets a `sample()`-calling program be memoised at all.**  Four ways exactly equalled the number of signal KINDS once `proximity` shipped, and `interior` made a fifth, so a body querying all five would have evicted round-robin at a ~0 % hit rate; the ceiling was a REGRESSION GUARD rather than a budget and was raised with the reason recorded in the test.  The cliff moved from a fifth distinct (kind, radius) query per hit to a ninth -- it did not disappear.  Measured rather than reasoned, because round-robin replacement is FIFO and FIFO is not a stack algorithm: the L1 hit rate on `plank_closeup` is 0.8967 at four ways and 0.8968 at eight (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 8.4) |
 | Path guiding training stats | `PathGuidingField` | Atomic counters, updated between passes (not during) |
 | BDPT integrator atomics | `BDPTIntegrator` | Atomic counters for cross-pass statistics |
@@ -211,15 +211,13 @@ When no pixel filter is specified, the default is **Mitchell-Netravali (1/3, 1/3
 
 This is enforced in `PixelBasedRasterizerHelper::RasterizeScene()`:
 ```cpp
-if( pFilteredFilm ) {
-    if( !bDenoisingEnabled ) {
-        pFilteredFilm->Resolve( *pImage );
-    }
+if( pFilteredFilm && !bWillDenoise && !GetAdaptiveShowMap() ) {
+    pFilteredFilm->Resolve( *pImage, pRect );
 }
 // ... then OIDN runs on the (box-filtered) pImage ...
 ```
 
-BDPT is not affected by this because `BDPTRasterizerBase::RasterizeScene()` is a complete override that never uses `pFilteredFilm`.
+`BDPTRasterizerBase::RasterizeScene()` (shared by `BDPTPelRasterizer`, `BDPTSpectralRasterizer`, `VCMPelRasterizer`, and `VCMSpectralRasterizer`) also allocates `pFilteredFilm` when `UseFilteredFilm()` is true and applies the exact same `if( pFilteredFilm && !bWillDenoise && !GetAdaptiveShowMap() )` skip gate ([BDPTRasterizerBase.cpp](../src/Library/Rendering/BDPTRasterizerBase.cpp)), denoising the primary non-splat image before resolving/compositing the `t=1` `SplatFilm`.
 
 ### AOV Pipeline
 
@@ -256,6 +254,26 @@ failure while preserving the separately owned last-successful observation.
 See [AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the API, semantics, and exact
 session-aware peak accounting (84 B/pixel cold and 91 B/pixel for an
 equal-sized animation or replacement render; active read leases are counted).
+
+## SceneEditor Module
+
+`src/Library/SceneEditor/` provides the cross-platform backend for interactive scene editing, CST-backed mutations, node-graph wiring, previews, and persistence (shared across the macOS and Windows/Qt GUIs and the agent surface):
+
+| Component | Role |
+|-----------|------|
+| `SceneEditController` | Primary orchestrator coordinating live scene mutations, undo/redo, CST synchronization, dirty state, and viewport re-render triggers |
+| `SceneEditor` | Core scene-graph selection, gizmo/transform manipulation, and viewport picking helpers |
+| `EditHistory` / `TransformSnapshot` | Command-stack undo/redo history and reversible object/camera transform snapshots |
+| `DirtyTracker` / `SaveEngine` | Document dirty-state tracking and format-preserving CST save/export pipeline |
+| `CancellableProgressCallback` | Cooperative cancellation and progress bridge for background editor renders and previews |
+| `CstIntrospection` (+ `*Introspection`) | CST chunk/parameter readback and typed domain introspection (`Camera`, `Object`, `Light`, `Material`, `Media`, `Painter`, `Rasterizer`, `Film`) |
+| `ChunkDescriptorRegistry` | Runtime lookup over parser `ChunkDescriptor` schemas for UI inspectors, completion, and agent validation |
+| `ReferenceGraph` | Directed chunk-reference dependency graph across named scene entities |
+| `OwnershipClosure` | Transitive exclusive-dependency closure for safe entity duplication, deletion, and subgraph extraction |
+| `ConnectionLegality` | Slot-pipe and category legality checks (including frozen/legacy tier gating) for graph and inspector bindings |
+| `EntityTemplates` | Canonical starter chunk templates for creating new materials, painters, lights, geometries, and objects |
+| `MaterialPreview` / `PainterPreview` | Off-screen swatch renderers for material spheres and 2D/3D painter thumbnails |
+| `GraphLayout` / `GraphLayoutSidecar` | Automatic DAG node positioning and `.layout` sidecar serialization for the shader/material graph editor |
 
 ## Design Decisions
 

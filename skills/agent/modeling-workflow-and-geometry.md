@@ -824,19 +824,21 @@ directional_light
    `csg_object`, must appear EARLIER in the file than their consumer
    -- same rule as painters-before-materials in the scene-skeleton
    skill.
-5. **There is no undo verb -- but there ARE batch verbs.**  Every
-   insert and every removal validates before applying, and nothing
-   you apply can be taken back through this surface, so prefer the
-   observe loop (small renders between edits) over applying several
-   unverified chunks in a row.  When you DO know what you want,
-   batch it: `insert_chunks` adds N chunks in one call (sequential,
-   best-effort -- list them in dependency order), and `remove_chunks`
-   deletes N chunks in one call ATOMICALLY (all-or-nothing, order
-   irrelevant -- chunks that reference each other inside the same
-   batch come out together).  Reach for the singular `insert_chunk` /
-   `remove_chunk` only for a genuinely single edit, or when you need
-   `remove_chunk`'s `kind` disambiguator, which the batch form does
-   not have.
+5. **Prefer batch verbs — and `revert_to_revision` is commit-only.**
+   Every insert and every removal validates before applying.  Under
+   `commit` autonomy `revert_to_revision` can restore any prior session
+   revision, whereas under `propose` autonomy it is unavailable, so
+   still prefer the observe loop (small renders between edits) over
+   stacking unverified speculative edits.  When you DO know what you
+   want, batch it: `insert_chunks` adds N chunks in one call
+   (sequential, best-effort -- list them in dependency order),
+   `remove_chunks` deletes N chunks in one call ATOMICALLY
+   (all-or-nothing, order irrelevant -- chunks that reference each other
+   inside the same batch come out together), and `propose_patches`
+   applies multiple parameter edits in one round-trip.  Reach for the
+   singular `insert_chunk` / `remove_chunk` only for a genuinely single
+   edit, or when you need `remove_chunk`'s `kind` disambiguator, which
+   the batch form does not have.
 6. **`cylinder_geometry`'s default axis is `x`.**  A cylinder with no
    `axis` line lies on its side; use `axis y` to stand it upright
    under a Y-up camera.

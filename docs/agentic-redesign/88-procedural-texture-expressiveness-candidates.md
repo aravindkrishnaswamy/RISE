@@ -1,28 +1,10 @@
 # 88 — Procedural texture expressiveness: candidates
 
-**Status: APPROVED with decisions (user review 2026-08-19, see §7); Phase-1
-implementation IN FLIGHT per the §8 slice plan — S1 (d91e5bfd), S2 (01bd9df7),
-S3 (afe1a4cc), S4 (86ebc7a0), S4b (efc54324), S5 (1161e66d) shipped; S6's
-OFFLINE half (rich_material_closeup scenario + fixture, the additive
-expression-family census metric on both bare_prompt_build scenarios, harness
-unit coverage, T10 + full suite green) shipped 2026-08-20 — see §10 for the
-run protocol.  Gate (c)'s OWN scenario (`constant_materials_polish` — a
-starting scene with three flat-roughness materials, a prompt naming neither
-the mechanism nor the verb, and a `toolCallCount` trajectory checkpoint that
-census-counts `vary_material` calls) shipped 2026-08-20 too — gate (c) is no
-longer "out of scope for this slice" (§10's earlier text); it is measurable
-by the same live run as (a)/(b), see §10.  The LIVE half (actually running
-the census against a hosted model and reading the §5 gates) has NOT run in
-this environment (no API keys) and is the next action item in §10.  §1's
-gap table describes the PRE-ARC state.  **Phase 3 (the P5.4 node canvas,
-§5 decision 6) is COMPLETE**: S11-S23 of `docs/gui/NODE_GRAPH_CANVAS.md`
-§6 all shipped 2026-08-20→2026-08-21 (per-slice commit hashes in that
-doc's own status header) — the shared C++ graph model/layout/legality/
-ownership-closure core, the Mac canvas (Phase A read-only + Phase B
-edit), and the Windows/Qt mirror (carried, MSVC-verification still owed)
-are all in tree, closed out by S23's regression pass + the three
-`scenes/Tests/GUI/graph_stress_*`/`panel_stress_params` GUI stress
-scenes.**
+**Status: COMPLETE (Phases 1, 2, and 3 + Material Verbs SHIPPED).**
+- **Phase 1 (§8 S1–S6):** `expression_painter` + `scalar_painter { expression ... }` + `scalar_painter { painter ... }` + `ramp_painter` + `PainterIntrospection` round-trip + `vary_material` / `insert_material_scaffold` adoption wiring all shipped; S6's live census ran in two rounds on 2026-08-20 (see **§11** — Gate (a) PASS 3/3, Gate (c) PASS 3/3).
+- **Phase 2 (§5 breadth + filtering + cross-expression sampling):** `mapping_painter` (incl. UV TRS + triplanar), `blend_painter` `mode` (`multiply|screen|overlay|add|mix`), `voronoi3d_painter` `space` (`world|object`), `stochastic_tile_painter`, `scatter_painter`, analytic primary-hit footprint plumbing (`fw` world-width + `fwo` object-width + forward-mode Jacobian scale autodiff, §7 item 3), `sample(painter, u, v)` / `sample_scalar(fn2d, u, v)` in `expr(...)`, and material/painter preview & panel affordances all shipped.
+- **Phase 3 (§5 P5.4 node canvas):** S11–S23 of `docs/gui/NODE_GRAPH_CANVAS.md` §6 all shipped 2026-08-20→2026-08-21 (shared C++ graph model/layout/legality/ownership-closure core, macOS canvas Phase A read-only + Phase B edit, Windows/Qt mirror, plus the Object Graph canvas and `scenes/Tests/GUI/graph_stress_*` / `panel_stress_params` stress scenes).
+- §1's gap table below records the **PRE-ARC** baseline.
 
 This is the texture half of the directive that closed the creative-richness arc
 (CREATIVITY_JOURNAL.md, closing line: *"build even more expressive geometry and
@@ -157,7 +139,7 @@ conclusions:
 
 ## 4. Candidates
 
-### P1 — Texture expressions: grow `ExpressionEval` into the texture language
+### P1 — Texture expressions: grow `ExpressionEval` into the texture language *(SHIPPED)*
 
 **The core bet.**  Extend the existing expression VM with a 3D evaluation
 domain, a vector type, and noise/pattern builtins; expose it on **both pipes**:
@@ -175,7 +157,7 @@ Language surface (all reusing existing painter cores, factored into shared free
 functions — no new noise implementations):
 
 - Context: `u, v` (existing), `P`/`Po` (world/object position), `N` (shading
-  normal), `fw` (filter width, from footprint), optional keyframable `time`.
+  normal), `fw` / `fwo` (world-space and object-space filter widths from primary-hit ray-differential footprints, with forward-mode Jacobian scale autodiff — **SHIPPED**, see §7 item 3), optional keyframable `time`. *(Plus CST `expr(...)` gained `sample(painter, u, v)` and `sample_scalar(fn2d, u, v)` with `BuildReferenceGraph` edge tracking — **SHIPPED**.)*
 - Types: scalar + `vec3` (constructors, `.x/.y/.z`, dot/cross/length/
   normalize, component-wise arithmetic).  Typed at compile time in the same
   postfix VM.
@@ -199,38 +181,38 @@ quality + tests/scenes).  Risks: per-sample cost vs hand-coded painters
 escape hatch later); expression bodies are opaque to a future node UI (accepted:
 the chunk DAG remains the structural layer, per the VOPs/VEX precedent).
 
-### P2 — Vocabulary gap-fill: few, powerful, parameterized chunks
+### P2 — Vocabulary gap-fill: few, powerful, parameterized chunks *(ALL SHIPPED)*
 
-1. **`scalar_painter { painter <name> channel <R|G|B|A> scale bias }`** —
+1. **`scalar_painter { painter <name> channel <R|G|B|A> scale bias }`** *(SHIPPED)* —
    generalize the existing `texture` form (raster-only) to **any** color
    painter.  One small form makes every colour painter + P1 expressions
    bindable to every physical-scalar slot.  Highest leverage-per-line in this doc.
    Cost: **S**.  (Note: reads `GetColor` channel post-uplift semantics — same
    caveat as `PainterToScalarAdapter`; fine for procedural masks, documented.)
-2. **`ramp_painter`** — multi-stop color ramp (positions + colors +
+2. **`ramp_painter`** *(SHIPPED)* — multi-stop color ramp (positions + colors +
    interpolation mode) driven by a source painter's channel.  The universal
    scalar→color remap every surveyed system has and RISE lacks (G2).  Keeps
    JH uplift *eager at the stop colors* (like `uniformcolor_painter`), so it's
    also the cheap way to get rich color from scalar-only expressions.
    Cost: **S–M**.
-3. **`mapping_painter`** — domain transform wrapper: TRS on UV or on the 3D
+3. **`mapping_painter`** *(SHIPPED)* — domain transform wrapper: TRS on UV or on the 3D
    domain of a wrapped painter, plus `projection uv|world|object|triplanar`
    (blend-weighted triplanar for image painters on UV-less geometry).  Also
    finally registers the existing `UVTransformPainter` surface (G3).
    Cost: **M** (triplanar is the real work).
 4. **Blend modes on `blend_painter`** (`mode multiply|screen|overlay|add`,
-   default `mix`).  Cost: **S**.
+   default `mix`) *(SHIPPED)*.  Cost: **S**.
 5. Hygiene riders: `space world|object` parameter on `voronoi3d_painter`
-   (G5, default preserves current behavior, documented).
+   *(SHIPPED)* (G5, default preserves current behavior, documented).
 
-### P3 — Stochastic richness: kill repetition, scatter elements
+### P3 — Stochastic richness: kill repetition, scatter elements *(ALL SHIPPED)*
 
-1. **`stochastic_tile_painter`** — hex-tiling with histogram-preserving
+1. **`stochastic_tile_painter`** *(SHIPPED)* — hex-tiling with histogram-preserving
    blending (Heitz & Neyret 2018; Burley JCGT 2019) over a source image
    painter: one photo of bark/plaster/rust → unbounded non-repeating cover.
    This is the single biggest *realism-per-scene-byte* win for image-based
    materials, and nothing in the current set addresses it (G4).  Cost: **M**.
-2. **`scatter_painter`** — texture-bombing / FX-map-lite: stamps a source
+2. **`scatter_painter`** *(SHIPPED)* — texture-bombing / FX-map-lite: stamps a source
    painter (or a weighted list) per cell with jittered position/rotation/scale/
    value over a background painter.  Unlocks the discrete-element richness
    (leaves, rivets, scratches, stains, screws) that noise fundamentally cannot
@@ -328,9 +310,9 @@ Work items:
    C2) is generatable later; it should be justified by adoption data, not
    built on faith.
 
-## 5. Recommended bundle and phasing
+## 5. Recommended bundle and phasing *(ALL THREE PHASES SHIPPED)*
 
-**Phase 1 — the bet (P1 + P2.1 + P2.2 + P4 + P5.1/P5.2):** texture
+**Phase 1 — the bet (P1 + P2.1 + P2.2 + P4 + P5.1/P5.2) — SHIPPED:** texture
 expressions on both pipes **including the color form from day 1 (decision 1)**
 — with the param-metadata grammar, offset-carrying diagnostics, `time`, and
 reserved `fw` from day one — the any-painter→scalar bridge, `ramp_painter`,
@@ -341,12 +323,13 @@ structural lever, a verb, and a census, while keeping the human co-edit story
 real from the first ship.
 
 **Phase 2 — richness breadth (P2.3–P2.5 + P3 + P5.3 panel affordances +
-filtering plumbing):** mapping/triplanar, blend modes, stochastic tiling,
-scatter, def-stage thumbnails + ramp editor, footprint (`fw`) plumbing +
-`fbm` octave fade.  Re-measure; these mostly widen what Phase 1's mechanisms
-can express.
+filtering plumbing) — SHIPPED:** `mapping_painter`/triplanar, `blend_painter`
+`mode`, `voronoi3d_painter` `space`, `stochastic_tile_painter`,
+`scatter_painter`, CST `sample()`/`sample_scalar()`, def-stage thumbnails + ramp
+editor, footprint (`fw`/`fwo` + Jacobian autodiff) plumbing + `fbm` octave fade.
+Re-measure; these mostly widen what Phase 1's mechanisms can express.
 
-**Phase 3 — P5.4 node canvas (committed, decision 6).**
+**Phase 3 — P5.4 node canvas (committed, decision 6) — SHIPPED (S11–S23).**
 
 Pre-committed Phase-1 success gates (C-MEAS): (a) `rich_material_closeup` —
 ≥2/3 runs bind ≥1 spatially-varying microsurface scalar without being told to;
@@ -496,9 +479,7 @@ all three → the mechanism is wrong, stop and re-diagnose before adding chunks.
   §10).  **Gate (c)'s scenario shipped 2026-08-20 too** (`constant_materials_polish`
   + its fixture + the new `toolCallCount` trajectory checkpoint op, wired
   into both `s6_census_gemini.json` and `s6_census_crossprovider.json` — see
-  §10); the live half (actually running N=3 against a hosted model and
-  reading all three gates, now including (c)) is the pending next action,
-  tracked in §10.
+  §10); the live half ran on 2026-08-20 across two rounds and is recorded in **§11** below.
 
 Sequencing: S1→S2 strictly ordered; S3 can overlap S2 reviews; S4 after S2;
 S5 after S2+S3 (examples must parse against shipped chunks); S6 last.

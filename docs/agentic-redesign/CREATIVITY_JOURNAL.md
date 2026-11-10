@@ -1,5 +1,13 @@
 # Getting Agents to Be Creative: A Week's Field Notes
 
+> **Status: HISTORICAL FIELD JOURNAL (2026-08-06 – 2026-08-14).**
+> Preserved verbatim as the primary narrative of arcs 75–83. Subsequent arcs resolved
+> the §12 open threads and closing pivots:
+> - `environment_scene` and `frame_scene` shipped at the close of this arc → [`83-staged-construction-plan.md`](83-staged-construction-plan.md) §15.
+> - Group-aware assembly repeats → [`87-recursive-scene-graph.md`](87-recursive-scene-graph.md) (`standard_object.source` subtree instancing, `populate_scene` `source` clones, and `collapse_to_instances`).
+> - Expressive geometry (`lathe_geometry`, multi-profile loft/`skin_geometry`, `sweep_geometry` builder adoption, generic shape operators) → [`85-geometry-expressiveness-candidates.md`](85-geometry-expressiveness-candidates.md) and [`89-generic-shape-operators.md`](89-generic-shape-operators.md).
+> - Default Gemini model advanced from `gemini-3.7-flash` to `gemini-4-argon` (see [`50-agentic-surface.md`](50-agentic-surface.md) and [`70-agent-eval-harness.md`](70-agent-eval-harness.md)).
+>
 > Consolidated journal of the creative-richness workstream, arcs 75–83
 > (2026-08-06 → 2026-08-13).  Written as raw material for an essay.  Every
 > number here is traceable to an arc doc (75–83 in this directory) and to a

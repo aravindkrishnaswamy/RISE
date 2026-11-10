@@ -173,9 +173,9 @@ light powers where PT's is flat to 4 %), so it is clamp-cut heavy-tailed connect
   directly — no context gap after all). Defaulted `false` so every untouched caller (any
   out-of-tree light, `LightManager::ComputeDirectLighting`'s forwarding loop) is byte-identical.
   Point, spot, mesh area and environment lights were already covered by the fix above.
-- ~~`NormalMap`/`BumpMap` modifiers unconditionally rebuild the ONB from the perturbed normal
+- ~~`NormalMap`/`ReliefModifier` (formerly `BumpMap`) modifiers unconditionally rebuild the ONB from the perturbed normal
   alone, discarding any incoming fibre tangent~~ — **RESOLVED, residual wave 2 item A, 2026-08-27**
-  (§4.1): both now preserve `bHasShadingTangent` hits via the `GlintModifier` `CreateFromWU`
+  (§4.1): both (`NormalMap.cpp` and `ReliefModifier.cpp` / `ModifierFrame.h`) now preserve `bHasShadingTangent` hits via the `GlintModifier` `CreateFromWU`
   idiom, byte-identical otherwise.
 - Windows (VS2022), Android (NDK/Gradle), and Xcode build-project files were updated with every
   new source file across all slices but have not been compiled this arc — only the Linux/macOS
@@ -500,14 +500,14 @@ guards against for `vTangent` / `bHasTangent`. `HairBSDF` now reads a real, geom
 tangent from `ri.onb.u()` for any hair hit that reaches it directly or through a CSG composite.
 
 **RESOLVED — residual wave 2 item A, 2026-08-27.** `NormalMap::Modify` (`NormalMap.cpp:172`) and
-`BumpMap::Modify` (`BumpMap.cpp:69`) no longer discard the incoming tangent unconditionally. Both
+`ReliefModifier::Modify` (`ReliefModifier.cpp` / `ModifierFrame.h`, replacing the retired `BumpMap.cpp`) no longer discard the incoming tangent unconditionally. Both
 now check `ri.bHasShadingTangent`: when set, the CURRENT `ri.onb.u()` (already the promoted,
 world-space fiber tangent by the time either modifier runs) is projected into the perturbed
-normal's plane and the ONB is rebuilt via `CreateFromWU`, exactly the `GlintModifier.cpp:230-246`
+normal's plane and the ONB is rebuilt via `CreateFromWU`, centralized in `ModifierFrame.h` after the `GlintModifier.cpp:230-246`
 idiom; a degenerate projection falls back to `CreateFromW`. When `bHasShadingTangent` is false
 (every non-hair hit, and the `SDFGeometry` heightfield case that sets
 `bShadingTangentFromGeometry` alone) the new branch is skipped entirely and the rebuild is
-byte-identical to the old unconditional `CreateFromW` call. Bump- and normal-mapped hair are now
+byte-identical to the old unconditional `CreateFromW` call. Relief- and normal-mapped hair are now
 supported; regression coverage in `tests/HairTangentPlumbingTest.cpp` (hair-through-modifier keeps
 `onb.u()` fiber-aligned; non-hair-through-modifier byte-matches pre-fix golden output).
 
@@ -628,35 +628,47 @@ the parallel pass, evaluating a painter per mesh vertex to displace it
 *resolved* base geometry and painters, may be expensive (1M strands), and must not run on the
 const hot path.
 
-Sketch of the chunk (final grammar is a Phase-1 deliverable; the descriptor-driven parser makes
-every parameter self-documenting):
+> **Shipped grammar note (`HairGeometryAsciiChunkParser` in `ChunkParserRegistry.cpp`):** The block below has been updated to match the shipped parameter names (`density`, `comb`, `clump`, `length_painter`, `guides`, `base_detail`, plus `.hair` file-import mode via `file`, `width_root`, `width_tip`, and `root_uv_mode`).
 
 ```
+// Procedural grow mode:
 hair_geometry
 {
     name            scalp_groom
     base_geometry   head_mesh          // named geometry ref; strands grow on its surface
+    base_detail     32                 // tessellation detail when base_geometry is procedural/parametric
     count           150000             // strand budget (pre-density-mask)
     segments        12                 // CPs per strand
     length          0.06               // meters, scaled per-strand by length_painter
     width_root      0.00008
     width_tip       0.00002
-    density_painter d_map              // IScalarPainter over base UV: rejection mask
+    density         d_map              // IScalarPainter over base UV: rejection mask
     length_painter  l_map              // IScalarPainter: per-root length scale
-    orient_painter  comb_map           // IPainter (vector-valued): comb direction field
+    comb            comb_map           // IPainter (vector-valued): comb direction field
     clump_size      0.004              // clump radius; 0 disables clumping
-    clump_painter   c_map              // optional per-region clump strength
-    curl_radius     0.0  curl_step 0.0 // helix parameters
+    clump           c_map              // IScalarPainter: optional per-region clump strength
+    curl_radius     0.0
+    curl_step       0.0                // helix parameters
     frizz           0.15               // per-CP jitter amplitude (seeded per-strand)
-    guides          my_guides          // optional: named explicit guide set (Phase 2)
+    guides          my_guides          // optional: named hair_guides chunk (Phase 2)
     seed            7
+}
+
+// CyHair (.hair) file-import mode (mutually exclusive with grow-mode parameters):
+hair_geometry
+{
+    name            imported_groom
+    file            models/fur.hair
+    width_root      1.0                // multiplier on file thickness (or explicit width if file lacks thickness)
+    width_tip       1.0
+    root_uv_mode    zero               // zero | scatter
 }
 ```
 
 Root placement: area-weighted sampling of the base geometry's triangles (base must be a mesh or
-tessellatable — the generic `TessellateToMesh` path the displacement system already leans on),
-rejection-filtered by `density_painter` at the root UV; grow along the interpolated normal, bent
-by the comb field, then clump toward the nearest clump-center strand and perturb by
+tessellatable at `base_detail` — the generic `TessellateToMesh` path the displacement system already leans on),
+rejection-filtered by `density` at the root UV; grow along the interpolated normal, bent
+by the `comb` field, then clump (`clump` / `clump_size`) toward the nearest clump-center strand and perturb by
 frizz/curl — all deterministic from `seed` so animation re-`Realize()`s are stable frame to
 frame. The painter system needs **zero changes**: `IPainter`/`IScalarPainter` already evaluate
 from a full `RayIntersectionGeometric` (a synthetic `ri` at the root, the exact trick
@@ -1164,17 +1176,19 @@ section sets for itself. Each remains cheap to reopen:
 | Medulla energy bookkeeping leaks | **Retired** | — | *Structural, not empirical*: the split conserves each parent order's `A_p` exactly, so `Σ A_p` is unchanged; group 17 asserts the per-lobe identity, group 16 the sphere integral |
 | Baked medulla table drifts from the generator | Low | Med | The generator writes the `.cpp` itself and stamps the extents, bake statistics and regeneration command into its banner; group 19 asserts the baked float count against the baked extents, and the runtime struct's fixed capacity against the baked bin count |
 
-## 10. Open questions (to resolve during Phase 1, none blocking start)
+## 10. Historical pre-Phase-1 open questions (RESOLVED — see §12)
 
-1. `ScatRayType` bucket for hair lobes (§6.1 recommendation: all `eRayReflection`; verify
-   against `StabilityConfig`'s actual mapping).
-2. Exact Catmull-Rom vs B-spline basis for strands (Catmull-Rom recommended for consistency
+> **Historical note:** All four pre-Phase-1 questions below were settled when Phases 1–3 landed; see **§12** for the shipped resolutions.
+
+1. ~~`ScatRayType` bucket for hair lobes (§6.1 recommendation: all `eRayReflection`; verify
+   against `StabilityConfig`'s actual mapping).~~
+2. ~~Exact Catmull-Rom vs B-spline basis for strands (Catmull-Rom recommended for consistency
    with `sweep_geometry`/`path_instances_geometry`; B-spline smooths guide noise better —
-   decide when the generator lands).
-3. Whether melanin `IFunction1D` sharing is a light refactor of `BioSpecSkinData` accessors or
-   a copy of two tables into a shared header (prefer sharing; decide on read).
-4. Whether `hair_geometry` participates in `ComputeSurfaceDerivatives` for texture-footprint
-   LOD on strands (likely unnecessary — strand widths are sub-footprint).
+   decide when the generator lands).~~
+3. ~~Whether melanin `IFunction1D` sharing is a light refactor of `BioSpecSkinData` accessors or
+   a copy of two tables into a shared header (prefer sharing; decide on read).~~
+4. ~~Whether `hair_geometry` participates in `ComputeSurfaceDerivatives` for texture-footprint
+   LOD on strands (likely unnecessary — strand widths are sub-footprint).~~
 
 ## 11. References
 
@@ -1206,3 +1220,10 @@ data is vendored.
 `src/Library/Materials/BioSpecSkinSPF.h` + `BioSpecSkinData.h` (melanin precedent);
 `src/Library/Geometry/BezierPatchGeometry.h` (embedded-accelerator + analytic-(u,v) precedent);
 `src/Library/Geometry/DisplacedGeometry.cpp` (build-time painter evaluation precedent).
+
+## 12. Shipped resolution of §10 pre-Phase-1 questions
+
+1. **`ScatRayType` bucket:** All hair lobes (`R`, `TT`, `TRT`, `TTˢ`, `TRTˢ`, and residual) emit `ScatteredRay::eRayReflection` so `max_glossy_bounce` governs deep forward-scattering fiber chains uniformly without burning `max_transmission_bounce`.
+2. **Curve basis:** `HairGeometry` uses Catmull-Rom spans (`EvalSpanCoefficients`), matching `sweep_geometry` and `path_instances_geometry`.
+3. **Melanin spectral tables:** Shared directly via `BioSpecSkinData.h` OMLC eumelanin/pheomelanin extinction data without duplicating tables.
+4. **Surface derivatives:** `HairGeometry` supplies `vShadingTangent` + `bHasShadingTangent` and dual UVs (`ptCoord` `(s, t)` for along-strand arc-length and `h = 2t - 1`, `ptCoord1` for root scalp UV; §4.1); full `ComputeSurfaceDerivatives` footprint differentials on sub-pixel ribbon widths proved unnecessary.

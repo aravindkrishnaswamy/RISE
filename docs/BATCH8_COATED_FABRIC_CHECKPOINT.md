@@ -6,4 +6,6 @@ Clear white fabric at normal incidence: coated 1.00837802 (SD .000776733), refer
 
 The existing directional-return probes do not define a complete reciprocal BRDF. A full bidirectional polar/azimuth return operator, live-painter cache, and thin-weave exit frame remain unresolved. No scalar normalization, clamp, reference change or band relaxation is landed.
 
-All four named builds used `make -C build/make/rise -j8 build-test/<Name>`, rc0 and no warnings. Positive guards: CoatedMaterialChunkTest 85/0, LayeredWhiteFurnaceTest 63/0, ConnectionTypeSplitTest --dl502-only 55459/0 (run rc0). The physical strict check remains rc1. Actual results are in ignored `.claude/logs/codex8/417-status.json` and `417-run-*`.
+All four named builds used `make -C build/make/rise -j8 build-test/<Name>`, rc 0 and no warnings. Positive guards: CoatedMaterialChunkTest 85/0, LayeredWhiteFurnaceTest 63/0, ConnectionTypeSplitTest --dl502-only 55459/0 (run rc 0). The physical strict check remains rc 1. Actual results are in ignored `.claude/logs/codex8/417-status.json` and `417-run-*`.
+
+> **Follow-up note:** The initial `#define main` test-TU self-inclusion P2 in `CoatedFabricAccuracyTest.cpp` (`#include "CompositeEnergyConservationTest.cpp"`) was superseded by commit `589182817`, which extracted the shared material/furnace helpers into `tests/CompositeEnergyFixture.h`.

@@ -1,6 +1,6 @@
 # 90 — The iteration ratchet: stopping regression-by-refinement
 
-Status: DESIGN — slices R1–R3 pending
+Status: **SHIPPED (Slices R1–R3 — 2026-08-23)**
 Evidence base: trajectory `20260823T030556Z-e3800bc9.jsonl` (gemini-3.7-flash,
 the doc-89 dragon probe, 2026-08-22)
 
@@ -81,8 +81,9 @@ anchor bestRevision at the most-mangled document.  Phase 2b's law --
 Agent verb: restore the DOCUMENT to its text as of an earlier head
 revision this session.  Design constraints:
 
-- **Revert-as-new-commit.**  The restore is one new edit producing a new
-  head revision whose content equals the old — append-only history, one
+- **Revert-as-new-commit (shipped as a forward `N+1` snapshot commit).**  The restore
+  (paired with explicit `commit_revision` / `revert_to_revision` snapshot checkpoints) is one new
+  edit advancing head to revision `N+1` whose document text equals the target revision — append-only history, one
   undo step, GUI-visible like any other agent edit.  Never rewinds the
   undo stack, never rewrites history.
 - Whole-document restore only (no partial/selective revert in R1 scope).

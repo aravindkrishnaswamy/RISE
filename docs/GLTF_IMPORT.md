@@ -202,9 +202,11 @@ see docs/BLENDER_MATERIAL_TRANSLATION.md "Coat and Subsurface".
 | **alphaMode = BLEND** (`transparency_shaderop` wiring) | — | Per-material wiring: `BlendPainter(zero, white, alpha) = (1 − α)` produces the see-through factor for `transparency_shaderop`; composed via `advanced_shader` with operators `[+, +, =]` over `[DefaultEmission, DefaultDirectLighting, transparency]`.  All transport paths use material coverage (DL-214); the shader-op wiring described here is historical. | — |
 | **KHR_materials_sheen** (Charlie / Neubelt BRDF) | — | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution + Neubelt visibility (Estevez & Kulla 2017).  **DELIVERED 2026-09-03** (docs/CLOTH_FABRIC_DESIGN.md §7(B)): the glTF import-time layer-over-PBR now imports onto `fabric_material` instead of `sheen_material`/`coated_material` -- see §15. | Per-pixel clearcoat/sheen textures beyond the two ALPHA/RGB channels already routed; clearcoat+sheen composes as coat-over-fabric since 2026-09-27 (see §15) |
 | **KHR_materials_transmission + volume + ior (scalar subset)** | — | Importer maps the trio to existing `DielectricMaterial(tau=white, ior, scattering=zero)` + `HomogeneousMedium(σ_a derived from attenuation_color / attenuation_distance)`; the medium is bound to the per-primitive object via `SetObjectInteriorMedium` during the scene walk.  IOR painter from KHR_materials_ior or default 1.5.  Requires `pathtracing_shaderop` for refraction (the legacy `DefaultDirectLighting` + `pixelpel_rasterizer` only evaluates BSDFs, and dielectrics have no BSDF).  **`transmission_texture` is NOT honoured** — assets that vary transmissivity per-pixel import as uniformly transmissive; importer emits a one-time warning per affected material. | Phase 5: per-pixel τ painter |
-| **KHR_materials_clearcoat** | — | **DELIVERED 2026-09-01** (WETNESS_COAT_DESIGN.md sec 13 item 9): imports onto `coated_material` over the PBR base -- `clearcoat_factor` -> `coat_weight`, `clearcoat_roughness_factor` squared -> `coat_roughness` (perceptual roughness -> GGX alpha), `coat_ior` fixed at 1.5 per spec.  The `clearcoat`/`clearcoatRoughness`/`clearcoatNormal` textures are not sampled -- uniform factors only, warned once per affected material. | Per-pixel clearcoat/roughness/normal textures |
+| **KHR_materials_clearcoat** | — | **DELIVERED 2026-09-01** (WETNESS_COAT_DESIGN.md sec 13 item 9): imports onto `coated_material` over the PBR base (or over `fabric_material` when sheen is also present, 2026-09-27) -- `clearcoat_factor` -> `coat_weight`, `clearcoat_roughness_factor` squared -> `coat_roughness` (perceptual roughness -> GGX alpha), `coat_ior` fixed at 1.5 per spec.  Scalar factors supported; `clearcoat`/`clearcoatRoughness`/`clearcoatNormal` textures are deferred (warned once per affected material). | Per-pixel clearcoat/roughness/normal textures |
+| **KHR_materials_specular** | — | **DELIVERED**: `specularFactor` (+ `specularTexture` alpha) and `specularColorFactor` (+ sRGB `specularColorTexture`) feed `Job::AddPBRMetallicRoughnessMaterial`'s dielectric F0 scale and tint (`F0_dielectric = 0.04 * specular_color * specular_factor`). | — |
+| **KHR_materials_anisotropy** | — | **DELIVERED**: `anisotropyStrength` and `anisotropyRotation` (+ `anisotropyTexture` direction/strength channels) feed `pbr_metallic_roughness_material`'s `anisotropy_factor` / `anisotropy_rotation`, composing onto the imported `TANGENT` frame (UV fallback when absent; DL-213). | — |
 | **Animation / skinning / morph targets** | — | Importer warns once per file; no runtime support yet. | Phase 5+ |
-| **Other KHR_materials_*** (specular, anisotropy, iridescence, dispersion, unlit-extension-extras) | — | — | Phase 5+ |
+| **Other KHR_materials_*** (`iridescence`, `dispersion`, `pbrSpecularGlossiness`) | — | — | Phase 5+ |
 
 The forward-looking design rationale still lives in §§ 1–6; the original
 phased plan ships in §7.  §10 has a per-row status column matching the
@@ -226,13 +228,13 @@ logical structure:
 | **mesh.morphTargets** | Per-vertex deltas for blend shapes | None | Phase 4+. |
 | **material** (PBR metallic-roughness) | baseColor, metallic, roughness, normal, occlusion, emissive, alphaMode, doubleSided | `ggx_material` + painter composition (see §6) | Already three-lobe + multiscatter + Fresnel. PBR mapping is a parser-level decomposition. |
 | **texture / sampler / image** | Image + filter/wrap settings | `png_painter` / `hdr_painter` / `exr_painter` / `tiff_painter` / **`jpg_painter`** (new) | Most glTF in the wild ships JPEG. JPEG support spun off as a separate task. |
-| **camera** (perspective / orthographic) | yfov, znear, zfar / xmag, ymag — **no position** (comes from node) | `pinhole_camera` / `orthographic_camera` | Position from flattened node transform. RISE has only one active camera; first wins. |
+| **camera** (perspective / orthographic) | yfov, znear, zfar / xmag, ymag — **no position** (comes from node) | `pinhole_camera` / `orthographic_camera` | Position from flattened node transform. Multi-camera (`ICameraManager`, Phase 1.3): `GLTFSceneImporter` imports all camera-bearing nodes (`<prefix>.cam.<sanitizedNodeName>`) for both `perspective` and `orthographic` cameras. |
 | **node** (scene graph) | TRS or 4×4 matrix, plus optional mesh/camera/light/skin reference and child list | `standard_object` (flat — no hierarchy) | Hierarchy must be flattened by multiplying parent matrices. Quaternion → Euler is lossy; see §10 enhancement. |
 | **scene[]** | Top-level scene picks roots from the node list | RISE has one implicit scene per Job | Honor `scene` field; ignore others or warn. |
 | **animation** | Channels target node TRS or morph weights; LINEAR / STEP / CUBICSPLINE samplers | `Keyframe` / `Timeline` | Only LINEAR straightforward. CUBICSPLINE needs baking. Morph weights have no target. Phase 4+. |
 | **skin** | Joint nodes + inverse-bind matrices; JOINTS_0/WEIGHTS_0 vertex attrs | None | Per-vertex CPU skinning + BVH refit (`UpdateVertices` exists). Phase 4+. |
 | **KHR_lights_punctual** | point / spot / directional lights on nodes | `omni_light` / `spot_light` / `directional_light` | Direct mapping. |
-| **KHR_materials_*** | `unlit`, `transmission`, `clearcoat`, `sheen`, `volume`, `ior`, `specular`, `emissive_strength`, `iridescence`, `anisotropy`, `dispersion`, `pbrSpecularGlossiness` | Mostly mappable to RISE materials | Warn-and-skip in v1 except `KHR_materials_emissive_strength` (trivial scalar) and `KHR_materials_unlit` (skip BSDF, use luminaire). |
+| **KHR_materials_*** | `unlit`, `transmission`, `clearcoat`, `sheen`, `volume`, `ior`, `specular`, `emissive_strength`, `iridescence`, `anisotropy`, `dispersion`, `pbrSpecularGlossiness` | Mostly mappable to RISE materials | **Supported:** `unlit`, `emissive_strength`, `ior`, `transmission` + `volume` (scalar subset; `transmission_texture` deferred), `specular`, `anisotropy`, `clearcoat` (scalar factors; clearcoat textures deferred), `sheen` (including coat-over-sheen). **Deferred (warn-and-skip):** `iridescence`, `dispersion`, `pbrSpecularGlossiness`. |
 | **KHR_draco_mesh_compression / EXT_meshopt_compression** | Compressed buffers | None — neither cgltf nor fastgltf decodes these | Reject with clear error in v1. |
 
 **Byte-level reality:** an accessor + bufferView + buffer triple resolves to a
@@ -255,7 +257,7 @@ bigger than RISE's whole extlib combined).
 - **Doesn't impose an image loader.** Parses image references but leaves bytes for the caller. Lets us route JPEG/PNG/HDR/EXR through RISE's existing painter system instead of duplicating decode paths.
 - **Small and auditable.** ~5k LOC. Easy to read, easy to debug.
 - **Well-maintained and battle-tested.** Used by raylib, bgfx, ozz-animation, Tracy. Regular releases.
-- **Supports GLB + most KHR extensions.** Including KHR_lights_punctual, KHR_materials_unlit, KHR_materials_pbrSpecularGlossiness, etc. (extension *parsing* only — interpretation is on us).
+- **Supports GLB + most KHR extensions.** Including `KHR_lights_punctual`, `KHR_materials_unlit`, `KHR_materials_emissive_strength`, `KHR_materials_ior`, `KHR_materials_transmission` + `KHR_materials_volume`, `KHR_materials_specular`, `KHR_materials_anisotropy`, `KHR_materials_clearcoat` (scalar factors; clearcoat textures deferred), `KHR_materials_sheen`, etc. (cgltf handles extension *parsing*; RISE's importer implements all of the above and warns-and-skips remaining extensions like `iridescence` / `dispersion` / `pbrSpecularGlossiness`).
 - **MIT licensed.** Compatible with RISE.
 
 **Cons**
@@ -299,9 +301,12 @@ cgltf wins on three axes that matter for an offline path tracer:
 2. **No imposed image loader** — keeps RISE's painter system as the single decode path; JPEG support added via the spun-off `jpg_painter` task uses the same path.
 3. **C99 portability** — slots into all five build projects without grief.
 
-The C-API ergonomics cost is bounded: we write one `TriangleMeshLoaderGLTF.cpp`
-that wraps the C structs, and one `GLTFSceneImporter.cpp` for Phase 2. Vendor
-as `extlib/cgltf/cgltf.h` + a one-liner `cgltf.c`.
+The C-API ergonomics cost is bounded: Phase 1 initially wrote a standalone
+`TriangleMeshLoaderGLTF.{h,cpp}`, which was consolidated into
+`GLTFSceneImporter.cpp` (`ImportPrimitive` / `BuildGeometryFromPrimitive`,
+2026-05-01) so single-primitive `gltfmesh_geometry` and bulk `gltf_import`
+share one implementation and cgltf parse. Vendor as `extlib/cgltf/cgltf.h` +
+a one-liner `cgltf.c`.
 
 ---
 
@@ -403,7 +408,7 @@ From [src/Library/Materials/GGXSPF.h](../src/Library/Materials/GGXSPF.h) (header
 >
 > Height-correlated Smith G2 (Heitz 2014), Kulla-Conty multiscattering (2017).
 
-Chunk parameters ([AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp), keyword `ggx_material`):
+Chunk parameters ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp), keyword `ggx_material`):
 
 - `rd` — diffuse reflectance (painter)
 - `rs` — specular reflectance / **F0** (painter)
@@ -525,7 +530,7 @@ no texcoords in its default `surface` domain; migrate a pre-removal scene with
 different job.)
 
 **Status:** **delivered in this branch.**  See `Modifiers/NormalMap.{h,cpp}`,
-the `normal_map_modifier` chunk in `AsciiSceneParser.cpp`, and the
+the `normal_map_modifier` chunk in `ChunkParserRegistry.cpp`, and the
 visual-regression scene `scenes/Tests/Geometry/gltf_normal_mapped.RISEscene`.
 Implementation follows the glTF 2.0 §3.7.2.1.4 spec form `B = cross(N, T) *
 tangent.w`, with two extra runtime details worth knowing:
@@ -593,8 +598,9 @@ every glTF-sourced texture vertically.  The bug went unnoticed because:
 2. The original adversarial test (`NormalTangentMirrorTest` in
    `tests/GLTFLoaderTest.cpp`) was actually checking **bitangent-sign
    data** — `w = ±1` per vertex — and never compared rendered output.
-   It does not load through the flip_v path at all (it constructs
-   `TriangleMeshLoaderGLTF(..., false)` explicitly).  The Phase 1 doc
+   It does not load through the flip_v path at all (originally tested
+   `TriangleMeshLoaderGLTF(..., false)`, now consolidated into
+   `GLTFSceneImporter.cpp`).  The Phase 1 doc
    note cited it as an "empirical verification" of V-flip behaviour;
    it is no such thing.
 
@@ -640,13 +646,18 @@ handles only input mapping.
 
 | glTF | RISE | Mapping |
 |---|---|---|
-| `perspective` (yfov, znear, zfar, aspectRatio?) | `pinhole_camera` | yfov → vertical FOV. aspectRatio → set width/height ratio if present, else use rasterizer's. znear/zfar — RISE doesn't use them (path tracer); accept and ignore. |
-| `orthographic` (xmag, ymag, znear, zfar) | `orthographic_camera` | xmag/ymag → frustum half-extents. |
+| `perspective` (yfov, znear, zfar, aspectRatio?) | `pinhole_camera` | yfov → vertical FOV. Film dimensions live on `Scene::GetFilm()`; `znear`/`zfar` are ignored by the path tracer. |
+| `orthographic` (xmag, ymag, znear, zfar) | `orthographic_camera` | xmag/ymag → orthographic viewport extents (`vpScale`). |
 
-Camera position comes from the **node transform** (glTF cameras are typed
-without position). RISE has only one active camera per Job — first imported
-camera wins; subsequent cameras get a warning. Imported camera names get
-`name_prefix.cam.<index>`.
+Camera position and orientation come from the **flattened node transform**
+(glTF cameras are typed without position). **Supported:** `GLTFSceneImporter`
+imports **all** camera-bearing nodes (both `perspective` and `orthographic`)
+into `ICameraManager` as `<prefix>.cam.<sanitizedNodeName>` (Phase 1.3,
+2026-05-01; last-added active by default, switchable via `SetActiveCamera`).
+On the material side, `KHR_materials_specular`, `KHR_materials_anisotropy`,
+`KHR_materials_clearcoat` (scalar factors; clearcoat textures deferred), and
+`KHR_materials_sheen` are also supported alongside `unlit`,
+`emissive_strength`, `ior`, and scalar `transmission` + `volume`.
 
 ### Lights (`KHR_lights_punctual`)
 
@@ -688,10 +699,10 @@ Euler. Minimal change to the chunk parser; storage is the same internally
 - **Skinning.** No CPU skin pass + BVH refit pipeline yet (refit hook exists but unused for skinning).
 - **Morph targets.** Same.
 - **`KHR_draco_mesh_compression` / `EXT_meshopt_compression`.** Reject with clear error.
-- **`KHR_materials_*`** beyond `unlit`, `emissive_strength`, `ior` (which feeds GGX directly). Warn-and-skip with the extension name in the warning so users know what was lost.  *(Phase 4 update: `unlit`, `emissive_strength`, scalar `transmission` + `volume` + `ior` have since shipped; `clearcoat` (2026-09-01, via `coated_material`) and `sheen` (2026-09-03, via `fabric_material`) as a layer-over-PBR have since shipped too.  See §15.)*
+- **`KHR_materials_*`** beyond `unlit`, `emissive_strength`, `ior` (which feeds GGX directly) were originally out of scope for v1.  **Current status — SUPPORTED:** `unlit`, `emissive_strength`, `ior`, `transmission` + `volume` (scalar subset; `transmission_texture` deferred), `KHR_materials_specular`, `KHR_materials_anisotropy`, `KHR_materials_clearcoat` (2026-09-01 via `coated_material`, scalar factors; clearcoat textures deferred), and `KHR_materials_sheen` (2026-09-03 via `fabric_material`, composing under clearcoat since 2026-09-27).  **Still deferred (warn-and-skip):** `iridescence`, `dispersion`, `pbrSpecularGlossiness`, `clearcoat*Texture`, `transmission_texture`.  See §15.
 - **Historical v1 alphaMode = BLEND limitation.** Phase 4 added a legacy transparency shader; DL-214 supersedes both MASK and BLEND wiring with shared material coverage.
-- **Multi-camera.** First camera wins.
-- **Multi-scene.** Honor `scene` field; ignore others.
+- ~~**Multi-camera.** First camera wins.~~ **DELIVERED (Phase 1.3, 2026-05-01):** `GLTFSceneImporter` imports all camera-bearing nodes (both `perspective` and `orthographic`) into `ICameraManager` as `<prefix>.cam.<sanitizedNodeName>`.
+- **Multi-scene.** Honor `scene` field (or `scene_index` override); ignore others.
 
 Each of these is a separate phase, not a v1 limitation — the v1 importer logs
 exactly what it skipped and why.
@@ -740,12 +751,12 @@ extension, every animation/skin/morph reference.
 
 1. **New:** `extlib/cgltf/cgltf.h` (vendored single header) + `extlib/cgltf/cgltf.c` (one-line implementation TU).
 2. **Update:** `extlib/README.TXT` — add cgltf section with license, source URL, version.
-3. **New:** `src/Library/Geometry/TriangleMeshLoaderGLTF.{h,cpp}` — parallels `TriangleMeshLoader3DS`.
+3. **New (Phase 1, later consolidated):** `src/Library/Geometry/TriangleMeshLoaderGLTF.{h,cpp}` — originally paralleled `TriangleMeshLoader3DS`; consolidated into `src/Library/Importers/GLTFSceneImporter.cpp` (`ImportPrimitive` / `BuildGeometryFromPrimitive`) on 2026-05-01.
 4. **Extend:** `src/Library/Interfaces/ITriangleMeshGeometry.h` — add `ITriangleMeshGeometryIndexed3` (tangents + TEXCOORD_1).
 5. **Extend:** `src/Library/Geometry/TriangleMeshGeometryIndexed.{h,cpp}` — implement v3 interface.
-6. **Extend:** `src/Library/RISE_API.{h,cpp}` — `RISE_API_CreateGLTFTriangleMeshLoader(...)`.
+6. **Extend:** `src/Library/RISE_API.{h,cpp}` — `RISE_API_CreateGLTFTriangleMeshLoader(...)` (retired 2026-05-01 when `TriangleMeshLoaderGLTF` consolidated into `GLTFSceneImporter.cpp`).
 7. **Extend:** `src/Library/Job.{h,cpp}` + `src/Library/Interfaces/IJob.h` — `Job::AddGLTFTriangleMeshGeometry(name, file, meshIndex, primIndex, doubleSided, faceNormals, flipV)`.
-8. **Extend:** `src/Library/Parsers/AsciiSceneParser.cpp` — `GLTFMeshGeometryAsciiChunkParser` next to `PLYMeshGeometryAsciiChunkParser` (~line 3503), registered in `CreateAllChunkParsers()`.
+8. **Extend:** `src/Library/Parsers/ChunkParserRegistry.cpp` — `GLTFMeshGeometryAsciiChunkParser` next to `PLYMeshGeometryAsciiChunkParser`, registered in `CreateAllChunkParsers()`.
 9. **New:** `tests/GLTFLoaderTest.cpp` — load known glTF, verify vertex/triangle counts, attribute presence, position accuracy.
 10. **New scenes:** `scenes/Tests/Geometry/gltf_box.RISEscene`, `scenes/Tests/Geometry/gltf_duck.RISEscene` (parser regression + visual check).
 
@@ -843,7 +854,7 @@ alpha_test_modifier am {
 - New: `src/Library/Modifiers/NormalMapModifier.{h,cpp}`.
 - New: `src/Library/Modifiers/AlphaTestModifier.{h,cpp}`.
 - Extend: `Job.cpp` + `IJob.h` + `RISE_API.{h,cpp}` — `AddPBRMetallicRoughnessMaterial`, `AddChannelPainter`, `AddNormalMapModifier`, `AddAlphaTestModifier`, `ImportGLTFScene`.
-- Extend: `AsciiSceneParser.cpp` — five new chunk parsers, registered in `CreateAllChunkParsers()`. Optional `quaternion` parameter on `StandardObjectAsciiChunkParser`.
+- Extend: `ChunkParserRegistry.cpp` — five new chunk parsers, registered in `CreateAllChunkParsers()`. Optional `quaternion` parameter on `StandardObjectAsciiChunkParser`.
 - Five-project build wiring.
 - Tests: `tests/GLTFImportTest.cpp` (full scene import — count objects, materials, lights), `tests/PBRMaterialTest.cpp` (verify the GGX construction matches the spec for a few canonical inputs).
 - Scenes: `scenes/Tests/Materials/pbr_metallic_roughness.RISEscene`, `scenes/Tests/Importers/gltf_sponza.RISEscene`, `scenes/FeatureBased/gltf_showcase.RISEscene` for a curated render.
@@ -908,26 +919,26 @@ records original-plan phase; "Status" records what has actually shipped.
 
 | Item | Where | Phase | Status | Justification |
 |---|---|---|---|---|
-| `gltfmesh_geometry` chunk | `AsciiSceneParser.cpp` | 1 | **delivered db65457** | Mesh import surface |
+| `gltfmesh_geometry` chunk | `ChunkParserRegistry.cpp` | 1 | **delivered db65457** | Mesh import surface |
 | `Job::AddGLTFTriangleMeshGeometry` | `Job.{h,cpp}`, `IJob.h` | 1 | **delivered db65457** | Construction API |
 | `RISE_API_CreateGLTFTriangleMeshLoader` | `RISE_API.{h,cpp}` | 1 | **delivered db65457; retired 2026-05-01** | Public C-style API.  The `Job::AddGLTFTriangleMeshGeometry` entry point survives and now routes through `GLTFSceneImporter::ImportPrimitive`, sharing the importer's single cgltf parse with the bulk path.  The intermediate ITriangleMeshLoaderIndexed wrapper this entry exposed used to re-parse the .gltf per primitive and is gone; out-of-tree callers should switch to `Job::AddGLTFTriangleMeshGeometry`. |
-| `TriangleMeshLoaderGLTF` class | `Geometry/` | 1 | **delivered db65457; retired 2026-05-01** | Loader implementation; the per-primitive geometry-extraction body migrated to `GLTFSceneImporter::BuildGeometryFromPrimitive` (a public method, used by both `ImportPrimitive` and the bulk Walker hop). |
+| `TriangleMeshLoaderGLTF` class | `Geometry/` → `Importers/GLTFSceneImporter.cpp` | 1 | **delivered db65457; consolidated 2026-05-01** | `TriangleMeshLoaderGLTF.{h,cpp}` was consolidated into `GLTFSceneImporter.cpp` (`BuildGeometryFromPrimitive` / `ImportPrimitive`, shared by both single-primitive and bulk import). |
 | `ITriangleMeshGeometryIndexed3` interface | `Interfaces/` | 1 | **delivered db65457** | Tangent + TEXCOORD_1 storage |
 | ~~`tangent_painter` chunk~~ | — | 1 | **dropped — not needed** | Replaced by direct `RayIntersectionGeometric` fields (see "v3 intersection plumbing" below) |
 | `RayIntersectionGeometric::vTangent / bitangentSign / bHasTangent` | `Intersection/` | 1 | **this branch** | Hit-time tangent surface for the normal-map modifier |
 | Tangent interpolation in `TriangleMeshGeometryIndexed::IntersectRay` | `Geometry/` | 1 | **this branch** | Per-hit barycentric interpolation of v3 storage |
 | Tangent transform in `Object::IntersectRay` | `Objects/` | 1 | **this branch** | Object→world transform via `m_mxFinalTrans` |
-| ~~`flip_v` default = TRUE on `gltfmesh_geometry`~~ | `AsciiSceneParser.cpp` | 1 | **REVERTED in Phase 4** | The Phase 1 V-flip was a misanalysis — both glTF and RISE use V-down (origin upper-left).  Default is now FALSE.  See §4 V-convention reconciliation. |
+| ~~`flip_v` default = TRUE on `gltfmesh_geometry`~~ | `ChunkParserRegistry.cpp` | 1 | **REVERTED in Phase 4** | The Phase 1 V-flip was a misanalysis — both glTF and RISE use V-down (origin upper-left).  Default is now FALSE.  See §4 V-convention reconciliation. |
 | `normal_map_modifier` chunk + `NormalMap` class | `Modifiers/` | 2 → 1.5 | **this branch (early)** | Tangent-space normal maps |
 | `Job::AddNormalMapModifier`, `RISE_API_CreateNormalMapModifier` | `Job/RISE_API` | 2 → 1.5 | **this branch (early)** | Construction API for the modifier |
 | Embedded-texture extraction helper (`extract_embedded_texture.py`) | `scenes/Tests/Geometry/assets/` | 1.5 | **this branch (stopgap)** | One-shot script + sidecar PNG until `gltf_import` auto-extracts |
-| `gltf_import` chunk | `AsciiSceneParser.cpp` | 2 | **this branch** | Full scene import surface |
-| `pbr_metallic_roughness_material` chunk | `AsciiSceneParser.cpp` | 2 | **this branch** | PBR authoring sugar |
+| `gltf_import` chunk | `ChunkParserRegistry.cpp` | 2 | **this branch** | Full scene import surface |
+| `pbr_metallic_roughness_material` chunk | `ChunkParserRegistry.cpp` | 2 | **this branch** | PBR authoring sugar |
 | ~~`PBRMetallicRoughnessMaterial` class~~ | — | 2 | **dropped — not needed** | Implemented as a `Job::AddPBRMetallicRoughnessMaterial` parser-side decomposition into GGX + painter graph; no new Material class required |
 | `channel_painter` chunk + class | `Painters/` | 2 | **this branch** | Extract MR-texture channels |
 | `GLTFSceneImporter` class + `ImportGLTFScene` API | `Importers/` | 2 | **this branch** | Orchestrates full scene import |
 | `alpha_test_modifier` chunk + class | `Modifiers/` | 2 → 3 | **deferred to Phase 3** | RISE modifiers run post-hit-commit; alpha mask needs pre-commit hook |
-| Optional `quaternion` / `matrix` param on `standard_object` | `AsciiSceneParser.cpp` | 2 → 3 | **delivered in Phase 3** | Quaternion/matrix parameters preserve imported transforms; see the later delivery table. |
+| Optional `quaternion` / `matrix` param on `standard_object` | `ChunkParserRegistry.cpp` | 2 → 3 | **delivered in Phase 3** | Quaternion/matrix parameters preserve imported transforms; see the later delivery table. |
 | Optional `emissive` param on `ggx_material` | `Materials/` + parser | 2 | **this branch** | Avoid double-chunk for PBR + emissive |
 | Schlick-from-F0 mode in GGX BSDF | `Materials/GGXSPF` | — → 3 | **delivered in Phase 3** | Schlick-from-F0 supplies PBR reflectance; DL-37 later changed diffuse transmission. |
 
@@ -937,7 +948,7 @@ records original-plan phase; "Status" records what has actually shipped.
 
 1. **`KHR_materials_emissive_strength`** — multiplies emissive by a scalar.  Easy.  Honor in v1?
 2. **`KHR_materials_unlit`** — bypass BSDF, render baseColor as luminaire.  Maps to `lambertian_luminaire_material`.  Honor in v1?
-3. **Color space.** glTF spec says baseColor and emissive are sRGB; metallic / roughness / normal / occlusion are linear.  Our `png_painter` has a `color_space` param — confirm the auto-mapping logic when the importer creates painters.  Phase 1 finding for one slice of this: **normal maps need `color_space ROMMRGB_Linear`** (NOT `Rec709RGB_Linear`) to bypass the Rec709 → ROMM colour-matrix conversion that would otherwise warp the encoded vector.  Documented in `gltf_normal_mapped.RISEscene` and the `normal_map_modifier` chunk description.
+3. **Color space.** glTF spec says baseColor and emissive are sRGB; metallic / roughness / normal / occlusion are linear.  Our `png_painter` has a `color_space` param — confirm the auto-mapping logic when the importer creates painters.  **Normal maps need `color_space Rec709RGB_Linear`** (the post-Stage-B native linear passthrough since `RISEPel = Rec709RGBPel`, bypassing both gamma decoding and any colour-matrix conversion so the RGB-encoded tangent vector stays exact; historical Phase 1 notes prior to Stage B used `ROMMRGB_Linear` when ROMM was the working space, which would now apply an unwanted ROMM → Rec.709 matrix).  Documented in `gltf_normal_mapped.RISEscene` and the `normal_map_modifier` chunk description.
 4. **JPEG dependency timing.** ~~Phase 1 doesn't strictly need JPEG (we can test with PNG-textured glTF assets), but the curated showcase scene in Phase 2 will. Should the JPEG task be a hard dependency for Phase 2, or do we ship Phase 2 without JPEG and document it as "PNG-textured glTF only for now"?~~ **RESOLVED 2026-04-29** — `jpg_painter` shipped, so Phase 2 can use JPEG-textured assets from Khronos Sample-Assets directly without conversion.
 5. **Naming convention for imported objects.** Proposal: `<prefix>.<glTFNodeName>.<primIdx>` for objects, `<prefix>.mat.<materialIdx>` for materials, `<prefix>.tex.<textureIdx>` for textures, `<prefix>.cam.<cameraIdx>` for cameras, `<prefix>.light.<lightIdx>` for lights.  Predictable enough that users can override individual items by re-declaring them after the `gltf_import` chunk.
 6. **Where does the importer live?** Options:
@@ -1162,9 +1173,9 @@ shipped in Phase 4 and what remains open.)*
 | Item | Status |
 |---|---|
 | Per-pixel alpha via alpha-aware painter (extract A channel from RGBA PNG) | **DELIVERED Phase 4** (see §15: `IPainter::GetAlpha`, `TexturePainter` straight-A, `ChannelPainter::CHAN_A`, raw-texture alpha source). |
-| Alpha mask under BDPT / VCM / MLT | **Still open.** Requires promoting alpha-test to a hit-time geometry concern; touches the intersector and every integrator's path-sampling loop.  Substantial refactor. |
+| Alpha mask / blend under BDPT / VCM / MLT | **CLOSED (DL-214).** `IMaterial` scalar intersection coverage (`IJob::SetMaterialAlpha`, [ALPHA_COVERAGE.md](ALPHA_COVERAGE.md)) promotes OPAQUE / MASK / BLEND to hit-time and emission-endpoint coverage shared across PT, BDPT, VCM, MLT, and photon tracing. |
 | Animation / skinning / morph targets | **Still open.** Carried into Phase 5+. |
-| `KHR_materials_*` extensions (clearcoat, transmission, sheen, …) | **Partial — Phase 4** delivered scalar `transmission` + `volume` + `ior` and the standalone Charlie/Neubelt sheen BRDF; `clearcoat` and `sheen` as a layer over PBR are deferred (composition with the 3-lobe PBR base needs a new layered material).  Other `KHR_materials_*` (specular, anisotropy, iridescence, dispersion) are Phase 5+. |
+| `KHR_materials_*` extensions (specular, anisotropy, clearcoat, transmission, sheen, …) | **Supported:** scalar `transmission` + `volume` + `ior` (Phase 4), `KHR_materials_specular`, `KHR_materials_anisotropy`, `KHR_materials_clearcoat` (scalar factors via `coated_material`, 2026-09-01; clearcoat textures deferred), and `KHR_materials_sheen` (via `fabric_material`, 2026-09-03, including coat-over-sheen since 2026-09-27).  **Deferred:** `iridescence`, `dispersion`, `pbrSpecularGlossiness`, `clearcoat*Texture`, `transmission_texture`. |
 | `alphaMode = BLEND` (stochastic transparency) | **DELIVERED Phase 4** (see §15: `transparency_shaderop` wired through `advanced_shader [+,+,=]`). |
 
 ---
@@ -1185,13 +1196,15 @@ The work split into two cohorts.
 | **Per-pixel alpha** (alpha-aware painter) | `IPainter::GetAlpha()` virtual added (default 1.0). `TexturePainter` overrides to return un-premultiplied A. `ChannelPainter` extended with `CHAN_A=3` so the chunk parser routes alpha through the standard channel-extraction flow.  Closes the §13 `max(R,G,B)` proxy.  **Note:** the existing pre-Phase-4 `TexturePainter::GetColor` still returns `c.base * c.a` (premultiplied); Phase 4 added `GetAlpha` alongside without changing legacy color semantics. |
 | **`alphaMode = BLEND`** | Per-material wiring: `BlendPainter(zero=0, white=1, mask=alpha) = 1 − α` produces the see-through factor for `transparency_shaderop`; the shader-op formula `c = cthis*factor + c*(1-factor)` then yields the correct `surface*α + background*(1-α)`.  Composition uses an `advanced_shader` (NOT `standard_shader`) with operators `[+, +, =]` over `[DefaultEmission, DefaultDirectLighting, transparency]` — the `=` replace operator is essential because the additive `standard_shader` would double the surface contribution on opaque pixels.  All transport paths use material coverage (DL-214); the shader-op wiring described here is historical. |
 
-### Cohort B — extension materials (PARTIAL)
+### Cohort B — extension materials (DELIVERED; clearcoat/transmission textures & iridescence/dispersion deferred)
 
 | Feature | What landed |
 |---|---|
-| **`KHR_materials_sheen` (BRDF)** | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution `D(α, n·h) = (2 + 1/α)/(2π) · sin(θ_h)^(1/α)` + Neubelt visibility `V(n·l, n·v) = 1/(4·(n·l + n·v − n·l·n·v)·n·l·n·v)` (Estevez & Kulla 2017 / KHR_materials_sheen).  Cosine-hemisphere sampling for the SPF (no closed-form Charlie importance sample); the PDF mismatch is small for sheen's typical roughness range and is cleaned up by MIS in PT.  Both `SheenBRDF::value(NM)` and `SheenSPF::Pdf(NM)` flip the shading normal on back-face hits so the BRDF stays consistent with the sampling counterpart.  Was standalone-only in this branch; **the glTF import-time layer-over-PBR was DELIVERED 2026-09-03 via `fabric_material`** — see "Delivered 2026-09-03" below. |
+| **`KHR_materials_specular`** | **DELIVERED.** Importer maps `specularFactor` (+ `specularTexture` A channel) and `specularColorFactor` (+ sRGB `specularColorTexture`) into `Job::AddPBRMetallicRoughnessMaterial`'s `specular_factor` / `specular_color` parameters (`F0_dielectric = 0.04 * specular_color * specular_factor`). |
+| **`KHR_materials_anisotropy`** | **DELIVERED.** Importer maps `anisotropyStrength`, `anisotropyRotation`, and `anisotropyTexture` into `Job::AddPBRMetallicRoughnessMaterial`'s `anisotropy_factor` / `anisotropy_rotation`, composing onto the imported `TANGENT` frame (UV fallback when absent; DL-213). |
+| **`KHR_materials_sheen` (BRDF + layered import)** | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution `D(α, n·h) = (2 + 1/α)/(2π) · sin(θ_h)^(1/α)` + Neubelt visibility `V(n·l, n·v) = 1/(4·(n·l + n·v − n·l·n·v)·n·l·n·v)` (Estevez & Kulla 2017 / KHR_materials_sheen).  Cosine-hemisphere sampling for the SPF (no closed-form Charlie importance sample); the PDF mismatch is small for sheen's typical roughness range and is cleaned up by MIS in PT.  Both `SheenBRDF::value(NM)` and `SheenSPF::Pdf(NM)` flip the shading normal on back-face hits so the BRDF stays consistent with the sampling counterpart.  **The glTF import-time layer-over-PBR was DELIVERED 2026-09-03 via `fabric_material`** (and composes with clearcoat via `coated_material` since 2026-09-27) — see "Delivered 2026-09-03" below. |
 | **`KHR_materials_transmission` + `KHR_materials_volume` + `KHR_materials_ior`** | Importer maps the trio to existing `DielectricMaterial(tau=white, ior, scattering=zero)` + `HomogeneousMedium`.  Beer-Lambert absorption coefficient derived from the volume's `attenuation_color` and `attenuation_distance`: `σ_a = -ln(attenuation_color) / attenuation_distance` (component-wise; per-wavelength absorption gives green / red / etc. tinted glass).  IOR taken from `KHR_materials_ior` or default 1.5.  The medium is bound to the per-primitive object via `SetObjectInteriorMedium` during the scene walk.  **Requires `pathtracing_shaderop`** for refraction: dielectrics have no BSDF (`GetBSDF()` returns `NULL`), so `DefaultDirectLighting` + `pixelpel_rasterizer` cannot shade them — render glass scenes with `pathtracing_pel_rasterizer`. |
-| **`KHR_materials_clearcoat`** | **DELIVERED 2026-09-01** — imports onto `coated_material` over the PBR base.  See the amended Test-assets §13 entry and "Delivered 2026-09-01" below; no longer warn-and-skip. |
+| **`KHR_materials_clearcoat` (scalar factors)** | **DELIVERED 2026-09-01** — imports onto `coated_material` over the PBR base (and over `fabric_material` when sheen is also present, 2026-09-27).  Scalar factors (`clearcoatFactor`, `clearcoatRoughnessFactor`) are supported; clearcoat textures (`clearcoatTexture`, `clearcoatRoughnessTexture`, `clearcoatNormalTexture`) remain deferred.  See "Delivered 2026-09-01" below. |
 
 ### Delivered 2026-09-01 (WETNESS_COAT_DESIGN.md sec 13 item 9)
 
@@ -1213,7 +1226,7 @@ The work split into two cohorts.
 | **Per-pixel `sheenColorTexture` UV/wrap edge cases beyond the shared `WrapWithUVTransform` path** | Uses the same per-binding `KHR_texture_transform` wrapper every other glTF texture role does; not independently stress-tested beyond the delivered test coverage. |
 
 | **Animation / skinning / morph targets** | Carried forward from Phase 3+. |
-| **Other `KHR_materials_*`** (`specular`, `anisotropy`, `iridescence`, `dispersion`) | Phase 5+. |
+| **Other `KHR_materials_*`** (`iridescence`, `dispersion`, `pbrSpecularGlossiness`, plus `clearcoat*Texture` / `transmission_texture`) | Phase 5+. (`specular`, `anisotropy`, scalar `clearcoat`, and `sheen` are already supported.) |
 
 ### Adversarial review summary (Phase 4)
 

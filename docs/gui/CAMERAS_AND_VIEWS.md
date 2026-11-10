@@ -1,10 +1,14 @@
 # RISE GUI — Cameras & Views (Direction B)
 
-**Status:** **MOSTLY IMPLEMENTED.** Named views, promote/stamp-to-camera,
-axis-ball navigation and snaps, transient viewport poses, render-camera
-overrides, and desktop N-up panes have shipped. Camera-cut/time-range authoring
-and remaining polish are still roadmap items. N-up implementation details are
-tracked in [RENDER_MODES.md](RENDER_MODES.md) §7.
+**Status:** **MOSTLY IMPLEMENTED (with Windows NamedViewsPanel widget gap).**
+Shared C++ Named Views (`NamedViewStore` + `.RISEviews` JSON sidecar),
+promote/stamp-to-camera, axis-ball navigation and snaps, transient viewport poses,
+render-camera overrides, macOS `NamedViewsPanel.swift`, and Windows
+`ViewportBridge` Named-View methods + N-up pane vantage selector have shipped;
+however, **the Windows Qt `NamedViewsPanel` CRUD/promote widget is not yet wired**
+(tracked in [OPEN_ITEMS.md](OPEN_ITEMS.md) §4). Camera-cut/time-range authoring
+(B4b) and auxiliary GPU wireframe panes (B5; desktop N-up currently uses CPU
+preview modes per [RENDER_MODES.md](RENDER_MODES.md) §7) remain roadmap items.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Design the camera & view *management* layer for the RISE desktop GUIs (macOS + Windows) and an Android tier note. Five deliverables — **B1** Named Views (session/UI state) + promote-to-scene-camera; **B2** axis-ball nav gizmo + axis snaps + Home; **B3** fly-then-stamp; **B4** camera list panel + bind-camera-to-time-range; **B5** right-sized split view (3 GL/wireframe orientation panes + 1 render pane). Built on the shipped multi-camera infrastructure ([../CAMERAS_ROADMAP.md](../CAMERAS_ROADMAP.md) Phase 1.3/1.4). Parent: [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §6, §10.4, §11 (Phase 2), §12, §13.
 **Predecessors:** Multi-camera `ICameraManager` (Phase 1.3, shipped), Camera/Film/Output split (Phase 1.4, shipped), Interactive viewport Phases 1–5 ([../INTERACTIVE_EDITOR_PLAN.md](../INTERACTIVE_EDITOR_PLAN.md)).
@@ -125,10 +129,10 @@ This is the single B1 action that writes to `.RISEscene`. It is intentionally **
 
 | Piece | Layer |
 |---|---|
-| `NamedView` model, store, serialize, thumbnail capture, restore-into-`ViewportPose` (no scene mutation, §3.2/§5.5) | **Shared C++** |
-| `.RISEscene` write on Promote | **Scene language** (existing camera chunk + round-trip re-emit) — no new chunk |
-| Named-views sidecar location | **UI-only** (platform prefs/dotfile; shared serialization) |
-| The views strip/grid widget + thumbnails + drag-to-restore | **Platform** (SwiftUI list/grid; Qt `QListWidget` icon mode) |
+| `NamedView` model, store, `.RISEviews` sidecar JSON serialize/deserialize, thumbnail capture, restore-into-`ViewportPose` (no scene mutation, §3.2/§5.5) | **Shared C++** (shipped) |
+| `.RISEscene` write on Promote | **Scene language** (existing camera chunk + CST Document insert — shipped) |
+| Named-views `.RISEviews` sidecar | **UI-only** (`<scene>.RISEviews` JSON sidecar — shipped) |
+| The views strip/grid widget + thumbnails + promote/CRUD UI | **Platform:** macOS `NamedViewsPanel.swift` shipped; **Windows Qt `NamedViewsPanel` CRUD/promote widget is not yet wired** (though `ViewportBridge` exposes the Named-View methods and the Windows N-up pane vantage selector lists Named Views) |
 
 ---
 
@@ -330,7 +334,7 @@ Ordered by value-per-cost; each row is independently shippable. Desktop-shared w
 Everything that is not a native widget or a GPU present surface lives in `src/Library/` behind the existing C-ABI (`SceneEditController` / `RISE_API_SceneEditController_*` + the two bridges). Direction B adds:
 
 - **Shared C++ (write once):** `NamedViewStore`, the transient **`ViewportPose`** + free-fly navigation, the **render-camera override** (§5.5 — the one engine-side render-path addition: a viewport-private realized `ICamera` + the interactive pass's camera-selection point, leaving `Scene::pActiveCamera` and production render untouched), the nav-gizmo math (layout + hit-test), the axis-snap/Home pose math (targeting the `ViewportPose`), `AddCameraFromPose`, the `CameraTrack` cut model + dispatcher hook, thumbnail capture/cache, and the B5 ortho-camera + wireframe-walk core. All of it consumed identically by macOS, Windows, and Android JNI.
-- **Platform (thin shells):** the axis-ball overlay draw, the Named-Views/camera-list widgets + thumbnails, timeline cut-region drawing, the quad layout container + per-pane GL present surface, and keyboard accelerators.
+- **Platform (thin shells):** the axis-ball overlay draw, the Named-Views/camera-list widgets + thumbnails (**note:** macOS `NamedViewsPanel.swift` is shipped; the Windows Qt `NamedViewsPanel` CRUD/promote widget is not yet wired, though `ViewportBridge` exposes the Named-View methods and the Windows N-up pane vantage selector consumes them), timeline cut-region drawing, the quad layout container + per-pane present surface, and keyboard accelerators.
 - **C-ABI additions** are all **additive** — new `RISE_API_SceneEditController_*` exports + new bridge methods/structs, mirroring how `addCameraFromActive` / `RISEViewportGizmoHandle` / `RISEViewportPropertyPreset` are already done. Follow the **`abi-preserving-api-evolution`** skill (no virtuals added to frozen interfaces; new functionality is non-virtual controller methods + C exports). Audit the enum-translation getters in **both** bridges if any new `Category`/`PanelMode`-style enum value is introduced for a Named-Views UI section (project memory: the `case N:` fall-through-to-None trap).
 
 This is the §10 payoff in miniature: the camera math, named-views model, and gizmo hit-testing are written once; only the widgets differ.

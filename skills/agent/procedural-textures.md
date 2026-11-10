@@ -223,18 +223,22 @@ dust where a wall meets a floor -- and the analogue is Unreal's
   (interpenetration is contact).
 - It works on **every receiver**, including ones with no signal provider
   at all (a `box_geometry`, an infinite plane).  What varies is which
-  NEIGHBOURS can answer: the analytic primitives and INDEXED TRIANGLE
-  MESHES are exact, `sdf_geometry` and ellipsoids are UPPER bounds on
-  distance (so the signal may under-paint a seam and can never paint one
-  that is not there), CSG composites answer too (a `union` reports the
-  nearer operand; an `intersection` or `subtraction` brackets the composed
-  field), and RAW (non-indexed) meshes, patches, hair, heightfield-mode
-  SDFs and an intersection or subtraction with a SHEET operand contribute
-  nothing and say so once per refusing object in the log.
-- **An eccentric ellipsoid, or an anisotropically scaled object, needs a
-  bigger radius than you mean** -- the bound is the semi-axis ratio, so
-  against a 4:1 ellipsoid ask for roughly 4x the world length you want.
-  The failure is silent: an unpainted seam, never a wrong one.
+  NEIGHBOURS can answer: the analytic primitives (including
+  `ellipsoid_geometry`, which solves exact Euclidean surface distance) and
+  INDEXED TRIANGLE MESHES are exact, `sdf_geometry` and non-uniformly
+  scaled objects are UPPER bounds on distance (so the signal may
+  under-paint a seam and can never paint one that is not there), CSG
+  composites answer too (a `union` reports the nearer operand; an
+  `intersection` or `subtraction` brackets the composed field), and RAW
+  (non-indexed) meshes, patches, hair, heightfield-mode SDFs and an
+  intersection or subtraction with a SHEET operand contribute nothing and
+  say so once per refusing object in the log.
+- **An anisotropically scaled object (`standard_object.scale`) needs a
+  bigger radius than you mean** -- non-uniform `scale` uses a conservative
+  `min|scale|` bound (`ellipsoid_geometry` itself is exact), so against a
+  4:1 `scale` ask for roughly 4x the world length you want (or author an
+  `ellipsoid_geometry` directly).  The failure is silent: an unpainted
+  seam, never a wrong one.
 
 Worked example -- the contact seam under a nail lying on a board, which is
 the composition `plank_closeup.RISEscene` ships.  The nail rests on its
@@ -464,13 +468,15 @@ that will surprise you:
   compared with `r` in every other direction, which is why the pool in the
   fence below is 60 cm deep for a 2 cm radius.
 - **Only the SOLID families contribute to it.**  A sphere, box, capped
-  cylinder, torus, ellipsoid, `sdf_geometry` or a CSG composite of those
-  can say whether a point is inside; every SHEET -- a plane, a disk, an
-  OPEN cylinder, a TRIANGLE MESH, a patch, hair -- cannot, and contributes
-  0 silently.  So a receiver buried inside a MESH neighbour reads
-  `interior` 0 while `proximity` still reads its honest distance to the
-  nearest triangle.  If your neighbour is an imported mesh, this signal
-  has nothing to say about it.
+  cylinder, torus, ellipsoid, `sdf_geometry`, a closed 2-manifold
+  indexed / glTF / PLY / displaced triangle mesh, or a CSG composite of
+  solids can say whether a point is inside; every SHEET -- a plane, a
+  disk, an OPEN cylinder, an OPEN (non-watertight) triangle mesh (or raw
+  non-indexed mesh), a patch, hair -- cannot, and contributes 0 silently.
+  So a receiver buried inside an open or non-watertight mesh neighbour
+  reads `interior` 0 while `proximity` still reads its honest distance to
+  the nearest triangle, whereas closed watertight indexed/glTF/PLY/displaced
+  meshes DO report signed `interior(r)`.
 - **The buried surface has to be VISIBLE for the paint to matter.**  A
   point inside an opaque neighbour is behind that neighbour's surface, so
   the camera cannot see it.  The signal earns its keep where the neighbour
@@ -856,7 +862,8 @@ parameter's `description` -- the scalar ones say so -- or use this rule:
   renderers, Jakob-Hanika spectral uplift.
 - **PHYSICAL-SCALAR slots take a `scalar_painter` name, or an inline
   number** -- and nothing else.  `roughness`, `alpha`, `alphax`,
-  `alphay`, `facets`, `ior`, `extinction`, `tau`, `scattering`,
+  `alphay`, `facets`, `ior`, `extinction`, `tau` (on `dielectric_material`;
+  `translucent_material.tau` is a colour slot), `scattering`,
   `absorption`, `film_ior`, `film_thickness`, phase asymmetry.  These
   are raw magnitudes: NEVER colour-converted, never spectrally
   uplifted, which is the whole point (`scattering 1000000` survives).
@@ -1486,9 +1493,14 @@ added last and anisotropically.  The rules below are that order.
   features together instead of scrambling them.
 - **Geometry signals.**  Drive variation from the object's own shape --
   `occlusion()` for dirt in a crevice, `convexity()` for hand-worn polish
-  on an edge, a component of `N` for a gravity- or sun-driven effect.
-  These only answer on the SDF family and indexed meshes; on every
-  analytic primitive `curv` is 0, `occlusion()` returns its neutral 1 and
+  on an edge, `curv`/`curvR` for local differential curvature, or a
+  component of `N` for a gravity- or sun-driven effect.  `curv` and
+  `curvR` are populated via `ri.derivatives` on analytic curved primitives
+  (spheres, tori, cylinders, ellipsoids, patches) as well as
+  indexed/displaced meshes and SDFs (0 on flat planes/boxes).  By
+  contrast, `occlusion()`, `convexity()`, and `thickness()` require
+  `ISurfaceSignalProvider` on SDFs and indexed/displaced meshes; on
+  analytic primitives `occlusion()` returns its neutral 1 and
   `convexity()` its neutral 0, so each mask lights nothing rather than
   everything.
 - **Rare events, hand-placed, not uniform texture.**  One knot, one

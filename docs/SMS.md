@@ -15,18 +15,33 @@ hitting a diffuse receiver.
 
 | File | Role |
 |------|------|
-| `src/Library/Utilities/ManifoldSolver.h` | Solver interface, config, result structs |
-| `src/Library/Utilities/ManifoldSolver.cpp` | Full Newton solver, constraint, Jacobian, contribution eval |
+| `src/Library/Utilities/ManifoldSolver.h` | Solver interface, `ManifoldSolverConfig`, result structs |
+| `src/Library/Utilities/ManifoldSolver.cpp` | Full Newton solver, constraint, analytical half-vector Jacobian, contribution eval, extended-mode estimators |
+| `src/Library/Utilities/SMSConfig.h` | Parser-facing `SMSConfig` struct and defaults |
 | `src/Library/Utilities/SMSPhotonMap.h/cpp` | Photon-aided seeding; kd-tree of proven-good SMS seeds queried by `ManifoldSolver::EvaluateAtShadingPoint` |
-| `src/Library/Shaders/SMSShaderOp.h/cpp` | Unidirectional PT integration |
+| `src/Library/Shaders/PathTracingIntegrator.h/cpp` | Primary live consumer (`PathTracingPelRasterizer` / `PathTracingSpectralRasterizer` → `PathTracingIntegrator`) |
+| `src/Library/Shaders/PathTracingShaderOp.h/cpp` | Frozen shader-dispatch PT wrapper |
+| `src/Library/Shaders/SMSShaderOp.h/cpp` | Deprecated standalone shader-op wrapper |
 | `src/Library/Interfaces/SpecularInfo.h` | Material query for specular properties |
 
-SMS is wired into PT (`pathtracing_*_rasterizer`) and MLT.  It was
-historically wired into BDPT as well; the BDPT integration was
-excised in 2026-05 because state-of-the-art renderers don't combine
-BDPT with SMS and the cross-strategy MIS overlap was structural
-complexity for no measurable variance gain.  VCM handles caustics
-via merging and was never wired through SMS.
+```
+PathTracingPelRasterizer / PathTracingSpectralRasterizer
+        └──▶ PathTracingIntegrator ──┐
+pathtracing_shaderop (FROZEN) ───────┼──▶ ManifoldSolver (src/Library/Utilities/)
+sms_shaderop (DEPRECATED) ───────────┘
+```
+
+`ManifoldSolver` is wired **only** into unidirectional path tracing
+(`PathTracingPelRasterizer` and `PathTracingSpectralRasterizer` via
+`PathTracingIntegrator`, plus the frozen `pathtracing_shaderop` and
+deprecated `sms_shaderop`).  Neither `BDPT*`, `VCM*`, nor `MLT*` uses SMS
+(`auto_rasterizer` / `auto_spectral_rasterizer` also construct their PT
+delegate with SMS disabled).  BDPT was historically wired through SMS;
+that integration was excised in 2026-05 because state-of-the-art renderers
+don't combine BDPT with SMS and the cross-strategy MIS overlap added
+structural complexity for no measurable variance gain.  VCM handles
+caustics natively via vertex merging, and MLT was never wired to
+`ManifoldSolver`.
 
 ## Algorithm Pipeline
 
@@ -125,32 +140,50 @@ sample via Newton iteration.
   up to `sms_bernoulli_trials` additional Newton solves per successful
   path, which is expensive but removes the multi-solution bias.
 
-## Scene Syntax
+## Scene Syntax and Configuration
 
 ```
 pathtracing_pel_rasterizer
 {
     sms_enabled           TRUE
-    sms_max_iterations    30       # Newton iteration limit
-    sms_threshold         1e-4    # Convergence threshold on ||C||
-    sms_max_chain_depth   10       # Max specular vertices in chain
-    sms_biased            TRUE     # Skip Bernoulli PDF estimation
-    sms_bernoulli_trials  100      # Trials for unbiased mode
+    sms_max_iterations    20          # Newton iteration limit per solve
+    sms_threshold         1e-5        # Convergence threshold on ||C||
+    sms_max_chain_depth   30          # Max specular vertices in chain (10 on legacy shaderops)
+    sms_biased            TRUE        # Skip Bernoulli PDF estimation
+    sms_bernoulli_trials  100         # Max trials for unbiased mode (when sms_biased FALSE)
+    sms_multi_trials      1           # Independent Newton solves per shading point
+    sms_photon_count      0           # Photon-aided seed budget (0 = off)
+    sms_two_stage         FALSE       # Two-stage smoothed-reference then actual-surface solve
+    sms_seeding           "snell"     # "snell" (Snell-traced) or "uniform" (uniform-on-caster)
+    sms_target_bounces    0           # Exact required specular-vertex count (0 = unconstrained)
+    sms_extended          FALSE       # Opt-in extended SMS reference estimators & PT partition
 }
 ```
 
-Same parameters apply to `pathtracing_spectral_rasterizer`.
+The same `AddSMSConfigParams` parameters ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)) apply to `pathtracing_spectral_rasterizer`:
+
+| Parameter / `SMSConfig` field | Default | Description |
+|---|---|---|
+| `sms_enabled` (`enabled`) | `FALSE` | Master switch enabling SMS at non-specular surface shading points |
+| `sms_max_iterations` (`maxIterations`) | `20` | Maximum Newton iterations per solve |
+| `sms_threshold` (`threshold`) | `1e-5` | Convergence threshold on `\|\|C\|\|` |
+| `sms_max_chain_depth` (`maxChainDepth`) | `30` (`10` on frozen `pathtracing_shaderop` / deprecated `sms_shaderop`) | Hard cap on specular vertices in a manifold chain |
+| `sms_biased` (`biased`) | `TRUE` | Biased single-root weight (`1.0`); set `FALSE` for geometric Bernoulli `1/p` unbiased PDF estimation |
+| `sms_bernoulli_trials` (`bernoulliTrials`) | `100` | Maximum Bernoulli rediscovery trials per root when `sms_biased FALSE` (and in `sms_extended`) |
+| `sms_multi_trials` (`multiTrials`) | `1` | Independent Newton trials per shading-point evaluation |
+| `sms_photon_count` (`photonCount`) | `0` | Builds an `SMSPhotonMap` at scene prep when `> 0` to seed hard diacaustic / mirror chains |
+| `sms_max_photon_seeds` / `SMSConfig::maxPhotonSeedsPerShadingPoint` | `16` | Cap on kd-tree photon seeds run through Newton per shading point (`0` = unlimited; programmatic `SMSConfig` / `ManifoldSolverConfig` field) |
+| `sms_two_stage` (`twoStage`) | `FALSE` | Two-stage Newton solve (smoothed reference surface first, then actual displaced/Phong surface; [SMS_TWO_STAGE_SOLVER.md](SMS_TWO_STAGE_SOLVER.md)) |
+| `sms_levenberg_marquardt` / `SMSConfig::useLevenbergMarquardt` | `FALSE` | Adaptive diagonal Levenberg–Marquardt damping in `ManifoldSolver::NewtonSolve` ([SMS_LEVENBERG_MARQUARDT.md](SMS_LEVENBERG_MARQUARDT.md); programmatic `SMSConfig` / `ManifoldSolverConfig` field) |
+| `sms_seeding` (`seedingMode`) | `"snell"` | `"snell"` (Snell-trace from shading point toward light) or `"uniform"` (Mitsuba-style uniform-area point on caster + `SnellContinue`; [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md)) |
+| `sms_target_bounces` (`targetBounces`) | `0` | Required exact specular-bounce count `K` (`0` = no fixed target; recommended when `sms_seeding "uniform"`) |
+| **`sms_extended`** (`extended`) | `FALSE` | Opt-in extended SMS: native R/T below-TIR proposals, per-channel RGB / per-wavelength NM / per-lane HWSS geometry & medium replay, root-level delta-light estimator A, and topology-level area-emitter estimator B with shared PT/SMS ownership partition. Ignores `sms_biased`, `sms_seeding`, and `sms_two_stage`. Full specification: **[SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md)** |
 
 ## Implementation Notes
 
-### Surface derivatives
+### Analytical Jacobian and surface derivatives
 
-The solver uses central finite differences (`eps = 5e-4`) to compute
-dpdu, dpdv, dndu, dndv at each specular vertex.  This is geometry-
-agnostic (works with any shape that supports ray intersection) but
-introduces O(eps^2) error and requires 4 probe ray casts per vertex.
-Tangent vectors are projected into the tangent plane and
-Gram-Schmidt orthogonalized for Jacobian consistency.
+`ManifoldSolver` uses an **analytical block-tridiagonal half-vector Jacobian** (`BuildJacobian` + `ManifoldNormalDerivative`) by default for Newton steps and `|det(∂C/∂x)|` evaluation. Where a geometry does not supply analytical surface derivatives, the solver computes `dpdu`, `dpdv`, `dndu`, `dndv` via central finite-difference ray probes with step fallback `eps = 1e-5` (geometry-agnostic, 4 probe ray casts per vertex; `BuildJacobianNumerical` is retained only for the unused angle-difference formulation). Tangent vectors are projected into the tangent plane and Gram-Schmidt orthogonalized for Jacobian consistency.
 
 ### Jacobian determinant and geometric coupling
 
@@ -210,6 +243,15 @@ is significantly larger or smaller.
 Exact dielectric Fresnel (s- and p-polarization averaged) is used
 for the chain throughput, matching the `DielectricFresnel` function
 in the SSS materials.
+
+## Disjoint Path Spaces (PT vs. SMS Partition)
+
+Because SMS is added alongside unidirectional PT rather than MIS-weighted per strategy against BSDF sampling, PT and SMS must partition caustic path space cleanly so paths are neither double-counted nor lost:
+
+- **Delta lights (`omni_light`, `spot_light`, `directional_light`) — opaque NEE shadow suppression (`bSMSCoversDeltaLights`, DL-344):** At non-specular PART 2 surface anchors where SMS is active, `bSMSCoversDeltaLights` forces delta-light NEE shadow rays to treat clear specular dielectrics as opaque even when `transparent_shadows TRUE` is enabled on the PT rasterizer, because SMS owns refractive caustic connections to point and spot lights at those anchors. (Environment lights are ignored by SMS and remain wholly PT's.)
+- **Area emitters (`lambertian_luminaire_material` / mesh luminaires) — split emission suppression:** When a BSDF continuation from a prior non-specular shading anchor passes through one or more specular casters and hits an area emitter (`PathTracingIntegrator.cpp` PART 1), PT queries the solver rather than blindly dropping every post-specular emitter hit:
+  - **Legacy deterministic mode** (`SplitSuppressionExact`: `sms_seeding "snell"`, `sms_biased TRUE`, `sms_photon_count 0`, no alpha coverage): `ManifoldSolver::ClassifyEmitterHitCoverage` re-runs the deterministic endpoint-aware Snell seed and Newton solve from the recorded anchor to the hit emitter point and suppresses PT's emitter hit only when SMS covers that chain (`eSMSChainNotCovered` keeps PT's emission, DL-295).
+  - **Extended mode (`sms_extended TRUE`):** `ManifoldSolver::ExtendedEmitterHitOwned` enforces a canonical shared PT/SMS ownership partition per RGB component, NM wavelength, or HWSS lane ([SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md)). PT keeps every emitter hit (or unowned channel via `smsKeepMask`) outside SMS's eligible/owned specular topology, so Newton basin misses degrade only variance, never energy.
 
 ## References
 

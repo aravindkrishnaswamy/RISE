@@ -1,6 +1,8 @@
 # Extended SMS Phase 1 validation (2026-10-03)
 
-Status: Phase 1 primitives and interim scene policy merged from `sms-ext` at master `34bd520ec5e70a5cf96bcf8b8154b1a17888880f` after the final serial gate and fresh round 3 returned zero P1/P2. No ledger closure is claimed. This merge-record documentation adds no source change.
+> **Note:** This document is the historical Phase 1 merge validation record. See **[SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md)** for the final shipped Phases 1–4 architecture, the opt-in `sms_extended` scene parameter, and current ledger status.
+
+Status: Phase 1 primitives and interim scene policy merged from `sms-ext` at master `34bd520ec5e70a5cf96bcf8b8154b1a17888880f` after the final serial gate and fresh round 3 returned zero P1/P2. No ledger closure is claimed in this Phase 1 snapshot. This merge-record documentation adds no source change.
 
 ## Scope and rejection contract
 

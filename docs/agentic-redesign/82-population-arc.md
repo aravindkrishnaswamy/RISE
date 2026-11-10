@@ -1,6 +1,7 @@
 # Population — Repeats Are Most of the Richness (Arc 82 Design, 2026-08-12)
 
-> **Status:** BUILDING.  User direction 2026-08-12, after arc 81's first live
+> **Status: SHIPPED (2026-08-12); EXTENDED WITH `source` SUBTREE CLONES (post-[doc 87](87-recursive-scene-graph.md)).**
+> User direction 2026-08-12, after arc 81's first live
 > result: *"Let's do the population arc."*  Depends on arc 80's inventory and
 > arc 81's `light_scene`, whose pattern it copies almost exactly.
 
@@ -46,6 +47,12 @@ It is given ONE worked example of a repeat, and no number.  Object count is
 what this arc measures, so a count in the prompt would manufacture the
 result.  The example is the steering, per the measured lever; the prose is
 only the contract.
+
+> **Post-doc-87 update (`source` subtree clones):** After [87-recursive-scene-graph.md](87-recursive-scene-graph.md)
+> introduced `<element>_element_root` containers and `standard_object.source`, `populate_scene` was extended to
+> also accept `standard_object { name <clone>  source <existing_object_or_root>  position ...  orientation ...  scale ... }`
+> subtree-instancing chunks alongside `{ name, geometry, material, ... }` leaf repeats — allowing multi-part
+> elements/creatures to be cloned coherently as a single unit (resolving §7.1 below).
 
 ## 3. Forced first use
 
@@ -277,6 +284,11 @@ where they do not, the cause is structural rather than careless.  The fix is
 not a better scatter — it is that the pass needs to repeat GROUPS.  Arc-78
 attribution already knows which chunks belong to which element, which is
 exactly the grouping this lacks; wiring that in is the obvious next slice.
+
+> **Update (post-[doc 87](87-recursive-scene-graph.md)):** Closed by recursive scene-graph `source`
+> subtree cloning — `populate_scene` now lists element roots and accepts `{ name, source, position, orientation, scale }`
+> `standard_object` clones so an entire multi-part assembly (`<element>_element_root` and its descendants)
+> repeats together under one shared transform.
 
 ### 7.2 An unforced regression worth watching
 

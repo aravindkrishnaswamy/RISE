@@ -1,5 +1,13 @@
 # Node-Graph Canvas (doc-88 Phase 3 / MATERIAL_EDITOR C2)
 
+**Material Editor Slice 5 shipped (2026-10-31):** Material nodes (`category == 2`)
+on both `NodeGraphCanvas.swift` (macOS) and `NodeGraphCanvas.{h,cpp}` (Windows)
+now render live 40×40 3D studio shaderball thumbnails via the shared
+`MaterialPreview` engine (`src/Library/SceneEditor/MaterialPreview.{h,cpp}`),
+alongside the existing 2D `PainterPreview` swatches on Painter nodes. In addition,
+both desktop shells ship the sibling **`ObjectGraphCanvas`** (see §ObjectGraphCanvas
+below) over Objects, Geometry, and CSG/instancing wires.
+
 **Material Editor Slice 4 shipped (2026-10-31):** Both desktop graph canvases
 colour input sockets, output handles and connected wires by pipe: Color gold,
 Scalar neutral grey, Material green and Function purple; dual Color/Scalar
@@ -363,10 +371,29 @@ Same discipline as doc 88 §8: each slice runs the implementation-review-loop to
 
 ---
 
+### Sibling Canvas: `ObjectGraphCanvas` (Objects + Geometry + CSG / Instancing)
+
+Alongside the Material & Painter `NodeGraphCanvas`, both desktop shells ship a
+sibling **`ObjectGraphCanvas`** built on the same `GraphLayout` /
+`GraphLayoutSidecar` / C-ABI bulk-snapshot architecture:
+
+- **Shared C++:** `SceneEditController::ReadObjectGraphLaidOutFocused`
+  (`src/Library/SceneEditor/SceneEditController.{h,cpp}`) assembles the DAG of
+  `Object` and `Geometry` chunks plus CSG (`csg_object` left/right children) and
+  instancing/geometry reference wires, laid out via `GraphLayout` and persisted
+  in `<scene>.risegraph.json`.
+- **Desktop shells:** `ObjectGraphCanvas.swift` on macOS
+  (`build/XCode/rise/RISE-GUI/App/ObjectGraphCanvas.swift`) and
+  `ObjectGraphCanvas.{h,cpp}` on Windows (`build/VS2022/RISE-GUI/`), reusing the
+  same pan/zoom/selection/focus conventions as `NodeGraphCanvas`.
+
+---
+
 ### Critical Files for Implementation
 
 - `src/Library/Cst/Cst.h` (`ReferenceGraph`/`ReferenceUse`/`BuildReferenceGraph`/`DocInsertItem` — the edge and insertion primitives every slice builds on)
-- `src/Library/SceneEditor/SceneEditController.cpp` (`BuildAuthoredTree`/`RefreshTreeSnapshot_`, lines 4372-4640 — the pattern S11 generalizes to multi-parent)
+- `src/Library/SceneEditor/SceneEditController.cpp` (`BuildAuthoredTree`/`RefreshTreeSnapshot_` and `ReadPainterMaterialGraphLaidOut*` / `ReadObjectGraphLaidOutFocused`)
 - `src/Library/SceneEditor/PainterIntrospection.h` (the painter edge/param source S11's `ReferenceGraph` wraps, and the editability contract Phase B's edits must match)
-- `src/Library/SceneEditor/PainterPreview.h` (the thumbnail engine S15/S21 reuse verbatim — no new preview machinery needed)
+- `src/Library/SceneEditor/PainterPreview.{h,cpp}` (2D painter/stage/ramp thumbnail engine reused by S15/S21/S22)
+- `src/Library/SceneEditor/MaterialPreview.{h,cpp}` (Slice 5 deterministic 3D studio shaderball engine driving 40×40 Material-node thumbnails on both desktop graph canvases)
 - `docs/gui/MATERIAL_EDITOR.md` (§3/§3.7/§3.7a/§3.8 — the design this doc's Phase-B slices (S18-S20) implement almost line-for-line; keep both docs cross-referenced, not forked)

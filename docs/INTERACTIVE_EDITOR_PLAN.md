@@ -1,5 +1,7 @@
 # RISE Interactive Scene Editor Plan
 
+> **Status: HISTORICAL IMPLEMENTATION LOG (Phases 1–6 SHIPPED; later toolbar/save notes superseded by [gui/ADR_DOCUMENT_FIRST_EDITOR.md](gui/ADR_DOCUMENT_FIRST_EDITOR.md) and [GUI_ROADMAP.md](GUI_ROADMAP.md)).**
+
 **Status**: **COMPLETE AS AN EXECUTION PLAN.** Phases 1–5 shipped the shared
 editor and macOS/Windows/Android viewport stack. Phase 6 also shipped, but its
 first byte-splice implementation was later deleted in the July 2026 CST

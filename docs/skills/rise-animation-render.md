@@ -1,9 +1,24 @@
+---
+name: rise-animation-render
+description: |
+  Procedure for rendering a RISE scene timeline animation to an HDR10 /
+  ProRes 4444 movie, encoding linear EXR frame sequences via
+  tools/encode_pq_prores.py + ffmpeg with the required QuickTime colr
+  atom, and diagnosing animation movies that render static frames or play
+  back as SDR.
+---
+
 # RISE animation render → HDR movie
 
 ## When to use
 - Rendering a RISE scene's animation (a camera/object **timeline**) to a movie file.
 - Producing an **HDR** (ProRes 4444 / HDR10) movie of a scene.
 - Diagnosing an animation movie that "isn't HDR", plays back washed/dark, or renders the wrong (static) frames.
+
+## When NOT to use
+- Rendering a single still image (use `render` with `EXR` / `PNG` output directly).
+- Measuring per-pixel Monte Carlo variance or A/B integrator convergence (use [variance-measurement](variance-measurement.md) on raw undenoised EXR stills, not PQ-encoded video).
+- Authoring or debugging static scene lighting/materials before any timeline exists (use [effective-rise-scene-authoring](effective-rise-scene-authoring.md) first).
 
 ## Two paths
 1. **GUI — simplest for HDR.** The Mac RISE-GUI's `MovieRasterizerOutput.mm` (AVFoundation) renders the animation straight to an HDR10 ProRes `.mov`, writing the container `colr` atom automatically. Windows GUI uses `VideoEncoder.cpp` (FFmpeg). Load the scene, set the video output path, hit Render Animation. **Use this when you're at the GUI** — it Just Works for HDR.
@@ -51,6 +66,18 @@ QuickTime/macOS engages HDR off the **container `colr` atom** (`nclc: pri 9 trc 
 - **Viewing**: HDR is visible only on an HDR display + HDR-aware player (QuickTime on an XDR Mac). SDR displays tone-map it; a non-HDR-aware player shows PQ-as-SDR (wrong). To preview headlessly, tonemap the **linear EXRs** (not the PQ `.mov`) to sRGB.
 - **Content brightness**: renders are scene-referred; the script maps linear 1.0 = 100 nits. A dim/moody scene (low median nits) reads as HDR only in its highlights — to make HDR "pop", brighten the render or add a gain before the PQ step.
 
+## Anti-patterns
+- **Relying on `-color_primaries` / `-color_trc` or `-bsf:v prores_metadata=…` without `setparams` + `-movflags +write_colr`.** Writes codec metadata only, omitting QuickTime's container `colr` atom (`nclc: pri 9 trc 16 matrix 9`) so HDR pixels play back as SDR.
+- **Passing an unquoted `$FRAMES` shell variable in zsh** (`FRAMES=$(ls …); python3 … $FRAMES`) — collapses all EXR paths into one argument and fails with `"file name too long"`. Pass the glob directly.
+- **Stacking concurrent `./bin/rise` frame renders** — each render already saturates all CPU cores; run sequentially.
+- **Leaving the animated camera earlier than the last camera chunk** — RISE activates the last-defined camera, producing N identical static frames.
+
 ## Files
 - `tools/encode_pq_prores.py` — EXR (Rec.709-linear) → HDR10 (Rec.2020/PQ) `yuv444p10le` raw, piped to `ffmpeg prores_ks`.
 - GUI writers: `build/XCode/rise/RISE-GUI/Bridge/MovieRasterizerOutput.{h,mm}` (Mac, AVFoundation), `build/VS2022/RISE-GUI/VideoEncoder.{h,cpp}` (Windows, FFmpeg).
+
+## Stop rule
+Done when:
+1. Frame 0 and frame `N/2` visibly differ (confirming the active camera/object timeline actually ran).
+2. `ffprobe -v trace rendered/<name>.mov 2>&1 | grep nclc` prints `nclc: pri 9 trc 16 matrix 9`.
+3. `RISE_Log.txt` has no unexpected scene or frame-output errors.

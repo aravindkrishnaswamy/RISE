@@ -25,11 +25,14 @@ Important anchors:
 
 ## Directory Map
 
+- `Agent/`: embedded scene-editing agent loop, LLM provider codecs, perception/viewport observers, and evaluation runner
 - `Animation/`: keyframes, timelines, animation helpers
 - `Cameras/`: camera models
+- `Cst/`: lossless Concrete Syntax Tree (`Cst::ParseToCst` + `Cst::DeriveToJob`) — the canonical `.RISEscene` parse and derive path
 - `DetectorSpheres/`: detector sphere infrastructure
 - `Functions/`: polynomial and parametric math helpers
 - `Geometry/`: analytic and mesh geometry plus mesh loaders and UV generators.  Includes `DisplacedGeometry` — a composite that wraps any `IGeometry`, tessellates it via `IGeometry::TessellateToMesh`, and displaces vertices along their normals using an `IFunction2D`.  Parser chunk: `displaced_geometry`.
+- `Importers/`: external asset importers (glTF 2.0, `.hair` curve files)
 - `Interfaces/`: public abstract interfaces and contracts
 - `Intersection/`: ray-primitive intersection routines
 - `Lights/`: classic light implementations
@@ -39,12 +42,14 @@ Important anchors:
 - `Noise/`: noise generators used by painters and functions
 - `Objects/`: object wrappers and CSG
 - `Painters/`: color and texture sources
-- `Parsers/`: `.RISEscene`, script, command, and options parsing
+- `Parsers/`: descriptor-driven scene chunk registry (`ChunkParserRegistry.cpp`), plus script, command, and options parsers (native `.RISEscene` tokenization and derivation live in `Cst/` via `Cst::ParseToCst` + `Cst::DeriveToJob`)
 - `PhotonMapping/`: photon maps, tracers, and irradiance cache
 - `RasterImages/`: image representation, readers, writers, and accessors
 - `Rendering/`: rasterizers, ray caster, raster sequences, outputs, FilteredFilm, AOVBuffers
 - `Sampling/`: sample generators and pixel filters
-- `Shaders/`: shader ops, shader composition, volume shaders, PathTracingIntegrator, BDPTIntegrator
+- `SceneEditor/`: interactive scene editing model, transactions, gizmos, and revision history
+- `SceneEditorSuggestions/`: grammar-driven completions, hover diagnostics, and editor suggestions
+- `Shaders/`: shader ops, shader composition, volume shaders, `PathTracingIntegrator`, `BDPTIntegrator`, `VCMIntegrator`
 - `Utilities/`: reference counting, logging, media paths, math, optics, threading
 - `Volume/`: volume data and accessors
 
@@ -72,7 +77,12 @@ The project intentionally favors physically motivated, readable code over aggres
 - Add parser support if the type should be usable from `.RISEscene`.
 - Add a scene and or test that demonstrates the feature.
   Use `scenes/Tests` for focused regression or baseline scenes, and `scenes/FeatureBased` for curated showcase scenes when the feature is user-facing.
-- Update [../../build/make/rise/Filelist](../../build/make/rise/Filelist) if you added new `.cpp` files.
+- Update all **5** lock-step build projects when adding or removing `.cpp` / `.h` files under `src/Library/`:
+  - [../../build/make/rise/Filelist](../../build/make/rise/Filelist)
+  - [../../build/cmake/rise-android/rise_sources.cmake](../../build/cmake/rise-android/rise_sources.cmake)
+  - [../../build/VS2022/Library/Library.vcxproj](../../build/VS2022/Library/Library.vcxproj)
+  - [../../build/VS2022/Library/Library.vcxproj.filters](../../build/VS2022/Library/Library.vcxproj.filters)
+  - [../../build/XCode/rise/rise.xcodeproj/project.pbxproj](../../build/XCode/rise/rise.xcodeproj/project.pbxproj)
 
 ### Adding a new scene-visible feature
 
@@ -90,18 +100,23 @@ The project intentionally favors physically motivated, readable code over aggres
 
 ### Rasterizer hierarchy
 
-Pixel-based rasterizers form two parallel inheritance chains:
+Pixel-based rasterizers inherit from `PixelBasedRasterizerHelper` (common block dispatch, filtered film lifecycle, OIDN denoising, and output flushing) along several branches:
 
-**Shader-dispatch rasterizers** (use `RayCaster::CastRay` → ShaderOp dispatch):
-- `PixelBasedPelRasterizer` — standard RGB
-- `PixelBasedSpectralIntegratingRasterizer` — standard spectral
-- `BDPTRasterizerBase` → `BDPTPelRasterizer` / `BDPTSpectralRasterizer` — bidirectional
+**Shader-dispatch rasterizers — FROZEN legacy pipeline** (use `RayCaster::CastRay` → ShaderOp dispatch; frozen since 2026-10-09):
+- `PixelBasedPelRasterizer` — legacy shader-dispatch RGB (**FROZEN**)
+- `PixelBasedSpectralIntegratingRasterizer` — legacy shader-dispatch spectral (**FROZEN**)
 
-**Pure integrator rasterizers** (bypass shader ops, call `PathTracingIntegrator` directly):
-- `PathTracingPelRasterizer` (extends `PixelBasedPelRasterizer`) — iterative PT, RGB
-- `PathTracingSpectralRasterizer` (extends `PixelBasedSpectralIntegratingRasterizer`) — iterative PT, spectral
+**Pure integrator rasterizers** (bypass ShaderOp dispatch and call the modern integrators directly):
+- `PathTracingPelRasterizer` (extends `PixelBasedPelRasterizer`, overrides `IntegratePixel()`) — iterative PT, RGB (`PathTracingIntegrator`)
+- `PathTracingSpectralRasterizer` (extends `PixelBasedSpectralIntegratingRasterizer`, overrides `IntegratePixel()`) — iterative PT, spectral NM/HWSS (`PathTracingIntegrator`)
+- `BidirectionalRasterizerBase` (extends `PixelBasedRasterizerHelper`) — shared bidirectional subpath/light-pass base; calls integrators directly (NOT ShaderOp dispatch):
+  - `BDPTRasterizerBase` → `BDPTPelRasterizer` / `BDPTSpectralRasterizer` — bidirectional path tracing (`BDPTIntegrator`)
+  - `VCMRasterizerBase` → `VCMPelRasterizer` / `VCMSpectralRasterizer` — vertex connection and merging (`VCMIntegrator` + `BDPTIntegrator`)
+- `AutoRasterizer` / `AutoSpectralRasterizer` — automatic scene-analysis selector dispatching to PT, BDPT, or VCM (Pel and spectral)
+- `MLTRasterizer` / `MLTSpectralRasterizer` — PSSMLT Markov-chain transport over `BDPTIntegrator` (**FROZEN**)
 
-All inherit from `PixelBasedRasterizerHelper`, which provides the common block dispatch, filtered film lifecycle, OIDN denoising, and output flushing.  The pure integrator rasterizers override only `IntegratePixel()` and delegate to `PathTracingIntegrator` for the actual path tracing.
+**Interactive preview rasterizer**:
+- `InteractivePelRasterizer` — shared low-latency material/AO preview pipeline used identically across macOS, Windows, and Android viewports (`CreateInteractiveMaterialPreviewPipeline`).
 
 ## Path Guiding And Adaptive Alpha
 

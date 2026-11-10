@@ -1,8 +1,14 @@
 # 21 — Stable-Object Incremental Apply + Shared Reference Resolver
 
-> **Status:** **SUBSTANTIALLY IMPLEMENTED.** Stable-object incremental apply,
+> **Status (refreshed 2026-11):** **SUBSTANTIALLY IMPLEMENTED.** Stable-object incremental apply,
 > shared/recorded reference resolution, rename/reference safety, maintained
-> closure data, and non-spatial TLAS skipping landed. The body is the design and
+> closure data, and non-spatial TLAS skipping landed. Since 2026-06, `SceneEditor`
+> and `src/Library/Agent/` are live, and `BuildReferenceGraph` was extended to
+> trace `standard_object.source` (doc 87) plus `sample()`/`sample_scalar()`
+> painter/function references inside `expr(...)` (doc 88); production `DeriveToJob`
+> callers still pass `outRecorded = nullptr` by default, relying on the static
+> `BuildReferenceGraph` / `MaintainedReferenceGraph` guarded by `CstRecordDeriveTest`'s
+> bidirectional `recorded == static` cross-check. The body is the design and
 > review record; consult current `Cst.cpp`, `Job.cpp`, and `Cst*Test.cpp`
 > coverage for exact behavior.
 
@@ -65,7 +71,8 @@ the derive-apply and every consumer (rename, closure). No parallel scan.
   generation. Rename/closure read that stamped graph; a stale graph (artifact
   re-derived) is detected by the stamp, never silently trusted.
 - **Resolution is descriptor-driven at the apply layer**, replacing the scattered
-  per-parser `GetX()->GetItem(name)` ([AsciiSceneParser.cpp:1411,1451,…](../../src/Library/Parsers/ChunkParserRegistry.cpp))
+  per-parser `GetX()->GetItem(name)` ([ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp),
+  formerly `AsciiSceneParser.cpp:1411,1451,…`)
   as the *recording* path. (Phase: the parser's internal lookups remain, but the
   recorded graph is what consumers use; a later phase routes the parser lookups
   through the resolver so the two cannot drift even in principle.)
@@ -76,7 +83,8 @@ the derive-apply and every consumer (rename, closure). No parallel scan.
 - **⚠ Static-graph gap to close before slice 2 (rename): `timeline`.** A `timeline`
   references its animated target (`element`) and its owning `animation` as
   `ValueKind::String`, NOT `Reference`
-  ([AsciiSceneParser.cpp:9555](../../src/Library/Parsers/ChunkParserRegistry.cpp)), so
+  ([ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp),
+  formerly `AsciiSceneParser.cpp:9555`), so
   those chunk→chunk edges are **invisible to the descriptor scan** — this is a
   *static* edge the scan structurally misses, not the dynamic-helper case above.
   Renaming or recreating an animated entity on the static graph would silently
@@ -181,7 +189,8 @@ the managers a typed removal clears. Classification:
     Painter-category gate today).
   - **`gltf_import` is the worst case: it is `ChunkCategory::Geometry`** but its
     `Finalize` spawns many objects/materials/painters/lights/a camera
-    ([AsciiSceneParser.cpp:5164](../../src/Library/Parsers/ChunkParserRegistry.cpp)).
+    ([ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp),
+    formerly `AsciiSceneParser.cpp:5164`).
     `IsMaterialComposed` (material-only) does NOT catch it, and the Geometry gate
     ALLOWS it — so it must be refused explicitly. The Hosek-Wilkie sky similarly
     spawns a hidden `__hw_sun__` light (currently caught only because it has no
@@ -262,8 +271,10 @@ edits under B.
 
 ## 8. D35 — record-during-derive (the structural one-path)
 
-**Status (2026-06-24): KERNEL COMPLETE (slices 1–2 + a comprehensive drift guard); the
-consumer default-switch is GATED on live editor consumers.** This is the remaining D35 step
+**Status (2026-06-24; updated 2026-11): KERNEL COMPLETE (slices 1–2 + a comprehensive drift guard);
+`SceneEditor` and `Agent` are live and `BuildReferenceGraph` traces `standard_object.source` +
+`sample()`/`sample_scalar()` in `expr(...)`, while production `DeriveToJob` still passes
+`outRecorded = nullptr` by default.** This is the remaining D35 step
 from §2/§6 (slice 5): route the derive's OWN resolution through the recorded graph so the
 static graph and the engine **cannot drift**. Delivered: the recorded graph IS the engine's
 production+resolution (it cannot drift by construction), and a bidirectional cross-check
@@ -274,11 +285,11 @@ PATTERNS (a drift on a pattern outside the corpus — shader/shaderop, light —
 this runtime guard; those edges rely on the 144-param convergence proof, §6 slice-5). It is a
 drift DETECTOR on the tested patterns, not an exhaustive every-edge proof. What remains (gated, NOT
 speculatively built): making closure CONSUMERS default to the recorded graph + maintaining it
-incrementally — there are no live closure consumers today (the editor/agent layer doesn't
-exist yet), the recorded graph requires a derive the Document-only consumers don't have, and
-rename always needs the param-level static path regardless. The live editor (holding
-`(doc, Job, recorded)`) adopts the recorded graph for closure when it lands; the cross-check
-is the no-drift guarantee until then.
+incrementally — even though `SceneEditor` and `src/Library/Agent/` have since shipped, production
+`DeriveToJob` still defaults to `outRecorded = nullptr` (so the recording hooks remain zero-cost
+off unless explicitly requested), Document-only consumers still lack a live derive, and
+rename always needs the param-level static path regardless. The bidirectional `CstRecordDeriveTest`
+cross-check remains the active no-drift guarantee.
 
 **Why it's needed.** Slices 1–5 + the post-gate review rounds converged the *static*
 resolver (`BuildReferenceGraph`) to match the engine for all 144 reference params — but by

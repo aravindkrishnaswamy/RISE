@@ -1,9 +1,12 @@
 # Agent Turn-Efficiency and Output-Quality — Session Log (2026-07-27 → 2026-07-29)
 
-> **Status:** 26 commits on `master`, gate green throughout (`make all` zero
-> warnings, `./run_all_tests.sh` 225/225, `xcodebuild RISE-GUI` clean).
-> Nothing pushed as of the last entry; `master` needed
-> `git pull --rebase origin master` and got it (29 replayed, 0 conflicts).
+> **Status: HISTORICAL SESSION LOG (2026-07-27 – 2026-07-29).** 26 commits landed on
+> `master` during this session (`make all` zero warnings, `./run_all_tests.sh` 225/225,
+> `xcodebuild RISE-GUI` clean). Subsequent arcs closed its open threads: creative-richness
+> bare-prompt evals & skill re-anchoring shipped in [73-creative-richness-design.md](73-creative-richness-design.md) /
+> [74-creative-richness-arc-log.md](74-creative-richness-arc-log.md), the E4 render-cadence
+> gate shipped in [75-expressive-surface-arc.md](75-expressive-surface-arc.md), and
+> `lathe_geometry` (§6.1's noted gap) shipped in [85-geometry-expressiveness-candidates.md](85-geometry-expressiveness-candidates.md) C3.
 >
 > **What this is:** a working log of what was measured, what was changed, what
 > was got wrong, and what is still open — written so a later session can pick

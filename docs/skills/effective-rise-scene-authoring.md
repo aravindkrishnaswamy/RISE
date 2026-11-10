@@ -46,10 +46,18 @@ description: |
 The single biggest predictor of "this scene renders correctly the
 first time" is whether you started from a working reference.  Find one
 in `scenes/Tests/` whose **rasterizer + camera + lighting style** matches
-what you want (e.g. `pixelpel_rasterizer` + `pinhole_camera` + a
-directional key + ambient is the most common combo) and adapt it.
+what you want (e.g. `pathtracing_pel_rasterizer` or `auto_rasterizer` +
+`pinhole_camera` + an area light or directional key + an environment
+`radiance_map` / `hosek_wilkie_skylight` is the modern norm; never start
+from the frozen `pixelpel_rasterizer` or `ambient_light`) and adapt it.
 Don't start with a blank file unless you're authoring something
 genuinely novel.
+
+Native scenes use the `RISE ASCII SCENE 7` header, declare output
+resolution in a top-level `film { width … height … }` chunk (not inside
+the camera chunk), and express parametric values with document-level
+`let` constants and `expr(...)` rather than retired `$(...)` / `FOR`
+constructs (see [src/Library/Parsers/README.md](../../src/Library/Parsers/README.md)).
 
 Good starting points:
 
@@ -58,7 +66,7 @@ Good starting points:
 - `scenes/Tests/Materials/pbr_metallic_roughness.RISEscene` — PBR
   spheres with `pbr_metallic_roughness_material`.
 - `scenes/Tests/Importers/gltf_import_avocado.RISEscene` — glTF bulk
-  import + key/ambient lighting.
+  import + environment `radiance_map` / key lighting.
 - `scenes/Tests/Geometry/sweep_instances.RISEscene` — the procedural
   chunks (`sweep_geometry`, `path_instances_geometry`) on four reuse
   cases: tube on a 3D S-curve, tapered horn, beads on an arc, twisted
@@ -182,10 +190,10 @@ standard_object
 }
 ```
 
-A dark control sphere with `power 3.14` directional + `power 0.25`
-ambient indicates a wrong-direction directional (most common — see
-§1).  A control sphere that's bright but tinted indicates a colour
-space bug (§4).
+A dark control sphere with a `power 3.14` directional key + a dim sky
+or environment `radiance_map` indicates a wrong-direction directional
+(most common — see §1).  A control sphere that's bright but tinted
+indicates a colour space bug (§4).
 
 ### 4. Render at low SPP first
 
@@ -225,7 +233,8 @@ confirm the lighting works in isolation before trusting the importer.
 
 If the scene has SMS enabled (`sms_enabled TRUE`), three SMS knobs
 need scene-class-aware values, not defaults.  See
-[CLAUDE.md] §"SMS seeding mode" + [docs/SMS_PHOTON_REGIME.md] for the
+[CLAUDE.md](../../CLAUDE.md) §"SMS seeding mode" +
+[docs/SMS_PHOTON_REGIME.md](../SMS_PHOTON_REGIME.md) for the
 full empirical writeup; quick decision tree:
 
 1. **`sms_seeding`**:
@@ -247,13 +256,14 @@ full empirical writeup; quick decision tree:
    - Required (not optional) when `sms_seeding "uniform"` — without
      it, uniform mode produces variable-length chains and a 36-53 %
      phys-fail rate vs. snell's 3-17 %.  See commit `a3790c4` and
-     [docs/SMS_SEEDING_OVERTRACE_FIX.md] §"Uniform-mode follow-up".
+     [docs/SMS_SEEDING_OVERTRACE_FIX.md](../SMS_SEEDING_OVERTRACE_FIX.md)
+     §"Uniform-mode follow-up".
 
 3. **`sms_photon_count`**: default `0` = off.  Enable (`100000` is a
    reasonable starting value) ONLY when the no-photon ok rate is
    below ~10 % — i.e. snell-trace is systematically missing
    caustic basins.  Diagnostic decision tree in
-   [docs/SMS_PHOTON_REGIME.md]:
+   [docs/SMS_PHOTON_REGIME.md](../SMS_PHOTON_REGIME.md):
    - **Diacaustic-class** (multi-basin curved mirror): photons help
      both modes, uniform sees the bigger gain.  `sms_photon_count
      100000` + `sms_seeding "uniform"` is the canonical combo.
@@ -269,7 +279,7 @@ full empirical writeup; quick decision tree:
    energy).  It ignores `sms_seeding`, `sms_biased` and `sms_two_stage`, needs `sms_enabled TRUE`, and
    `sms_photon_count > 0` disables SMS under it.  It is inert on
    scenes with a `composite_material`, and it costs roughly 10-17x on
-   caustic-heavy scenes.  See [docs/SMS_EXTENDED_DESIGN.md] §"Using
+   caustic-heavy scenes.  See [docs/SMS_EXTENDED_DESIGN.md](../SMS_EXTENDED_DESIGN.md) §"Using
    extended SMS".
 
 ### 8. Save the working scene to `scenes/Tests/` or `scenes/FeatureBased/`

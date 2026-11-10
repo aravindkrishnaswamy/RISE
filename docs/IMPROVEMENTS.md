@@ -12,7 +12,7 @@ RISE already has significant infrastructure in place:
 
 - Full bidirectional path tracing with explicit light and eye subpaths
 - Spectral rendering (sampled spectrum, per-wavelength PT/BDPT)
-- SMS / manifold solving (Zeltner et al. 2020).  See [SMS_TWO_STAGE_SOLVER.md](SMS_TWO_STAGE_SOLVER.md) for the two-stage extension scope, [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) for the in-progress Mitsuba-faithful refactor, and [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md) for the post-2020 literature catalogue (PMS / SMBS / MPG / Specular Polynomials / PSMS-ReSTIR / Bernstein Bounds).
+- SMS / manifold solving (Zeltner et al. 2020), with uniform seeding and the `sms_extended` two-stage solver shipped.  See [SMS_TWO_STAGE_SOLVER.md](SMS_TWO_STAGE_SOLVER.md) for the two-stage extension scope, [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) for the Mitsuba-faithful uniform-seeding refactor, and [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md) for the post-2020 literature catalogue (PMS / SMBS / MPG / Specular Polynomials / PSMS-ReSTIR / Bernstein Bounds).
 - OpenPGL path guiding with RIS and variance-aware adaptive alpha (PT and BDPT eye subpaths)
 - BSSRDF-aware transport (Donner-Jensen, Burley diffusion profiles) in both PT and BDPT
 - Owen-scrambled Sobol samplers
@@ -42,8 +42,8 @@ The improvements below target gaps where the field has advanced beyond what RISE
 | 7 | ~~Null-scattering volume framework~~ **DONE** | Volumes | Large | Roadmap Ranks 5-6 |
 | 8 | ~~Optimal MIS weights~~ **DONE** | Transport | Medium | None |
 | 9 | ~~VCM (Vertex Connection and Merging)~~ **DONE** (v1: VC+VM, surface-only, fixed radius, balance heuristic, Pel + Spectral/HWSS — see [docs/VCM.md](VCM.md)) | Transport | Medium-Large | None |
-| 10 | Hair/fiber BSDF (Chiang et al. 2016) | Materials | Medium | ~~1 (GGX foundation)~~ None |
-| 11 | Jakob-Hanika sigmoid spectral uplifting | Spectral | Small | 5 (HWSS) |
+| 10 | ~~Hair/fiber BSDF (Chiang et al. 2016)~~ **DONE** | Materials | Medium | ~~1 (GGX foundation)~~ None |
+| 11 | ~~Jakob-Hanika sigmoid spectral uplifting~~ **DONE** | Spectral | Small | 5 (HWSS) |
 
 ---
 
@@ -75,7 +75,7 @@ New:
 Modified:
 - `src/Library/RISE_API.h` / `.cpp` — Public construction API
 - `src/Library/Interfaces/IJob.h`, `src/Library/Job.h` / `.cpp` — Material creation
-- `src/Library/Parsers/AsciiSceneParser.cpp` — `ggx_material` parser chunk
+- `src/Library/Parsers/ChunkParserRegistry.cpp` — `ggx_material` parser chunk
 - `build/make/rise/Filelist` — Build system
 - `tests/SPFBSDFConsistencyTest.cpp`, `tests/SPFPdfConsistencyTest.cpp` — GGX entries added
 
@@ -167,7 +167,7 @@ Light subpath training data is collected via `RecordGuidingTrainingLightPath()`,
 | `src/Library/Shaders/BDPTVertex.h` | Added `guidingReversePdfDirectionIn` and `guidingReverseScatteringWeight` for reversed training segments |
 | `src/Library/Rendering/BDPTRasterizerBase.h` | Added `pLightGuidingField` member |
 | `src/Library/Rendering/BDPTRasterizerBase.cpp` | Creates separate `pLightGuidingField` when `maxLightGuidingDepth > 0`; trains both fields in parallel; passes both to `SetGuidingField()` at all call sites; releases light field in destructor and cleanup |
-| `src/Library/Parsers/AsciiSceneParser.cpp` | Parse `pathguiding_light_max_depth` in both BDPT chunks (Pel and Spectral) |
+| `src/Library/Parsers/ChunkParserRegistry.cpp` | Parse `pathguiding_light_max_depth` in both BDPT chunks (Pel and Spectral) |
 
 **Files unchanged (by design):** `PathTransportUtilities.h` (utilities reused as-is), `MISWeight()` (auto-correct via PDF chain), `PathTracingShaderOp.cpp` (untouched — no PT risk), `RuntimeContext.h` (`maxLightGuidingDepth` lives in integrator only).
 
@@ -204,7 +204,7 @@ Light guiding adds ~12% on top of eye-only guiding, from the additional field qu
 
 ### Future Work
 
-If convergence is poor on highly asymmetric (non-reciprocal) scenes, Option B (separate light-specific OpenPGL field) can be added without changing the sampling code — only the field pointer passed to `GenerateLightSubpath` changes.
+Option B (a dedicated `pLightGuidingField` OpenPGL field for light subpaths) shipped as the baseline implementation above after Option A (shared field) showed destructive interference. Potential follow-ups include extending light-subpath guiding to VCM's photon/light pass and investigating OpenPGL parallax-compensated / directional-product refinements on highly glossy chains.
 
 ---
 
@@ -244,7 +244,7 @@ Modified:
 - `src/Library/Utilities/PathVertexEval.h` — Sw evaluation for random-walk entry vertices
 - `src/Library/RISE_API.h` / `.cpp` — Public construction API
 - `src/Library/Interfaces/IJob.h`, `src/Library/Job.h` / `.cpp` — Material creation
-- `src/Library/Parsers/AsciiSceneParser.cpp` — `randomwalk_sss_material` parser chunk
+- `src/Library/Parsers/ChunkParserRegistry.cpp` — `randomwalk_sss_material` parser chunk
 - `build/make/rise/Filelist` — Build system
 
 ### Scene syntax
@@ -264,7 +264,7 @@ randomwalk_sss_material
 
 ---
 
-## 4. Light BVH For Many-Light Sampling
+## 4. Light BVH For Many-Light Sampling — DONE
 
 ### Why This Is Fourth
 
@@ -336,11 +336,11 @@ The light BVH selection PDF replaces the alias-table PDF in the existing MIS fra
 | `src/Library/Interfaces/IRayCaster.h` | `SetUseLightBVH()` pure virtual |
 | `src/Library/Utilities/StabilityConfig.h` | `useLightBVH` field |
 | `src/Library/Interfaces/IJob.h` | `StabilityConfig` parameter added to `SetMLTRasterizer` |
-| `src/Library/Parsers/AsciiSceneParser.cpp` | `light_bvh` in `pixelpel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `mlt_rasterizer` |
+| `src/Library/Parsers/ChunkParserRegistry.cpp` | `light_bvh` in `pathtracing_*`, `bdpt_*`, `vcm_*`, `auto_*`, `pixelpel_rasterizer`, `pixelintegratingspectral_rasterizer`, `mlt_*` |
 | `src/Library/Job.cpp` | Wire `stabilityConfig.useLightBVH` to `pCaster->SetUseLightBVH()` |
 | `build/make/rise/Filelist` | Add `LightBVH.cpp` |
 
-**Scene syntax**: Add `light_bvh true` to any `pixelpel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, or `mlt_rasterizer` chunk.
+**Scene syntax**: Add `light_bvh true` to any `pathtracing_pel_rasterizer`, `pathtracing_spectral_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `vcm_pel_rasterizer`, `vcm_spectral_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` (or legacy `pixelpel_rasterizer`, `pixelintegratingspectral_rasterizer`, `mlt_rasterizer`, `mlt_spectral_rasterizer`) chunk.
 
 **Quantitative results** (100-light corridor, 64 SPP, 512x512):
 
@@ -432,7 +432,7 @@ Each rasterizer (`PixelBasedSpectralIntegratingRasterizer`, `BDPTSpectralRasteri
 | `src/Library/Rendering/BDPTSpectralRasterizer.h/.cpp` | HWSS mode for BDPT spectral rasterizer |
 | `src/Library/Shaders/BDPTIntegrator.h/.cpp` | `RecomputeSubpathThroughputNM`, `HasDispersiveDeltaVertex` |
 | `src/Library/Rendering/MLTSpectralRasterizer.h/.cpp` | Spectral MLT rasterizer (new) |
-| `src/Library/Parsers/AsciiSceneParser.cpp` | `hwss` parameter + `mlt_spectral_rasterizer` chunk |
+| `src/Library/Parsers/ChunkParserRegistry.cpp` | `hwss` parameter + `mlt_spectral_rasterizer` chunk |
 | `src/Library/RISE_API.h/.cpp` | HWSS params threaded through API |
 | `src/Library/Job.h/.cpp`, `src/Library/Interfaces/IJob.h` | HWSS params threaded through job |
 
@@ -490,7 +490,7 @@ Implemented Morton-indexed Sobol (ZSobol) sampling following Ahmed & Wonka (SIGG
 Modified 14 files to thread `useZSobol` from parser through Job/API to rasterizer constructors:
 - Rasterizers: `PixelBasedPelRasterizer`, `BDPTPelRasterizer`, `PixelBasedSpectralIntegratingRasterizer`, `BDPTSpectralRasterizer` (`.h` and `.cpp`)
 - `PixelBasedRasterizerHelper.h/.cpp` (added `bool useZSobol` member)
-- `RISE_API.h/.cpp`, `IJob.h`, `Job.h/.cpp`, `AsciiSceneParser.cpp`
+- `RISE_API.h/.cpp`, `IJob.h`, `Job.h/.cpp`, `ChunkParserRegistry.cpp`
 
 #### Scene Syntax
 
@@ -710,7 +710,7 @@ Two new rasterizers bypass the shader-op pipeline entirely, calling `PathTracing
 | `PathTracingPelRasterizer` | `PixelBasedPelRasterizer` | `pathtracing_pel_rasterizer` |
 | `PathTracingSpectralRasterizer` | `PixelBasedSpectralIntegratingRasterizer` | `pathtracing_spectral_rasterizer` |
 
-Both inherit the standard pixel-based sample loop (Sobol/ZSobol, adaptive sampling, path guiding training, optimal MIS training) from their base classes. The Pel variant supports per-sample AOV accumulation for OIDN. The spectral variant supports both per-wavelength (NM) and hero wavelength (HWSS) modes.
+Both inherit the standard pixel-based sample loop (Sobol/ZSobol, adaptive sampling, path guiding training) from their base classes; `pathtracing_pel_rasterizer` also inherits optimal MIS training (`optimal_mis`, which `pathtracing_spectral_rasterizer` omits because `AddOptimalMISParams` is Pel-only) and per-sample AOV accumulation for OIDN. The spectral variant supports both per-wavelength (NM) and hero wavelength (`hwss`) modes.
 
 **Scene syntax** (same parameters as existing rasterizers plus SMS controls):
 ```
@@ -718,6 +718,7 @@ pathtracing_pel_rasterizer
 {
     samples                 64
     oidn_denoise            TRUE
+    optimal_mis             TRUE
     pathguiding             true
     pathguiding_sampling_type RIS
     sms_enabled             true
@@ -730,9 +731,9 @@ pathtracing_spectral_rasterizer
 {
     samples                 64
     spectral_samples        16
-    use_hwss                TRUE
+    hwss                    TRUE
     sms_enabled             true
-    # all stability controls
+    # all stability controls (note: optimal_mis is Pel-only and omitted here)
 }
 ```
 
@@ -770,7 +771,7 @@ pathtracing_spectral_rasterizer
 | `src/Library/Shaders/PathTracingShaderOp.h/.cpp` | Now delegates to PathTracingIntegrator via IntegrateFromHit (modified) |
 | `src/Library/Shaders/BSSRDFEntryAdapters.h` | Shared BSSRDF entry-point adapters (new) |
 | `src/Library/Job.cpp` | Rasterizer construction (modified) |
-| `src/Library/Parsers/AsciiSceneParser.cpp` | New chunk parsers (modified) |
+| `src/Library/Parsers/ChunkParserRegistry.cpp` | New chunk parsers (modified) |
 | `src/Library/RISE_API.h/.cpp` | Public construction API (modified) |
 | `build/make/rise/Filelist` | Build file list (modified) |
 
@@ -825,11 +826,23 @@ SmallVCM (smallvcm.com) is a ~2000-line C++ educational implementation covering 
 
 ---
 
-## 10. Hair/Fiber BSDF (Chiang Et Al. 2016)
+## 10. Hair/Fiber BSDF (Chiang Et Al. 2016) — DONE
 
-### Why This Is Tenth
+**Implemented Summer–Autumn 2026.**
 
-RISE has no dedicated hair or fiber BSDF. The Chiang et al. model (Disney/Hyperion, also used in pbrt-v4 and Cycles) is the production standard. It builds on Marschner et al. (2003) with near-field formulation, a single residual lobe for all higher-order internal reflections, and logistic distributions for azimuthal roughness with closed-form CDF. This is a self-contained material addition.
+### Implementation Summary
+
+Full hair, fur, and fiber subsystem built around Chiang et al. (2016) with d'Eon energy-conserving longitudinal `Mp` lobes, trimmed-logistic azimuthal lobes, melanin/dye/direct parameterization, optional scattering medulla profile, dedicated curve geometry, procedural fur grooming, and shared fiber primitives reused by cloth:
+
+- **BSDF & Material**: `src/Library/Materials/HairBSDF.{h,cpp}`, `src/Library/Materials/HairMaterial.h`, `src/Library/Materials/HairMedullaProfile.{h,cpp}`, and shared fiber lobe math in `src/Library/Materials/FibreLobeMath.h` (implementing `IBSDF` and `ISPF` in both RGB and native per-wavelength `NM` forms).
+- **Geometry, Guides & Grooming**: `src/Library/Geometry/HairGeometry.{h,cpp}`, `hair_geometry` and `hair_guides` scene chunks in `src/Library/Parsers/ChunkParserRegistry.cpp`, CyHair `.hair` binary/ASCII strand loader, procedural guide interpolation (`density`, `comb`, `clump`, `length_painter`, `guides`, `base_detail`), and the `add_fuzz` agent grooming verb. Full design in [docs/HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md).
+- **Cloth & Fiber Extension**: `fabric_material` (energy-compensated Charlie sheen over allowed bases) and `weave_material` (two-thread-family Sadeghi/d'Eon microcylinder cloth BSDF sharing `FibreLobeMath.h`, with `transmission thin` support). Full design in [docs/CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md).
+
+### Original Specification
+
+### Why This Was Tenth
+
+RISE previously had no dedicated hair or fiber BSDF. The Chiang et al. model (Disney/Hyperion, also used in pbrt-v4 and Cycles) is the production standard. It builds on Marschner et al. (2003) with near-field formulation, a single residual lobe for all higher-order internal reflections, and logistic distributions for azimuthal roughness with closed-form CDF. This is a self-contained material addition.
 
 ### What To Implement
 
@@ -852,8 +865,8 @@ Sample the combined longitudinal x azimuthal distribution. The logistic CDF enab
 ### Current RISE Files
 
 - `src/Library/Interfaces/ISPF.h` (interface to implement)
-- `src/Library/Interfaces/IBRDF.h`
-- `src/Library/Materials/` (add new files here)
+- `src/Library/Interfaces/IBSDF.h`
+- `src/Library/Materials/` (`HairBSDF.{h,cpp}`, `HairMaterial.h`, `HairMedullaProfile.{h,cpp}`, `FibreLobeMath.h`)
 
 ### Deliverables
 
@@ -870,9 +883,22 @@ Sample the combined longitudinal x azimuthal distribution. The logistic CDF enab
 
 ---
 
-## 11. Jakob-Hanika Sigmoid Spectral Uplifting
+## 11. Jakob-Hanika Sigmoid Spectral Uplifting — DONE
 
-### Why This Is Eleventh
+**Implemented Summer–September 2026.**
+
+### Implementation Summary
+
+End-to-end Jakob & Hanika (CGF/EG 2019) sigmoid polynomial spectral uplifting across textures and RGB painters, paired with the Rec.709 linear working-space migration and D65 reference-illuminant spectral convention:
+
+- **Core Polynomial & LUT Runtime**: `src/Library/Utilities/Color/RGBSigmoidPolynomial.h`, `src/Library/Utilities/Color/RGBToSpectrumTable.{h,cpp}`, and `src/Library/Utilities/Color/RGBSpectra.{h,cpp}`.
+- **Offline Table Generator**: `tools/JakobHanikaLUTGen.cpp` (~1 s build-time generation for Rec.709 / sRGB with D65 whitepoint).
+- **Painters & Raster Images**: integrated into `src/Library/Painters/` and `src/Library/RasterImages/` so `GetColorNM(ri, nm)` evaluates smooth bounded `[0, 1]` reflectance spectra (and D65-weighted illuminant uplift for emitters/lights).
+- **Design & Gamut Audits**: see [docs/COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md), [docs/JH_LUT_GAMUT.md](JH_LUT_GAMUT.md), and [docs/SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md).
+
+### Original Specification
+
+### Why This Was Eleventh
 
 The mapping from RGB to spectral reflectance is underdetermined. The Jakob and Hanika (CGF/Eurographics 2019) sigmoid method parameterizes spectra as S(lambda) = sigmoid(c0 * lambda^2 + c1 * lambda + c2), intrinsically bounded in [0,1] and smooth. A precomputed 3D lookup table maps RGB to three coefficients. Evaluation costs ~6 FLOPs per wavelength. Zero round-trip error on the full sRGB gamut. This is the standard used by both pbrt-v4 and Mitsuba 3.
 
@@ -894,8 +920,8 @@ At shading time, evaluate S(lambda) = sigmoid(c0 * lambda^2 + c1 * lambda + c2) 
 
 ### Current RISE Files
 
-- `src/Library/Utilities/Color/SpectralPacket.h` (spectral evaluation infrastructure)
-- `src/Library/Texturing/` (texture loading and evaluation)
+- `src/Library/Utilities/Color/SpectralPacket.h`, `RGBSigmoidPolynomial.h`, `RGBToSpectrumTable.{h,cpp}`, `RGBSpectra.{h,cpp}` (spectral evaluation & uplifting infrastructure)
+- `src/Library/Painters/` and `src/Library/RasterImages/` (painter evaluation and texture loading/storage)
 
 ### Deliverables
 
@@ -999,7 +1025,7 @@ continuous-PMF fix:
   `EvaluateNEEImpl`) — mesh-side strategies don't need migration.
 - **BDPT-side scope**: 6 sites per the v2 design's "Group 2" rows,
   using the Phase-1.A `IsInfiniteLight()` + `ConvertDensity` helpers.
-- **OpenPGL guiding**: env-pdf consumers in `src/Library/Guiding/`.
+- **OpenPGL guiding**: env-pdf consumers in `src/Library/Utilities/PathGuidingField.{h,cpp}`.
 - **Catastrophe modes defused**: prior v2 attempts catastrophically
   collapsed BDPT to 6–36 % of PT because the binary `envSelectProb`
   interacted with partial SA landings.  Session 9's continuous-PMF
@@ -1095,10 +1121,10 @@ baseline for Phase 1** — 80/80 lax, production-working, empirically closest to
 PT, bounded ~11-28 % strict-only residual.  The real fix is a multi-week
 monolithic migration gated behind a separate HWSS prerequisite — not justified
 for a bounded strict-only residual given the 4-attempt history.  **No
-integrator code landed (src/** byte-identical to HEAD); one optional
+integrator code landed (`src/**` byte-identical to HEAD); one
 test-harness improvement** (`pixel_filter box` on the two PT rasterizer strings
 in `tests/EnvLightBalanceTest.cpp`, removing the documented filter confounder;
-80/80 lax, 116/116 suite) left in the working tree for review.
+80/80 lax, 116/116 suite) committed.
 
 ### Background
 
@@ -1285,40 +1311,30 @@ weights sum to 1 unbiased — closing the 15-22% gap.
   scenes: BDPT/VCM RMSE vs PT-reference should drop by ≥15% (the
   residual gap closed).
 
-### Companion limitation — VCM connection transmittance — MECHANICAL FIX IN WORKING TREE 2026-05-31; SUPERVISOR DECISION PENDING
+### Companion limitation — VCM connection transmittance — CLOSED (COMMITTED 2026-05-31)
 
-**Pre-fix state (still documented here as the diagnosis of record):**
-VCM's NEE (and other connection strategies) do not currently apply
-connection transmittance at all — `VCMIsVisible` is a binary
+**Pre-fix state (retained as historical diagnosis):**
+VCM's NEE (and other connection strategies) previously did not apply
+connection transmittance at all — `VCMIsVisible` was a binary
 occlusion test, not a media-aware shadow walk like BDPT's
 `EvalConnectionTransmittance`.  The 2026-05-26 round 4 fix that
 extended env-NEE transmittance from `2 × cachedSceneRadius` to
-`RISE_INFINITY` applies to BDPT only; VCM env-NEE still has Tr = 1
-in any global / per-object medium.  This is a general VCM gap, not
-env-specific — fix as part of broader VCM media support work, not
-folded into this env-IBL task.
+`RISE_INFINITY` applied to BDPT only; VCM env-NEE still had Tr = 1
+in any global / per-object medium.
 
-**Pre-Phase-1 Piece 2 (2026-05-31) — mechanical port landed in working tree, NOT YET COMMITTED, awaits supervisor decision:**
-A mechanical port of BDPT's `EvalConnectionTransmittance{,NM}` to
-the three VCM connection-strategy sites (NEE / interior / splat-
-to-camera) is in the working tree.  All 116 binary tests pass.
-Vacuum non-regression is bit-clean (< 0.05 % per-channel diff).
-However, K-trial variance on the new env-IBL-through-fog regression
-scenes ([scenes/Tests/Volumes/vcm_env_through_fog.RISEscene](../scenes/Tests/Volumes/vcm_env_through_fog.RISEscene),
-[scenes/Tests/Volumes/pt_env_through_fog.RISEscene](../scenes/Tests/Volumes/pt_env_through_fog.RISEscene))
-revealed that pre-fix VCM is DARKER (not brighter) than PT in
-fog, and the mechanical fix widens the gap rather than closing
-it.  Root cause is a VCM SmallVCM-MIS partition interaction
-between the s=0 eye-escape strategy (un-attenuated by Tr per PT
-& BDPT convention) and the s=1 env-NEE strategy (Tr → 0 along
-RISE_INFINITY in any global medium) — both compete in VCM's MIS
-denominator regardless of whether either delivers non-zero
-contribution.  Diagnosis, per-scene empirical numbers, and three
-recommendation options (land as-is / revert / narrow scope) in
-[docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) under
-"Pre-Phase-1 Piece 2 outcome".  This entry will be updated to
-CLOSED only after the supervisor / user picks an option and the
-chosen change is committed.
+**Resolution (2026-05-31, committed):**
+BDPT's media-aware `EvalConnectionTransmittance{,NM}` was ported to
+all three VCM connection-strategy sites in `src/Library/Shaders/VCMIntegrator.cpp`
+(NEE / interior / splat-to-camera) and committed alongside the coordinated
+PT + BDPT + VCM eye-walk escape-segment `Tr` fix (see §7 "Eye-walk escape
+segment Tr — FIXED" and the 2026-05-31 status update above).  Prior to the
+escape-Tr fix, applying connection `Tr` alone widened a discrepancy on
+global-medium env-IBL scenes (`vcm_env_through_fog`, `pt_env_through_fog`)
+because `s=0` eye-escape remained un-attenuated while `s=1` env-NEE
+attenuated to 0; once escape-segment `Tr` landed across all integrators,
+connection `Tr` and escape `Tr` became mutually consistent and validated on
+the bounded-medium `env_bounded_fog_{pt,bdpt,vcm}` fixtures (details in
+[docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md)).
 
 ### Companion limitation — env not in alias table for mixed-light scenes — CLOSED 2026-05-29
 
@@ -1444,8 +1460,8 @@ Several items here build on transport work already completed or planned before t
 | Item | Prior status |
 |------|-------------|
 | Light BVH (Rank 4) | **Done** (April 2026) — 4A, 4B, 4C implemented; 4.78x variance reduction on 100-light corridor |
-| Null-scattering volumes (Rank 7) | **Done** (April 2026) — 7A, 7B, 7C, 7E implemented; 7D deferred pending HWSS |
-| Light subpath guiding (Rank 2) | New scope |
+| Null-scattering volumes (Rank 7) | **Done** (April 2026) — 7A, 7B, 7C, 7E implemented; 7D spectral decomposition tracking deferred (HWSS itself shipped in Rank 5; frozen `MLTSpectralRasterizer` stays single-wavelength NM per wavelength sample without path sharing) |
+| Light subpath guiding (Rank 2) | **Done** (April 2026) — dedicated `pLightGuidingField` (Option B) in BDPT |
 | Random-walk SSS (Rank 3) | **Done** (April 2026) |
 
 The following validation and correctness work from the prior roadmap remains relevant before starting items that depend on light sampling or spectral correctness:

@@ -156,7 +156,7 @@ BDPT (`BDPTIntegrator.cpp`, ~8,200 ln) is the largest integrator, so 2c is split
 The core integrator refactor (Phases 0/1/2a/2b/2c — templatize every PT/VCM/BDPT Pel/NM method pair into one `*Impl<Tag>`) **finished with Phase 2c on 2026-06-02**. The remaining items are separate, optional workstreams, none of which the refactor depends on:
 - **Phase 2d** — shared `EvaluatePathConnection<Tag>` primitive extraction across BDPT↔VCM (the post-2c go/no-go checkpoint; the connection math is now templatized on both sides, so a shared primitive is the natural next consolidation).
 - **Phase-4 dead-member cleanup — DONE (2026-06-02).** The 4 dead BDPT `EvalBSDFAtVertex{,NM}` / `EvalPdfAtVertex{,NM}` members are removed and the 2 live HWSS callers migrated to `PathValueOps::EvalBSDFAtVertex<NMTag>`; `IsVisible` (F3a) and `EvalEmitterRadianceNM` (F3b) were already gone. The BDPT Phase-4 dead-member cleanup is complete — see the "Phase-4 dead-member cleanup — outcome" section below.
-- **PT-spectral-rasterizer AOV-buffer follow-up** (deferred from Phase 2b PART 2).
+- **PT-spectral-rasterizer AOV-buffer follow-up** (deferred from Phase 2b PART 2). *[Updated 2026-06-02: `PathTracingSpectralRasterizer` now allocates AOV buffers and accumulates inline AOVs.]*
 - **The deferred SA-MIS migration** (env-IBL strict-tolerance VCM env-S0 ↔ env-NEE partition — IMPROVEMENTS.md §12; scope reduced to ~1 week after the Session-9 continuous-PMF fix).
 
 Reasons the broader plan was staged are documented in the "Why I stopped here" section below.

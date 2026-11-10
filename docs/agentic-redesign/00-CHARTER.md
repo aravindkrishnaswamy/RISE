@@ -1,11 +1,17 @@
 # RISE Agentic Redesign — Design Charter
 
-> **Status:** **RATIFIED CHARTER, PARTIALLY REALIZED.** The canonical CST,
-> v7-only scene path, CST-native edit/save/history, dynamic desktop UI, and agent
-> surface have shipped. The full immutable derived/prepared-scene architecture
-> remains incomplete. This is the original foundation and decision context, not
-> a current implementation-status ledger; use source/tests and the facet
-> headers for what exists today.
+> **Status (2026-11):** **FOUNDING MODEL-B CHARTER — HYBRID ARCHITECTURE SHIPPED.**
+> This document is the ratified founding charter for the Model-B pivot. The canonical
+> lossless CST (`src/Library/Cst`), native v7 scene path, CST-backed edit/save/history,
+> schema-driven desktop UI, and 38-tool agentic surface have shipped. Rather than
+> deleting `SceneEditor`/`SceneEdit`/`EditHistory`/`SaveEngine` wholesale (§4 L7) or
+> completing the full immutable COW `DerivedScene`/`PreparedRenderState` snapshot DAG,
+> RISE shipped a pragmatic **hybrid architecture**: the lossless CST (`Cst.cpp`) is the
+> canonical document, paired with a retained and CST-adapted `SceneEditor`, `SceneEdit`
+> (31 ops + exact-byte CST undo), `EditHistory`, and `SaveEngine` (`SerializeCst` +
+> atomic CAS save). Treat this file as the original architectural thesis and decision
+> context rather than a live implementation ledger; see `00-OVERVIEW.md` and individual
+> facet headers for current status.
 
 ## 1. Thesis & positioning
 
@@ -135,8 +141,9 @@ Each doc must contain, in this order:
 ## 8. Grounding pointers (read before designing)
 
 - Repo guide: `AGENTS.md`, `README.md`, `docs/README.md`, `CLAUDE.md`.
-- Parser (descriptor-driven, the schema source): `src/Library/Parsers/README.md`,
-  `src/Library/Parsers/AsciiSceneParser.cpp`, the `IAsciiChunkParser` pattern.
+- Parser & CST (descriptor-driven, the schema source): `src/Library/Parsers/README.md`,
+  `src/Library/Parsers/ChunkParserRegistry.cpp`, `src/Library/Cst/Cst.cpp`
+  (replacing the retired legacy `AsciiSceneParser.cpp`), and the `IAsciiChunkParser` pattern.
 - Construction API & assembly: `src/Library/RISE_API.h`, `src/Library/Interfaces/IJob.h`,
   `src/Library/Job.cpp`, `Job::InitializeContainers/SetPrimaryAcceleration`.
 - Current GUI/edit subsystem (to be superseded): `src/Library/SceneEditor/` (`SceneEditController`,

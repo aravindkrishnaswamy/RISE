@@ -56,8 +56,18 @@ chunk in
 
 ### Exact OIDN API surface RISE calls
 
+> **Historical audit baseline (2026-04-29, pre-P0/P1):** The snippet and
+> feature table below record RISE's initial CPU-only OIDN call surface before
+> `OIDN-P0-1`..`P0-4` and `OIDN-P1-1`..`P1-2` shipped. Current
+> [`OIDNDenoiser.cpp`](../src/Library/Rendering/OIDNDenoiser.cpp) resolves
+> Metal/GPU via `ResolveOidnDevice`, caches device and filter state per
+> `Rasterizer`, applies `oidn_quality` (`auto` via deterministic `DL-360`
+> `workPerMegapixel`), runs `accurate` auxiliary prefilters when requested,
+> and uses shared host buffers on CPU (`DL-440` owned copies for `accurate`
+> aux) vs `buf.write` / `buf.read` on GPU.
+
 ```cpp
-// OIDNDenoiser.cpp:106-144
+// OIDNDenoiser.cpp:106-144 (historical pre-P0/P1 baseline)
 oidn::DeviceRef device = oidn::newDevice( oidn::DeviceType::CPU );
 device.commit();
 oidn::BufferRef colorBuf  = device.newBuffer( bufBytes );
@@ -174,7 +184,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P0 — high leverage, low-to-moderate cost
 
 #### OIDN-P0-1 — Expose `quality` preset as a scene-language parameter (with `auto`)
-- **Status:** Code complete — pending commit/PR (2026-04-29)
+- **Status:** Shipped (2026-04-29; `auto` heuristic updated to deterministic `workPerMegapixel` policy in `DL-360`, 2026-10-02)
 - **Owner:** Aravind
 - **PR:** —
 - **Why:** OIDN's BALANCED preset is roughly 2× faster than HIGH; FAST is
@@ -252,7 +262,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     and rise_sources.cmake skipped as those track only `.cpp` files).
 
 #### OIDN-P0-2 — Cache device + filter across renders
-- **Status:** Code complete — pending commit/PR (2026-04-29)
+- **Status:** Shipped (2026-04-29)
 - **Owner:** Aravind
 - **PR:** —
 - **Primary motivator:** Interactive renderer ([InteractivePelRasterizer](../src/Library/Rendering/InteractivePelRasterizer.h)).
@@ -302,10 +312,9 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     the property the interactive viewport needs.
 
 #### OIDN-P0-3 — Add Metal device backend on Apple Silicon
-- **Status:** Shipped — code complete, Metal verified end-to-end via
-  the in-tree OIDN install at `extlib/oidn/install/` (2026-04-29).
-  Auto-quality threshold recalibration deferred — see decision log
-  for the measurement-driven reasoning.
+- **Status:** Shipped (2026-04-29 — Metal verified end-to-end via the
+  in-tree OIDN install at `extlib/oidn/install/`; auto-quality threshold
+  recalibration deferred per decision log)
 - **Owner:** Aravind
 - **PR:** —
 - **Why:** RISE primarily targets macOS / Apple Silicon. OIDN 2.x ships a
@@ -408,7 +417,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     amortises that across the rasterizer's lifetime.
 
 #### OIDN-P0-4 — Register an error callback + verbose toggle
-- **Status:** Code complete — pending commit/PR (2026-04-29)
+- **Status:** Shipped (2026-04-29)
 - **Owner:** Aravind
 - **PR:** —
 - **Why (historical motivation):** the original path polled after
@@ -459,8 +468,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   smoother than the truth.  Treat `accurate` as the right default for
   surface-dominated scenes with delta transport (the regime it was built and
   verified for), not as a blanket upgrade.
-- **Status:** Shipped (v1 PT-only on 2026-04-29; v2 BDPT + VCM
-  Pel/Spectral on 2026-04-29).  Supersedes OIDN-P1-4 — inline
+- **Status:** Shipped (v1 PT Pel on 2026-04-29; v2 BDPT + VCM
+  Pel/Spectral on 2026-04-29; spectral PT + `pixelintegratingspectral`
+  inline AOV wired 2026-06-02; channel-planned depth + guide
+  `AOVBuffers::Plan` added with agent perception).  Supersedes OIDN-P1-4 — inline
   accumulation handles glass refraction probabilistically via
   per-sample `ScatteredRay::isDelta` instead of a separate recursive
   retrace.  v1 shipped the full plumbing + the 3-filter prefilter
@@ -582,8 +593,8 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
       (vs 518 ms accurate, 2.3× speedup as designed).
 
 #### OIDN-P1-2 — Replace `device.newBuffer + memcpy` with `oidnNewSharedBuffer`
-- **Status:** Shipped — 2026-04-29; ownership corrected by DL-440 on
-  2026-10-03. CPU beauty/output remain shared. Fast aux is input-only and
+- **Status:** Shipped (2026-04-29; ownership corrected by DL-440 on
+  2026-10-03). CPU beauty/output remain shared. Fast aux is input-only and
   shared too; Accurate aux uses reusable owned buffers and one fresh copy
   per supplied guide on every call. GPU retains device-owned buffers and
   uploads/readback. Actual device type selects this path, including CPU
@@ -1501,4 +1512,9 @@ from a reviewer, or has its priority moved. Most recent first.
 
 ## Shipped log
 
-(empty)
+- **2026-04-29 — `OIDN-P0-1` (`oidn_quality` preset + `auto`):** Added `oidn_quality` (`auto` / `high` / `balanced` / `fast`, default `auto`) across rasterizer chunks, `IJob`, and `OIDNDenoiser::Denoise`. Updated on **2026-10-02 (`DL-360`)** from wall-clock timing to deterministic `workPerMegapixel` (`configured_spp * family_cost`) policy thresholds (`< 3` FAST, `< 20` BALANCED, `>= 20` HIGH).
+- **2026-04-29 — `OIDN-P0-2` (per-rasterizer device + filter cache):** Cached OIDN device, filter, and buffer handles on `Rasterizer` keyed by `(width, height, hasAlbedo, hasNormal, resolvedQuality, prefilter, requestedDevice)`, eliminating repeated kernel/network commit overhead across interactive and multi-frame renders.
+- **2026-04-29 — `OIDN-P0-3` (`oidn_device` + Apple Silicon Metal backend):** Added `oidn_device` (`auto` / `cpu` / `gpu`, default `auto`) with `ResolveOidnDevice` fallback introspection, `buf.write` / `buf.read` GPU-safe transfers, and in-tree Metal-enabled OIDN build support (`extlib/oidn/install/`).
+- **2026-04-29 — `OIDN-P0-4` (error callback + `OIDN_VERBOSE` pass-through):** Registered `OidnErrorCallback` after device resolution and polled post-setup / post-execute errors into RISE's `GlobalLog()`.
+- **2026-04-29 / 2026-06-02 — `OIDN-P1-1` (inline AOV accumulation + `oidn_prefilter`):** Shipped `oidn_prefilter` (`fast` / `accurate`) and 3-filter auxiliary prefiltering alongside inline AOV accumulation across Pel PT (v1, 2026-04-29), BDPT + VCM Pel/Spectral (v2, 2026-04-29), and Spectral PT + `pixelintegratingspectral` (2026-06-02), later extended with channel-planned `AOVBuffers::Plan` (albedo/normal guides + depth).
+- **2026-04-29 / 2026-10-03 — `OIDN-P1-2` (CPU `newSharedBuffer` zero-copy + `DL-440` ownership fix):** Replaced host `memcpy` staging on CPU devices with shared buffers for beauty/output and `fast` aux inputs; `DL-440` (2026-10-03) switched `accurate` aux prefilter buffers to reusable owned storage with per-call input copies so const caller guides are never mutated in place.

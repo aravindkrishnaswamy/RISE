@@ -1,8 +1,8 @@
 # Jakob-Hanika LUT — Gamut Failures & Why Better Solver ≠ Better LUT
 
-**Date:** 2026-05-09 (Stage A update: 2026-05-24)
-**Status:** known-limitation greatly mitigated by Stage A migration; current LUT shipped is `extlib/jakob-hanika-luts/rec709.coeff`
-**Related:** [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md) (the spectral-uplift work the LUT supports), [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) (Stage A done, Stage B in progress)
+**Date:** 2026-05-09 (Stage A update: 2026-05-24; Stage C resolution: 2026-09-01)
+**Status:** RESOLVED (Stage B Rec.709 working space + Stage C D65 reference-illuminant LUT, 2026-09-01); current LUT shipped is `extlib/jakob-hanika-luts/rec709.coeff`
+**Related:** [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md) (the spectral-uplift work the LUT supports), [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) (Stages A–B complete), [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) (Stage C complete)
 
 ---
 
@@ -142,7 +142,7 @@ make -C build/make/rise tools
 #    Windows (VS2022):
 "$msbuild" build\VS2022\Tools\JakobHanikaLUTGen.vcxproj /p:Configuration=Release /p:Platform=x64
 
-# 2. Regenerate the binary LUT (~30-60 sec on modern hardware for the
+# 2. Regenerate the binary LUT (~1 sec on modern hardware for the
 #    default 64-resolution grid).  Default target is rec709 since 2026-05.
 #    Output: extlib/jakob-hanika-luts/rec709.coeff
 ./bin/tools/JakobHanikaLUTGen --target rec709 \

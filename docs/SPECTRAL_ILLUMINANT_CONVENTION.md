@@ -374,9 +374,7 @@ column — it matters, see §7.4.
 | furnace, white perfect reflector | 1.240 / 0.938 / 0.896 | 1.032 / 0.993 / 1.002 | 10 (default) |
 | furnace, grey-0.95 perfect reflector | 1.224 / 0.939 / 0.883 | 1.048 / 1.000 / 1.013 | 10 (default) |
 
-Scenes are in `_abtest2/` (`gen.py` writes (c)/(d)/(e); the s1/s6 pairs are copies of the
-slice-1 `_abtest/` scenes with their output paths redirected). `analyze.py` prints the
-table.
+Measured across standalone furnace and Cornell-box A/B verification scenes during the Stage C slice-2 landing (ephemeral local test harness; not tracked in the repo).
 
 ### 7.4 Known residual: the wavelength-grid bias is NOT closed
 

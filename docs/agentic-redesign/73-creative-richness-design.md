@@ -9,12 +9,13 @@
 > evidence-gated discipline: the baseline decides whether geometry has a
 > deficit before anything ships to change it.
 
-> **Status:** P0 (measurement layer, materials + geometry) SHIPPED 2026-07-29
-> and reviewed to zero P1 over two fresh rounds — four checker ops,
-> metricLabel per-label aggregation, the 11-checkpoint bare-prompt scenario +
-> fixture, runconfig; gate green (make zero-warn, 225/225, xcodebuild).
-> P1 (B1+C1 skills) / P2 (A1 advisory) / P3 (A2 detector) remain design-only
-> pending the baseline run. Originally written to settle the §7 "live design
+> **Status: ARC CLOSED (2026-07-30) — P0, P1, P2, P2.b SHIPPED; P3 (A2 detector) & C3 DEFERRED**
+> (full empirical execution record in [74-creative-richness-arc-log.md](74-creative-richness-arc-log.md);
+> follow-on authoring-surface arc in [75-expressive-surface-arc.md](75-expressive-surface-arc.md)).
+> P0 (measurement layer: four checker ops, `metricLabel` per-label aggregation, 11-checkpoint
+> bare-prompt scenario + fixture), P1 (B1+C1 skill re-anchoring), and P2 / P2.b (A1 flatness
+> advisory plumbing) all shipped and were measured; P3 (A2 collapsed-painter detector) and C3
+> remain deferred. Originally written to settle the §7 "live design
 > question" of `72-agent-turn-efficiency-and-quality-log.md` before any code;
 > every mechanism claim below was file:line-verified by a fresh code audit on
 > 2026-07-29 (advisory pipeline, ask_user, skills, starter scene, checker

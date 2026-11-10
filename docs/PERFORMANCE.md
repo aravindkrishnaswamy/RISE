@@ -257,8 +257,10 @@ This was the single biggest VCM win in the sprint (−14 % wall).
 ### [Thread-local expression memo](../src/Library/Utilities/ExpressionMemo.h)
 
 A two-level per-hit memo for the texture-expression VM and the geometry
-shading signals it calls, entirely in `thread_local` fixed-size tables (1440
-bytes per worker since the L2 key gained its `pipe` tag, 1408 before; no
+shading signals it calls, entirely in `thread_local` fixed-size tables (2976
+bytes per worker, ~53.6 kB across 18 workers — matching
+[ARCHITECTURE.md](ARCHITECTURE.md) and
+[ExpressionMemoTest.cpp](../tests/ExpressionMemoTest.cpp); no
 heap, no locks, no sharing).  L1 keys a signal builtin on
 (query, every field of the hit's `SurfaceSignalInfo`); L2 keys a whole compiled
 program on (process-unique program id, every field of `ExprEvalContext`).  Both
@@ -284,7 +286,8 @@ above.
 ## Investigated-and-rejected optimisations (keep notes for future agents)
 
 ### ProgressiveFilm `alignas(64)`
-Padding `ProgressivePixel` from 56 B to 64 B to eliminate false
+Aligning `ProgressivePixel` with `alignas(64)` (rounding its natural
+`sizeof(ProgressivePixel)` of 72 B up to 128 B — +78 % bloat) to eliminate false
 sharing between adjacent pixels was investigated and reverted.  On
 the 256² benchmark VCM wall went 27 s → 47 s and PT 9 s → 14 s — the
 L2 working-set overshoot cost more than the false-sharing fixed.
@@ -293,11 +296,11 @@ the same thread, so false sharing was rarer than the static analysis
 suggested.
 
 ### ProgressiveFilm struct-shrink (packing converged into wN high bit)
-Tried compacting `ProgressivePixel` from 72 B to exactly 64 B (one
+Tried compacting `ProgressivePixel` from its natural 72 B to exactly 64 B (one
 pixel per cache line, no padding) by moving the `bool converged`
 field into the high bit of `wN`.  A/B benchmark showed `bench_bdpt`
 regressed ~5 % (14.82 s → 15.52 s), `bench_vcm` flat, `bench_pt` +3 %.
-The ~10 % memory savings didn't translate to wall-time gains because
+The ~11 % memory savings didn't translate to wall-time gains because
 the struct was already L2-resident for these scenes and Morton tile
 ordering had eliminated most false sharing already.  Reverted.
 
@@ -419,7 +422,7 @@ Counters are essentially free (~5 ns each).
   and `BDPTRasterizerBase.cpp`.  Expose as a scene-file option if
   needed.
 - **Memory too high?**  `ProgressiveFilm` memory scales with
-  resolution × 56 B/pixel.  Largest store is `LightVertexStore` at
+  resolution × 72 B/pixel (`sizeof(ProgressivePixel)`).  Largest store is `LightVertexStore` at
   VCM's 1080p × 10 light-depth ≈ 1.6 GB.  Cap via
   `maxStoredLightVertices`.
 - **Want smaller/larger tiles?**  Override `ComputeTileSize`'s

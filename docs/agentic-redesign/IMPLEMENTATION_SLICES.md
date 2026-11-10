@@ -19,7 +19,9 @@
 > derive's own resolution through the recorded graph so the static graph cannot drift from
 > the apply *even in principle* — is candidly scoped in slice 5. This doc maps each slice
 > to the decisions it validates, states its gates, and is candid about what is **not yet
-> proven**.
+> proven**. For post-cutover feature, UI, eval, clean-room construction, recursive scene
+> graph, geometry/texture expressiveness, and lifetime arcs, see [`63-scene-variants-feature-spec.md`](63-scene-variants-feature-spec.md)
+> and docs **`70`–`91`** in this directory.
 
 All four slices are committed on `feature/gui-snapshot-prototype` (unpushed). They are
 self-contained C++ test executables under `tests/`, sharing one prototype CST in
@@ -250,7 +252,7 @@ halves have since landed as #5 slices 1-4 (RepeatGroup, expr, let, instance_arra
      **(d)** the newline aggregate was ungated (zeroing it passed) → `DocNewlineCount` exposed +
      checked exact across parse/replace/insert/erase on LF **and** CRLF. 42→67. ← next: item 4.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
-   complexity measurement. **✅ DONE (pending re-review)** — kernel `a3cc2a77`; review fixes
+   complexity measurement. **✅ DONE** — kernel `a3cc2a77`; review fixes
    `0b0a25f4`, `955c1962`, `bfc57601`, `a5ba984d`, + the 4th-review fixes. [`tests/CstIdentityTest.cpp`](../../tests/CstIdentityTest.cpp)
    **134 checks**. *(Current shipped state — this entry describes what is in tree now, not the
    intermediate states the review rounds passed through; see the review log at the end.)*

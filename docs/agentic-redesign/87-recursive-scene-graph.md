@@ -12,6 +12,10 @@ keeps a non-rendering edit correct — and the per-frame walk is what stops the
 stored parent world being a latch.
 Supersedes and DELETES the single-level grouping shipped in
 [86](86-object-grouping.md) (`48ab06b1`, `da0b6839`, `16b160a6`).
+*(Post-2026-08-18 extensions built atop this graph: `standard_object.mirror` for bilateral
+symmetry in [89-generic-shape-operators.md](89-generic-shape-operators.md) Slice C, the
+zero-required-arg `collapse_to_instances` refactoring verb, and `populate_scene` `source`
+subtree clones in [82-population-arc.md](82-population-arc.md).)*
 
 ---
 

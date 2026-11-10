@@ -101,9 +101,9 @@ that ARE the silhouette (see object-modeling-recipes' turned-vessel
 recipe).  When the form must instead be an SDF -- to take part in CSG,
 or to blend into a larger body -- that is a chain of `roundcone` parts
 joined by `smin`, and several lines of `part` math.
-`insert_geometry_scaffold` expands one of six family templates
+`insert_geometry_scaffold` expands one of seven family templates
 (`displaced_slab`, `sweep_rail`, `blended_vessel`, `sdf_column`,
-`blended_chain`, `volume_bank`) into that graph in a single call, e.g.
+`blended_chain`, `quadruped` [alias `creature`], `volume_bank`) into that graph in a single call, e.g.
 `insert_geometry_scaffold {family:"sdf_column", name:"column1",
 size:1.0, detail:0.5, aspect:1.5}` -- this lands `tmpl_column1_col` (a
 single `sdf_geometry` base/shaft/capital `smin` chain, closed with the

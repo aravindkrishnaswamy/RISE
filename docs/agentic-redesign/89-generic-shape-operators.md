@@ -1,6 +1,6 @@
 # 89 — Generic shape operators: loft, skin, mirror, displaced detail
 
-Status: DESIGN — slices A–D pending
+Status: **SHIPPED (Slices A–D — 2026-08-22)**
 Successor to: 85 (geometry-expressiveness candidates; C1/C2/C3/C6 shipped),
 87 (recursive scene graph), 88 (procedural textures)
 Companion evidence: the three 2026-08-19 live trajectories

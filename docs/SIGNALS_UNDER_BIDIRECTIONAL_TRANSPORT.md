@@ -436,7 +436,7 @@ skip, `2` reference-incomplete rows, and `1` no-complete-reference skip,
 both green. This is not a loosened band — BDPT and VCM disagreeing
 ≈ 20× on `tidal_stones`' caustic-lit pixels is a real, open integrator
 disagreement, tracked as its own item, debt 30, in
-RENDERING_INTEGRATORS.md.
+RENDERING_INTEGRATORS.md (subsequently CLOSED in debt-cov — see [DEBT_LEDGER.md](DEBT_LEDGER.md)).
 
 ## 7. Cost gate (§ performance-work-with-baselines)
 
@@ -572,7 +572,7 @@ Ledger (filled per slice):
   the literal defect this bullet described — forcing the eye ray's
   `hasDifferentials` to false — reproduces exactly the symptom this bullet
   predicted).**
-- **Debt 27** (PT under-reads gapped two-layer weaves) — untouched; any new
+- **Debt 27** (PT under-reads gapped two-layer weaves; note `DL-27` in [DEBT_LEDGER.md](DEBT_LEDGER.md) was subsequently CLOSED in debt-cov, while the gapped-weave PT strategy gap is tracked in RENDERING_INTEGRATORS.md) — untouched by this change; any new
   integrator-disagreement data from §6.2 is appended there.
 - **No weight formula changes** — MIS heuristics per integrator stay as
   documented in MIS_HEURISTICS.md.

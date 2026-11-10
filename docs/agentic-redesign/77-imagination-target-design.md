@@ -1,19 +1,17 @@
 # Imagination Targets — Sketch-First Scene Building (Arc 77 Design, 2026-08-10)
 
-> **Status:** DESIGN APPROVED by the user 2026-08-10; §12's three open
-> decisions are RESOLVED (recorded inline below): (1) fold into
+> **Status: SHIPPED (G3a, G3b, Phase 2, Phase 2b — 2026-08-11)** (`file_part_plan` was
+> subsequently renamed/extended to `file_build_plan` in [78-staged-build-protocol.md](78-staged-build-protocol.md)).
+> Design approved 2026-08-10; §12's three open
+> decisions were RESOLVED (recorded inline below): (1) fold into
 > `file_part_plan` — confirmed, and the just-in-time alternative is
 > technically foreclosed by the chunk→part join problem; (2) force level
 > = STRICTLY REQUIRED, no `"none"` escape — the escape valve lives at the
 > GATE level (the 3-refusal give-up), not the field level, and any
 > polygon is accepted so the anti-Goodhart property moves to the shape
-> dimension; (3) Phase 2 provider image generation APPROVED IN PRINCIPLE
-> for the whole-scene target, capability-gated per model, deferred — and
-> consequently v1 carries NO scene-level target: the `region` field is
-> CUT from the schema (parts only), which also forfeits the layout-vs-
-> objectmap presence-check windfall (§6, retained below for the record;
-> returns as its own lever if built-but-invisible persists post-v1).
-> Implementation begins as slice G3a (artifact) then G3b (comparison).
+> dimension; (3) Phase 2 provider image generation (`imagine_scene` + Phase 2b)
+> SHIPPED for the whole-scene target, capability-gated per model — while v1
+> per-part sketches cut the `region` field from the schema (parts only).
 > Successor
 > mechanism to the 75-arc's post-arc slices (R1/R2/G1/G2); builds on every
 > banked result there.  The user's framing (2026-08-10, verbatim intent):
@@ -92,7 +90,7 @@ Three forms were considered for HOW the imagination artifact comes to be:
 | **Model-authored coarse bitmap** (e.g. 32×32 of 0/1 as text) | Rejected: token-heavy at useful resolution, and produces an artifact nothing else can consume. |
 | **Model-authored closed polygon** (point list; harness rasterizes) | **v1.**  Deterministic, provider-independent, works on both roster models, cheap in tokens — and the census already proved models author point lists well (`blended_chain` paths were the one creative act that measured as working).  Decisive extra: a 2D outline is exactly what `sweep_geometry.profile_point` consumes, so the imagined shape and a construction input are the SAME artifact — the target teaches the fix. |
 
-### 4.2 The plan schema (G2's `file_part_plan`, version 2)
+### 4.2 The plan schema (G2's `file_part_plan`, version 2 — *superseded by `file_build_plan` in [doc 78](78-staged-build-protocol.md)*)
 
 One artifact, one gate.  We EXTEND the shipped tool rather than adding a
 second gate (two gates stacking refusals on the first insert would fight,

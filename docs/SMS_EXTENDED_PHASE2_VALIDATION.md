@@ -1,5 +1,7 @@
 # Extended SMS Phase 2 validation
 
+> **Note:** This document is the historical Phase 2 merge validation record. See **[SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md)** for the final shipped Phases 1–4 architecture, the opt-in `sms_extended` scene parameter, and current ledger status.
+
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and merged at `818004785c4b14a831b2f60828a935f1e897e56a`.
 The latest completed replacement gate at `97d2e2ff68c25d8dc22feea2e4f83b3d74139778` passes 54 make modes/525120/0, 54 actual Xcode controls/627180/0, and 29 all-project sanitizer modes/349351/0, with clean make/Deployment/Opto zero owned diagnostics. Cached recursion and signed-return repairs have coherent committed proof. Fresh Round 17 review of `c388ea6a3` converged: three independent lenses, zero P1, one common P2 measured and filed as DL-443. Phase 2 merged at `818004785c4b14a831b2f60828a935f1e897e56a`; its targeted master gate passed. Earlier sections are historical.

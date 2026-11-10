@@ -5,8 +5,8 @@
 > `bumpmap_modifier.function` special case in `Cst.cpp`.  A scene that
 > still carries the chunk is REFUSED at derive time with a diagnostic
 > naming `relief_modifier` and `tools/migrate_scenes_relief.py` (the
-> `kRetiredChunks` table in `Cst.cpp`).  The registry is **175** chunk
-> types.  `IJob::AddBumpMapModifier` and
+> `kRetiredChunks` table in `Cst.cpp`).  The registry is **176** chunk
+> types (after Phase 2 added `modifier_stack`).  `IJob::AddBumpMapModifier` and
 > `RISE_API_CreateBumpMapModifier{,Ex}` survive with FROZEN SIGNATURES
 > only because the Blender bridge and out-of-tree callers hold them; they
 > build a `ReliefModifier` in the UV domain with the §7.2 fold applied

@@ -1,6 +1,10 @@
 # Cross-Object Proximity — a contact signal for grime, dust and wear
 
-**Status:** PHASE 2 SHIPPED 2026-09-09 — the MESH family answers, on a bounded
+**Status:** PHASES 1–3 SHIPPED (Sept 2026) — Phase 3 (`interior(r)`, CSG
+composites, exact Jacobi `σ`, `add_wear` contact integration, §5.6 / §8.4)
+shipped 2026-09-09 and its three showcases (§8.5 /
+[PROXIMITY_SHOWCASES.md](PROXIMITY_SHOWCASES.md)) followed in Sept 2026;
+PHASE 2 SHIPPED 2026-09-09 — the MESH family answers, on a bounded
 closest-point traversal of its own BVH (exact: bit-identical to brute force
 on all 63,096 answered points of 110,000), `displaced_geometry` forwards to
 its baked mesh, scene D is placed by its own test, and the candidate scan
@@ -478,11 +482,11 @@ transforms are translation-only.
 |---|---|---|---|
 | Infinite plane, sphere, box, capped and open cylinder (`m_bCapped`, axis + `m_dAxisMin/Max`), disk, torus (`sdTorusY`, the engine's own form) | closed forms in the geometry's own parameterisation | exact | 1 |
 | Clipped plane | `ClippedPlaneGeometry` stores four ARBITRARY corners — it is a bilinear patch; answers the point-to-quad closed form only when the corners are **coplanar AND convex** (both checked once at construction), else refuses | exact on **CONVEX** planar quads (every `rect_light`), **refuses otherwise** | 1 |
-| Ellipsoid | scaled-sphere bound | upper bound, ≤ ratio of semi-axes (a 4:1 ellipsoid at true 2.75 reports 11.0) | 1 |
+| Ellipsoid | **SHIPPED (DL-15):** safeguarded Lagrange-multiplier Newton nearest-point solve (`RefineExteriorDistanceToEllipsoid`, outward-padded by `1 + 1e-9` so it remains a sound upper bound independent of iteration convergence), `min` with the Phase-1 scaled-sphere fallback; interior points clamp at `0` | near-exact upper bound (`~1e-9` relative outward pad; scaled-sphere bound only as non-finite fallback) | 1 + DL-15 |
 | SDF / skeleton | bracketed sign change, below | **upper bound**, gap measured in C | 1 |
 | Indexed triangle mesh (every loader but RAW; tessellated primitives; `displaced_geometry`'s internal mesh) | **SHIPPED (§8.3).** Closest point on the mesh's own BVH2: a bounded-radius traversal visiting the two children of each node nearest-AABB-first, pruning any node whose point-to-AABB distance is ≥ the running best, `PointTriangleDistance` (Ericson's region method) at the leaves. **SHEETS, with NO interpenetration clamp** — unlike every solid family, which clamps a signed field at zero so a point inside reads 0; a triangle soup carries no inside test (it may be open, non-manifold or self-intersecting), so a point inside a closed mesh reports its honest distance to the nearest triangle. That is the safe direction: an over-report under-paints, never over-paints. | exact — identical to brute force under the same point–triangle formula, **measured bit-for-bit on 63,096 answered points of 110,000** (§8.3); node boxes are conservative `float`, rounded OUTWARD at build, so reading them can only ADMIT a node the pruning could have skipped | 2 |
 | Non-indexed mesh (RAW) | refuses (no BVH). Still true after Phase 2, and pinned by `MeshClosestPointTest` (e), which asks the RAW family and its INDEXED twin the same question about the same triangle: the twin answers 1.0, the RAW one refuses | — | — |
-| CSG composite | refuses in v1 (its surface is not the min of its operands' under subtraction/intersection); union-min with the exact boundary test is Phase 3 | — | 3 |
+| CSG composite | **SHIPPED (Phase 3, §5.6 / §8.4):** `CSG_UNION` takes `min` over answering operands; `CSG_INTERSECTION` and `CSG_SUBTRACTION` bracket a sign change on the composed `SignedDistanceLower` field (refusing when an operand is a sheet / heightfield SDF or no admitted crossing lands within budget) | upper bound (union inherits operand exactness/bounds; intersection/subtraction bracketed upper bound) | 3 |
 | Patches, hair | refuse | — | — |
 
 **The SDF family is NOT exact, and the flagship scene is the counter-example.**
@@ -3460,27 +3464,6 @@ measured by a harness test against the tracked scene.
   (1) above. See `ComputeWatertightness`'s own updated function comment in
   `TriangleMeshGeometryIndexed.cpp` for the full derivation and the ledger's
   DL-197 entry for the closing commit hashes.
-- **`standard_object`'s `scale` written with ONE number derives to a
-  DEGENERATE transform, silently.**  It is a `DoubleVec3`; `scale 0.35`
-  produces no diagnostic, makes the object vanish from the render, and
-  makes it refuse every proximity query (`Object::DistanceToSurface`
-  rejects `sigma_min <= 0`).  Found while authoring scene D and verified by
-  re-introducing it (§8.3, trap 4).  A parser gap, outside this design's
-  scope, recorded here because it is a live trap for anyone placing an
-  object for a contact scene.
-
-- **A mesh neighbour is a SHEET, and no other shipped family is.**  Every
-  solid family clamps a signed field at zero, so a point inside reads 1;
-  a point inside a closed MESH reads its honest distance to the nearest
-  triangle instead, because a triangle soup carries no inside test.  The
-  direction is safe (an over-report under-paints) but the inconsistency is
-  real: a receiver buried inside a mesh neighbour will not read contact.
-  A signed/inside variant for meshes needs a robustly closed-mesh test.
-  **Phase 3's `interior(r)` did NOT close this**: it is the signed variant for
-  every SOLID family, and a mesh -- being a sheet -- contributes 0 to it, so a
-  receiver buried inside a closed mesh reads `interior` 0 as well as
-  `proximity` its honest distance. The closed-mesh test is still the missing
-  piece.
 - ~~**`standard_object`'s `scale` written with ONE number derives to a
   DEGENERATE transform, silently.**~~  **CLOSED 2026-09-14 (DL-32,
   [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))** — `scale 0.35` is now an explicit

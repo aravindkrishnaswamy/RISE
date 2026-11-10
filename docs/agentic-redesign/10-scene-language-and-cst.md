@@ -8,10 +8,24 @@
 > rewritten to conform; this doc now points to the decision record as authoritative and
 > contradicts none of D1–D51.
 >
-> **Status:** **CORE FACET SHIPPED.** The lossless CST, v7-only load/derive
+> **Status (refreshed 2026-11):** **CORE FACET SHIPPED.** The lossless CST, v7-only load/derive
 > path, persistent node identity, edits, serialization, migration, and retained
-> `Document` are implemented under `src/Library/Cst/`. Some performance and
-> broader immutable-scene goals remain elsewhere in the package. Read
+> `Document` are implemented under `src/Library/Cst/` (`Cst.h` / `Cst.cpp`), backed
+> by **176** registered chunk keywords in [`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp)
+> (`CreateAllChunkParsers`; `AsciiSceneParser.cpp` was deleted in the July 2026 P5 cutover).
+> Post-cutover updates:
+> - **Shipped `Cst.h` representation:** `enum class NodeKind { Document, Chunk, Param, Token, Trivia }`
+>   on immutable relative-width `Node` green nodes, a D16 persistent balanced rope (`SeqNode` with
+>   cached `count`/`bytes`/`newlines`) for top-level items, and `Document { items, idseq, byName, byId,
+>   paramIds, nextId, sourceInstanceCount }` maintaining persistent `IdNode`/`IdMapNode`/`ParamMapNode`
+>   side-maps (rather than every specialized AST `CstNodeKind` sketched in §2.2).
+> - **`instance_array` retired (doc 87 step 3d, 2026-08):** declarative grid/linear object repetition
+>   moved onto `standard_object` via `source` + `count_u`/`count_v` (instancing whole subtrees as well
+>   as leaves).
+> - **Painter sampling in `expr(...)` (doc 88, 2026-08):** `sample(painter, u, v)` and
+>   `sample_scalar(fn2d, u, v)` shipped in `expr(...)` with dependency edges tracked by
+>   `BuildReferenceGraph`.
+> Some performance and broader immutable-scene goals remain elsewhere in the package. Read
 > [`00-CHARTER.md`](00-CHARTER.md) and [`01-DECISIONS.md`](01-DECISIONS.md) first — this doc
 > inherits the charter's locked decisions (L1–L7, **as corrected by D44** — `NodeId` is the
 > lineage identity, name-path is addressing), open decisions (O1–O3), invariants
@@ -39,7 +53,7 @@
 > identity; the other axes are Facets 2/5); the **comment/token-aware** migration grammar (D37);
 > declarative iteration
 > replacing `FOR`/`DEFINE`/`hal`/`$(...)`/macros (L3);
-> coverage of all ~138 chunk types; the **single-file** scene-format version bump (O3 / D7).
+> coverage of all **176** registered chunk keywords in `ChunkParserRegistry.cpp` (~138 at original drafting); the **single-file** scene-format version bump (O3 / D7).
 >
 > **Historical authoring note:** this document itself made no code changes; its
 > core design has since been implemented.
@@ -48,26 +62,27 @@
 
 ## 1. Current-state grounding
 
-### 1.1 The scene file today: two layers
+### 1.1 The scene file pre-cutover: two layers
 
-A `.RISEscene` file (header `RISE ASCII SCENE 6`) is processed by
-[`AsciiSceneParser::ParseAndLoadScene`](../../src/Library/Parsers/ChunkParserRegistry.cpp)
-(`AsciiSceneParser.cpp:10431`). There are **two distinct language layers**, and only one of
-them is descriptor-driven:
+*(Historical pre-cutover baseline — `AsciiSceneParser.cpp` was deleted in the July 2026 P5 cutover; chunk descriptors and `DispatchChunkParameters` now live in [`src/Library/Parsers/ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp) and the canonical CST parser/deriver in [`src/Library/Cst/Cst.cpp`](../../src/Library/Cst/Cst.cpp).)*
 
-- **Top-level preprocessing layer** (hand-rolled, line-oriented, in the main parse loop
-  ~`AsciiSceneParser.cpp:10610–10810`): comments (`#`, `/* */`), embedded commands
+A pre-cutover `.RISEscene` file (header `RISE ASCII SCENE 6`) was processed by
+`AsciiSceneParser::ParseAndLoadScene` (retired `AsciiSceneParser.cpp`, registry now in
+[`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp)). There were **two distinct language layers**, and only one of
+them was descriptor-driven:
+
+- **Top-level preprocessing layer** (hand-rolled, line-oriented, in the retired `AsciiSceneParser` main parse loop): comments (`#`, `/* */`), embedded commands
   (`> load`, `> run`, `> set accelerator`), macro definition (`!`, `define`, `DEFINE`) and
   removal (`~`, `undef`, `UNDEF`), `FOR`/`ENDFOR` loops with `in.seekg()` body re-reads,
-  inline math functions (`sin cos tan sqrt hal`) via `evaluate_first_function_in_expression`
-  (`:191`), and `$(...)` arithmetic via `evaluate_expression` (`:298`). Macro substitution
-  rewrites tokens *in place* (`@NAME` numeric / `%NAME` textual; `substitute_macro` `:10999`)
-  **before** the chunk body is assembled.
+  inline math functions (`sin cos tan sqrt hal`) via `evaluate_first_function_in_expression`,
+  and `$(...)` arithmetic via `evaluate_expression`. Macro substitution
+  rewrote tokens *in place* (`@NAME` numeric / `%NAME` textual; `substitute_macro`)
+  **before** the chunk body was assembled.
 - **Chunk layer** (descriptor-driven since 2026-04, per L6): every chunk parser derives from
   [`IAsciiChunkParser`](../../src/Library/Parsers/IAsciiChunkParser.h) and overrides exactly
   `Describe()` (returns a `ChunkDescriptor`) and `Finalize(const ParseStateBag&, IJob&)`. The
-  default `ParseChunk` (`AsciiSceneParser.cpp:9861`) validates every input line against
-  `Describe().parameters` via `DispatchChunkParameters` (`:697`), stores typed values in a
+  default `ParseChunk` ([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp)) validates every input line against
+  `Describe().parameters` via `DispatchChunkParameters`, stores typed values in a
   `ParseStateBag`, then calls `Finalize`, which emits `pJob.AddX(...)`. **The descriptor is
   the schema** ([`ChunkDescriptor.h`](../../src/Library/Parsers/ChunkDescriptor.h)).
 
@@ -118,7 +133,7 @@ is dropped. The positional *information* is retained; its representation changes
 RISE already expresses repetition declaratively in several chunks — these are the existence
 proof that L3 is viable, not speculative:
 
-- **`expression_function2d`** (`AsciiSceneParser.cpp:5453`): a real function-expression
+- **`expression_function2d`** ([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp)): a real function-expression
   sublanguage — repeatable `param <name> <number>`, repeatable `def <name> <expr>`
   (let-bindings), and a final `expr`, compiled to an
   [`ExpressionProgram`](../../src/Library/Painters/ExpressionEval.h). Example from
@@ -134,11 +149,11 @@ proof that L3 is viable, not speculative:
       expr   clamp((exp(-Ea/(2*8.314*Tk))-...)/...,0,1)
   }
   ```
-- **`sweep_geometry`** / **`path_instances_geometry`** (`:5565` / `:5697`): repeatable
+- **`sweep_geometry`** / **`path_instances_geometry`** ([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp)): repeatable
   `profile_point` / `point` / `point_width` control points; `path_instances_geometry` stamps
   a named template geometry along a Catmull-Rom path at arc-length `pitch` (homogeneous
   instancing — instances are *derived*, not authored).
-- **`sdf_geometry`** (`:5368`): repeatable inline `part` lines compose primitives; or a
+- **`sdf_geometry`** ([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp)): repeatable inline `part` lines compose primitives; or a
   heightfield `expression_function2d`. `watch_dial.RISEscene` uses **zero** `FOR` loops and
   **zero** `DEFINE` macros — every repeat is a declarative generator or a repeatable param.
 
@@ -150,7 +165,7 @@ and Internal scenes). The go-forward corpus already prefers declarative form.
 
 Animation already references entities by a `(category, name, param)` triple:
 `timeline { element strap_screw  element_type object  param position ... }`
-(`AsciiSceneParser.cpp:9513`), and `element_type` already includes `geometry` and `painter`
+([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp)), and `element_type` already includes `geometry` and `painter`
 to reach *intrinsic* params (e.g. an `sdf_geometry`'s part fields). `SourceSpanIndex` keys
 non-object spans by `DirtyEntity = (EntityCategory, name)`. L5's name-path
 (`objects/strap_screw.position`, `geometry/dial_sdf.part[3].round`) is the generalization of
@@ -208,6 +223,18 @@ green-node kinds):
 | `Comment` | `# …` or `/* … */` (standalone or trailing) | raw text | — |
 | `Blank` | a run of blank lines | count | — |
 | `Trivia` | indentation/inter-token whitespace, attached to the node it precedes | raw bytes | — |
+
+> **Implementation note (`src/Library/Cst/Cst.h`, 2026-11):** The shipped CST kernel realizes
+> this red-green model with a deliberately compact 5-kind green enum,
+> `enum class NodeKind { Document, Chunk, Param, Token, Trivia }`, on immutable `Node` structs
+> (`text` on `Token`/`Trivia` leaves, `role` for keyword/param-name/token-role, `kids` on
+> internal nodes). Top-level items live in a D16 persistent balanced rope (`SeqNode`, caching
+> `count`, `bytes`, `newlines`, `itemBytes`, `itemNewlines`), while `Document` pairs `items`
+> with persistent balanced side-maps `idseq` (`IdNode`), `byName` (`NameNode`), `byId`
+> (`IdMapNode`), and `paramIds` (`ParamMapNode`) plus `sourceInstanceCount`. `let` blocks and
+> `standard_object` `source` + `count_u`/`count_v` instancing (`instance_array` was retired in
+> doc 87 step 3d) are ordinary `Chunk` nodes, and `expr(...)` tokens are parsed/evaluated at
+> derive time in `Cst.cpp` rather than stored as separate green AST `NodeKind`s.
 
 **Key shape decisions:**
 
@@ -515,7 +542,7 @@ than quietly re-pointed at the wrong row. Genuinely new content gets fresh `Node
 
 - *Unnamed chunks* (a `pinhole_camera` with no `name`) already receive an auto-name in the
   current parser (`AllocateCameraName` → `"default"`, `"default_1"`, …,
-  `AsciiSceneParser.cpp:601`). The occurrence gets a `NodeId` (in the `Version`'s `identityRoot`,
+  [`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp)). The occurrence gets a `NodeId` (in the `Version`'s `identityRoot`,
   D26) from creation regardless; the synthesized name gives it an addressable *name-path*, and on first
   structured edit the name is materialized into the text as an explicit `name` parameter
   (author-visible, round-trip-stable). Until edited, the synthesized name lives only in the CST
@@ -549,6 +576,13 @@ When the repeat is *truly homogeneous* (N copies of the same entity that differ 
 parametric function of the index), it is a **declarative generator**: the instances are
 **derived, not authored**. This is the `path_instances_geometry` / guilloché model promoted to
 a first-class CST construct usable for *objects*, not just geometry.
+
+> **Update (2026-08-17, [doc 87](87-recursive-scene-graph.md) step 3d — `instance_array` RETIRED):**
+> `instance_array` shipped for the July 2026 v7 cutover and was subsequently **deleted** when recursive
+> scene-graph instancing landed. Homogeneous 1D/2D grids now author directly on `standard_object` via
+> `source <target>` + `count_u` / `count_v` (using the exact same `i, j, u, v` `expr(...)` placement
+> variables and `[i,j]` auto-naming, generalized to clone any object or multi-part subtree). Keep the
+> `instance_array` prose below as the historical L3 design record.
 
 Proposed concrete primitive — an **`instance_array` chunk** (a new descriptor-driven chunk,
 so it gets validation/UI/suggestions for free, L6):
@@ -646,8 +680,9 @@ in-session, the agent decides and the user sees the diff.
   (`lets/LZ`), so it is editable and a single edit re-derives all consumers (INV-3). This
   preserves the *reuse* semantics `DEFINE` provided without imperative, order-dependent macro
   state.
-- **Built-in constants** (`PI`, `E`, currently seeded into the macro table at
-  `AsciiSceneParser.cpp:9883`) become **reserved identifiers in the expression grammar**
+- **Built-in constants** (`PI`, `E`, formerly seeded into the legacy macro table in the retired
+  `AsciiSceneParser`, now handled directly in [`Cst.cpp`](../../src/Library/Cst/Cst.cpp) /
+  [`ExpressionEval.h`](../../src/Library/Painters/ExpressionEval.h)) become **reserved identifiers in the expression grammar**
   (§2.7) — `expr( 2*PI*r )` — not macros.
 
 `UNDEF` has no equivalent and is dropped: a CST `let` binding has lexical, document-order
@@ -666,14 +701,19 @@ literals) retained in the CST. Grammar:
 
 - **Operators:** `+ - * / %`, parentheses, unary `-`. (Same as `MathExpressionEvaluator` today.)
 - **Functions:** the `ExpressionProgram` set (`sin cos tan sqrt clamp hypot exp pow min max
-  abs floor …` — whatever `expression_function2d` already supports). `hal(d)` — the Halton
-  low-discrepancy generator (`AsciiSceneParser.cpp:256`) — becomes a **function in this set**
+  abs floor …` — whatever `expression_function2d` already supports). **Shipped extension
+  ([doc 88](88-procedural-texture-expressiveness-candidates.md)):** `expr(...)` also supports
+  `sample(painter_name, u, v)` (RGB painter query) and `sample_scalar(fn2d_name, u, v)` (2D
+  scalar function query) for procedural placement/modulation, with `BuildReferenceGraph` in
+  [`Cst.cpp`](../../src/Library/Cst/Cst.cpp) recording static reference edges from those calls so
+  incremental re-derive and rename track them. `hal(d)` — the legacy Halton
+  low-discrepancy generator (from the retired `AsciiSceneParser`) — becomes a **function in this set**
   if any scene needs deterministic quasi-random placement; it is wired as `halton(dim, index)`
   with an explicit index argument rather than relying on hidden global sequence state
-  (`static MultiHalton mh` at `:159`). **Open point** (§4): `hal()`'s current statefulness
+  (`static MultiHalton mh`). **Open point** (§4): `hal()`'s legacy statefulness
   violates INV-2 (determinism depends on call order) — the redesign must make it pure by
-  passing the index explicitly. Most scenes don't use it; the two that do
-  (`painters.RISEscene`, `diamond_teapot_pour.RISEscene`) can migrate to the explicit form.
+  passing the index explicitly. Most scenes don't use it; the two that did
+  (`painters.RISEscene`, `diamond_teapot_pour.RISEscene`) were constant-folded during the v7 corpus migration.
 - **Identifiers:** instance variables in a generator context (`i`, `j`, `u`, `v`),
   `let`-bound constants (`LZ`, `POWER`), built-ins (`PI`, `E`), and **name-path references to
   other parameters** (a future extension — `expr( materials/gold.scale * 2 )` — flagged as
@@ -894,7 +934,9 @@ nukes the whole derivation with no structured location. The CST changes this to
 
 ### 2.10 Coverage: does this cover everything?
 
-**All ~138 chunk keywords** (the README's count; the Explore survey enumerates them across
+**All 176 chunk keywords** registered in `CreateAllChunkParsers()`
+([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp); ~138 at charter time,
+spanning
 Painters, Functions, Materials, scene-config, Cameras, Geometry, Modifiers, Media, Objects,
 ShaderOps, Shaders, Rasterizers, Output, Lights, PhotonMaps/Gather, IrradianceCache,
 Animation) are `Chunk` nodes — they are *already* uniform `Describe()`/`Finalize()` pairs, so
@@ -1029,9 +1071,9 @@ entry); the expanded sub-scene is a derivation product, not CST content. (This m
 | `RawTokenCapture` (lexer + token widths + symbolic flags) | **Evolve → reuse** | Promote from save-side Phase 0 to the front-line CST lexer; it produces green-node content (relative widths, not absolute spans). Lexing rules (quoted strings, `expr(...)` balancing, comment ranges) are exactly what the CST needs. Add comment/blank emission instead of stripping. (The `$(...)` balancing it already does is consumed only by the v6→v7 migrator, D8.) |
 | `SourceSpanIndex` (per-entity/param **absolute** byte ranges, `AuthorMode`, `ApplyOffsetDeltas`) | **Delete (replaced by the red cursor, D2/D16)** | D2 forbids stored absolute offsets in shared nodes. Green nodes store **relative widths only** (the per-occurrence `NodeId` lives in the `Version`'s persistent `identityRoot` side-map, **not** on the green node — D26/D15); absolute positions are computed on demand by the version-specific red cursor over the rope-cached widths (§2.4, O(log N), D16). The standalone absolute-offset side-table and **`ApplyOffsetDeltas`** (offset-shift-on-splice) are **deleted**, not evolved — there is nothing to shift. `chunkRevisited`/FOR-dedup logic is gone with v6 (no legacy nodes, D8). `insideManagedBlock` becomes obsolete (no managed override block — see SaveEngine row). `AuthorMode` (Euler/Quaternion/Matrix precedence) is retained as green-node content where needed. |
 | Descriptor schema ([`ChunkDescriptor.h`](../../src/Library/Parsers/ChunkDescriptor.h), `IAsciiChunkParser::Describe()`) | **Reuse verbatim** | L6. The CST references it; no structural change required for this facet. It gains a fourth consumer (CST binding) alongside parser/highlighter/suggestions. |
-| `DispatchChunkParameters` / generic `ParseChunk` (`AsciiSceneParser.cpp:697`, `:9861`) | **Evolve** | Becomes the descriptor-binding step of `ParseToCst` (validate names → typed `ValueAtom`s), **minus** the abort-on-error behavior (→ error nodes, §2.9) and **minus** `Finalize` invocation. |
+| `DispatchChunkParameters` / generic `ParseChunk` ([`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp), formerly `AsciiSceneParser.cpp`) | **Evolve** | Becomes the descriptor-binding step of `ParseToCst` (validate names → typed `ValueAtom`s), **minus** the abort-on-error behavior (→ error nodes, §2.9) and **minus** `Finalize` invocation. |
 | `IAsciiChunkParser::Finalize` bodies (the `pJob.AddX` emission) | **Evolve → move to derivation (Facet 2)** | The "typed values → engine objects" logic relocates into Facet 2, which calls the **same `Job::Add*` apply layer**. The apply layer (`Job.cpp`, `RISE_API`) is **reused unchanged**. |
-| Top-level preprocessing (`FOR`/`ENDFOR` seek-back, `substitute_macro`, `evaluate_expression`, `evaluate_first_function_in_expression`, the `static MultiHalton mh` global, `macros`/`loops` parser state) | **Delete after migration (lives only in the one-shot migrator, D8)** | There is **no legacy derivation pre-pass** and no runtime legacy nodes (D8, §2.8.3). The expansion logic is used *only* by the v6→v7 migrator to convert `FOR`→`instance_array`, `DEFINE`→`let`, `$(...)`/`@`/`%`→`expr(...)`/`let`-refs, and `hal`→index-explicit `halton(dim, idx)` (INV-2). Once the corpus is migrated and the gate is green, this whole subsystem (and the v6 reader) is **deleted**; v7 is the sole runtime format. |
+| Top-level preprocessing (`FOR`/`ENDFOR` seek-back, `substitute_macro`, `evaluate_expression`, `evaluate_first_function_in_expression`, the `static MultiHalton mh` global, `macros`/`loops` parser state) | **Delete after migration (lives only in the one-shot migrator, D8)** | There is **no legacy derivation pre-pass** and no runtime legacy nodes (D8, §2.8.3). The expansion logic is used *only* by the v6→v7 migrator to convert `FOR`→`instance_array` *(later superseded by `standard_object` `source` + `count_u`/`count_v` in doc 87 step 3d)*, `DEFINE`→`let`, `$(...)`/`@`/`%`→`expr(...)`/`let`-refs, and `hal`→index-explicit `halton(dim, idx)` (INV-2). Once the corpus is migrated and the gate is green, this whole subsystem (and the v6 reader) is **deleted**; v7 is the sole runtime format. |
 | Embedded `>` command parsing — `> set` (accelerator / global-medium / `light_rr_threshold`); `> modify <entity>` (active corpus count = **0** — the seven in `watch_dial` are inside a `/* */` block, D37) | **Delete from v7; migrate or fold (D19/D27/D37)** | v7 has **no `Command` node kind and no `> ` syntax** (D19/D27). The migrator rewrites `> set` structural forms into descriptor-driven chunks (`acceleration { … }`, `global_medium { … }`); rewrites `> set <render-setting>` (e.g. `light_rr_threshold`) into a **declarative parameter** on the relevant rasterizer/integrator chunk; and **retires `> modify`** by **folding any *active* one into the target entity chunk's final authored values** (no runtime modify) — moot for the current corpus, which has **zero active `> modify`** (D37). All `>` parsing survives only inside the one-shot v6→v7 migrator (alongside `> load`/`> run` flattening, D7). **The migrator is comment/token-aware** — it operates on the parsed token stream / CST, **never a raw line grep**, preserving `/* */` blocks verbatim as CST comment nodes and never activating a commented-out command (D37) — and **hard-fails on any unhandled active `>` form**. |
 | `AllocateCameraName` auto-naming (`:601`) | **Evolve → CST synthesized identity** (§2.5) | Generalized to all unnamed chunks; synthesized name (with its side-map `NodeId`, D15) persisted in CST, materialized to text on first edit. |
 | [`SaveEngine`](../../src/Library/SceneEditor/SaveEngine.cpp) Mode-A/Mode-B byte-splice + managed-override-block machinery | **Delete (this facet's contribution to the deletion)** | Replaced by `SerializeCst(Cst)` — pretty-printing the canonical tree, verbatim for untouched nodes, re-rendered for edited nodes. The whole Mode-A-vs-Mode-B duality, the sentinel-bracketed managed block, `OverrideSpanIndex`, `override_object`, the load-time `FileIdentity` external-mod guard's *splice* rationale, and `loadedPropertyValues` diffing exist **only** because the text wasn't retained. With a retained CST they vanish. **Note (D6, superseded by D17):** the external-mod guard's *intent* is **not** deleted — it is retained as the load/flush content-fingerprint + **atomic save** contract (temp-write → fsync → revalidate content-hash → atomic rename, **D17**, replacing D6's TOCTOU-prone compare-and-swap; Facet 3 owns it); only its byte-*splice* mechanism goes away here. (Facet 3/6 own the full SaveEngine deletion inventory; this facet supplies the replacement: CST serialization.) |

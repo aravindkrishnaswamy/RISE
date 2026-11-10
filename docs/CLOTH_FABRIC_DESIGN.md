@@ -6519,14 +6519,12 @@ DL-213 producer update (2026-09-29; items4/12): global Indexed3/glTF Tangent4 al
     band loosened — see [bdpt-vcm-mis-balance.md's "Sibling sweep"
     addendum](skills/bdpt-vcm-mis-balance.md) for the full accounting.
 
-27. **FIXED 2026-09-28 (debt ledger DL-05, slice `debt-dl05`; row left
-    open for the supervisor to strike) — was OPEN 2026-09-05: PT cannot
-    sample the far layer's delta gap: a two-layer gapped weave read PT
+27. ~~**PT cannot sample the far layer's delta gap: a two-layer gapped weave read PT
     UNDER BDPT/VCM by 1.28–1.30× at gap 0.1 (two planes / box) and 1.55×
     at gap 0.3 with the light outside; exact with the light inside or a
-    single layer.**
+    single layer.**~~ **CLOSED (DL-05 fixed 2026-09-28; follow-on residuals DL-295 and DL-329 also CLOSED).**
 
-    **Resolution (2026-09-28).**  Only a DELTA light's NEE shadow ray sees
+    **Resolution (2026-09-28, DL-05 — CLOSED).**  Only a DELTA light's NEE shadow ray sees
     through a non-bending delta pass-through: `IMaterial::
     HasDeltaPassThrough()` + `ISPF::DeltaPassThroughTransmittance{,NM}`
     (the SPF's own expected gap throughput -- `gap(x)` for the weave,
@@ -6547,9 +6545,12 @@ DL-213 producer update (2026-09-29; items4/12): global Indexed3/glTF Tangent4 al
     plane 1.0000 -> 1.0000, light inside 0.9971 -> 0.9969; the ~0.7 % left
     on the box is the gap-0 closed-box residual debt 25 records (0.9945 ->
     0.9935 on the same box at gap 0).  Closed form, full table, cost, the
-    `silk`/`satin` gap-0 gate and the two residuals it opened (DL-294, a
-    narrow-fov bidirectional splat bias; DL-295, PT+SMS dropping emission
-    after a gap): [DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md](DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md).
+    `silk`/`satin` gap-0 gate and the residuals it opened (**DL-294**, a
+    narrow-fov bidirectional splat bias; **DL-295**, PT+SMS dropping emission
+    after a gap — subsequently **CLOSED**; **DL-329**, HWSS companion gap
+    throughput — subsequently **CLOSED** via `EvaluateKrayNM` on `WeaveSPF`,
+    `FabricSPF`, and `CoatedSPF`):
+    [DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md](DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md).
     The history below is kept as written.
 
     Exposed by debt 25's fix — masked before it by the closed-box leak that
@@ -6615,17 +6616,13 @@ DL-213 producer update (2026-09-29; items4/12): global Indexed3/glTF Tangent4 al
 
     **Auto-router.** `docs/RENDERING_INTEGRATORS.md` §2 /
     `docs/AUTO_RASTERIZER_DESIGN.md` currently have no rule for this
-    two-layer-gap regime, and PT is the default.  (Moot for RGB and
-    non-HWSS spectral since the 2026-09-28 fix: PT now agrees with
-    BDPT/VCM on this regime there.  **False for `hwss TRUE`**: PT's HWSS
-    companion loop prices a Scatter()-sampled continuation through the gap
-    with the continuum BSDF instead of the delta pass-through -- no
-    `weave_material`/`fabric_material`/`coated_material`/
-    `composite_material` SPF implements `ISPF::EvaluateKrayNM` -- dropping
-    3 of 4 wavelength lanes; the §15 item 27 closed-form rows' own HWSS
-    numbers are unaffected because they cross the gap only via the NEE
-    shadow ray, not a continuation.  Filed as **DL-329** at merge; see
-    [DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md](DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md)
+    two-layer-gap regime, and PT is the default.  (Moot for RGB, non-HWSS
+    spectral, AND `hwss TRUE`: DL-05 fixed RGB/NM, and **DL-329 is now
+    CLOSED** — `WeaveSPF`, `FabricSPF`, and `CoatedSPF` all implement
+    `ISPF::EvaluateKrayNM`, so PT's HWSS companion loop prices a
+    `ScatterNM`-sampled continuation through the delta gap with the exact
+    per-lobe companion throughput instead of falling back to the continuum
+    BSDF; see [DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md](DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md)
     section 8.)
 ---
 

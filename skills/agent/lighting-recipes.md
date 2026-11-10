@@ -162,25 +162,8 @@ pinhole_camera
 
 uniformcolor_painter
 {
-	name	pnt_gray_a
-	color	0.82 0.83 0.86
-}
-
-uniformcolor_painter
-{
-	name	pnt_gray_b
-	color	0.35 0.37 0.42
-}
-
-# View-angle colour shift instead of a flat grey -- a lit subject reads
-# its shading better than a plain matte ball.  Swap back to
-# uniformcolor_painter for a neutral subject.
-iridescent_painter
-{
-	name	pnt_gray
-	colora	pnt_gray_a
-	colorb	pnt_gray_b
-	bias	0.05
+	name	pnt_subject
+	color	0.72 0.58 0.42
 }
 
 uniformcolor_painter
@@ -192,7 +175,7 @@ uniformcolor_painter
 lambertian_material
 {
 	name		mat_subject
-	reflectance	pnt_gray
+	reflectance	pnt_subject
 }
 
 lambertian_material
@@ -267,7 +250,10 @@ directional_light
 ```
 
 **A quick varied subject material.** The demo above gives the subject a
-view-shifting `iridescent_painter` tint; for a subject with real surface
+warm clay `uniformcolor_painter` so the three lights' colour separation
+reads cleanly (note: the old view-angle `iridescent_painter` look-alike
+is deprecated — use `ggx_material` with `fresnel_mode thinfilm` for
+physical thin-film interference); for a subject with real surface
 texture instead, `insert_material_scaffold {family:"brushed_metal",
 name:"fixture1", tone:"0.55 0.56 0.6", wear:0.5, scale:4.0}` expands
 into a wired `ggx_material` (`tmpl_fixture1_mat`, `fresnel_mode

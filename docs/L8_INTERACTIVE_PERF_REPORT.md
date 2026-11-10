@@ -1,5 +1,12 @@
 # L8 Interactive Render Path — Production Perf Impact Report
 
+> **HISTORICAL BENCHMARK SNAPSHOT (2026-05-11):** Preserved as the point-in-time
+> performance validation of the L8 interactive viewport rework. Note that since
+> 2026-10-09, `pixelpel_rasterizer` and `mlt_rasterizer` are FROZEN legacy
+> surfaces ([SCENE_CONVENTIONS.md §11.4](SCENE_CONVENTIONS.md)), and
+> `scenes/Tests/Geometry/shapes.RISEscene` has since been migrated to
+> `pathtracing_pel_rasterizer`.
+
 **Date**: 2026-05-11
 **Baseline**: commit `97fb593a` (FilmIntrospection NaN guard — the last commit before the
 L8 interactive-rendering rework began at `386c488a`)
@@ -94,7 +101,7 @@ within 2% — the differences are pure Monte-Carlo non-determinism from non-fixe
 seeds and parallel-tile scheduling, not algorithmic divergence. For MLT (which uses
 a deterministically-seeded PSSMLT bootstrap) the output is byte-for-byte identical.
 
-The full per-scene PNG diff table (across all 7 scenes) is in `docs/L8_INTERACTIVE_PERF_REPORT_RAW.md`.
+The full per-scene PNG diff table (across all 7 scenes) was recorded in `docs/L8_INTERACTIVE_PERF_REPORT_RAW.md` (local scratch, not committed).
 
 ## Where the L8 production-path overhead lives
 

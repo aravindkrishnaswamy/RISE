@@ -1,11 +1,9 @@
 # RISE LLM / Agent Runtime — Provider Adapters, the Agent Loop, Chat UX, and Staged Autonomy
 
-**Status:** **CORE RUNTIME SHIPPED.** Provider codecs, the shared agent loop,
-desktop chat panels, tool calling, proposal/commit authority, render tools,
-prompt caching, transcript compaction, trajectories/evals, and clarification
-requests are implemented under `src/Library/Agent/` and the desktop bridges.
-Credential/security and future-provider sections remain design guidance. The
-sibling [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md) owns the tool catalog.
+**Status:** **CORE RUNTIME SHIPPED (5 PROVIDERS ON MACOS + WINDOWS); SECURITY/OAUTH/ANDROID ITEMS OPEN.**
+- **Shipped:** Shared C++ `AgentChatLoop` + **5-provider** `AgentChatCodecs` (`Anthropic`, `Gemini`, `OpenAI`, `XAI`, `Local` OpenAI-compatible) under `src/Library/Agent/`, macOS (`ChatPanel.swift`) & Windows (`ChatPanel.{h,cpp}`) chat UIs + `ProposalCard` diff-approval cards, vision/imagine render-and-inspect loop (`render_preview`, `read_viewport`, `compare_to_reference`), prompt caching, transcript compaction, trajectories/evals, clarification requests, and macOS Swift Keychain storage.
+- **Still open / unbuilt:** Curated `ExternalServerHub` (consuming external MCP servers), shared C++ `ICredentialStore` + Windows Credential Manager (`ChatPanel.cpp` currently keeps API keys in-memory / env-var only), OAuth sign-in flows, Linux TLS transport backend, and Android JNI chat UI + Keystore wiring.
+The sibling [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md) owns the tool catalog.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Make the in-app AI a first-class authoring surface over the canonical `.RISEscene` text, on macOS, Windows, and (Tier A) Android, with **the entire runtime in the shared C++ library** and only credential storage + the chat bubble UI per-platform. Answers GUI_ROADMAP §13 open-question #4 (the minimal provider-adapter interface) and maps to the A0–A3 AI spine of GUI_ROADMAP §11.
 **Honors:** GUI_ROADMAP §1 principles — text is canonical (#1), maximize shared C++ (#2), Android keeps the core incl. LLM (#3), one mutation path through `SceneEditController` (#6) — and §16 confirmed decisions: the credential interface is a single reference-counted **`ICredentialStore : IReference`** in **`src/Library/Agent/`** (drop `ISecretStore`); the agent subsystem **avoids the bare `MCP` token** in type/dir names; cloud auth ships **API-key paste first**.

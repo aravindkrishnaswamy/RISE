@@ -33,7 +33,7 @@ never both (hard parse error).
 The geometry is **object-space**: position / orient / scale it with the
 enclosing `standard_object` exactly like any other geometry. It participates
 in the normal ray pipeline — primary rays, shadow rays, reflection/refraction
-continuation rays, and the caustic photon pass all sphere-trace against it.
+continuation rays, and bidirectional caustic light subpaths all sphere-trace against it.
 
 ## The part-line grammar
 
@@ -74,8 +74,8 @@ chunks ready to paste into `watch_dial.RISEscene`).
 |-------|-------------------|
 | `sdf_shadows.RISEscene`  | A melded SDF blob (roundbox `smin` sphere) beside an analytic sphere + box on a ground plane, one directional + ambient light. Validates sphere-trace primary hits, gradient normals, **shadow rays**, and **inter-geometry depth** against the analytic primitives. |
 | `sdf_volume.RISEscene`   | A glass SDF "peanut" (two spheres `smin`) bounding a colored fog `interior_medium`. Validates that the ray-marched **entry/exit** crossings correctly drive the IOR-stack participating-medium tracking (the continuation ray must find the far face, not re-hit the surface it was spawned on). |
-| `sdf_caustic.RISEscene`  | A glass SDF torus over a white floor with an overhead light. Light passes through the ring's hole **and** refracts through the band → a **ring caustic** via the caustic photon map. Each photon can cross the boundary up to four times, exercising entry/exit tracking on the light-transport side too. |
-| `sdf_arealight.RISEscene` | A glowing SDF **torus** lights a floor under pure DirectLighting — NEE draws its samples from the SDF's tessellation-backed `UniformRandomPoint`/`GetArea`. Validates first-class area-light support on a non-convex, multi-silhouette surface. |
+| `sdf_caustic.RISEscene`  | A glass SDF torus over a white floor with an overhead light. Light passes through the ring's hole **and** refracts through the band → a **ring caustic** under `vcm_pel_rasterizer` (`samples 64`). Each light subpath can cross the boundary up to four times, exercising entry/exit tracking on the light-transport side too. |
+| `sdf_arealight.RISEscene` | A glowing SDF **torus** lights a floor under `pathtracing_pel_rasterizer` (`max_diffuse_bounce 0`, direct-only) — NEE draws its samples from the SDF's tessellation-backed `UniformRandomPoint`/`GetArea`. Validates first-class area-light support on a non-convex, multi-silhouette surface. |
 | `sdf_luminaire_fog.RISEscene` | The **media stress**: a glowing blobby SDF (smin peanut) as an area light INSIDE a global homogeneous fog, plus a glass SDF holding a second interior medium (nested global-fog → glass → interior-fog crossings on marched boundaries), plus an analytic reference sphere. Exercises volume in-scattering NEE from SDF surface samples, fog transmittance along shadow rays toward them, the camera-side glow halo, and the IOR/medium stack swapping at sphere-traced crossings in both directions. |
 | `sdf_luminaire_heterofog.RISEscene` | The same blobby SDF luminaire inside a **heterogeneous** (perlin-worley painter) fog with a box occluder — delta-tracked transmittance reads density along every ray toward the SDF-sampled light positions; the glow halo picks up the density variation. |
 
@@ -178,7 +178,7 @@ residual and the J clamp ([0.5, 2]) near creases.  That backs:
   for its pure-mirror supplemental loop, which reads the same caster list.
 - **Area lights**: an emissive SDF registers as a real luminary and is
   NEE-importance-sampled — see `sdf_arealight.RISEscene` (a glowing SDF torus
-  lighting a floor under pure DirectLighting). Linear-HDR floor brightness
+  lighting a floor under `pathtracing_pel_rasterizer` with `max_diffuse_bounce 0`). Linear-HDR floor brightness
   matches an analytic emitter of equal area within MC noise. *Caveat*: an SDF
   emitter measures ~2× the pixel variance of an analytic-primitive emitter at
   equal samples (a surface-curve CDF map fragments sampler stratification at the

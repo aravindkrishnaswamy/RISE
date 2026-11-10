@@ -277,3 +277,4 @@ landed with this slice:
   subsumed by the transaction path before it ever shipped — was removed
   (manifest updated in the same commit).  Film / Film-preset / Environment
   are the documented phase-3b work list.
+- **Follow-up (shipped 2026-10-31):** Material Editor C1 Slices 1–6 (soft-range sliders, inline painter slot swatches/quick-editors/Shared-Fork, 56×56 3D `MaterialPreview` shaderball header, and D1–D3 spectral/metal/thin-film cards) shipped in `PropertiesPanel.swift` and `ViewportProperties.cpp` — see [MATERIAL_EDITOR.md](MATERIAL_EDITOR.md) and [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md).
