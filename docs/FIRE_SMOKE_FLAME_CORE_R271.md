@@ -1300,10 +1300,34 @@ A bounded closing step on the floor-layer question, after an owner review of the
 
 **Where this leaves the floor question.** The twin method cannot resolve RISE against FDS at the floor in the first 0.2 s, and the budget shows no RISE term that over-dissipates there. The sustained floor quietness is a slow (0.5–1 s) decay with no single responsible operator, consistent with §28. The question is closed as cumulative scheme behaviour, and the campaign moves to judging a candidate package against physical targets (Next, item 1).
 
+## 31. Inert plume A/B: the limited carrier alone recovers most of the entrainment without grid noise (2026-11-10)
+
+`r271_inert/inert_compact_lc`: the §20 non-reacting plume, compact stencil, C_v 0.07, with `RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1` only (14 s, exit 98, window 6–14 s). Compared with FDS, the compact baseline, the §22 seeded arm and the §27 C_v 0.02 arm. Evidence: `s30_runs.txt`.
+
+| | FDS | compact | limited carrier | seed ±20% | C_v 0.02 |
+|---|---|---|---|---|---|
+| 3 m mass flux (kg/s) | 0.922 | 0.454 | 0.725 | 0.608 | 0.704 |
+| 2 m mass flux | 0.514 | 0.255 | 0.386 | 0.320 | 0.413 |
+| entrainment rate / FDS, 0.29–0.50 m | 1 | 0.45 | 0.61 | 0.55 | 0.85 |
+| entrainment rate / FDS, 0.5–2.5 m | 1 | 0.42–0.49 | 0.74–0.78 | 0.59–0.64 | 0.71–0.88 |
+| entrainment rate / FDS, 2.49–3.01 m | 1 | 0.54 | 0.87 | 0.77 | 0.72 |
+| centre excess T at 0.99 m (K) | 339 | 714 | 534 | 675 | 466 |
+| centre excess T at 2.0 m | 101 | 317 | 146 | 231 | 140 |
+| centre excess T at 3.0 m | 48 | 110 | 59 | 78 | 64 |
+| centre rms w/w_c at 0.29 / 0.50 / 0.99 m | 0.079 / 0.147 / 0.312 | 0.013 / 0.024 / 0.094 | 0.027 / 0.053 / 0.217 | 0.022 / 0.041 / 0.136 | 0.105 / 0.144 / 0.256 |
+| grid-scale w′ share at 1.5 / 2.0 / 3.0 m | 0.113 / 0.090 / 0.063 | 0.125 / 0.096 / 0.057 | 0.119 / 0.091 / 0.059 | 0.101 / 0.080 / 0.055 | 0.217 / 0.210 / 0.181 |
+| large-scale w′ share at 2.0 / 3.0 m | 0.595 / 0.690 | 0.382 / 0.651 | 0.566 / 0.710 | 0.466 / 0.679 | 0.417 / 0.543 |
+
+- **The limited carrier closes about 60% of the 3 m mass-flux gap** (0.454 → 0.725; FDS 0.922), slightly more than C_v 0.02, and from 0.5 m up it entrains at 74–87% of FDS's rate against the baseline's 42–54%.
+- **It does so with an FDS-like spectrum.** The grid-scale share matches FDS within 5% from 1.5 m up, where C_v 0.02 carries 2–3× FDS's. The large-scale share is FDS's from 2 m.
+- **The far plume is close to FDS** (excess T 59 against 48 K and w_c 2.62 against 2.67 m/s at 3 m). The first metre is still too steady and too hot: rms w/w_c is a third of FDS's at 0.29–0.50 m, and the excess T at 1 m is 534 K against 339.
+- The seed alone does less at every height. Running: `inert_compact_lc_seed02`, the limited carrier plus the ±20% seed.
+
 ## Next (owner decisions)
 
 1. **Plan agreed 2026-11-10 (owner):** stop the open-ended floor-mechanism hunt (§30 closes it) and judge a candidate package against physical targets.
-   - Running: 14 s inert A/B `r271_inert/inert_compact_lc` (limited carrier alone at C_v 0.07), the decision data for the carrier.
+   - Done (§31): the limited carrier alone closes about 60% of the inert plume's 3 m mass-flux gap with an FDS-like spectrum; the first metre stays too steady.
+   - Running: `r271_inert/inert_compact_lc_seed02` (limited carrier plus the ±20% seed, 14 s).
    - Then: limited carrier plus the §22 heat-source seed, judged on McCaffrey centreline values, Heskestad entrainment and flame height, with FDS as a second reference.
    - In reserve: a reduced-domain resolution check of both codes, if the package falls short.
    - The limited momentum carrier (§29) stays the one identified numerics contributor: 2–3× base unsteadiness with an FDS-like spectrum aloft. Superbee on top adds only 6–9% at k7–k16.
