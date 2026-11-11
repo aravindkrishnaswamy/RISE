@@ -50,6 +50,7 @@ class ViewportTimeline;
 class ViewportProperties;
 class OutlinerWidget;
 class EnvironmentPanel;
+class NamedViewsPanel;
 class StartWidget;
 class NodeGraphCanvas;
 class ObjectGraphCanvas;
@@ -497,6 +498,10 @@ private:
     // Shows nothing until setBridge() gives it a live scene; hides itself
     // entirely when the scene has no active rasterizer.
     EnvironmentPanel* m_environmentPanel = nullptr;
+    // Named Views (session/UI camera bookmarks, docs/gui/CAMERA_CONTROLS_UX.md §3),
+    // persistent between EnvironmentPanel and the per-scene ViewportProperties
+    // (mirrors macOS ContentView.swift:854-859).
+    NamedViewsPanel*  m_namedViewsPanel = nullptr;
 
     // Center column: persistent host for the view stack / timeline /
     // log drawer.  m_viewportTimeline is inserted/removed at index 1

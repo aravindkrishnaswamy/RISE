@@ -6,6 +6,7 @@
 
 #include "ChatPanel.h"
 
+#include "CredentialStore.h"
 #include "ViewportBridge.h"
 #include "Theme.h"
 
@@ -73,6 +74,14 @@ namespace
     {
         const QByteArray utf8 = s.toUtf8();
         return std::string(utf8.constData(), static_cast<std::size_t>(utf8.size()));
+    }
+
+    void scrubSecretString(QString& s)
+    {
+        if (!s.isEmpty()) {
+            s.fill(QChar(0));
+            s.clear();
+        }
     }
 
     // GUI stage 3 (Windows parity, chat-display enrichment): cap a
@@ -828,13 +837,31 @@ ChatPanel::ChatPanel(QWidget* parent)
     providerRow->addWidget(m_modelEdit, 1);
     outer->addLayout(providerRow);
 
+    auto* apiKeyRow = new QHBoxLayout();
+    apiKeyRow->setSpacing(6);
     m_apiKeyEdit = new QLineEdit();
     m_apiKeyEdit->setEchoMode(QLineEdit::Password);
-    m_apiKeyEdit->setPlaceholderText("API key");
+    m_apiKeyEdit->setPlaceholderText("Paste API key (stored in Credential Manager)");
     m_apiKeyEdit->setFont(Theme::mono(10));
+    // Write-only: never populated with stored or environment secrets.
     // Styled in restyleTheme() -- LIVE THEME-SWITCH CONTRACT (Theme.h).
-    m_apiKeyEdit->setText(envKeyFor(Provider::Local));
-    outer->addWidget(m_apiKeyEdit);
+    apiKeyRow->addWidget(m_apiKeyEdit, 1);
+
+    m_saveKeyBtn = makePillButton(tr("Save Key"), this);
+    m_saveKeyBtn->setToolTip(tr("Store in Windows Credential Manager (\"RISE Agent Chat\") for this provider"));
+    m_saveKeyBtn->setEnabled(false);
+    apiKeyRow->addWidget(m_saveKeyBtn);
+
+    m_clearKeyBtn = makePillButton(tr("Clear Key"), this);
+    m_clearKeyBtn->setToolTip(tr("Delete this provider's stored key from Windows Credential Manager"));
+    m_clearKeyBtn->setEnabled(false);
+    apiKeyRow->addWidget(m_clearKeyBtn);
+    outer->addLayout(apiKeyRow);
+
+    m_keySourceLabel = new QLabel();
+    m_keySourceLabel->setFont(Theme::sans(10));
+    m_keySourceLabel->setWordWrap(true);
+    outer->addWidget(m_keySourceLabel);
 
     // Secure-MCP slice 5c (Windows parity, RISE UI redesign): pending/
     // recently-resolved proposals column -- above the transcript,
@@ -1000,7 +1027,16 @@ ChatPanel::ChatPanel(QWidget* parent)
     // case must still be able to flip agentConfigured() (Local is
     // keyless; every other provider isn't).
     connect(m_apiKeyEdit, &QLineEdit::textChanged,
-            this, [this](const QString&) { emit agentConfiguredChanged(); });
+            this, [this](const QString&) {
+                m_keySaveNotice.clear();
+                m_keySaveNoticeIsWarning = false;
+                updateKeyControls();
+                emit agentConfiguredChanged();
+            });
+    connect(m_saveKeyBtn, &QPushButton::clicked,
+            this, &ChatPanel::saveApiKeyClicked);
+    connect(m_clearKeyBtn, &QPushButton::clicked,
+            this, &ChatPanel::clearApiKeyClicked);
     connect(m_inputEdit, &QLineEdit::returnPressed,
             this, &ChatPanel::sendMessage);
     connect(m_inputEdit, &QLineEdit::textChanged,
@@ -1034,6 +1070,13 @@ ChatPanel::~ChatPanel()
         m_reply->abort();
         m_reply->deleteLater();
         m_reply = nullptr;
+    }
+    for (auto it = m_keysByProvider.begin(); it != m_keysByProvider.end(); ++it) {
+        scrubSecretString(it.value());
+    }
+    m_keysByProvider.clear();
+    if (m_apiKeyEdit) {
+        m_apiKeyEdit->clear();
     }
 }
 
@@ -1075,6 +1118,8 @@ void ChatPanel::restyleTheme()
 
     if (m_retryBtn) m_retryBtn->setStyleSheet(pillButtonStyleSheet());
     if (m_resetBtn) m_resetBtn->setStyleSheet(pillButtonStyleSheet());
+    if (m_saveKeyBtn) m_saveKeyBtn->setStyleSheet(pillButtonStyleSheet());
+    if (m_clearKeyBtn) m_clearKeyBtn->setStyleSheet(pillButtonStyleSheet());
 
     if (m_providerCombo) {
         m_providerCombo->setStyleSheet(QStringLiteral(
@@ -1091,6 +1136,7 @@ void ChatPanel::restyleTheme()
             "QLineEdit { color: %1; background: %2; border: 1px solid %3; border-radius: 6px; padding: 4px 8px; }")
             .arg(Theme::hex(Theme::textSecondary), Theme::hex(Theme::bgWell), Theme::hex(Theme::borderLight)));
     }
+    updateKeyControls();
 
     if (m_transcriptScroll) {
         // Task B (Phase-3 crispness): slim themed scrollbar, appended
@@ -1408,8 +1454,8 @@ void ChatPanel::sendMessage()
     if (m_busy || !m_bridge || !m_sceneEditable) return;
     const QString text = m_inputEdit->text().trimmed();
     if (text.isEmpty()) return;
-    if (providerRequiresApiKey(m_appliedProvider) && m_apiKeyEdit->text().trimmed().isEmpty()) {
-        refreshTranscript("Enter an API key before sending.");
+    if (providerRequiresApiKey(m_appliedProvider) && resolveApiKey(m_appliedProvider).isEmpty()) {
+        refreshTranscript("Enter or save an API key before sending.");
         return;
     }
 
@@ -1617,8 +1663,159 @@ bool ChatPanel::agentConfigured() const
     // gates a send on, inverted to a positive "ready" reading -- reusing
     // it rather than a second source of truth.  m_appliedProvider (not
     // the combo's possibly-mid-edit selection) matches what an actual
-    // send would evaluate right now.
-    return !providerRequiresApiKey(m_appliedProvider) || !m_apiKeyEdit->text().trimmed().isEmpty();
+    // send would evaluate right now across draft input, Credential
+    // Manager, and environment fallback.
+    return !providerRequiresApiKey(m_appliedProvider) || !resolveApiKey(m_appliedProvider).isEmpty();
+}
+
+void ChatPanel::ensureCredentialLoaded(Provider provider) const
+{
+    if (!providerRequiresApiKey(provider)) return;
+    const int slot = static_cast<int>(provider);
+    if (m_credLoadedProviders.contains(slot)) return;
+    m_credLoadedProviders.insert(slot);
+    const QString stored = CredentialStore::read(agentProviderName(provider));
+    if (!stored.isEmpty()) {
+        m_keysByProvider.insert(slot, stored);
+    }
+}
+
+bool ChatPanel::hasStoredCredential(Provider provider) const
+{
+    if (!providerRequiresApiKey(provider)) return false;
+    ensureCredentialLoaded(provider);
+    return !m_keysByProvider.value(static_cast<int>(provider)).isEmpty();
+}
+
+QString ChatPanel::resolveApiKey(Provider provider) const
+{
+    // 1. Write-only input box: transient unsaved draft for the applied provider.
+    if (provider == m_appliedProvider && m_apiKeyEdit) {
+        const QString draft = m_apiKeyEdit->text().trimmed();
+        if (!draft.isEmpty()) return draft;
+    }
+    if (!providerRequiresApiKey(provider)) {
+        return QString();
+    }
+    // 2. Windows Credential Manager (lazily cached once per provider per process).
+    ensureCredentialLoaded(provider);
+    const QString cred = m_keysByProvider.value(static_cast<int>(provider));
+    if (!cred.isEmpty()) return cred;
+    // 3. Process environment variable fallback.
+    return envKeyFor(provider).trimmed();
+}
+
+QString ChatPanel::envVarHintFor(Provider provider)
+{
+    switch (provider) {
+    case Provider::Anthropic: return QStringLiteral("ANTHROPIC_API_KEY");
+    case Provider::Gemini:    return QStringLiteral("GEMINI_API_KEY or GOOGLE_API_KEY");
+    case Provider::OpenAI:    return QStringLiteral("OPENAI_API_KEY");
+    case Provider::XAI:       return QStringLiteral("XAI_API_KEY");
+    case Provider::Local:     return QString();
+    }
+    return QStringLiteral("OPENAI_API_KEY");
+}
+
+void ChatPanel::saveApiKeyClicked()
+{
+    if (m_busy || !providerRequiresApiKey(m_appliedProvider) || !m_apiKeyEdit) return;
+    const QString draft = m_apiKeyEdit->text().trimmed();
+    if (draft.isEmpty()) {
+        m_keySaveNotice = tr("Enter a key first, or use Clear Key to remove one.");
+        m_keySaveNoticeIsWarning = true;
+        updateKeyControls();
+        return;
+    }
+    const QString account = agentProviderName(m_appliedProvider);
+    if (!CredentialStore::write(account, draft)) {
+        m_keySaveNotice = tr("Credential Manager write failed.");
+        m_keySaveNoticeIsWarning = true;
+        updateKeyControls();
+        return;
+    }
+    const int slot = static_cast<int>(m_appliedProvider);
+    if (m_keysByProvider.contains(slot)) {
+        scrubSecretString(m_keysByProvider[slot]);
+    }
+    m_keysByProvider.insert(slot, draft);
+    m_credLoadedProviders.insert(slot);
+    m_apiKeyEdit->clear();
+    m_keySaveNotice.clear();
+    m_keySaveNoticeIsWarning = false;
+    updateKeyControls();
+    emit agentConfiguredChanged();
+}
+
+void ChatPanel::clearApiKeyClicked()
+{
+    if (m_busy || !providerRequiresApiKey(m_appliedProvider)) return;
+    const QString account = agentProviderName(m_appliedProvider);
+    if (!CredentialStore::remove(account)) {
+        m_keySaveNotice = tr("Credential Manager delete failed.");
+        m_keySaveNoticeIsWarning = true;
+        updateKeyControls();
+        return;
+    }
+    const int slot = static_cast<int>(m_appliedProvider);
+    if (m_keysByProvider.contains(slot)) {
+        scrubSecretString(m_keysByProvider[slot]);
+        m_keysByProvider.remove(slot);
+    }
+    m_credLoadedProviders.insert(slot);
+    if (m_apiKeyEdit) m_apiKeyEdit->clear();
+    m_keySaveNotice.clear();
+    m_keySaveNoticeIsWarning = false;
+    updateKeyControls();
+    emit agentConfiguredChanged();
+}
+
+void ChatPanel::updateKeyControls()
+{
+    const bool needsKey = providerRequiresApiKey(m_appliedProvider);
+    const QString draft = m_apiKeyEdit ? m_apiKeyEdit->text().trimmed() : QString();
+    const bool hasStored = needsKey && hasStoredCredential(m_appliedProvider);
+
+    if (m_saveKeyBtn) {
+        m_saveKeyBtn->setVisible(needsKey);
+        m_saveKeyBtn->setEnabled(!m_busy && needsKey && !draft.isEmpty());
+    }
+    if (m_clearKeyBtn) {
+        m_clearKeyBtn->setVisible(needsKey);
+        m_clearKeyBtn->setEnabled(!m_busy && needsKey && hasStored);
+    }
+    if (!m_keySourceLabel) return;
+
+    const QColor labelColor = (needsKey && m_keySaveNoticeIsWarning && !m_keySaveNotice.isEmpty())
+        ? Theme::warning
+        : Theme::textDim;
+    m_keySourceLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(labelColor)));
+
+    if (!needsKey) {
+        m_keySourceLabel->setText(
+            tr("Endpoint: %1 \xE2\x80\x94 no API key needed (requires a running local server; "
+               "override with RISE_LOCAL_LLM_BASE_URL).")
+                .arg(localResolvedEndpoint()));
+        return;
+    }
+
+    if (!m_keySaveNotice.isEmpty()) {
+        m_keySourceLabel->setText(m_keySaveNotice);
+        return;
+    }
+
+    QString activeSource;
+    if (!draft.isEmpty()) {
+        activeSource = tr("Unsaved input (click Save Key to store in Credential Manager)");
+    } else if (hasStored) {
+        activeSource = tr("Credential Manager");
+    } else if (!envKeyFor(m_appliedProvider).trimmed().isEmpty()) {
+        activeSource = tr("Environment (%1)").arg(envVarHintFor(m_appliedProvider));
+    } else {
+        activeSource = tr("Not set \xE2\x80\x94 Credential Manager first, then %1")
+            .arg(envVarHintFor(m_appliedProvider));
+    }
+    m_keySourceLabel->setText(tr("Active key source: %1.").arg(activeSource));
 }
 
 QString ChatPanel::currentProviderDisplayName() const
@@ -1638,38 +1835,24 @@ void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
     const Provider oldProvider = m_appliedProvider;
     const Provider newProvider = currentProvider();
 
-    // P1-1: keys are per-provider and must never cross providers.  Stash
-    // whatever is currently in the field under the OLD applied provider's
-    // slot (a harmless no-op rewrite of the same slot when oldProvider ==
-    // newProvider, e.g. a model-only change), then repopulate the field
-    // from the NEW provider's slot, falling back to its env var when that
-    // slot is still empty.  This guarantees the field -- and therefore
-    // every fetch/step path that reads it -- always carries only the
-    // CURRENTLY APPLIED provider's key.
-    m_keysByProvider[static_cast<int>(oldProvider)] = m_apiKeyEdit->text();
+    // Write-only secret hygiene: stored and environment API keys are NEVER
+    // echoed into m_apiKeyEdit.  When switching providers, clear any
+    // transient unsaved text in m_apiKeyEdit so a draft key pasted for one
+    // provider can never be sent under another provider's auth header.
+    if (oldProvider != newProvider && m_apiKeyEdit) {
+        m_apiKeyEdit->clear();
+    }
+    m_keySaveNotice.clear();
+    m_keySaveNoticeIsWarning = false;
 
     if (resetModelToDefault || m_modelEdit->text().trimmed().isEmpty()) {
         m_modelEdit->setText(defaultModelFor(newProvider));
     }
 
-    QString newKey = m_keysByProvider.value(static_cast<int>(newProvider));
-    if (newKey.trimmed().isEmpty()) {
-        newKey = envKeyFor(newProvider);
-    }
-    m_apiKeyEdit->setText(newKey);
-
-    // No-key affordance for Provider::Local (keyless-by-design): there is
-    // no per-provider settings popover on this platform to swap in
-    // dedicated endpoint UI, so reuse the existing key field's placeholder
-    // to show where the chat is pointing plus a hint that a server has to
-    // actually be running -- the field itself stays enabled (a local
-    // server started with --api-key still accepts an optional key here).
     m_apiKeyEdit->setPlaceholderText(
         providerRequiresApiKey(newProvider)
-            ? QStringLiteral("API key")
-            : QStringLiteral("No key needed -- ") + localResolvedEndpoint() +
-                  QStringLiteral(" (requires a running local server, e.g. "
-                                 "`ollama serve`; override with RISE_LOCAL_LLM_BASE_URL)"));
+            ? QStringLiteral("Paste API key (stored in Credential Manager)")
+            : QStringLiteral("Optional bearer token (no key needed for local Ollama)"));
 
     ChatProvider chatProvider = ChatProvider::OpenAI;
     if (newProvider == Provider::Anthropic) {
@@ -1697,6 +1880,7 @@ void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
     m_appliedProvider = newProvider;
     m_appliedModel = m_modelEdit->text().trimmed();
     clearErrorAffordances();
+    updateKeyControls();
 
     // Start screen readiness (spec §6): the applied provider just changed
     // (or was (re)confirmed) -- explicit emit because the key-field
@@ -2156,6 +2340,7 @@ void ChatPanel::updateButtonStates()
     m_apiKeyEdit->setEnabled(!m_busy);
     m_inputEdit->setEnabled(!m_busy && m_bridge && m_sceneEditable);
     m_retryBtn->setEnabled(m_retryAvailable && !m_busy && m_bridge && m_sceneEditable);
+    updateKeyControls();
 }
 
 void ChatPanel::runNextStep()
@@ -2169,12 +2354,9 @@ void ChatPanel::runNextStep()
         return;
     }
 
-    // P1-1: the field always carries only m_appliedProvider's key (see
-    // applyProviderToLoop) -- since providerChanged/modelEditingFinished
-    // cannot change m_appliedProvider without going back through that
-    // function, reading the live field text here is reading the CURRENTLY
-    // APPLIED provider's key, never a stale/foreign one.
-    const QString appliedApiKey = m_apiKeyEdit->text().trimmed();
+    // Resolve the active key for m_appliedProvider (write-only draft input,
+    // else Credential Manager cached entry, else environment fallback).
+    const QString appliedApiKey = resolveApiKey(m_appliedProvider);
 
     // Arc 77 Phase 2 GUI wiring: keep `imagine_scene`'s HOST generator
     // fresh on every in-app tool-call session before this round's tool

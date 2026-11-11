@@ -70,7 +70,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
-      <AdditionalDependencies>RISE.lib;Qt6Networkd.lib;Qt6Svgd.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>RISE.lib;Qt6Networkd.lib;Qt6Svgd.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\dbin\;$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\debug\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -90,7 +90,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
-      <AdditionalDependencies>RISE.lib;Qt6Network.lib;Qt6Svg.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>RISE.lib;Qt6Network.lib;Qt6Svg.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -104,9 +104,11 @@
     <ClCompile Include="RenderWidget.cpp" />
     <ClCompile Include="HDRRenderWidget.cpp" />
     <ClCompile Include="ChatPanel.cpp" />
+    <ClCompile Include="CredentialStore.cpp" />
     <ClCompile Include="ProposalCard.cpp" />
     <ClCompile Include="OutlinerWidget.cpp" />
     <ClCompile Include="EnvironmentPanel.cpp" />
+    <ClCompile Include="NamedViewsPanel.cpp" />
     <ClCompile Include="StartWidget.cpp" />
     <ClCompile Include="LogWidget.cpp" />
     <ClCompile Include="SceneEditor.cpp" />
@@ -137,6 +139,7 @@
     <ClCompile Include="$(QtMocOutDir)moc_ProposalCard.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_OutlinerWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_EnvironmentPanel.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_NamedViewsPanel.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_StartWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_LogWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneEditor.cpp" />
@@ -201,6 +204,12 @@
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="EnvironmentPanel.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="NamedViewsPanel.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
@@ -279,6 +288,7 @@
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
     <!-- Header without Q_OBJECT — no MOC needed -->
+    <ClInclude Include="CredentialStore.h" />
     <ClInclude Include="VideoEncoder.h" />
     <ClInclude Include="Theme.h" />
   </ItemGroup>

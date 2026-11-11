@@ -22,6 +22,7 @@
 #include "ViewportProperties.h"
 #include "OutlinerWidget.h"
 #include "EnvironmentPanel.h"
+#include "NamedViewsPanel.h"
 #include "NodeGraphCanvas.h"
 #include "ObjectGraphCanvas.h"
 #include "StartWidget.h"
@@ -679,6 +680,19 @@ QWidget* MainWindow::buildRightPanel()
                 revealSourceSpan(category, name, param, 0);
             });
 
+    // Named Views section, between EnvironmentPanel and the per-scene
+    // ViewportProperties (mirrors macOS ContentView.swift:854-859).
+    // Persistent like OutlinerWidget / EnvironmentPanel; hides itself
+    // while no bridge is attached.
+    m_namedViewsPanel = new NamedViewsPanel(panel);
+    m_rightPanelLayout->addWidget(m_namedViewsPanel);
+
+    // Promoting a named view creates and activates a scene camera --
+    // refresh the outliner immediately (m_viewportProps is per-scene and
+    // connects in rebuildViewportForLoadedScene).
+    connect(m_namedViewsPanel, &NamedViewsPanel::cameraPromoted,
+            m_outlinerWidget, &OutlinerWidget::refresh);
+
     return panel;
 }
 
@@ -1061,6 +1075,7 @@ void MainWindow::updateMenuActionStates()
     // each ViewportBridge setEnvironment* call takes the controller's
     // commit mutex a production / chat-driven render owns.
     if (m_environmentPanel) m_environmentPanel->setSceneEditable(bridgeInteractingEnabled);
+    if (m_namedViewsPanel)  m_namedViewsPanel->setSceneEditable(bridgeInteractingEnabled);
     // The viewport's nav axis-ball reads isFreeFlyActive()/hasHomeView() and
     // its pointer* calls all take the controller commit mutex; gate them on the
     // SAME chat-inclusive term.  onStateChanged's setEnabled(interacting) is
@@ -2669,6 +2684,12 @@ void MainWindow::rebuildViewportForLoadedScene()
                 m_viewportProps, &ViewportProperties::refresh);
     }
 
+    if (m_namedViewsPanel) {
+        m_namedViewsPanel->setBridge(m_viewportBridge);
+        connect(m_namedViewsPanel, &NamedViewsPanel::cameraPromoted,
+                m_viewportProps, &ViewportProperties::refresh);
+    }
+
     if (m_nodeGraphCanvas) {
         m_nodeGraphCanvas->setBridge(m_viewportBridge);
     }
@@ -2796,6 +2817,11 @@ void MainWindow::rebuildViewportForLoadedScene()
         connect(m_viewportBridge, &ViewportBridge::imageUpdated,
                 m_environmentPanel, &EnvironmentPanel::reload);
     }
+    if (m_namedViewsPanel) {
+        // Cheap diff against cached m_names; never touches m_captureEdit.
+        connect(m_viewportBridge, &ViewportBridge::imageUpdated,
+                m_namedViewsPanel, &NamedViewsPanel::reload);
+    }
 
     // Round-trip save success: pull the just-written bytes into the
     // SceneEditor text pane so it reflects the saved edits, refresh
@@ -2861,6 +2887,9 @@ void MainWindow::teardownViewport()
         // false with no controller).  m_environmentPanel is persistent, so
         // it is NOT deleted here -- only its bridge borrow is cleared.
         m_environmentPanel->setBridge(nullptr);
+    }
+    if (m_namedViewsPanel) {
+        m_namedViewsPanel->setBridge(nullptr);
     }
     if (m_nodeGraphCanvas) {
         // Same persistent-borrow-clear discipline as the outliner/

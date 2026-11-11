@@ -59,8 +59,8 @@ edited.
 **Major roadmap slices have shipped on both desktop platforms (macOS + Windows):**
 redesigned workspaces and start screen (`empty_starter.RISEscene`), outliner/entity
 creation (`EntityTemplates` + `OwnershipClosure`), environment editing, canonical
-and named camera views (note: Windows Qt `NamedViewsPanel` widget is still pending
-wiring over the shipped `ViewportBridge` methods), render modes, N-up panes,
+and named camera views (`NamedViewsPanel.swift` on macOS and `NamedViewsPanel.{h,cpp}`
+on Windows Qt), render modes, N-up panes,
 **Material Editor Slices 1–6 ALL SHIPPED** — C1 inspector (`PropertiesPanel.swift` /
 `ViewportProperties.cpp`) + C2 node-graph canvas ([gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md))
 with 2D `PainterPreview`, Slice 4 pipe-coloured sockets/wires and scalar-to-colour
@@ -75,9 +75,9 @@ wires on macOS & Windows), the **5-provider `src/Library/Agent/` stack**
 `AgentMcpAdapter`, `AgentLoopbackHttpServer`), and editable region rendering +
 explicit region-only final renders. Current gaps include C3 MaterialX import,
 `default_studio.RISEscene` + A3 drag-to-assign + A5 CC0 asset library, remaining
-D1/D4–D7 spectral/scope overlays, Windows `NamedViewsPanel` + Credential Manager
-wiring, Android `.RISEscene` save / missing inspector categories / agent JNI, and
-process-wide multi-document security/orchestration hardening. ([gui/CURRENT_STATE_AUDIT.md](gui/CURRENT_STATE_AUDIT.md)
+D1/D4–D7 spectral/scope overlays, Android `.RISEscene` save / missing inspector
+categories / agent JNI, and process-wide multi-document security/orchestration
+hardening. ([gui/CURRENT_STATE_AUDIT.md](gui/CURRENT_STATE_AUDIT.md)
 is a frozen June 2026 pre-implementation baseline — do **not** read it as
 present-day capability authority.) The sections below remain the umbrella
 rationale and backlog; their original phase language is not a present-day audit.
@@ -251,12 +251,12 @@ Desktop-shared work lands on macOS + Windows simultaneously (principle 2); Andro
 |---|---|---|
 | **0** | **Entity-creation / outliner** workflow + CST persistence for non-camera entities ([gui/ENTITY_CREATION.md](gui/ENTITY_CREATION.md)) | **PARTIALLY SHIPPED:** `EntityTemplates` (Light, Object, Material, Painter, Medium), `OwnershipClosure` reference-safe delete/duplicate/rename, macOS + Windows Outliner CRUD, and agent chunk CRUD shipped. Standalone `Category::Geometry` templates, `Shader`/`Modifier` categories, atomic glTF-into-open-scene import, and Android CRUD UI remain open. |
 | **1** | **Approachability foundation** (Dir A, [gui/APPROACHABILITY_FOUNDATION.md](gui/APPROACHABILITY_FOUNDATION.md)) | **PARTIALLY SHIPPED:** Three-path Start Screen + `empty_starter.RISEscene`, Pause/Resume/Stop progressive viewport (A2), Draw Region / Render Active Region (A4), Environment HDRI editor, and Basic/Advanced disclosure shipped on desktop. `default_studio.RISEscene` (A1), drag-to-assign (A3), and CC0 asset library (A5) remain open. |
-| **2** | **Cameras, views & render modes** (Dir B, [gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md), [gui/RENDER_MODES.md](gui/RENDER_MODES.md)) | **MOSTLY SHIPPED:** Transient `ViewportPose` + fly-then-stamp, axis-ball nav gizmo, `.RISEviews` sidecar + macOS `NamedViewsPanel` + Windows `ViewportBridge`/pane selector, P1–P3 render modes + desktop N-up panes shipped. Windows Qt `NamedViewsPanel` CRUD widget and B4b animation camera-cuts remain open. |
+| **2** | **Cameras, views & render modes** (Dir B, [gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md), [gui/RENDER_MODES.md](gui/RENDER_MODES.md)) | **MOSTLY SHIPPED:** Transient `ViewportPose` + fly-then-stamp, axis-ball nav gizmo, `.RISEviews` sidecar + macOS/Windows `NamedViewsPanel`, P1–P3 render modes + desktop N-up panes shipped. B4b animation camera-cuts and B5 GPU wireframe panes remain open. |
 | **3** | **Material instance editor + spectral widgets** (C1 + Dir D subset, [gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md), [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md)) | **SHIPPED (Slices 1–3, 5, 6):** C1 soft-range sliders, inline 18×18 `PainterPreview` swatches, `Shared (N)`/`Fork`, 56×56 3D `MaterialPreview` shaderball header, D1 Blackbody Kelvin strip & Sellmeier optical glass presets/$n_d$/Abbe $V_d$, D2 CC0 Au/Ag/Cu/Al/Cr/Ti measured metals, and D3 0°–89° thin-film iridescence strip shipped on macOS + Windows. D1 monochromatic/CSV/prism preview remain open. |
 | **4** | **Node-graph editors & MaterialX import** (C2 + sibling Object Graph + C3, [gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md)) | **C2 + Object Graph SHIPPED (S11–S23 + Slices 4–5); C3 OPEN:** Editable `NodeGraphCanvas` with pipe-coloured sockets/wires, 1-click `scalar_painter` adapter insertion, and 40×40 3D `MaterialPreview` swatches + sibling `ObjectGraphCanvas` (Objects + Geometry + CSG/instancing) shipped on macOS + Windows. C2 group frames/uber-node polish and C3 MaterialX import remain open. |
 | **AI spine** | | |
 | **A0** | **RISE agent server** (JSON-RPC / `--mcp` stdio / `--agent-http` loopback): 38+ verbs, schema-gen, `AgentSession::ValidateText`, framebuffer/viewport read, render control ([gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md)) | **SUBSTANTIALLY SHIPPED:** Core 38+ verbs, integer `headVersion` CAS, proposals, and transports shipped. `resources/subscribe`, `prompts/list`, `export_movie`, `ProjectRootJail`, `SecretRedactor`, and `SchemaConformanceTest` remain open. |
-| **A1–A3** | **In-app chat + 5 providers + vision loop** ([gui/LLM_AGENT_RUNTIME.md](gui/LLM_AGENT_RUNTIME.md)) | **CORE SHIPPED (macOS + Windows):** `AgentChatLoop` + 5-provider `AgentChatCodecs` (`Anthropic`, `Gemini`, `OpenAI`, `XAI`, `Local`), `ChatPanel` + `ProposalCard`, tool calling, vision/imagine loop, prompt caching, and compaction shipped. `ExternalServerHub`, C++ `ICredentialStore` / Windows Credential Manager, OAuth, Linux TLS, and Android JNI chat remain open. |
+| **A1–A3** | **In-app chat + 5 providers + vision loop** ([gui/LLM_AGENT_RUNTIME.md](gui/LLM_AGENT_RUNTIME.md)) | **CORE SHIPPED (macOS + Windows):** `AgentChatLoop` + 5-provider `AgentChatCodecs` (`Anthropic`, `Gemini`, `OpenAI`, `XAI`, `Local`), `ChatPanel` + `ProposalCard`, macOS Keychain & Windows Credential Manager API-key persistence, tool calling, vision/imagine loop, prompt caching, and compaction shipped. `ExternalServerHub`, shared C++ `ICredentialStore`, OAuth, Linux TLS, and Android JNI chat remain open. |
 | **Ongoing** | **Marquee spectral diagnostics & Light Mix** (D5–D7, [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md)) | **OPEN** (top-bar resolved integrator + reason and EDR display + EV + 5 tone curves shipped; D5 probe heatmap/card, D6 cinema scopes, and D7 PT Light Mix remain open). |
 
 ---
@@ -280,7 +280,7 @@ Desktop-shared work lands on macOS + Windows simultaneously (principle 2); Andro
 The deep-dives and 2026-07..2026-10 implementation slices resolved the original architectural questions. Remaining items needing a product decision are under "Still open."
 
 1. **Lossless CST save & spectral preview cost** — **RESOLVED.** Every scene loads into a retained CST `Document` serialized losslessly by `SaveEngine::Save` (`Cst::SerializeCst` — byte-exact when unedited, minimal-diff when edited) with exact-byte undo via `Cst::DocReplaceChunkIfText`. For previews, flat spectral swatches (D1 Kelvin, D2 measured metals, D3 thin-film 0°–89° strip) and headless 2D/3D inspector/node swatches (`PainterPreview`, `MaterialPreview`) evaluate deterministically in shared C++ without touching the live film; drag-to-assign (A3, still open) keeps **commit-on-release** as its baseline. ([gui/ADR_DOCUMENT_FIRST_EDITOR.md](gui/ADR_DOCUMENT_FIRST_EDITOR.md), [gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md), [gui/SPECTRAL_DIFFERENTIATORS.md](gui/SPECTRAL_DIFFERENTIATORS.md))
-2. **Axis/split-view ground truth** — **RESOLVED & SHIPPED.** Direction B landed symmetrically across shared C++ + desktop bridges (axis-ball gizmo, transient `ViewportPose`, `.RISEviews` sidecar, and P3 N-up panes; Windows Qt `NamedViewsPanel` CRUD widget remains a parity follow-up). ([gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md), [gui/RENDER_MODES.md](gui/RENDER_MODES.md))
+2. **Axis/split-view ground truth** — **RESOLVED & SHIPPED.** Direction B landed symmetrically across shared C++ + desktop bridges (axis-ball gizmo, transient `ViewportPose`, `.RISEviews` sidecar, macOS/Windows `NamedViewsPanel`, and P3 N-up panes). ([gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md), [gui/RENDER_MODES.md](gui/RENDER_MODES.md))
 3. **MCP transport** — **RESOLVED & SHIPPED.** Three transports share one `AgentRpc` / `AgentSession` core: in-process (`ChatPanel`), loopback HTTP (`AgentLoopbackHttpServer` / `--agent-http`), and stdio (`--mcp`). ([gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md))
 4. **Provider-adapter abstraction** — **RESOLVED & SHIPPED.** `AgentChatLoop` + `AgentChatCodecs` normalize **5 providers** (`Anthropic`, `Gemini`, `OpenAI`, `XAI`, `Local`) over one tool-call and streaming transcript model. ([gui/LLM_AGENT_RUNTIME.md](gui/LLM_AGENT_RUNTIME.md))
 5. **Side-effect-free `validate` dry-run** — **RESOLVED & SHIPPED.** Implemented in `AgentSession::ValidateText`: runs construction-free `Cst::ParseToCst` plus an isolated throwaway-`Job` `DeriveToJob` pass with `>`-directive refusal and structured `AgentDiagnostic` output, never mutating the live scene. (Sandbox hardening — `ProjectRootJail`, resource caps, out-of-process asset decode — remains open in [gui/VALIDATION_ARCHITECTURE.md](gui/VALIDATION_ARCHITECTURE.md).)
@@ -333,7 +333,7 @@ Each is a focused design or implementation doc spun off from this roadmap. Each 
 - [gui/REDESIGN_IMPLEMENTATION.md](gui/REDESIGN_IMPLEMENTATION.md) — implementation record of the delivered macOS + Windows workspace redesign.
 - [gui/ENVIRONMENT_SECTION.md](gui/ENVIRONMENT_SECTION.md) — dedicated Environment inspector section (HDRI radiance map, scale, orientation).
 - [gui/PROPERTIES_AND_REFERENCES.md](gui/PROPERTIES_AND_REFERENCES.md) — descriptor-driven property inspector, reference pickers, and C1 review findings.
-- [gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md) — Named Views (`.RISEviews` sidecar; Windows `NamedViewsPanel` widget open), axis-ball gizmo, camera list, fly-then-stamp, split view.
+- [gui/CAMERAS_AND_VIEWS.md](gui/CAMERAS_AND_VIEWS.md) — Named Views (`.RISEviews` sidecar + macOS/Windows `NamedViewsPanel`), axis-ball gizmo, camera list, fly-then-stamp, split view.
 - [gui/RENDER_MODES.md](gui/RENDER_MODES.md) — interactive viewport shading/debug modes (`Lit`, `Wireframe`, `Normals`, `Depth`, `Albedo`, `ObjectID`) and desktop N-up panes.
 - [gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md) — C1 instance-first inspector, C2 node graph, shared 3D `MaterialPreview` shaderball, C3 MaterialX import (open), `IPainter`/`IScalarPainter` pipe mapping (Slices 1–6 shipped).
 - [gui/NODE_GRAPH_CANVAS.md](gui/NODE_GRAPH_CANVAS.md) — shared `GraphLayout`/`GraphLayoutSidecar`/`ConnectionLegality`, C2 Material & Painter `NodeGraphCanvas`, and sibling `ObjectGraphCanvas` (Objects + Geometry + CSG/instancing).

@@ -4956,6 +4956,73 @@ int main()
 		       "reads only for emitters, the GGX rotation painter and the coat normal map" );
 	}
 
+	// ---- Tier 0 §0.3.1 / §0.3.2: Windows Qt6 NamedViewsPanel & CredentialStore parity ----
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		const fs::path winGuiDir = repoRoot / "build" / "VS2022" / "RISE-GUI";
+		const std::string vcxproj = SlurpFile( winGuiDir / "RISE-GUI.vcxproj" );
+		const std::string mainH = SlurpFile( winGuiDir / "MainWindow.h" );
+		const std::string mainCpp = SlurpFile( winGuiDir / "MainWindow.cpp" );
+		const std::string nvpH = SlurpFile( winGuiDir / "NamedViewsPanel.h" );
+		const std::string nvpCpp = SlurpFile( winGuiDir / "NamedViewsPanel.cpp" );
+		const std::string credH = SlurpFile( winGuiDir / "CredentialStore.h" );
+		const std::string credCpp = SlurpFile( winGuiDir / "CredentialStore.cpp" );
+		const std::string chatH = SlurpFile( winGuiDir / "ChatPanel.h" );
+		const std::string chatCpp = SlurpFile( winGuiDir / "ChatPanel.cpp" );
+		const std::string chatCode = StripCommentsPreservingLayout( chatCpp );
+
+		Check( !nvpH.empty() && !nvpCpp.empty(),
+		       "win-gui-parity: NamedViewsPanel.{h,cpp} exist in build/VS2022/RISE-GUI/" );
+		Check( vcxproj.find( "Include=\"NamedViewsPanel.cpp\"" ) != std::string::npos
+		       && vcxproj.find( "moc_NamedViewsPanel.cpp" ) != std::string::npos
+		       && vcxproj.find( "CustomBuild Include=\"NamedViewsPanel.h\"" ) != std::string::npos,
+		       "win-gui-parity: RISE-GUI.vcxproj compiles NamedViewsPanel.cpp + MOC CustomBuild" );
+		Check( nvpH.find( "m_themeReady" ) != std::string::npos
+		       && nvpH.find( "m_themeEpochSeen" ) != std::string::npos
+		       && nvpCpp.find( "QEvent::PaletteChange" ) != std::string::npos
+		       && nvpCpp.find( "QTimer::singleShot" ) != std::string::npos,
+		       "win-gui-parity: NamedViewsPanel follows Theme.h's LIVE THEME-SWITCH CONTRACT" );
+		Check( nvpCpp.find( "captureNamedView" ) != std::string::npos
+		       && nvpCpp.find( "restoreNamedView" ) != std::string::npos
+		       && nvpCpp.find( "updateNamedView" ) != std::string::npos
+		       && nvpCpp.find( "promoteNamedView" ) != std::string::npos
+		       && nvpCpp.find( "deleteNamedView" ) != std::string::npos,
+		       "win-gui-parity: NamedViewsPanel wires all 5 ViewportBridge NamedView CRUD/promote actions" );
+		Check( mainH.find( "m_namedViewsPanel" ) != std::string::npos
+		       && mainCpp.find( "new NamedViewsPanel" ) != std::string::npos
+		       && mainCpp.find( "m_namedViewsPanel->setSceneEditable(bridgeInteractingEnabled)" ) != std::string::npos
+		       && mainCpp.find( "m_namedViewsPanel->setBridge(m_viewportBridge)" ) != std::string::npos
+		       && mainCpp.find( "m_namedViewsPanel->setBridge(nullptr)" ) != std::string::npos,
+		       "win-gui-parity: MainWindow wires NamedViewsPanel right-panel lifecycle & commit-mutex gate" );
+
+		Check( !credH.empty() && !credCpp.empty(),
+		       "win-gui-parity: CredentialStore.{h,cpp} exist in build/VS2022/RISE-GUI/" );
+		Check( vcxproj.find( "Include=\"CredentialStore.cpp\"" ) != std::string::npos
+		       && vcxproj.find( "Include=\"CredentialStore.h\"" ) != std::string::npos,
+		       "win-gui-parity: RISE-GUI.vcxproj lists CredentialStore.{h,cpp}" );
+		{
+			size_t advCount = 0;
+			for( size_t pos = vcxproj.find( "advapi32.lib" ); pos != std::string::npos;
+			     pos = vcxproj.find( "advapi32.lib", pos + 12 ) ) {
+				++advCount;
+			}
+			Check( advCount >= 2,
+			       "win-gui-parity: RISE-GUI.vcxproj links advapi32.lib in both Debug and Release configs" );
+		}
+		Check( credCpp.find( "CredReadW" ) != std::string::npos
+		       && credCpp.find( "CredWriteW" ) != std::string::npos
+		       && credCpp.find( "CredDeleteW" ) != std::string::npos
+		       && credCpp.find( "CredFree" ) != std::string::npos
+		       && credCpp.find( "SecureZeroMemory" ) != std::string::npos,
+		       "win-gui-parity: CredentialStore uses Win32 CredReadW/CredWriteW/CredDeleteW/CredFree + SecureZeroMemory" );
+		Check( chatH.find( "resolveApiKey" ) != std::string::npos
+		       && chatCode.find( "CredentialStore::read" ) != std::string::npos
+		       && chatCode.find( "CredentialStore::write" ) != std::string::npos
+		       && chatCode.find( "CredentialStore::remove" ) != std::string::npos
+		       && chatCode.find( "m_apiKeyEdit->setText(" ) == std::string::npos,
+		       "win-gui-parity: ChatPanel resolves/saves/clears via CredentialStore and keeps m_apiKeyEdit write-only (never setText)" );
+	}
+
 	std::cout << std::endl
 	          << "(scanned " << scanned << " test files) "
 	          << passCount << " passed, " << failCount << " failed." << std::endl;

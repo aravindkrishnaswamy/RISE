@@ -248,14 +248,15 @@ clones.
   `tests/IJobVtableManifest.txt` (SourceHygieneTest) or `tools/gen_bridge_enums.py`.
 - **Windows shell**: all branch work is code-complete + review-verified
   only; needs a real Windows build/run pass before or at merge.
-- **Windows `NamedViewsPanel` Qt widget gap**: `ViewportBridge` exposes the
-  Named-View C-ABI methods and the Windows N-up pane vantage selector lists
-  Named Views, but no standalone Qt `NamedViewsPanel` CRUD/promote widget is
-  wired yet (unlike macOS `NamedViewsPanel.swift`; see `CAMERAS_AND_VIEWS.md`).
-- **Windows `ChatPanel` API-key persistence gap**: `ChatPanel.cpp` holds
-  provider API keys in-memory / environment variables only; Windows Credential
-  Manager (`CredWriteW` / `CredReadW`) and the shared C++ `ICredentialStore`
-  seam are not yet wired (macOS persists via `KeychainCredentials.swift`).
+- ~~**Windows `NamedViewsPanel` Qt widget gap**~~ (**CLOSED:** shipped in
+  `build/VS2022/RISE-GUI/NamedViewsPanel.{h,cpp}`, wired in `MainWindow.{h,cpp}`
+  between `EnvironmentPanel` and `ViewportProperties`, matching macOS
+  `NamedViewsPanel.swift`).
+- ~~**Windows `ChatPanel` API-key persistence gap**~~ (**CLOSED:** shipped in
+  `build/VS2022/RISE-GUI/CredentialStore.{h,cpp}` via `<wincred.h>`
+  `CredWriteW`/`CredReadW`/`CredDeleteW` under `"RISE Agent Chat/<provider>"`
+  with write-only `m_apiKeyEdit` in `ChatPanel.{h,cpp}`; shared C++
+  `ICredentialStore` abstraction remains an optional future consolidation).
 - **Standalone geometry creation templates** (`TemplatesFor(Geometry)`
   empty) — ENTITY_CREATION.md §4.2's import/primitive-set design.
 - **Shader / Modifier UI categories** — no `IJob` enumeration surface yet;

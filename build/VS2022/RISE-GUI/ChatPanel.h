@@ -16,6 +16,7 @@
 
 #include <QWidget>
 #include <QHash>
+#include <QSet>
 #include <QJsonObject>
 #include <QMap>
 #include <QDateTime>
@@ -188,6 +189,8 @@ private slots:
     void sendMessage();
     void providerChanged(int index);
     void modelEditingFinished();
+    void saveApiKeyClicked();
+    void clearApiKeyClicked();
     void networkFinished();
     void retryLastRequest();
 
@@ -239,6 +242,11 @@ private:
     Provider currentProvider() const;
     QString defaultModelFor(Provider provider) const;
     QString envKeyFor(Provider provider) const;
+    void ensureCredentialLoaded(Provider provider) const;
+    bool hasStoredCredential(Provider provider) const;
+    QString resolveApiKey(Provider provider) const;
+    static QString envVarHintFor(Provider provider);
+    void updateKeyControls();
     /// The lowercase wire-provider name Arc 77 Phase 2's image-generator
     /// wiring expects ("anthropic"/"gemini"/"openai"/"xai"/"local") --
     /// the SAME spelling OpenAIChatCodec::Config::providerName already
@@ -488,6 +496,11 @@ private:
     QComboBox* m_providerCombo = nullptr;
     QLineEdit* m_modelEdit = nullptr;
     QLineEdit* m_apiKeyEdit = nullptr;
+    QPushButton* m_saveKeyBtn = nullptr;
+    QPushButton* m_clearKeyBtn = nullptr;
+    QLabel* m_keySourceLabel = nullptr;
+    QString m_keySaveNotice;
+    bool m_keySaveNoticeIsWarning = false;
 
     // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
     // Default Apply -- matches today's actual behaviour byte-for-byte
@@ -555,14 +568,13 @@ private:
     bool m_sceneEditable = false;
     int m_nextRpcId = 1;
 
-    // P1-1: per-provider in-memory API key storage (never persisted to
-    // disk).  Keyed by static_cast<int>(Provider).  On a provider switch,
-    // applyProviderToLoop() stashes the field's current text under the
-    // OLD provider's slot before repopulating the field from the NEW
-    // provider's slot (falling back to its env var) -- a key typed for
-    // one provider must never be sent under another provider's auth
-    // header.
-    QHash<int, QString> m_keysByProvider;
+    // Per-provider Credential Manager cache (in-memory for process lifetime,
+    // mirroring macOS ChatViewModel.cachedApiKeys).  Each provider's stored
+    // secret is read from Windows Credential Manager at most once per process
+    // (tracked by m_credLoadedProviders), never written to QSettings, never
+    // echoed back into m_apiKeyEdit, and scrubbed on Clear Key / ~ChatPanel().
+    mutable QHash<int, QString> m_keysByProvider;
+    mutable QSet<int> m_credLoadedProviders;
     // The provider/model the loop is CURRENTLY configured for (as of the
     // last applyProviderToLoop() call) -- distinct from whatever the combo
     // / model field widgets are showing mid-edit.  Used by
