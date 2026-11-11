@@ -3258,6 +3258,7 @@ void SDFGeometry::RegenerateData()
 	}
 	ComputeBounds();
 	InvalidateSamplingStructure();
+	BumpShapeRevision();
 }
 
 void SDFGeometry::InvalidateSamplingStructure()

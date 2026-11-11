@@ -430,6 +430,7 @@ void SphereGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void SphereGeometry::RegenerateData( )
 {
+	BumpShapeRevision();
 }
 
 //! IGeometry::DistanceToSurface -- EXACT outside, and 0 everywhere inside.

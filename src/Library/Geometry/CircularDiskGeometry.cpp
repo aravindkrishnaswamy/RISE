@@ -513,6 +513,7 @@ void CircularDiskGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void CircularDiskGeometry::RegenerateData( )
 {
+	BumpShapeRevision();
 }
 
 

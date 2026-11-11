@@ -581,6 +581,8 @@ namespace RISE
 				return pGeometry ? typeid( *pGeometry ).name() : "(no geometry)";
 			}
 
+			virtual unsigned long long ShapeRevision() const override;
+
 			//! IObject::NoteDistanceRefusal -- wins the one-shot latch
 			//! exactly once per object.  See `m_distanceRefusalWarned`.
 			virtual bool NoteDistanceRefusal() const override

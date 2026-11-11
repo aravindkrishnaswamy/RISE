@@ -453,6 +453,15 @@ namespace RISE
 		//!
 		//! DEFAULTED, declared LAST: no claim on any existing vtable slot.
 		virtual bool IsDoubleSided() const { return false; }
+
+		//! DL-626: monotonic per-instance revision bumped whenever this
+		//! geometry's shape, vertex positions, control points, or topology
+		//! mutate in place (e.g. `RegenerateData`, `UpdateVertices`,
+		//! `DoneIndexedTriangles`, `AddPatch` / `Prepare`, `RefreshMeshVertices`).
+		//! Defaulted to 0 for stateless / out-of-tree implementers;
+		//! `Implementation::Geometry` maintains the atomic counter.
+		//! DEFAULTED, declared LAST: no claim on any existing vtable slot.
+		virtual unsigned long long ShapeRevision() const { return 0; }
 	};
 }
 

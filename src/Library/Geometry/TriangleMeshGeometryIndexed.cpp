@@ -783,6 +783,7 @@ void TriangleMeshGeometryIndexed::InvalidateTopologyProofCaches()
 	m_watertightEdges.clear();
 	m_topologicalOpenness.store( -2, std::memory_order_release );
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 }
 
 void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
@@ -838,6 +839,7 @@ void TriangleMeshGeometryIndexed::AddNormal( const Vector3& normal )
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 	if( !bUseFaceNormals ) {
 		pNormals.push_back( normal );
 	}
@@ -871,6 +873,7 @@ void TriangleMeshGeometryIndexed::AddNormals( const NormalsListType& normals )
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 	if( !bUseFaceNormals ) {
 		pNormals.insert( pNormals.end(), normals.begin(), normals.end() );
 	}
@@ -1049,6 +1052,7 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
             ComputeWatertightness();
     }
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 
 
 	// The mesh has genuinely CHANGED SHAPE under a stable IGeometry*, which
@@ -1837,6 +1841,7 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 	// Changed positions refresh it in UpdateVertices.
 	ComputeWatertightness();
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 
 	// Vertex arrays and topology are final only now (the block above
 	// re-points every PointerTriangle into pPoints/pNormals), so anything
@@ -3169,6 +3174,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
     if(version>=4) ComputeWatertightness();
     else m_bWatertight=false;
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 	// Replacing a mesh under the same geometry identity also invalidates
 	// geometry-owned signal tables and their cached per-position normals.
 	InvalidateSignalBakes();
@@ -3187,6 +3193,7 @@ void TriangleMeshGeometryIndexed::ComputeVertexNormals()
     openRefusalPair[0]=openRefusalPair[1]=size_t(-1);
     openGraphCoincidentPairs.clear();
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 	pNormals.clear();
 	pNormals.reserve( pPoints.size() );
 	CalculateVertexNormals( indexedtris, pNormals, pPoints );

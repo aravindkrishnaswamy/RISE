@@ -444,6 +444,7 @@ void TorusGeometry::RegenerateData( )
 	m_p1 = m_dMinorRadius;
 	m_sqrP0 = m_p0 * m_p0;
 	m_sqrP1 = m_p1 * m_p1;
+	BumpShapeRevision();
 }
 
 //! IGeometry::DistanceToSurface -- EXACT.

@@ -483,6 +483,7 @@ void BilinearPatchGeometry::InvalidateCertificate()
 	m_bNegativeOpenSignedVolume.store( false, std::memory_order_release );
 	m_certGeneration.fetch_add( 1, std::memory_order_acq_rel );
 	GeometricUtilities::BumpPatchCertificateEpoch();	// cached composite certificates are stale
+	BumpShapeRevision();
 }
 
 void BilinearPatchGeometry::EnsureCertified() const

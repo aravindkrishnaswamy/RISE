@@ -2038,6 +2038,18 @@ void Object::Realize() const
 	}
 }
 
+unsigned long long Object::ShapeRevision() const
+{
+	if( const Object* c = TimeClone() ) {
+		return c->ShapeRevision();
+	}
+	const unsigned long long ptrKey = static_cast<unsigned long long>( reinterpret_cast<uintptr_t>( pGeometry ) );
+	const unsigned long long geomRev = pGeometry ? pGeometry->ShapeRevision() : 0ULL;
+	unsigned long long h = ptrKey ^ 0x9e3779b97f4a7c15ULL;
+	h ^= geomRev + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+	return h;
+}
+
 void Object::ResetRuntimeData() const
 {
 	if( pShader ) {

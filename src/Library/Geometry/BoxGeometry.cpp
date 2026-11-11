@@ -687,6 +687,7 @@ void BoxGeometry::RegenerateData( )
 	} else {
 		GlobalLog()->PrintSourceError( "BoxGeometry:: Depth is 0", __FILE__, __LINE__ );
 	}
+	BumpShapeRevision();
 }
 
 //! IGeometry::DistanceToSurface -- EXACT outside, and 0 everywhere inside.

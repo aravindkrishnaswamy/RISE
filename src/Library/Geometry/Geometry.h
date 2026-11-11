@@ -22,6 +22,7 @@
 #include "../Utilities/Reference.h"
 
 #include <algorithm>	// std::max (BoundingBoxRootFloor)
+#include <atomic>		// m_shapeRevision (DL-626)
 #include <cmath>		// std::fabs / std::isfinite (same)
 
 namespace RISE
@@ -34,11 +35,29 @@ namespace RISE
 			// Can this geometry object only be represented as a 
 			// mesh ?
 			bool		bOnlyAsMesh;
+			mutable std::atomic<unsigned long long>	m_shapeRevision;
 
 		//	std::vector<Triangle>		triangles;
 
 			Geometry();
+			Geometry( const Geometry& other ) :
+			  bOnlyAsMesh( other.bOnlyAsMesh ),
+			  m_shapeRevision( other.m_shapeRevision.load( std::memory_order_relaxed ) )
+			{}
 			virtual ~Geometry();
+
+			inline void BumpShapeRevision() const
+			{
+				m_shapeRevision.fetch_add( 1, std::memory_order_acq_rel );
+			}
+
+		public:
+			unsigned long long ShapeRevision() const override
+			{
+				return m_shapeRevision.load( std::memory_order_acquire );
+			}
+
+		protected:
 
 			//! Shared helper for `IGeometry::SelfHitRootFloor` on geometries
 			//! that hold a COLLECTION of primitives (triangle meshes, patch

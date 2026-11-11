@@ -978,6 +978,7 @@ void CylinderGeometry::RegenerateData( )
 	} else {
 		GlobalLog()->PrintSourceError( "CylinderGeometry:: m_dRadius is <= 0", __FILE__, __LINE__ );
 	}
+	BumpShapeRevision();
 }
 
 

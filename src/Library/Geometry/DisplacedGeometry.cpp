@@ -942,6 +942,7 @@ void DisplacedGeometry::BuildMesh() const
 			pNewMesh->SetDisplacementWeldDomains( weldDomains );		// instances stay separate weld domains in a layer above
 		}
 	}
+	BumpShapeRevision();
 }
 
 void DisplacedGeometry::RefreshMeshVertices()
@@ -1008,6 +1009,8 @@ void DisplacedGeometry::RefreshMeshVertices()
 			"DisplacedGeometry::RefreshMeshVertices: UpdateVertices failed; rebuilding from scratch" );
 		DestroyMesh();
 		BuildMesh();
+	} else {
+		BumpShapeRevision();
 	}
 }
 
@@ -1016,6 +1019,19 @@ void DisplacedGeometry::DestroyMesh() const
 	safe_release( m_pMesh );
 	m_pMesh = 0;
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
+}
+
+unsigned long long DisplacedGeometry::ShapeRevision() const
+{
+	unsigned long long h = Geometry::ShapeRevision();
+	const unsigned long long baseRev = m_pBase ? m_pBase->ShapeRevision() : 0ULL;
+	const unsigned long long meshPtr = static_cast<unsigned long long>( reinterpret_cast<uintptr_t>( m_pMesh ) );
+	const unsigned long long meshRev = m_pMesh ? m_pMesh->ShapeRevision() : 0ULL;
+	h ^= baseRev + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+	h ^= meshPtr + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+	h ^= meshRev + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+	return h;
 }
 
 bool DisplacedGeometry::TessellateToMesh(

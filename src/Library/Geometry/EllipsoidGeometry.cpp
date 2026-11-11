@@ -607,6 +607,7 @@ void EllipsoidGeometry::RegenerateData( )
 	}
 	m_dArea = area;
 	m_dJacobianMax = r_max( r_max( b*c, a*c ), a*b );
+	BumpShapeRevision();
 }
 
 

@@ -246,6 +246,7 @@ namespace RISE
 			//! DL-617: both operands closed by topology (no free boundary).
 			bool IsTopologicallyClosed() const;
 			bool HasNegativeOpenSignedVolume() const;
+			unsigned long long ShapeRevision() const;
 
 		protected:
 			//! THE DIAGONAL OF THIS COMPOSITE'S OWN LOCAL BOX -- A's box

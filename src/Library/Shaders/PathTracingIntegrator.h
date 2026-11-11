@@ -519,7 +519,8 @@ namespace RISE
 				//! only production caller of `CastRayHWSS` always passes a
 				//! default-constructed `RAY_STATE`, so this is a training-
 				//! consistency fix with no observable effect today).
-				Scalar castRRCompensation_ = 1
+				Scalar castRRCompensation_ = 1,
+				const IORStack* preseededOriginLanes_ = 0
 				) const;
 
 			/// Traces one complete path for a single wavelength.

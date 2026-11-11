@@ -312,6 +312,16 @@ namespace RISE
 		//! tree's IObject stubs and any out-of-tree implementer compile
 		//! unchanged.  Declared last + defaulted: no vtable claim.
 		virtual const char* DescribeKind() const { return "(unknown)"; }
+
+		//! DL-626: revision / hash token capturing this object's current
+		//! geometry identity and in-place shape revision (including operand
+		//! poses and shape revisions on a CSG composite).  Used alongside the
+		//! world transform and world bounding box by `IORStackSeeding` so an
+		//! in-place geometry edit that preserves both transform and AABB still
+		//! refreshes cached open-sheet descriptions without advancing the
+		//! process-wide catalog epoch.  Declared last + defaulted: no vtable
+		//! claim.
+		virtual unsigned long long ShapeRevision() const { return 0; }
 	};
 }
 

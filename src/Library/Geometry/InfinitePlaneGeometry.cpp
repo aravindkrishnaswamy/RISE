@@ -209,6 +209,7 @@ void InfinitePlaneGeometry::RegenerateData( )
 	} else {
 		GlobalLog()->PrintSourceError( "InfinitePlaneGeometry:: yTile <= 0", __FILE__, __LINE__ );
 	}
+	BumpShapeRevision();
 }
 
 

@@ -187,6 +187,12 @@ namespace RISE
 			Scalar ior;
 			bool bOpenSheet;
 
+			IORDATA() :
+			pObj( 0 ),
+			ior( 0 ),
+			bOpenSheet( false )
+			{}
+
 			IORDATA(
 				const IObject* pObj_,
 				Scalar ior_,
@@ -198,16 +204,19 @@ namespace RISE
 			{}
 		};
 
-		//! The stack proper.  `std::stack` is a PROTECTED base so only this
-		//! class's members touch the entry vector: every push and erase goes
-		//! through `pushEntry` / `find_and_destroy`, which keep the context
-		//! indices below in step (DL-622 review).
-		class MyIORStack : protected std::stack< IORDATA, std::vector<IORDATA> >
+		//! The stack proper.  DL-631: inline small-buffer storage (`m_inline`,
+		//! capacity 4: environment + up to 3 enclosing media) keeps camera
+		//! rays, subpath roots, query stacks and typical dielectric/translucent
+		//! walks completely off the heap; stacks deeper than 4 spill to an
+		//! out-of-line `std::vector<IORDATA>*` via `RISE_IORSTACK_COLD` helpers
+		//! so hot callers inline only fixed-size array operations.  Every push
+		//! and erase still goes through `pushEntry` / `find_and_destroy`, keeping
+		//! `ContextList` indices in lockstep (DL-622).
+		class MyIORStack
 		{
-			typedef std::stack< IORDATA, std::vector<IORDATA> > Base;
-
 		public:
 
+			static const std::size_t kInlineCap = 4;
 			typedef std::pair<std::size_t, EntryContext> IndexedContext;
 
 			//! DL-622: the entries that carry an EntryContext, as (stack
@@ -223,30 +232,100 @@ namespace RISE
 				ContextList() : refs( 1 ) {}
 			};
 
+		private:
+
+			IORDATA m_inline[kInlineCap];
+			std::size_t m_size;
+			std::vector<IORDATA>* m_heap;
+
+			inline IORDATA* entries() { return m_heap ? m_heap->data() : m_inline; }
+			inline const IORDATA* entries() const { return m_heap ? m_heap->data() : m_inline; }
+
+			RISE_IORSTACK_COLD static std::vector<IORDATA>* CloneHeap( const std::vector<IORDATA>& src )
+			{
+				return new std::vector<IORDATA>( src );
+			}
+
+			RISE_IORSTACK_COLD static void FreeHeap( std::vector<IORDATA>* p )
+			{
+				delete p;
+			}
+
+			RISE_IORSTACK_COLD void AssignHeap( const std::vector<IORDATA>& src )
+			{
+				if( m_heap ) {
+					*m_heap = src;
+				} else {
+					m_heap = new std::vector<IORDATA>( src );
+				}
+				m_size = m_heap->size();
+			}
+
+			RISE_IORSTACK_COLD void SpillAndPush( const IORDATA& d )
+			{
+				if( !m_heap ) {
+					m_heap = new std::vector<IORDATA>();
+					m_heap->reserve( kInlineCap * 2 );
+					for( std::size_t i = 0; i < m_size; ++i ) {
+						m_heap->push_back( m_inline[i] );
+					}
+				}
+				m_heap->push_back( d );
+				m_size = m_heap->size();
+			}
+
+			RISE_IORSTACK_COLD void EraseHeapAt( const std::size_t idx )
+			{
+				m_heap->erase( m_heap->begin() + static_cast<std::ptrdiff_t>( idx ) );
+				m_size = m_heap->size();
+			}
+
+		public:
+
 			//! Null for every stack with no context-carrying entry -- every
 			//! stack in a scene without open sheets.  On that path a copy, a
-			//! destruction, a push and an erase each test this one pointer and
-			//! nothing else; everything that allocates, counts or re-indexes
-			//! lives in the out-of-line (RISE_IORSTACK_COLD) helpers below, so
-			//! the inlined code a hot caller (an SPF's scattered-ray stack,
-			//! `ScatteredRay::~ScatteredRay`) carries is the pre-DL-622 code
-			//! plus one compare (DL-622 review round 3: a `shared_ptr` member
-			//! made those inlined bodies non-trivial and moved
-			//! `ScatteredRay`'s destructor and `find_and_destroy` out of line).
+			//! destruction, a push and an erase each test `m_heap` and `ctxs`
+			//! and nothing else; everything that allocates, counts or re-indexes
+			//! lives in the out-of-line (RISE_IORSTACK_COLD) helpers, so the
+			//! inlined code a hot caller carries stays heap-free up to depth 4.
 			ContextList* ctxs;
 
-			MyIORStack() : ctxs( 0 ) {};
+			MyIORStack() : m_size( 0 ), m_heap( 0 ), ctxs( 0 ) {}
 			MyIORStack( const MyIORStack& s ) :
-			  Base( s ),
+			  m_size( s.m_size ),
+			  m_heap( 0 ),
 			  ctxs( s.ctxs )
 			{
+				if( m_size <= kInlineCap ) {
+					const IORDATA* src = s.entries();
+					for( std::size_t i = 0; i < m_size; ++i ) {
+						m_inline[i] = src[i];
+					}
+				} else {
+					m_heap = CloneHeap( *s.m_heap );
+				}
 				if( ctxs ) {
 					Retain( ctxs );
 				}
 			}
 			MyIORStack& operator=( const MyIORStack& s )
 			{
-				c = s.c;
+				if( this == &s ) {
+					return *this;
+				}
+				if( s.m_size <= kInlineCap ) {
+					if( m_heap ) {
+						FreeHeap( m_heap );
+						m_heap = 0;
+					}
+					const IORDATA* src = s.entries();
+					for( std::size_t i = 0; i < s.m_size; ++i ) {
+						m_inline[i] = src[i];
+					}
+					m_size = s.m_size;
+				} else {
+					AssignHeap( *s.m_heap );
+				}
 				if( ctxs != s.ctxs ) {
 					AssignContexts( s.ctxs );
 				}
@@ -254,14 +333,18 @@ namespace RISE
 			}
 			~MyIORStack()
 			{
+				if( m_heap ) {
+					FreeHeap( m_heap );
+				}
 				if( ctxs ) {
 					Release( ctxs );
 				}
 			}
 
-			using Base::top;
-			using Base::size;
-			using Base::empty;
+			inline IORDATA& top() { return entries()[m_size - 1]; }
+			inline const IORDATA& top() const { return entries()[m_size - 1]; }
+			inline std::size_t size() const { return m_size; }
+			inline bool empty() const { return m_size == 0; }
 
 			static const EntryContext& NoContext()
 			{
@@ -315,7 +398,7 @@ namespace RISE
 				if( ctxs ) {
 					items = ctxs->items;
 				}
-				items.push_back( IndexedContext( c.size() - 1, ctx ) );
+				items.push_back( IndexedContext( m_size - 1, ctx ) );
 				ReplaceContexts( items );
 			}
 
@@ -336,7 +419,11 @@ namespace RISE
 
 			void pushEntry( const IORDATA& d, const EntryContext* pCtx )
 			{
-				c.push_back( d );
+				if( !m_heap && m_size < kInlineCap ) {
+					m_inline[m_size++] = d;
+				} else {
+					SpillAndPush( d );
+				}
 				if( pCtx && pCtx->bHasContext ) {
 					AppendContext( *pCtx );
 				}
@@ -344,17 +431,18 @@ namespace RISE
 
             std::vector<const IObject*> ObjectKeys() const {
                 std::vector<const IObject*> result;
-                for(const IORDATA& entry : c)
-                    if(entry.pObj) result.push_back(entry.pObj);
+                const IORDATA* p = entries();
+                for( std::size_t i = 0; i < m_size; ++i )
+                    if( p[i].pObj ) result.push_back( p[i].pObj );
                 return result;
             }
-            Scalar EnvironmentIOR() const { return c.front().ior; }
-            std::size_t depth() const { return c.size(); }
-            const IObject* objectAt( std::size_t i ) const { return c[i].pObj; }
-            Scalar iorAt( std::size_t i ) const { return c[i].ior; }
-            void setIORAt( std::size_t i, Scalar ior ) { c[i].ior = ior; }
-            bool topIsOpenSheet() const { return c.empty() ? false : c.back().bOpenSheet; }
-            bool isOpenSheetAt( std::size_t i ) const { return i < c.size() ? c[i].bOpenSheet : false; }
+            Scalar EnvironmentIOR() const { return entries()[0].ior; }
+            std::size_t depth() const { return m_size; }
+            const IObject* objectAt( std::size_t i ) const { return entries()[i].pObj; }
+            Scalar iorAt( std::size_t i ) const { return entries()[i].ior; }
+            void setIORAt( std::size_t i, Scalar ior ) { entries()[i].ior = ior; }
+            bool topIsOpenSheet() const { return m_size == 0 ? false : entries()[m_size - 1].bOpenSheet; }
+            bool isOpenSheetAt( std::size_t i ) const { return i < m_size ? entries()[i].bOpenSheet : false; }
             const EntryContext& contextAt( std::size_t i ) const {
                 if( ctxs ) {
                     for( std::size_t k = 0; k < ctxs->items.size(); ++k ) {
@@ -364,7 +452,7 @@ namespace RISE
                 return NoContext();
             }
             RISE_IORSTACK_COLD void setContextAt( std::size_t i, const EntryContext& ctx ) {
-                if( i >= c.size() ) return;
+                if( i >= m_size ) return;
                 if( !ctxs && !ctx.bHasContext ) return;
                 std::vector<IndexedContext> items;
                 bool placed = false;
@@ -382,34 +470,43 @@ namespace RISE
                 if( !placed && ctx.bHasContext ) items.push_back( IndexedContext( i, ctx ) );
                 ReplaceContexts( items );
             }
-            const EntryContext& topContext() const { return contextAt( c.size() - 1 ); }
+            const EntryContext& topContext() const { return contextAt( m_size - 1 ); }
             const EntryContext* findContext( const IObject* r ) const {
                 if( !ctxs ) return 0;
+                const IORDATA* p = entries();
                 for( std::size_t k = ctxs->items.size(); k-- > 0; ) {
                     const IndexedContext& e = ctxs->items[k];
-                    if( e.first < c.size() && c[e.first].pObj == r ) {
+                    if( e.first < m_size && p[e.first].pObj == r ) {
                         return &e.second;
                     }
                 }
                 return 0;
             }
             bool SameInterfaces(const MyIORStack& other) const {
-                if(c.size() != other.c.size()) return false;
-                for(std::size_t i=0; i<c.size(); ++i)
-                    if(c[i].pObj != other.c[i].pObj || c[i].ior != other.c[i].ior) return false;
+                if(m_size != other.m_size) return false;
+                const IORDATA* a = entries();
+                const IORDATA* b = other.entries();
+                for(std::size_t i=0; i<m_size; ++i)
+                    if(a[i].pObj != b[i].pObj || a[i].ior != b[i].ior || a[i].bOpenSheet != b[i].bOpenSheet) return false;
                 return true;
             }
 
 			bool find_and_destroy( const IObject* r )
 			{
-				std::vector<IORDATA>::reverse_iterator i, e;
-				for( i=c.rbegin(), e=c.rend(); i!=e; i++ ) {
-					if( i->pObj == r ) {
-						const std::vector<IORDATA>::iterator it = (i.base())-1;
+				IORDATA* p = entries();
+				for( std::size_t i = m_size; i-- > 0; ) {
+					if( p[i].pObj == r ) {
 						if( ctxs ) {
-							EraseContextIndex( static_cast<std::size_t>( it - c.begin() ) );
+							EraseContextIndex( i );
 						}
-						c.erase( it );
+						if( m_heap ) {
+							EraseHeapAt( i );
+						} else {
+							for( std::size_t j = i + 1; j < m_size; ++j ) {
+								m_inline[j - 1] = m_inline[j];
+							}
+							--m_size;
+						}
 						return true;
 					}
 				}
@@ -419,9 +516,9 @@ namespace RISE
 
 			bool containsObject( const IObject* r ) const
 			{
-				std::vector<IORDATA>::const_reverse_iterator i, e;
-				for( i=c.rbegin(), e=c.rend(); i!=e; i++ ) {
-					if( i->pObj == r ) {
+				const IORDATA* p = entries();
+				for( std::size_t i = m_size; i-- > 0; ) {
+					if( p[i].pObj == r ) {
 						return true;
 					}
 				}

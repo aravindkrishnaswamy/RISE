@@ -492,6 +492,7 @@ namespace RISE
 			IKeyframeParameter* KeyframeFromParameters( const String& /*name*/, const String& /*value*/ ) override { return 0; }
 			void SetIntermediateValue( const IKeyframeParameter& /*val*/ ) override {}
 			void RegenerateData() override {}
+			unsigned long long ShapeRevision() const override;
 		};
 	}
 }

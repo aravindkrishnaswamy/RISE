@@ -178,6 +178,7 @@ void TriangleMeshGeometry::BeginTriangles( )
     m_bOpenSignedVolumeNegative=false;
 	m_topologicalOpenness.store( -2, std::memory_order_release );
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 	safe_release( pPolygonsBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -191,6 +192,7 @@ void TriangleMeshGeometry::AddTriangle( const Triangle& tri )
     m_bShapeOpenSheet=false;
 	m_topologicalOpenness.store( -2, std::memory_order_release );
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 	// Add the triangle, precompute the stuff that needs to be precompute
 	polygons.push_back( tri );
 }
@@ -259,6 +261,7 @@ void TriangleMeshGeometry::ComputeAreas()
     m_bProvablyOpenSheet = m_bShapeOpenSheet && !smsUncertainNormalOrientation;
 	m_topologicalOpenness.store( -2, std::memory_order_release );
 	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
 }
 
 int TriangleMeshGeometry::TopologicalOpenness() const

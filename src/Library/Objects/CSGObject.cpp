@@ -5054,3 +5054,43 @@ const char* CSGObject::DescribeKind() const
 	default:				return "csg (unknown operation)";
 	}
 }
+
+namespace
+{
+	inline unsigned long long HashScalarBits( unsigned long long h, const Scalar v )
+	{
+		const double canon = ( v == Scalar( 0 ) ) ? 0.0 : static_cast<double>( v );
+		unsigned long long bits = 0;
+		std::memcpy( &bits, &canon, sizeof( bits ) );
+		h ^= bits + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+		return h;
+	}
+
+	inline unsigned long long HashOperandState( unsigned long long h, const IObjectPriv* pChild )
+	{
+		const unsigned long long ptrBits = static_cast<unsigned long long>( reinterpret_cast<uintptr_t>( pChild ) );
+		h ^= ptrBits + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+		if( !pChild ) {
+			return h;
+		}
+		const unsigned long long rev = pChild->ShapeRevision();
+		h ^= rev + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
+		const Matrix4 m = pChild->GetFinalTransformMatrix();
+		h = HashScalarBits( h, m._00 ); h = HashScalarBits( h, m._01 ); h = HashScalarBits( h, m._02 ); h = HashScalarBits( h, m._03 );
+		h = HashScalarBits( h, m._10 ); h = HashScalarBits( h, m._11 ); h = HashScalarBits( h, m._12 ); h = HashScalarBits( h, m._13 );
+		h = HashScalarBits( h, m._20 ); h = HashScalarBits( h, m._21 ); h = HashScalarBits( h, m._22 ); h = HashScalarBits( h, m._23 );
+		h = HashScalarBits( h, m._30 ); h = HashScalarBits( h, m._31 ); h = HashScalarBits( h, m._32 ); h = HashScalarBits( h, m._33 );
+		const BoundingBox b = pChild->getBoundingBox();
+		h = HashScalarBits( h, b.ll.x ); h = HashScalarBits( h, b.ll.y ); h = HashScalarBits( h, b.ll.z );
+		h = HashScalarBits( h, b.ur.x ); h = HashScalarBits( h, b.ur.y ); h = HashScalarBits( h, b.ur.z );
+		return h;
+	}
+}
+
+unsigned long long CSGObject::ShapeRevision() const
+{
+	unsigned long long h = 0x517cc1b727220a95ULL ^ static_cast<unsigned long long>( op );
+	h = HashOperandState( h, pObjectA );
+	h = HashOperandState( h, pObjectB );
+	return h;
+}

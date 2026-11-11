@@ -18,7 +18,9 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-Geometry::Geometry( )
+Geometry::Geometry( ) :
+  bOnlyAsMesh( false ),
+  m_shapeRevision( 1 )
 {
 }
 

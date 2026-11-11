@@ -892,6 +892,7 @@ void ClippedPlaneGeometry::RegenerateData( )
 	}
 
 	BuildAreaData();
+	BumpShapeRevision();
 }
 
 bool ClippedPlaneGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
