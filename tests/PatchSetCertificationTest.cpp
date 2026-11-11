@@ -44,10 +44,13 @@
 #include <vector>
 
 #include "../src/Library/Polygon.h"
+#include "../src/Library/Interfaces/ILogPrinter.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Utilities/IORStackSeeding.h"
 #include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Geometry/BezierPatchGeometry.h"
+#include "../src/Library/Geometry/BilinearPatchGeometry.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Geometry/ClippedPlaneGeometry.h"
 #include "../src/Library/Geometry/DisplacedGeometry.h"
@@ -2646,9 +2649,194 @@ static void TestDL623ReviewPatchFindings()
 	}
 }
 
+namespace
+{
+	class DL630WarningCounter : public ILogPrinter, public Reference
+	{
+	public:
+		unsigned int dl382Warnings = 0;
+		void Print( const LogEvent& event ) override
+		{
+			if( event.eType == eLog_Warning && std::strstr( event.szMessage, "DL-382" ) ) {
+				++dl382Warnings;
+			}
+		}
+		void Flush() override {}
+	};
+}
+
+static void TestShippedWatertightPatchModels_DL630()
+{
+	std::cout << "K. shipped watertight Bezier & Bilinear models (DL-630)" << std::endl;
+
+	// 1. Direct patch-set certification & seam census on models/bezier/teapot_watertight.bezier.
+	{
+		const std::vector<BezierPatch> p = ReadBezierFile( "models/bezier/teapot_watertight.bezier" );
+		const auto t0 = std::chrono::steady_clock::now();
+		const Verdict v = CertBezier( p );
+		const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+		const SeamCensus c = CensusOf( p );
+		const int openness = GeometricUtilities::BezierPatchSetOpenness( p );
+		std::cout << "    models/bezier/teapot_watertight.bezier (" << p.size() << " patches): "
+			<< Describe( v ) << ", openness " << openness << " in " << ms << " ms" << std::endl;
+		Check( p.size() == 632, "K1: teapot_watertight.bezier loads 632 bicubic patches" );
+		Check( c.sameDirection == 0 && c.reversedMismatch == 0 && c.nonManifoldGroups == 0 && c.loopSides == 0,
+			"K1: teapot_watertight.bezier has zero seam orientation conflicts, mismatches, non-manifold groups, or petal loops" );
+		Check( openness == 0, "K1: teapot_watertight.bezier BezierPatchSetOpenness == 0 (closed manifold)" );
+		Check( v.watertight && !v.open && !v.negative && ReasonIs( v, "" ),
+			"K1: teapot_watertight.bezier certifies watertight with positive enclosed volume" );
+	}
+
+	// 2. Direct patch-set certification & non-planarity check on models/raw/vessel_watertight.bilinear.
+	{
+		const std::vector<BilinearPatch> p = ReadBilinearFile( "models/raw/vessel_watertight.bilinear" );
+		const auto t0 = std::chrono::steady_clock::now();
+		const Verdict v = CertBilinear( p );
+		const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
+		const int openness = GeometricUtilities::BilinearPatchSetOpenness( p );
+		std::size_t nonPlanarCount = 0;
+		for( const BilinearPatch& bp : p ) {
+			const Vector3 twist = GeometricUtilities::BilinearPatchSecondDerivUV( bp );
+			if( Vector3Ops::Magnitude( twist ) > 1e-3 ) {
+				++nonPlanarCount;
+			}
+		}
+		std::cout << "    models/raw/vessel_watertight.bilinear (" << p.size() << " patches, "
+			<< nonPlanarCount << " warped): " << Describe( v ) << ", openness " << openness << " in " << ms << " ms" << std::endl;
+		Check( p.size() == 552 && nonPlanarCount >= 100,
+			"K2: vessel_watertight.bilinear loads 552 patches including >= 100 genuinely warped non-planar bilinear patches" );
+		Check( openness == 0, "K2: vessel_watertight.bilinear BilinearPatchSetOpenness == 0 (closed manifold)" );
+		Check( v.watertight && !v.open && !v.negative && ReasonIs( v, "" ),
+			"K2: vessel_watertight.bilinear certifies watertight with positive enclosed volume" );
+	}
+
+	// 3. Scene preparation (zero DL-382 warnings), IORStackSeeding interior/cavity/hole membership,
+	//    DisplacedGeometry SignedDistanceLower, and CSG sheet trimming on both shipped assets.
+	{
+		auto* counter = new DL630WarningCounter();
+		GlobalLogPriv()->AddPrinter( counter );
+
+		{
+			const std::string bezScene = Materials( false ) +
+				"lambertian_material\n{\n name matte\n reflectance white\n}\n"
+				"bezierpatch_geometry\n{\n name g_tea\n file models/bezier/teapot_watertight.bezier\n bsp TRUE\n}\n"
+				"bezierpatch_geometry\n{\n name g_tea_ctr\n file models/bezier/teapot_watertight.bezier\n bsp TRUE\n center_object TRUE\n}\n"
+				"displaced_geometry\n{\n name g_tea_disp\n base_geometry g_tea\n detail 4\n disp_scale 0.0\n}\n"
+				"clippedplane_geometry\n{\n name g_plane\n pta -4 1.2 -4\n ptb 4 1.2 -4\n ptc 4 1.2 4\n ptd -4 1.2 4\n}\n"
+				"standard_object\n{\n name o_tea\n geometry g_tea\n material glass\n}\n"
+				"standard_object\n{\n name o_tea_ctr\n geometry g_tea_ctr\n material glass\n position 12 0 0\n}\n"
+				"standard_object\n{\n name o_tea_disp\n geometry g_tea_disp\n material matte\n position 0 40 0\n}\n"
+				"standard_object\n{\n name o_plane_a\n geometry g_plane\n material glass\n}\n"
+				"standard_object\n{\n name o_tea_trim\n geometry g_tea\n material glass\n}\n"
+				"csg_object\n{\n name csg_trim\n obja o_plane_a\n objb o_tea_trim\n operation subtraction\n material glass\n position 50 20 0\n}\n";
+			LoadedScene loaded( bezScene );
+			Check( counter->dl382Warnings == 0,
+				"K3: clear transmissive teapot_watertight.bezier (raw, center_object TRUE, and CSG sheet trim) prepares with 0 DL-382 warnings" );
+
+			const IObject* oTea = loaded.Scene().GetObjects()->GetItem( "o_tea" );
+			const IObject* oTeaCtr = loaded.Scene().GetObjects()->GetItem( "o_tea_ctr" );
+			const IObject* oTeaDisp = loaded.Scene().GetObjects()->GetItem( "o_tea_disp" );
+			const IObject* oTrim = loaded.Scene().GetObjects()->GetItem( "csg_trim" );
+			const auto* gTea = oTea ? dynamic_cast<const BezierPatchGeometry*>( oTea->GetGeometry() ) : nullptr;
+			const auto* gTeaCtr = oTeaCtr ? dynamic_cast<const BezierPatchGeometry*>( oTeaCtr->GetGeometry() ) : nullptr;
+			Check( gTea && gTea->IsCertifiedWatertight() && !gTea->IsProvablyOpenSheet() && gTea->TopologicalOpenness() == 0,
+				"K3: BezierPatchGeometry on teapot_watertight.bezier reports IsCertifiedWatertight=true, TopologicalOpenness=0" );
+			Check( gTeaCtr && gTeaCtr->IsCertifiedWatertight() && !gTeaCtr->IsProvablyOpenSheet(),
+				"K3: BezierPatchGeometry with center_object TRUE preserves exact seam certification" );
+			Check( oTrim && AsCSG( oTrim ) && AsCSG( oTrim )->IsProvablyOpenSheet() && !AsCSG( oTrim )->IsCertifiedWatertight(),
+				"K3: open sheet minus teapot_watertight.bezier certifies as a trimmed open sheet" );
+
+			auto seedDepth = [&]( const Point3& pt, Scalar& outTopIor ) -> std::size_t {
+				IORStack st( 1.0 );
+				IORStackSeeding::SeedFromPoint( st, pt, loaded.Scene(), 0.0 );
+				outTopIor = st.top();
+				return st.Depth();
+			};
+			Scalar iorBelly = 0, iorSpout = 0, iorHandle = 0, iorHole = 0, iorOut = 0;
+			const std::size_t dBelly = seedDepth( Point3( 0.25, 1.2, 0.15 ), iorBelly );
+			const std::size_t dSpout = seedDepth( Point3( 2.72, 1.48, 0.02 ), iorSpout );
+			const std::size_t dHandle = seedDepth( Point3( -3.00, 1.45, 0.02 ), iorHandle );
+			std::cout << "    K3 seeds: belly=(" << dBelly << ", " << iorBelly
+				<< "), spout=(" << dSpout << ", " << iorSpout
+				<< "), handle=(" << dHandle << ", " << iorHandle << ")" << std::endl;
+			Check( dBelly == 2 && std::fabs( iorBelly - 1.3 ) < 1e-6,
+				"K3: SeedFromPoint inside teapot_watertight belly seeds glass (Depth=2, ior=1.3)" );
+			Check( dSpout == 2 && std::fabs( iorSpout - 1.3 ) < 1e-6,
+				"K3: SeedFromPoint inside teapot_watertight curved spout seeds glass (Depth=2, ior=1.3)" );
+			Check( dHandle == 2 && std::fabs( iorHandle - 1.3 ) < 1e-6,
+				"K3: SeedFromPoint inside teapot_watertight C-handle seeds glass (Depth=2, ior=1.3)" );
+			Check( seedDepth( Point3( -2.35, 1.25, 0.0 ), iorHole ) == 1 && std::fabs( iorHole - 1.0 ) < 1e-6,
+				"K3: SeedFromPoint inside teapot_watertight genus-1 handle hole seeds exterior air (Depth=1)" );
+			Check( seedDepth( Point3( 0.0, 4.0, 0.0 ), iorOut ) == 1 && std::fabs( iorOut - 1.0 ) < 1e-6,
+				"K3: SeedFromPoint outside teapot_watertight seeds exterior air (Depth=1)" );
+
+			const auto* gDisp = oTeaDisp ? dynamic_cast<const DisplacedGeometry*>( oTeaDisp->GetGeometry() ) : nullptr;
+			Scalar sdIn = 0, sdOut = 0;
+			bool exIn = false, exOut = false;
+			Check( gDisp && gDisp->IsCertifiedWatertight() &&
+				gDisp->SignedDistanceLower( Point3( 0.0, 1.2, 0.0 ), 100.0, sdIn, exIn ) && exIn && sdIn < -0.5 &&
+				gDisp->SignedDistanceLower( Point3( 0.0, 4.0, 0.0 ), 100.0, sdOut, exOut ) && exOut && sdOut > 0.5,
+				"K3: DisplacedGeometry baked from teapot_watertight.bezier certifies watertight with exact negative interior / positive exterior signed distance" );
+		}
+
+		{
+			const std::string bilScene = Materials( false ) +
+				"lambertian_material\n{\n name matte\n reflectance white\n}\n"
+				"bilinearpatch_geometry\n{\n name g_ves\n file models/raw/vessel_watertight.bilinear\n bsp TRUE\n}\n"
+				"displaced_geometry\n{\n name g_ves_disp\n base_geometry g_ves\n detail 4\n disp_scale 0.0\n}\n"
+				"standard_object\n{\n name o_ves\n geometry g_ves\n material glass\n}\n"
+				"standard_object\n{\n name o_ves_disp\n geometry g_ves_disp\n material matte\n position 0 40 0\n}\n";
+			LoadedScene loaded( bilScene );
+			Check( counter->dl382Warnings == 0,
+				"K4: clear transmissive vessel_watertight.bilinear prepares with 0 DL-382 warnings" );
+
+			const IObject* oVes = loaded.Scene().GetObjects()->GetItem( "o_ves" );
+			const IObject* oVesDisp = loaded.Scene().GetObjects()->GetItem( "o_ves_disp" );
+			const auto* gVes = oVes ? dynamic_cast<const BilinearPatchGeometry*>( oVes->GetGeometry() ) : nullptr;
+			Check( gVes && gVes->IsCertifiedWatertight() && !gVes->IsProvablyOpenSheet() && gVes->TopologicalOpenness() == 0,
+				"K4: BilinearPatchGeometry on vessel_watertight.bilinear reports IsCertifiedWatertight=true, TopologicalOpenness=0" );
+
+			auto seedDepth = [&]( const Point3& pt ) -> std::size_t {
+				IORStack st( 1.0 );
+				IORStackSeeding::SeedFromPoint( st, pt, loaded.Scene(), 0.0 );
+				return st.Depth();
+			};
+			Check( seedDepth( Point3( 0.0, 0.18, 0.0 ) ) == 2,
+				"K4: SeedFromPoint inside vessel_watertight solid glass base seeds glass (Depth=2)" );
+			Check( seedDepth( Point3( 1.05, 1.45, 0.0 ) ) == 2,
+				"K4: SeedFromPoint inside vessel_watertight solid glass belly wall seeds glass (Depth=2)" );
+			Check( seedDepth( Point3( -2.18, 1.45, 0.0 ) ) == 2,
+				"K4: SeedFromPoint inside vessel_watertight C-handle seeds glass (Depth=2)" );
+			Check( seedDepth( Point3( 0.0, 1.50, 0.0 ) ) == 1,
+				"K4: SeedFromPoint inside vessel_watertight hollow interior cup cavity seeds air (Depth=1)" );
+			Check( seedDepth( Point3( -1.55, 1.35, 0.0 ) ) == 1,
+				"K4: SeedFromPoint inside vessel_watertight genus-1 handle hole seeds air (Depth=1)" );
+
+			const auto* gDisp = oVesDisp ? dynamic_cast<const DisplacedGeometry*>( oVesDisp->GetGeometry() ) : nullptr;
+			Scalar sdBase = 0, sdCup = 0;
+			bool exBase = false, exCup = false;
+			Check( gDisp && gDisp->IsCertifiedWatertight() &&
+				gDisp->SignedDistanceLower( Point3( 0.0, 0.18, 0.0 ), 100.0, sdBase, exBase ) && exBase && sdBase < -0.05 &&
+				gDisp->SignedDistanceLower( Point3( 0.0, 1.50, 0.0 ), 100.0, sdCup, exCup ) && exCup && sdCup > 0.2,
+				"K4: DisplacedGeometry baked from vessel_watertight.bilinear certifies watertight with negative base-wall and positive hollow-cup signed distance" );
+		}
+
+		{
+			const std::string showcaseText = ReadScene( "scenes/Tests/Geometry/teapot_watertight_glass.RISEscene" );
+			Check( !showcaseText.empty(), "K5: scenes/Tests/Geometry/teapot_watertight_glass.RISEscene exists" );
+			LoadedScene showcase( showcaseText );
+			Check( counter->dl382Warnings == 0,
+				"K5: shipped teapot_watertight_glass.RISEscene loads and prepares with 0 DL-382 warnings" );
+		}
+
+		GlobalLogPriv()->RemoveAllPrinters();
+		counter->release();
+	}
+}
+
 int main()
 {
-	std::cout << "=== PatchSetCertificationTest (DL-616 / DL-617 / DL-621 / DL-624) ===" << std::endl;
+	std::cout << "=== PatchSetCertificationTest (DL-616 / DL-617 / DL-621 / DL-624 / DL-630) ===" << std::endl;
 	TestDL623ReviewPatchFindings();
 	TestClosedSolids();
 	TestCrossingStrip();
@@ -2660,6 +2848,7 @@ int main()
 	TestProofStepCoverage();
 	TestMeshAndDisplacedCSG_DL621();
 	TestPolarPatchSets_DL624();
+	TestShippedWatertightPatchModels_DL630();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }

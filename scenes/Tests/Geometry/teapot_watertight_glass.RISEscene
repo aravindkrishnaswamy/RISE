@@ -1,0 +1,245 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           teapot_watertight_glass.RISEscene                                                       #
+#   Description:    DL-630 certified watertight analytic patch assets rendered as clear refractive glass:   #
+#                     - `models/bezier/teapot_watertight.bezier` (632-patch genus-1 bicubic Bezier teapot   #
+#                       with curved spout, C-handle loop, domed lid, finial knob, and 2x2 all-quad caps)    #
+#                     - `models/raw/vessel_watertight.bilinear` (552-patch genus-1 hollow fluted/twisted    #
+#                       bilinear ewer with hollow cup cavity, C-handle loop, and 2x2 all-quad base/cup)     #
+#                   Both geometries pass `CertifyBezierPatchSet` / `CertifyBilinearPatchSet` as closed      #
+#                   watertight solids (`IsCertifiedWatertight() == true`), so `ObjectManager` prepares      #
+#                   them on clear `dielectric_material` with zero DL-382 uncertified-patch warnings.        #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				16
+	max_diffuse_bounce	2
+	max_glossy_bounce	6
+	max_transmission_bounce	10
+	pixel_filter		gaussian
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/teapot_watertight_glass
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width				640
+	height				420
+}
+
+pinhole_camera
+{
+	location			0.2 3.2 10.4
+	lookat				0.2 1.35 0.0
+	up					0 1 0
+	fov					36.0
+}
+
+##################################################
+# Painters & Materials
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_floor_a
+	color				0.76 0.74 0.70
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor_b
+	color				0.30 0.33 0.38
+}
+
+checker_painter
+{
+	name				pnt_checker
+	colora				pnt_floor_a
+	colorb				pnt_floor_b
+	size				0.125
+}
+
+uniformcolor_painter
+{
+	name				pnt_wall
+	color				0.68 0.70 0.74
+}
+
+uniformcolor_painter
+{
+	name				pnt_key_emit
+	color				1.0 0.96 0.90
+}
+
+uniformcolor_painter
+{
+	name				pnt_fill_emit
+	color				0.80 0.90 1.0
+}
+
+dielectric_material
+{
+	name				mat_crystal_teapot
+	tau					0.96 0.985 0.995
+	ior					1.52
+}
+
+dielectric_material
+{
+	name				mat_aqua_vessel
+	tau					0.82 0.96 0.93
+	ior					1.50
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_checker
+}
+
+lambertian_material
+{
+	name				mat_wall
+	reflectance			pnt_wall
+}
+
+lambertian_luminaire_material
+{
+	name				mat_key_light
+	exitance			pnt_key_emit
+	scale				14.0
+	material			none
+}
+
+lambertian_luminaire_material
+{
+	name				mat_fill_light
+	exitance			pnt_fill_emit
+	scale				7.0
+	material			none
+}
+
+##################################################
+# Studio Floor, Backdrop & Area Lights
+##################################################
+
+clippedplane_geometry
+{
+	name				geom_floor
+	pta					-10.0 0.0  10.0
+	ptb					 10.0 0.0  10.0
+	ptc					 10.0 0.0 -10.0
+	ptd					-10.0 0.0 -10.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			geom_floor
+	material			mat_floor
+}
+
+clippedplane_geometry
+{
+	name				geom_backdrop
+	pta					-16.0 0.0 -4.5
+	ptb					 16.0 0.0 -4.5
+	ptc					 16.0 12.0 -4.5
+	ptd					-16.0 12.0 -4.5
+}
+
+standard_object
+{
+	name				backdrop
+	geometry			geom_backdrop
+	material			mat_wall
+}
+
+clippedplane_geometry
+{
+	name				geom_key
+	pta					-4.5 6.8  3.5
+	ptb					-0.5 6.8  3.5
+	ptc					-0.5 6.8 -1.5
+	ptd					-4.5 6.8 -1.5
+}
+
+standard_object
+{
+	name				key_light
+	geometry			geom_key
+	material			mat_key_light
+}
+
+clippedplane_geometry
+{
+	name				geom_fill
+	pta					 3.5 5.2  4.0
+	ptb					 6.5 3.2  4.0
+	ptc					 6.5 3.2  0.0
+	ptd					 3.5 5.2  0.0
+}
+
+standard_object
+{
+	name				fill_light
+	geometry			geom_fill
+	material			mat_fill_light
+}
+
+##################################################
+# Certified Watertight Bezier Teapot & Bilinear Vessel
+##################################################
+
+bezierpatch_geometry
+{
+	name				geom_teapot_wt
+	file				models/bezier/teapot_watertight.bezier
+	maxpatches			4
+	maxdepth			10
+	bsp					TRUE
+}
+
+standard_object
+{
+	name				teapot_glass
+	geometry			geom_teapot_wt
+	material			mat_crystal_teapot
+	position			-2.10 0.0 0.25
+	orientation			0 -14 0
+}
+
+bilinearpatch_geometry
+{
+	name				geom_vessel_wt
+	file				models/raw/vessel_watertight.bilinear
+	maxpolygons			6
+	maxdepth			10
+	bsp					TRUE
+}
+
+standard_object
+{
+	name				vessel_glass
+	geometry			geom_vessel_wt
+	material			mat_aqua_vessel
+	position			2.35 0.0 -0.10
+	orientation			0 198 0
+}

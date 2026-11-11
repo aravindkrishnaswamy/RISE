@@ -183,6 +183,7 @@ scenes/Tests/Geometry/sweep_instances.RISEscene  865bfeba4c64de97f1d9c9f2df7b41b
 scenes/Tests/Geometry/sweep_loop.RISEscene  9d0664787f3b41e57fc2297cdaa4e49c3a42b18d9eb508b0ed9a47626481f780  1372  28
 scenes/Tests/Geometry/sweep_stress.RISEscene  01789ae0def10870ef4e64e38f8c5ff1f7325376ad3dd157f18c385eb30a7476  3659  53
 scenes/Tests/Geometry/teapot_analytic.RISEscene  7bc694f883ea01e7ca4d588d5d4f46ec17d9a52bb567fddf2755937d2563c85e  8579  41
+scenes/Tests/Geometry/teapot_watertight_glass.RISEscene  7caeedc47c8f1198baacba541625884298ad99b271ea4d8ae725b99d42842868  2470  42
 scenes/Tests/Geometry/vertex_colors_quad.RISEscene  67eb1b20b62555bb7a9cc53ed47cc15c836465b3da92dcd0a17663b5c267cc90  829  23
 scenes/Tests/Geometry/vertex_colors_quad_bdpt.RISEscene  67eb1b20b62555bb7a9cc53ed47cc15c836465b3da92dcd0a17663b5c267cc90  829  23
 scenes/Tests/Geometry/vertex_colors_quad_bdpt_spectral.RISEscene  3e9de0cb866d521bb4e0b76744fc8945cd2cc8074b8afb023cb8c9af944e372d  829  23
