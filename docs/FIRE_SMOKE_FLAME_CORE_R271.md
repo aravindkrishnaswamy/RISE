@@ -1325,13 +1325,42 @@ A bounded closing step on the floor-layer question, after an owner review of the
 - **Limited carrier plus the ±20% seed** (`inert_compact_lc_seed02`, 14 s, exit 98, 2026-11-11) adds little to the carrier alone: 3 m mass flux 0.764 against 0.725 kg/s, entrainment rate +1–8%, centre rms w/w_c at 0.29 / 0.50 m 0.031 / 0.057 against 0.027 / 0.053, excess T at 1 m 523 against 534 K. The seed does not fix the first metre, so the candidate package is the limited carrier alone.
 - Running: reacting 4 s A/B `r271_compact_stencil/ab_lc_compact` (limited carrier, compact stencil, C_v 0.07, from r270 step 9223; driver `ab_build_lc`).
 
+## 32. Reacting A/B: the limited carrier against physical targets (2026-11-11)
+
+`r271_compact_stencil/ab_lc_compact`: `RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1`, compact stencil, C_v 0.07, floor on, 4 s from r270 step 9223 (driver `ab_build_lc`, exit 0, 4.4 h). Same 64 frames as the earlier arms. McCaffrey values are his centreline correlations at Q = 32.8 kW, T∞ = 300 K. Evidence: `s32_runs.txt`; earlier arms in `ab_compare.txt` and `s28_runs.txt`.
+
+Centre excess T (K):
+
+| z (m) | McCaffrey | FDS | r270 default | compact | C_v 0.02 compact | limited carrier |
+|---|---|---|---|---|---|---|
+| 0.29 | 873 | 926 | 1101 | 1193 | 1080 | 1106 |
+| 0.50 | 551 | 631 | 825 | 970 | 838 | 865 |
+| 0.75 | 367 | 355 | 533 | 735 | 568 | 577 |
+| 0.99 | 247 | 228 | 345 | 509 | 342 | 341 |
+| 1.51 | 122 | 114 | 166 | 198 | 160 | 153 |
+| 2.00 | 76 | 72 | 105 | 107 | 96 | 95 |
+| 3.01 | 39 | 39 | 60 | 50 | 48 | 45 |
+
+| | McCaffrey | FDS | r270 default | compact | C_v 0.02 compact | limited carrier |
+|---|---|---|---|---|---|---|
+| centre w at 0.99 / 2.00 / 3.01 m (m/s) | 3.60 / 2.85 / 2.48 | 3.47 / 2.68 / 2.33 | 3.79 / 2.95 / 2.75 | 4.03 / 2.78 / 2.43 | 3.55 / 2.73 / 2.44 | 3.57 / 2.72 / 2.28 |
+| mass flux at 0.50 / 0.99 / 3.01 m (kg/s) | — | 0.184 / 0.314 / 1.176 | 0.152 / 0.251 / 0.863 | 0.131 / 0.220 / 1.021 | 0.147 / 0.252 / 0.966 | 0.136 / 0.229 / 0.983 |
+| 90% / 99% heat-release height (m) | — | 0.43 / 0.77 | 0.46 / 0.86 | 0.83 / 1.25 | 0.58 / 0.98 | 0.61 / 1.01 |
+| grid-scale w′ share at 0.99 / 2.00 m | — | — | 0.205 / 0.238 | — | — | 0.116 / 0.072 |
+
+- **Against the compact baseline the carrier is a large improvement**: the 90% heat-release height falls from 0.83 to 0.61 m, and the excess T at 1 m from 509 to 341 K.
+- **It equals C_v 0.02 on the compact stencil** in every mean measure, at the production C_v and with a third of r270's grid-scale share at 2 m.
+- **Far field: close.** From 1.5 m the excess T is within 15–27% of McCaffrey (r270 default: 36–54%), and centre w is within 1–8%.
+- **Near field: still short.** At 0.5–0.75 m the excess T is 57% above McCaffrey, the mass flux at 0.5–1 m is 73–74% of FDS's (below r270 default's 80–83%, which is helped by its grid noise), and the 90% height is 0.61 m against FDS's 0.43.
+- **Verdict:** the limited carrier is a clean, physically motivated fix worth adopting on the compact stencil, but it is not sufficient: the first metre still under-entrains. This is the same near-source quietness as §30–§31.
+
 ## Next (owner decisions)
 
 1. **Plan agreed 2026-11-10 (owner):** stop the open-ended floor-mechanism hunt (§30 closes it) and judge a candidate package against physical targets.
    - Done (§31): the limited carrier alone closes about 60% of the inert plume's 3 m mass-flux gap with an FDS-like spectrum; the first metre stays too steady.
    - Done (§31): the seed adds little on top of the carrier (3 m mass flux 0.764 against 0.725). Package = limited carrier alone.
-   - Running: reacting 4 s A/B `ab_lc_compact`, to be judged on McCaffrey centreline values, entrainment and flame height.
-   - Then: limited carrier plus the §22 heat-source seed, judged on McCaffrey centreline values, Heskestad entrainment and flame height, with FDS as a second reference.
+   - Done (§32): reacting 4 s A/B. Far field within 15–27% of McCaffrey; first metre still 40–57% too hot and the flame 0.61 m against 0.43.
+   - **Owner decision:** (a) adopt the limited carrier with the compact stencil as the new default candidate (review `s29_optins.patch`), and (b) whether to run the reserve resolution check for the remaining near-field gap.
    - In reserve: a reduced-domain resolution check of both codes, if the package falls short.
    - The limited momentum carrier (§29) stays the one identified numerics contributor: 2–3× base unsteadiness with an FDS-like spectrum aloft. Superbee on top adds only 6–9% at k7–k16.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
