@@ -79,7 +79,7 @@ $ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
 $DualModeExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
     [string[]]@(
         'AgentSkillsTest', 'InteriorCandidateWalkCostTest', 'LightExitanceTest',
-        'PavilionColonnadeShowcaseTest', 'PolishedBRDFConsistencyTest',
+        'LuminarySamplerAreaTest', 'PavilionColonnadeShowcaseTest', 'PolishedBRDFConsistencyTest',
         'SPFPdfConsistencyTest', 'ShelfBunnyShowcaseTest', 'TidalStonesShowcaseTest',
         'TimeIndexedMotionBlurTest'
     ),

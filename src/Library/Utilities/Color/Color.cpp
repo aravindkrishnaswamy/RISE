@@ -24,11 +24,12 @@ static const Matrix3 mxXYZtoRec709 = Matrix3(
 	-0.969256,  1.875992,  0.041556,
 	 0.055648, -0.204043,  1.057311 );
 
-// Conversion matrix for Rec 709 RGB with its D65 whitepoint to CIE_XYZ (D65)
-static const Matrix3 mxRec709toXYZ = Matrix3(
-	0.412453, 0.357580, 0.180423,
-	0.212671, 0.715160, 0.072169,
-	0.019334, 0.119193, 0.950227 );
+// Conversion matrix for Rec 709 RGB with its D65 whitepoint to CIE_XYZ (D65).
+// Defined as the exact inverse of mxXYZtoRec709 (matching mxROMMtoXYZD50 and
+// mxAP1toXYZD60 below) so that RGB -> XYZ -> RGB round-trips in ProgressiveFilm
+// and FilteredFilm are identity to IEEE-754 precision (~1e-16) while preserving
+// mxXYZtoRec709 bit-for-bit for Jakob-Hanika LUT spectral forward parity.
+static const Matrix3 mxRec709toXYZ = Matrix3Ops::Inverse( mxXYZtoRec709 );
 
 // Conversion matrix for CIE_XYZ (D50) to ROMM RGB with its D50 whitepoint
 static const Matrix3 mxXYZD50toROMM = Matrix3(

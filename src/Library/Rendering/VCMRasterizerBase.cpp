@@ -262,8 +262,10 @@ namespace
 			Rect rect( 0, 0, 0, 0 );
 			while( GetNextBlock( rect ) )
 			{
-				localRng.Reseed( DeriveSeed( tileSeedBase,
-					( static_cast<unsigned long long>( rect.top ) << 32 ) | static_cast<unsigned long long>( rect.left ) ) );
+				const unsigned int tileSeed = DeriveSeed( tileSeedBase,
+					( static_cast<unsigned long long>( rect.top ) << 32 ) | static_cast<unsigned long long>( rect.left ) );
+				localRng.Reseed( tileSeed );
+				ScopedMediumTileSeed mediumSeed( tileSeed );
 				for( unsigned int y = rect.top; y <= rect.bottom; y++ )
 				{
 					for( unsigned int x = rect.left; x <= rect.right; x++ )
@@ -665,6 +667,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	mVolumeStoreProbability = 1;
 	mVolumeThinSeed = 0;
 	const bool sceneHasMedium = SceneHasMedium( pScene );
+	const unsigned int prepassMediumSeed = sceneHasMedium ? LockedLibcRand() : 0u;
+	ScopedMediumTileSeed prepassMediumScope( prepassMediumSeed, sceneHasMedium );
 	std::size_t mediumCount = 0;
 	Point3 mediumMin( 0, 0, 0 ), mediumMax( 0, 0, 0 );
 	auto accumulateMediumVertices = [&]( const std::vector<BDPTVertex>& verts ) {

@@ -542,9 +542,10 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 	// Reference: Novak et al. 2014, "Residual Ratio Tracking for
 	// Estimating Attenuation in Participating Media".
 
-	// Thread-local RNG for stochastic sampling.
-	// Each thread gets its own Mersenne Twister to avoid contention.
-	static thread_local RandomNumberGenerator tl_rng( ThreadLocalSeed() );	// never libc: see ThreadLocalSeed
+	// DL-628: per-tile / per-row / per-sample RNG when inside a parallel
+	// render scope (`ScopedMediumTileSeed`), falling back to a per-thread
+	// `ThreadLocalSeed()` generator outside render scopes.
+	RandomNumberGenerator& rng = ActiveMediumRNG();
 
 	RISEPel w( 1, 1, 1 );
 	const HeterogeneousMedium* self = this;
@@ -612,7 +613,7 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 	RatioTrackingVisitor visitor;
 	visitor.self = self;
 	visitor.pRay = &ray;
-	visitor.pRng = &tl_rng;
+	visitor.pRng = &rng;
 	visitor.pW = &w;
 	visitor.max_sigma_t = m_max_sigma_t;
 	visitor.pTotalSteps = &totalSteps;
@@ -640,7 +641,7 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 	const Scalar majorantRatio = (m_sigma_t_majorant > 0)
 		? sigma_t_max_nm / m_sigma_t_majorant : 1.0;
 
-	static thread_local RandomNumberGenerator tl_rng_nm( ThreadLocalSeed() );	// never libc: see ThreadLocalSeed
+	RandomNumberGenerator& rng_nm = ActiveMediumRNG_NM();
 
 	Scalar w = 1.0;
 	const HeterogeneousMedium* self = this;
@@ -702,7 +703,7 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 	RatioTrackingVisitorNM visitor;
 	visitor.self = self;
 	visitor.pRay = &ray;
-	visitor.pRng = &tl_rng_nm;
+	visitor.pRng = &rng_nm;
 	visitor.pW = &w;
 	visitor.sigma_t_max_nm = sigma_t_max_nm;
 	visitor.majorantRatio = majorantRatio;

@@ -73,6 +73,7 @@ static int RiseTestPid() { return static_cast<int>( ::getpid() ); }
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
+#include "../src/Library/Cameras/OrthographicCamera.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -92,6 +93,7 @@ static void Check( bool condition, const std::string& testName )
 {
 	if( condition ) {
 		passCount++;
+		std::cout << "  PASS: " << testName << std::endl;
 	} else {
 		failCount++;
 		std::cout << "  FAIL: " << testName << std::endl;
@@ -814,6 +816,7 @@ static void TestMultiThreadDeterminism()
 {
 	std::cout << "D: multi-threaded render determinism\n";
 	const std::string pt = "pathtracing_pel_rasterizer\n{\n\tsamples 16\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n";
+	const std::string ptSpec = "pathtracing_spectral_rasterizer\n{\n\tsamples 16\n\tnmbegin 400\n\tnmend 700\n\tnum_wavelengths 1\n\tspectral_samples 1\n\thwss TRUE\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n";
 	// VCM with merging on: its light pass (VCMRasterizerBase's
 	// LightPassDispatcher) seeded its workers the same racy way.
 	const std::string vcm = "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\toidn_denoise FALSE\n\tpixel_filter box\n\tvc_enabled true\n\tvm_enabled true\n}\n\n";
@@ -823,22 +826,37 @@ static void TestMultiThreadDeterminism()
 		double mean = 0;
 		RenderOnce( RenderScene( QuadChunk( kTrapezoid ), pt ), mean, true, &seed );
 	}
+	const char* fogSnippet =
+		"uniformcolor_painter\n{\n\tname fog_dense\n\tcolor 1 1 1\n}\n\n"
+		"uniformcolor_painter\n{\n\tname fog_sparse\n\tcolor 0 0 0\n}\n\n"
+		"wavelet3d_painter\n{\n\tname fog_density\n\ttile_size 32\n\tpersistence 0.65\n\toctaves 3\n\tcolora fog_dense\n\tcolorb fog_sparse\n\tscale 1.5 1.5 1.5\n\tshift 0 0 0\n}\n\n"
+		"painter_heterogeneous_medium\n{\n\tname fog\n\tabsorption 0.3 0.3 0.3\n\tscattering 1.5 1.5 1.5\n\tphase isotropic\n\tdensity_painter fog_density\n\tresolution 16\n\tcolor_to_scalar luminance\n\tbbox_min -3 -3 0.05\n\tbbox_max 3 3 0.85\n}\n\n"
+		"perfectrefractor_material\n{\n\tname fog_air\n\trefractance white\n\tior 1.0\n}\n\n"
+		"box_geometry\n{\n\tname geo_fog\n\twidth 6\n\theight 6\n\tdepth 0.8\n}\n\n"
+		"standard_object\n{\n\tname fogbox\n\tgeometry geo_fog\n\tmaterial fog_air\n\tposition 0 0 0.45\n\tinterior_medium fog\n\tcasts_shadows FALSE\n}\n\n";
 	// The rwsss rows hang a random-walk SSS slab between the emitter and
 	// the camera (which looks down and never sees it): every light path to
 	// the floor walks through it, and the walk draws from the RuntimeContext
 	// generator -- for VCM+VM the LIGHT pass's, whose vertices the floor's
 	// eye vertices merge.  The Lambertian scene never consumes it there.
-	struct Row { const char* name; const std::string* ras; int res; bool rwsss; };
-	const Row rows[] = { { "PT", &pt, 24, false }, { "PT", &pt, 96, false }, { "BDPT", &bdpt, 96, false },
-		{ "VCM+VM", &vcm, 96, false }, { "PT rwsss", &pt, 96, true }, { "VCM+VM rwsss", &vcm, 96, true } };
+	// The fog rows (DL-628) exercise HeterogeneousMedium::EvalTransmittance
+	// (Pel) and EvalTransmittanceNM (spectral/HWSS) across multi-tile passes.
+	struct Row { const char* name; const std::string* ras; int res; int extra; };
+	const Row rows[] = {
+		{ "PT", &pt, 24, 0 }, { "PT", &pt, 96, 0 }, { "BDPT", &bdpt, 96, 0 },
+		{ "VCM+VM", &vcm, 96, 0 }, { "PT rwsss", &pt, 96, 1 }, { "VCM+VM rwsss", &vcm, 96, 1 },
+		{ "PT fog", &pt, 96, 2 }, { "PT spectral fog", &ptSpec, 96, 2 }, { "VCM+VM fog", &vcm, 96, 2 }
+	};
 	for( const Row& row : rows ) {
 		std::string scene = RenderScene( QuadChunk( kTrapezoid ), *row.ras );
-		if( row.rwsss ) {
+		if( row.extra == 1 ) {
 			const std::string at = "standard_shader\n";
 			scene.insert( scene.find( at ),
 				"randomwalk_sss_material\n{\n\tname slab_mat\n\tior 1.0\n\tabsorption 0.05 0.05 0.05\n\tscattering 4\n\tg 0.0\n\troughness 0.05\n\tmax_bounces 64\n}\n\n"
 				"box_geometry\n{\n\tname geo_slab\n\twidth 8\n\theight 8\n\tdepth 0.4\n}\n\n"
 				"standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tmaterial slab_mat\n\tposition 0.2 -0.1 1.9\n}\n\n" );
+		} else if( row.extra == 2 ) {
+			scene.insert( scene.find( "standard_shader\n" ), fogSnippet );
 		}
 		const std::string from = "width 24\n\theight 24";
 		scene.replace( scene.find( from ), from.size(), Fmt( "width %d\n\theight %d", row.res, row.res ) );
@@ -913,10 +931,12 @@ static std::string GlassScene()
 
 //! A box of heterogeneous fog over the floor: every worker that renders a
 //! fog pixel constructs HeterogeneousMedium's thread_local generators.
-static std::string FogScene()
+static std::string FogScene( bool spectral = false )
 {
-	std::string scene = RenderScene( QuadChunk( kTrapezoid ),
-		"pathtracing_pel_rasterizer\n{\n\tsamples 96\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" );
+	const char* ras = spectral ?
+		"pathtracing_spectral_rasterizer\n{\n\tsamples 64\n\tnmbegin 400\n\tnmend 700\n\tnum_wavelengths 1\n\tspectral_samples 1\n\thwss TRUE\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" :
+		"pathtracing_pel_rasterizer\n{\n\tsamples 96\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n";
+	std::string scene = RenderScene( QuadChunk( kTrapezoid ), ras );
 	scene.insert( scene.find( "standard_shader\n" ),
 		"uniformcolor_painter\n{\n\tname fog_dense\n\tcolor 1 1 1\n}\n\n"
 		"uniformcolor_painter\n{\n\tname fog_sparse\n\tcolor 0 0 0\n}\n\n"
@@ -925,6 +945,13 @@ static std::string FogScene()
 		"perfectrefractor_material\n{\n\tname fog_air\n\trefractance white\n\tior 1.0\n}\n\n"
 		"box_geometry\n{\n\tname geo_fog\n\twidth 6\n\theight 6\n\tdepth 0.8\n}\n\n"
 		"standard_object\n{\n\tname fogbox\n\tgeometry geo_fog\n\tmaterial fog_air\n\tposition 0 0 0.45\n\tinterior_medium fog\n\tcasts_shadows FALSE\n}\n\n" );
+	if( spectral ) {
+		const std::string from = "width 24\n\theight 24";
+		scene.replace( scene.find( from ), from.size(), "width 64\n\theight 64" );
+	} else {
+		const std::string from = "width 24\n\theight 24";
+		scene.replace( scene.find( from ), from.size(), "width 96\n\theight 96" );
+	}
 	return scene;
 }
 
@@ -933,7 +960,11 @@ static void FreshProcessChild( const std::string& which )
 	const unsigned int seed = 777u;
 	std::vector<RISEColor> px;
 	double mean = 0;
-	const bool ok = RenderOnce( which == "fog" ? FogScene() : GlassScene(), mean, true, &seed, &px );
+	const std::string scene =
+		( which == "fog" ) ? FogScene( false ) :
+		( which == "fog_spectral" ) ? FogScene( true ) :
+		GlassScene();
+	const bool ok = RenderOnce( scene, mean, true, &seed, &px );
 	// The libc stream position after the render: what the NEXT render's (or
 	// pass's) seeding sites would read.
 	const int next = std::rand();
@@ -978,7 +1009,7 @@ static std::string FieldOf( const std::string& line, const char* key )
 static void TestFreshProcessDeterminism( const char* self )
 {
 	std::cout << "F: fresh-process multi-threaded determinism (progressive passes, first-use worker generators)\n";
-	for( const char* which : { "glass", "fog" } ) {
+	for( const char* which : { "glass", "fog", "fog_spectral" } ) {
 		std::vector<std::string> lines;
 		for( int r = 0; r < 3; ++r ) {
 			const std::string cmd = std::string( "\"" ) + self + "\" F_child_" + which;
@@ -1002,12 +1033,133 @@ static void TestFreshProcessDeterminism( const char* self )
 		}
 		// Every scene: no worker-side first use may move the libc stream.
 		Check( sameNext, Fmt( "F: %s: the libc stream position after a multi-threaded render is a function of std::srand", which ) );
-		// The glass (SMS) scene's pixels too.  The fog's pixels are NOT
-		// gated: the medium's ratio-tracking generator is per worker, not
-		// per tile, so its estimate depends on which worker renders a tile.
-		if( std::strcmp( which, "glass" ) == 0 ) {
-			Check( sameHash, "F: glass: three fresh processes render the SMS glass scene bit-identically after the same std::srand" );
+		// DL-628: both SMS glass and heterogeneous fog (Pel and spectral/HWSS)
+		// render bit-identically across fresh multi-threaded processes under a
+		// fixed std::srand.
+		Check( sameHash, Fmt( "F: %s: three fresh processes render bit-identically after the same std::srand", which ) );
+	}
+}
+
+//! Q (DL-629): high-power multi-threaded quadrature check on the DL-460
+//! trapezoid clipped-plane luminary scene.  At 96x96 (same [-2,2]^2
+//! orthographic viewport_scale 4x4 with box filter, so the exact film-mean
+//! integral is identical to 24x24 while 9 tiles run concurrently across
+//! workers and each pass averages 16x as many pixels), 32 salted 256-spp
+//! repeats reach ~2-4e-6 relative SE -- 95 % power below DL-629's 2-4e-5
+//! relative residual -- in seconds.
+static void TestHighPowerTrapezoidQuadrature( int spp, int repeats )
+{
+	std::cout << "Q: high-power multi-threaded trapezoid quadrature (96x96, spp=" << spp << ", repeats=" << repeats << ")\n";
+	const double exact = TrapezoidSceneExactQuadrature();
+	const int savedSpp = g_spp;
+	g_spp = spp;
+	const std::string emit = QuadChunk( kTrapezoid );
+	const std::pair<const char*, std::string> kinds[3] = {
+		{ "PT", RasPT() }, { "BDPT", RasBDPT() }, { "VCM", RasVCM() }
+	};
+	for( int k = 0; k < 3; ++k ) {
+		std::string text = RenderScene( emit, kinds[k].second );
+		const std::string from = "width 24\n\theight 24";
+		text.replace( text.find( from ), from.size(), "width 96\n\theight 96" );
+		Stat st{ 0, 0, true };
+		std::vector<double> vals;
+		vals.reserve( repeats );
+		for( int r = 0; r < repeats; ++r ) {
+			const unsigned int seed = g_seedBase + static_cast<unsigned int>( k * 10000 + r * 97 + 1 );
+			double m = 0;
+			if( !RenderOnce( text, m, /*multiThreaded=*/true, &seed ) ) {
+				st.ok = false;
+				break;
+			}
+			vals.push_back( m );
 		}
+		if( st.ok ) {
+			for( double v : vals ) st.mean += v;
+			st.mean /= double( repeats );
+			double ss = 0;
+			for( double v : vals ) ss += ( v - st.mean ) * ( v - st.mean );
+			st.se = std::sqrt( ss / double( repeats - 1 ) / double( repeats ) );
+		}
+		const double diff = st.mean - exact;
+		const double relDiff = diff / exact;
+		const double relSe = st.se / exact;
+		const double power95Rel = ( 3.0 + 1.645 ) * relSe;
+		const double z = st.se > 0 ? diff / st.se : 0.0;
+		std::printf( "    %-4s mean=%.12f  diff=%+.3e (rel %+.3e)  se=%.3e (rel %.3e)  z=%+.2f  95%%-power=%.3e rel\n",
+			kinds[k].first, st.mean, diff, relDiff, st.se, relSe, z, power95Rel );
+		Check( st.ok && std::fabs( diff ) <= 3.0 * st.se + 1e-12,
+			Fmt( "Q: %s matches exact trapezoid quadrature (z=%+.2f, 95%%-power=%.2e rel)", kinds[k].first, z, power95Rel ) );
+	}
+	g_spp = savedSpp;
+}
+
+//! P (DL-629):
+//!   1. Progressive multi-pass RGB accumulation must not drift via repeated
+//!      XYZ->Rec709->XYZ round-trips across passes (pre-fix: 32 progressive
+//!      passes drifted by ~16.5 * 0.733 ppm = 1.21e-5 in R and 1.78e-5 in G on
+//!      an achromatic scene, and left unequal R/G/B channels on white).
+//!   2. OrthographicCamera odd-dimension films (1x1, 3x3, 5x5) must place the
+//!      screen-center ray at the camera origin (pre-fix integer division
+//!      `frame.GetWidth()/2` shifted 1x1 center to (2, 2, 1)).
+static void TestProgressiveColorAndOrthoCamera()
+{
+	std::cout << "P: progressive RGB round-trip identity + orthographic odd-dim centering (DL-629)\n";
+
+	// 1. Odd-dimension OrthographicCamera center-ray check.
+	for( unsigned int dim : { 1u, 3u, 5u } ) {
+		OrthographicCamera* pCam = new OrthographicCamera(
+			Point3( 0, 0, 1 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
+			dim, dim, Vector2( 4.0, 4.0 ), 1.0, 0.0, 0.0, 0.0,
+			Vector3( 0, 0, 0 ), Vector2( 0, 0 ) );
+		RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
+		Ray ray;
+		const bool genOk = pCam->GenerateRay( rc, ray, Point2( Scalar( 0.5 ) * Scalar( dim ), Scalar( 0.5 ) * Scalar( dim ) ) );
+		const double err = std::hypot( ray.origin.x, std::hypot( ray.origin.y, ray.origin.z - 1.0 ) );
+		Check( genOk && err < 1e-14,
+			Fmt( "P: OrthographicCamera %ux%u center ray origin error %.3e < 1e-14", dim, dim, err ) );
+		safe_release( pCam );
+	}
+
+	// 2. Progressive 32-pass (1024 spp at default 32 spp/pass) vs single-pass
+	//    (progressive_rendering FALSE) on a 1x1 odd-dim film with uniform pixel
+	//    sampling across PT, BDPT, VCM:
+	//    - R, G, B channels must remain neutral (< 1e-13 chroma skew) on an
+	//      achromatic scene;
+	//    - On a 1x1 film with uniform sampling, progressive and single-pass
+	//      draw the exact same per-sample stream on pixel (0,0), so their
+	//      means must agree to floating-point accumulation precision (< 1e-12).
+	const std::string emit = QuadChunk( kTrapezoid );
+	const char* rasts[3][2] = {
+		{ "PT",   "pathtracing_pel_rasterizer\n{\n\tsamples 1024\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n" },
+		{ "BDPT", "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 1024\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n" },
+		{ "VCM",  "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 1024\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled false\n" },
+	};
+	for( int r = 0; r < 3; ++r ) {
+		auto makeProgScene = [&]( bool progressive ) {
+			const std::string rasChunk = std::string( rasts[r][1] ) +
+				"\tprogressive_rendering " + ( progressive ? "TRUE" : "FALSE" ) + "\n}\n\n";
+			std::string text = RenderScene( emit, rasChunk );
+			const std::string from = "width 24\n\theight 24";
+			text.replace( text.find( from ), from.size(), "width 1\n\theight 1" );
+			const std::string vpFrom = "viewport_scale 4 4";
+			text.replace( text.find( vpFrom ), vpFrom.size(), "viewport_scale 0 0" );
+			return text;
+		};
+		const unsigned int seed = 4242u;
+		double meanProg = 0.0, meanSingle = 0.0;
+		std::vector<RISEColor> pxProg, pxSingle;
+		const bool okProg = RenderOnce( makeProgScene( true ), meanProg, false, &seed, &pxProg, &seed );
+		const bool okSingle = RenderOnce( makeProgScene( false ), meanSingle, false, &seed, &pxSingle, &seed );
+		double maxChromaSkew = 0.0;
+		for( const RISEColor& c : pxProg ) {
+			maxChromaSkew = std::max( maxChromaSkew, double( std::fabs( c.base.r - c.base.g ) ) );
+			maxChromaSkew = std::max( maxChromaSkew, double( std::fabs( c.base.r - c.base.b ) ) );
+		}
+		const double passParityErr = std::fabs( meanProg - meanSingle );
+		Check( okProg && okSingle && !pxProg.empty() && maxChromaSkew < 1e-13,
+			Fmt( "P: %s 32-pass progressive achromatic R/G/B chroma skew %.3e < 1e-13", rasts[r][0], maxChromaSkew ) );
+		Check( okProg && okSingle && passParityErr < 1e-12,
+			Fmt( "P: %s 32-pass progressive vs single-pass parity diff %.3e < 1e-12", rasts[r][0], passParityErr ) );
 	}
 }
 
@@ -1080,13 +1232,21 @@ int main( int argc, char** argv )
 		}
 	}
 	const std::string only = argc > argIdx ? argv[argIdx++] : "all";
-	if( argc > argIdx ) g_spp = std::atoi( argv[argIdx++] );
-	if( argc > argIdx ) { g_repeats = std::atoi( argv[argIdx++] ); g_trapRepeats = g_repeats; }
+	const bool hasExplicitSpp = argc > argIdx;
+	if( hasExplicitSpp ) g_spp = std::atoi( argv[argIdx++] );
+	const bool hasExplicitRepeats = argc > argIdx;
+	if( hasExplicitRepeats ) { g_repeats = std::atoi( argv[argIdx++] ); g_trapRepeats = g_repeats; }
+	const char* extEnv = std::getenv( "RISE_TEST_EXTENDED" );
+	const bool extended = ( only == "Q" ) || ( extEnv != nullptr && std::strcmp( extEnv, "1" ) == 0 );
+	const int qSpp = ( only == "Q" && hasExplicitSpp ) ? g_spp : ( extended ? 1024 : 256 );
+	const int qRepeats = ( only == "Q" && hasExplicitRepeats ) ? g_repeats : ( extended ? 64 : 16 );
 	std::cout << "LuminarySamplerAreaTest (DL-459 / DL-460)\n";
 	if( only == "all" || only == "A" ) TestAreas();
 	if( only == "all" || only == "B" ) TestUniformity();
 	if( only == "all" || only == "C" ) TestRenders( false );
 	if( only == "C_trap" ) TestRenders( true );
+	if( only == "all" || only == "P" ) TestProgressiveColorAndOrthoCamera();
+	if( only == "all" || only == "Q" ) TestHighPowerTrapezoidQuadrature( qSpp, qRepeats );
 	if( only == "all" || only == "D" ) TestMultiThreadDeterminism();
 	if( only == "all" || only == "F" ) TestFreshProcessDeterminism( argv[0] );
 	if( only.rfind( "F_child_", 0 ) == 0 ) FreshProcessChild( only.substr( 8 ) );

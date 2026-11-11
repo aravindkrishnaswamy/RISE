@@ -142,8 +142,10 @@ bool OrthographicCamera::GenerateRay( const RuntimeContext& rc, Ray& ray, const 
 	// world axis, not world Y).
 	const OrthonormalBasis3D& basis = frame.GetBasis();
 	auto originOffset = [&]( const Scalar screenX, const Scalar screenY ) -> Vector3 {
-		const Scalar x = (frame.GetWidth()/2-screenX)/Scalar(frame.GetWidth()) * viewportScale.x;
-		const Scalar y = (screenY - frame.GetHeight()/2)/Scalar(frame.GetHeight()) * viewportScale.y;
+		const Scalar halfW = Scalar(0.5) * Scalar(frame.GetWidth());
+		const Scalar halfH = Scalar(0.5) * Scalar(frame.GetHeight());
+		const Scalar x = (halfW - screenX) / Scalar(frame.GetWidth()) * viewportScale.x;
+		const Scalar y = (screenY - halfH) / Scalar(frame.GetHeight()) * viewportScale.y;
 		return basis.u() * x + basis.v() * y;
 	};
 

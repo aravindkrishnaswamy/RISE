@@ -328,7 +328,9 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 		filmSample.x * static_cast<Scalar>( 4294967296.0 ) );
 	const unsigned int fyBits = static_cast<unsigned int>(
 		filmSample.y * static_cast<Scalar>( 4294967296.0 ) );
-	RandomNumberGenerator localRNG( fxBits * 2654435761u + fyBits );
+	const unsigned int sampleSeed = fxBits * 2654435761u + fyBits;
+	RandomNumberGenerator localRNG( sampleSeed );
+	ScopedMediumTileSeed mediumSeed( sampleSeed );
 	RuntimeContext rc( localRNG, RuntimeContext::PASS_NORMAL, false );
 
 	Ray cameraRay;

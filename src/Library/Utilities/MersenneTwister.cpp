@@ -284,6 +284,7 @@ double MersenneTwister::genrand_res53(void)
 #include "RandomNumbers.h"
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 namespace RISE
 {
@@ -338,6 +339,99 @@ namespace RISE
 	{
 		static RandomNumberGenerator rng;
 		return rng;
+	}
+
+	namespace
+	{
+		struct MediumRngSlot
+		{
+			RandomNumberGenerator pel;
+			RandomNumberGenerator nm;
+			bool initPel;
+			bool initNM;
+
+			MediumRngSlot() : pel( 0u ), nm( 0u ), initPel( false ), initNM( false ) {}
+		};
+
+		struct MediumTileScopeState
+		{
+			unsigned int depth = 0u;
+			unsigned int seed = 0u;
+			MediumRngSlot topSlot;
+			std::vector<MediumRngSlot> nestedSlots;
+		};
+
+		thread_local MediumTileScopeState tl_mediumScope;
+
+		MediumRngSlot& CurrentMediumSlot( MediumTileScopeState& st )
+		{
+			if( st.depth <= 1u ) {
+				return st.topSlot;
+			}
+			const std::size_t idx = static_cast<std::size_t>( st.depth - 2u );
+			if( st.nestedSlots.size() <= idx ) {
+				st.nestedSlots.resize( idx + 1u );
+			}
+			return st.nestedSlots[idx];
+		}
+	}
+
+	ScopedMediumTileSeed::ScopedMediumTileSeed( unsigned int tileSeed, bool enable ) noexcept :
+		prevSeed( 0u ),
+		prevDepth( 0u ),
+		enabled( enable )
+	{
+		if( !enabled ) {
+			return;
+		}
+		MediumTileScopeState& st = tl_mediumScope;
+		prevSeed = st.seed;
+		prevDepth = st.depth;
+		st.depth = prevDepth + 1u;
+		st.seed = tileSeed;
+		MediumRngSlot& slot = CurrentMediumSlot( st );
+		slot.initPel = false;
+		slot.initNM = false;
+	}
+
+	ScopedMediumTileSeed::~ScopedMediumTileSeed() noexcept
+	{
+		if( !enabled ) {
+			return;
+		}
+		MediumTileScopeState& st = tl_mediumScope;
+		st.depth = prevDepth;
+		st.seed = prevSeed;
+	}
+
+	RandomNumberGenerator& ActiveMediumRNG()
+	{
+		MediumTileScopeState& st = tl_mediumScope;
+		if( st.depth > 0u ) {
+			MediumRngSlot& slot = CurrentMediumSlot( st );
+			if( !slot.initPel ) {
+				slot.pel.Reseed( DeriveSeed( st.seed, 0x4845544D45445045ULL ) );
+				slot.initPel = true;
+			}
+			return slot.pel;
+		}
+		static thread_local RandomNumberGenerator tl_fallbackPel( ThreadLocalSeed() );
+		return tl_fallbackPel;
+	}
+
+	RandomNumberGenerator& ActiveMediumRNG_NM()
+	{
+		MediumTileScopeState& st = tl_mediumScope;
+		if( st.depth > 0u ) {
+			MediumRngSlot& slot = CurrentMediumSlot( st );
+			if( !slot.initNM ) {
+				slot.nm.Reseed( DeriveSeed( st.seed, 0x4845544D45444E4DULL ) );
+				slot.initNM = true;
+			}
+			return slot.nm;
+		}
+		static thread_local RandomNumberGenerator tl_fallbackNM( ThreadLocalSeed() );
+		return tl_fallbackNM;
 	}
 }
 

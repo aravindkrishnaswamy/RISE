@@ -146,6 +146,33 @@ namespace RISE
 	};
 
 	extern RandomNumberGenerator& GlobalRNG();
+
+	//! DL-628: per-tile / per-row / per-sample medium RNG scope.  Binds
+	//! `ActiveMediumRNG()` and `ActiveMediumRNG_NM()` on the calling worker
+	//! thread to deterministic streams derived from `tileSeed`, so ratio
+	//! tracking in `HeterogeneousMedium::EvalTransmittance{,NM}` depends on
+	//! the tile/row/sample rather than which worker thread claimed it.
+	//! Outside any active scope (e.g. standalone unit tests calling medium
+	//! methods directly), `ActiveMediumRNG{,_NM}()` falls back to a
+	//! per-thread `ThreadLocalSeed()`-initialized generator with zero libc
+	//! draws.  Generators are reseeded lazily on first medium draw inside a
+	//! scope, so tiles without heterogeneous media pay only a POD save/restore.
+	class ScopedMediumTileSeed
+	{
+	public:
+		explicit ScopedMediumTileSeed( unsigned int tileSeed, bool enable = true ) noexcept;
+		~ScopedMediumTileSeed() noexcept;
+		ScopedMediumTileSeed( const ScopedMediumTileSeed& ) = delete;
+		ScopedMediumTileSeed& operator=( const ScopedMediumTileSeed& ) = delete;
+
+	private:
+		unsigned int prevSeed;
+		unsigned int prevDepth;
+		bool enabled;
+	};
+
+	extern RandomNumberGenerator& ActiveMediumRNG();
+	extern RandomNumberGenerator& ActiveMediumRNG_NM();
 }
 
 #endif

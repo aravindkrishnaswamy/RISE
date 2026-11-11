@@ -189,7 +189,9 @@ namespace RISE
 				// This thread will execute until we ask for another block and we're told there are no more
 				Rect rect(0,0,0,0);
 				while( GetNextBlock( rect ) ) {
-					random.Reseed( TileSeed( rect ) );
+					const unsigned int ts = TileSeed( rect );
+					random.Reseed( ts );
+					ScopedMediumTileSeed mediumSeed( ts );
 					// Operate on this block
 					rasterizer.SPRasterizeSingleBlock( rc, image, scene, rect, height );
 				}
@@ -252,7 +254,9 @@ namespace RISE
 				// This thread will execute until we ask for another block and we're told there are no more
 				Rect rect(0,0,0,0);
 				while( GetNextBlock( rect ) ) {
-					random.Reseed( TileSeed( rect ) );
+					const unsigned int ts = TileSeed( rect );
+					random.Reseed( ts );
+					ScopedMediumTileSeed mediumSeed( ts );
 					// Operate on this block
 					rasterizer.SPRasterizeSingleBlockOfAnimation( rc, image, scene, rect, height, animData );
 				}

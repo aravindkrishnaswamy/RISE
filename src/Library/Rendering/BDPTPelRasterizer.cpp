@@ -277,6 +277,10 @@ void BDPTPelRasterizer::IntegratePixel(
 	}
 
 	// In progressive mode, restore persistent state from the film.
+	// Accumulate ONLY this pass's RGB samples into `colAccrued` and add the
+	// pass delta once into `px.colorSum` (XYZPel) at pass end so prior-pass
+	// totals never undergo repeated XYZ->RGB->XYZ round-trips or intermediate
+	// gamut clipping across progressive passes.
 	RISEPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
 	Scalar alphas = 0;
@@ -288,7 +292,6 @@ void BDPTPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		colAccrued = px.colorSum;
 		weights = px.weightSum;
 		alphas = px.alphaSum;
 		wMean = px.wMean;
@@ -429,9 +432,11 @@ void BDPTPelRasterizer::IntegratePixel(
 	}
 
 	// Write back persistent state for progressive rendering
+	XYZPel totalXYZ( 0, 0, 0 );
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		px.colorSum = colAccrued;
+		px.colorSum = px.colorSum + XYZPel( colAccrued );
+		totalXYZ = px.colorSum;
 		px.weightSum = weights;
 		px.alphaSum = alphas;
 		px.wMean = wMean;
@@ -461,7 +466,12 @@ void BDPTPelRasterizer::IntegratePixel(
 		const Scalar t = Scalar(globalSampleIndex) / Scalar(targetSamples);
 		cret = RISEColor( RISEPel(t, t, t), 1.0 );
 	} else if( alphas > 0 ) {
-		colAccrued = colAccrued * (1.0 / alphas);
-		cret = RISEColor( colAccrued, alphas / weights );
+		if( pProgFilm ) {
+			const XYZPel avgXYZ = totalXYZ * (1.0 / alphas);
+			cret = RISEColor( RISEPel( avgXYZ ), alphas / weights );
+		} else {
+			colAccrued = colAccrued * (1.0 / alphas);
+			cret = RISEColor( colAccrued, alphas / weights );
+		}
 	}
 }

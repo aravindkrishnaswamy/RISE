@@ -277,7 +277,9 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 		// default (libc) seed on a worker's first row would move the libc
 		// stream by a scheduling-dependent count.
 		static thread_local RandomNumberGenerator tl_rng( 0u );
-		tl_rng.Reseed( DeriveSeed( rowSeedBase, y ) );
+		const unsigned int rowSeed = DeriveSeed( rowSeedBase, y );
+		tl_rng.Reseed( rowSeed );
+		ScopedMediumTileSeed mediumSeed( rowSeed );
 		RuntimeContext rc( tl_rng, RuntimeContext::PASS_NORMAL, false );
 		rc.aovPrefilterMode = prefilterMode;
 

@@ -90,7 +90,7 @@ is_extended_test() {
 has_extended_mode() {
 	case "$1" in
 		AgentSkillsTest|InteriorCandidateWalkCostTest|LightExitanceTest|\
-		PavilionColonnadeShowcaseTest|PolishedBRDFConsistencyTest|\
+		LuminarySamplerAreaTest|PavilionColonnadeShowcaseTest|PolishedBRDFConsistencyTest|\
 		SPFPdfConsistencyTest|ShelfBunnyShowcaseTest|TidalStonesShowcaseTest|\
 		TimeIndexedMotionBlurTest)
 			return 0

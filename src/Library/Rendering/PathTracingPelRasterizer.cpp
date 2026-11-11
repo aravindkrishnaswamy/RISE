@@ -350,7 +350,6 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		colAccrued = px.colorSum;
 		weights = px.weightSum;
 		alphas = px.alphaSum;
 		wMean = px.wMean;
@@ -489,9 +488,11 @@ void PathTracingPelRasterizer::IntegratePixel(
 		}
 	}
 
+	XYZPel totalXYZ( 0, 0, 0 );
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		px.colorSum = colAccrued;
+		px.colorSum = px.colorSum + XYZPel( colAccrued );
+		totalXYZ = px.colorSum;
 		px.weightSum = weights;
 		px.alphaSum = alphas;
 		px.wMean = wMean;
@@ -517,8 +518,13 @@ void PathTracingPelRasterizer::IntegratePixel(
 		const Scalar t = Scalar(globalSampleIndex) / Scalar(targetSamples);
 		cret = RISEColor( RISEPel(t, t, t), 1.0 );
 	} else if( alphas > 0 ) {
-		colAccrued = colAccrued * (1.0 / alphas);
-		cret = RISEColor( colAccrued, alphas / weights );
+		if( pProgFilm ) {
+			const XYZPel avgXYZ = totalXYZ * (1.0 / alphas);
+			cret = RISEColor( RISEPel( avgXYZ ), alphas / weights );
+		} else {
+			colAccrued = colAccrued * (1.0 / alphas);
+			cret = RISEColor( colAccrued, alphas / weights );
+		}
 	}
 
 	RISE_PROFILE_INC(nPixelsResolved);
