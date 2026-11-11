@@ -8926,14 +8926,20 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 					 output.candidate->faceAlpha,q0_,r0->projection.velocityMPerS[0],
 					 r0->projection.velocityMPerS[1],r0->projection.velocityMPerS[2],
 					 r0->physical->physicalGas,centralR0,zeroR0,fctParameters_[0]},allFaces_)))return false;
+				// r271 default candidate with the compact viscous stencil (opt-in RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1;
+				// docs/FIRE_SMOKE_FLAME_CORE_R271.md sections 29-32): carry momentum with the scalar
+				// transport's accepted (limited) gas mass flux, low + alpha*delta, instead of the centred
+				// rho_face*v + physical carrier, so momentum and the face density see the same continuity.
+				static const bool limitedCarrier=[](){const char* value=std::getenv("RISE_FIRE_LIMITED_MOMENTUM_CARRIER");
+					return value&&std::string(value)=="1";}();
 				if(!EvaluateFireProductionNonpressureMomentumRHSMetalResident(rhs,output.nonpressure,
 					rhsDiagnostics,error)||!Encode(command,fct_.compatibleStageRate,
-					{central,zero,
+					{limitedCarrier?output.physical->lowComposite:central,limitedCarrier?output.physical->advectiveDelta:zero,
 					 output.candidate->faceAlpha,output.projection.velocityMPerS[0],
 					 output.projection.velocityMPerS[1],output.projection.velocityMPerS[2],
 					 output.advectionRate,failure_,fctParameters_[stage]},allFaces_)||
 					(stage==1u&&r0&&!Encode(command,fct_.compatibleStageRate,
-					 {centralR0,zeroR0,
+					 {limitedCarrier?r0->physical->lowComposite:centralR0,limitedCarrier?r0->physical->advectiveDelta:zeroR0,
 					  output.candidate->faceAlpha,r0->projection.velocityMPerS[0],
 					  r0->projection.velocityMPerS[1],r0->projection.velocityMPerS[2],
 					  output.heunR0AdvectionRate,failure_,fctParameters_[stage]},allFaces_)))return false;

@@ -109,7 +109,7 @@ index 920e90ad7..b885f15a6 100644
  		double PilotCommandMaximumStepS(const DerivedV1&);
  		bool BuildMethaneV1(
 diff --git a/src/Library/Utilities/FireProductionAdvectionMac.mm b/src/Library/Utilities/FireProductionAdvectionMac.mm
-index a3f2a1999..5b7398c6e 100644
+index 86707bf9e..22fc2de3e 100644
 --- a/src/Library/Utilities/FireProductionAdvectionMac.mm
 +++ b/src/Library/Utilities/FireProductionAdvectionMac.mm
 @@ -647,13 +647,20 @@ bool PackMetalResidentTransport(
@@ -264,28 +264,6 @@ index a3f2a1999..5b7398c6e 100644
  						const auto& diagnostic=output.projectionDiagnostics;
  						std::fprintf(stderr,"PROJECTION_REFUSAL_TRACE stage=%u invocation=%u cycles=%u "
  							"pre_per_s=%.17g post_per_s=%.17g band_per_s=%.17g passed=%d\n",
-@@ -8926,14 +8994,19 @@ bool BuildStage(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> tempe
- 					 output.candidate->faceAlpha,q0_,r0->projection.velocityMPerS[0],
- 					 r0->projection.velocityMPerS[1],r0->projection.velocityMPerS[2],
- 					 r0->physical->physicalGas,centralR0,zeroR0,fctParameters_[0]},allFaces_)))return false;
-+				// r271 diagnostic (opt-in RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1): carry momentum with the scalar
-+				// transport's accepted (limited) gas mass flux, low + alpha*delta, instead of the centred
-+				// rho_face*v + physical carrier, so momentum and the face density see the same continuity.
-+				static const bool limitedCarrier=[](){const char* value=std::getenv("RISE_FIRE_LIMITED_MOMENTUM_CARRIER");
-+					return value&&std::string(value)=="1";}();
- 				if(!EvaluateFireProductionNonpressureMomentumRHSMetalResident(rhs,output.nonpressure,
- 					rhsDiagnostics,error)||!Encode(command,fct_.compatibleStageRate,
--					{central,zero,
-+					{limitedCarrier?output.physical->lowComposite:central,limitedCarrier?output.physical->advectiveDelta:zero,
- 					 output.candidate->faceAlpha,output.projection.velocityMPerS[0],
- 					 output.projection.velocityMPerS[1],output.projection.velocityMPerS[2],
- 					 output.advectionRate,failure_,fctParameters_[stage]},allFaces_)||
- 					(stage==1u&&r0&&!Encode(command,fct_.compatibleStageRate,
--					 {centralR0,zeroR0,
-+					 {limitedCarrier?r0->physical->lowComposite:centralR0,limitedCarrier?r0->physical->advectiveDelta:zeroR0,
- 					  output.candidate->faceAlpha,r0->projection.velocityMPerS[0],
- 					  r0->projection.velocityMPerS[1],r0->projection.velocityMPerS[2],
- 					  output.heunR0AdvectionRate,failure_,fctParameters_[stage]},allFaces_)))return false;
 diff --git a/src/Library/Utilities/FireProductionForce.h b/src/Library/Utilities/FireProductionForce.h
 index e1b0690c3..86a030f13 100644
 --- a/src/Library/Utilities/FireProductionForce.h

@@ -1360,9 +1360,10 @@ Centre excess T (K):
    - Done (§31): the limited carrier alone closes about 60% of the inert plume's 3 m mass-flux gap with an FDS-like spectrum; the first metre stays too steady.
    - Done (§31): the seed adds little on top of the carrier (3 m mass flux 0.764 against 0.725). Package = limited carrier alone.
    - Done (§32): reacting 4 s A/B. Far field within 15–27% of McCaffrey; first metre still 40–57% too hot and the flame 0.61 m against 0.43.
-   - **Owner decision:** (a) adopt the limited carrier with the compact stencil as the new default candidate (review `s29_optins.patch`), and (b) whether to run the reserve resolution check for the remaining near-field gap.
+   - **Adopted 2026-11-11 (owner):** the limited momentum carrier with the compact viscous stencil is the default candidate. The carrier is committed as an opt-in (`RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1` with `RISE_FIRE_COMPACT_VISCOUS_STENCIL=1`); the production default is unchanged until the candidate is promoted.
+   - **Approved 2026-11-11 (owner):** the reduced-domain resolution check of both codes for the remaining near-field gap.
    - In reserve: a reduced-domain resolution check of both codes, if the package falls short.
    - The limited momentum carrier (§29) stays the one identified numerics contributor: 2–3× base unsteadiness with an FDS-like spectrum aloft. Superbee on top adds only 6–9% at k7–k16.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
 3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
-4. The seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman, advective-CFL, Vreman-zone and limited-momentum-carrier opt-ins stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.
+4. The seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman, advective-CFL and Vreman-zone opt-ins, and the §29.9 diagnostic switches, stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.
