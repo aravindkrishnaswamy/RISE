@@ -596,7 +596,7 @@ int main()
 	//    then reaches the top interface with a popped stack and is
 	//    double-culled -- exactly the failure 24888c67 fixed, re-introduced one
 	//    layer down.  This is the shipped-scene case
-	//    scenes/Tests/Materials/composite_material.RISEscene `mat_double_composite`.
+	//    scenes/Tests/Legacy/composite_material.RISEscene `mat_double_composite`.
 	// ------------------------------------------------------------
 	std::cout << "\n6. Stack-sensitive bottom layer (the shared-IObject-key trap)\n";
 

@@ -4,11 +4,19 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <type_traits>
+#ifdef _WIN32
+#include <process.h>
+#ifndef getpid
+#define getpid _getpid
+#endif
+#else
 #include <unistd.h>
+#endif
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IObject.h"
@@ -24,7 +32,14 @@ template<class F> static void Seed(F f, IORStack& stack, const Point3& p, const 
  if constexpr(std::is_invocable_v<F,IORStack&,const Point3&,const IScene&,Scalar>) f(stack,p,scene,nm);
  else f(stack,p,scene);
 }
-static std::string Scratch() { return std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp"; }
+static std::string Scratch() {
+ std::error_code ec;
+ std::filesystem::path d = std::filesystem::temp_directory_path(ec);
+ if(ec || d.empty()) return ".";
+ std::string s = d.generic_string();
+ if(!s.empty() && s.back() == '/') s.pop_back();
+ return s;
+}
 static int checks=0,failures=0;
 static void Check(bool ok,const char* label) { checks++;if(!ok){failures++;std::printf("FAIL %s\n",label);} }
 static std::string Scene(bool rw,int ambient,int control) {

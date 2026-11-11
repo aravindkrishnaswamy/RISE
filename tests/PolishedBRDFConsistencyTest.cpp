@@ -92,7 +92,14 @@
 #include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/DataDrivenMaterial.h"
 #include <fstream>
+#ifdef _WIN32
+#include <process.h>
+#ifndef getpid
+#define getpid _getpid
+#endif
+#else
 #include <unistd.h>
+#endif
 
 #include "TestStubObject.h"
 #include "DataDrivenTestTables.h"

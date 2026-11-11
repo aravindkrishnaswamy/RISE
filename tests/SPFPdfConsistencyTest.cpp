@@ -54,7 +54,14 @@
 #include "../src/Library/Materials/DataDrivenMaterial.h"
 #include "DataDrivenTestTables.h"
 #include <cstdio>
+#ifdef _WIN32
+#include <process.h>
+#ifndef getpid
+#define getpid _getpid
+#endif
+#else
 #include <unistd.h>
+#endif
 #include "../src/Library/Materials/OrenNayarSPF.h"
 #include "../src/Library/Materials/IsotropicPhongSPF.h"
 #include "../src/Library/Materials/CookTorranceSPF.h"

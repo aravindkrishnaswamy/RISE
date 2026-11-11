@@ -1021,7 +1021,7 @@ namespace
 		// but Phase 4 does not yet attempt to layer them on top of the
 		// PBR / dielectric / unlit base.  Reason: CompositeMaterial's
 		// random walk is currently designed around dielectric-on-Lambertian
-		// (the working scenes/Tests/Materials/composite_material.RISEscene
+		// (the working scenes/Tests/Legacy/composite_material.RISEscene
 		// pattern) and does not handle a GGX or sheen top over a complex
 		// 3-lobe PBR base — the resulting walk drops most diffuse
 		// contributions, producing nearly-black surfaces.  Phase 5 will

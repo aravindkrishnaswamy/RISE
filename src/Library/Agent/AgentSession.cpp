@@ -3821,10 +3821,10 @@ namespace RISE
 			//!       material out rather than being guessed at.
 			//!   (c) at least one `standard_object` binds it whose geometry chunk
 			//!       is NOT in the curv-barren family (CurvBarrenGeometryKind_).
-			//!       `curv` reads a genuine 0 on planars and reads 0 as ABSENCE on
-			//!       the patch stubs, so on a document whose every bound object is
-			//!       one of those the whole composition would collapse to the base
-			//!       colour -- a silent no-op dressed as a success.
+			//!       `curv` reads a genuine 0 on planars, so on a document whose
+			//!       every bound object is planar the whole composition would
+			//!       collapse to the base colour -- a silent no-op dressed as a
+			//!       success.
 			//!   (d) nothing it already references reads `curv` / `occlusion` /
 			//!       `thickness`.  A material that already keys off the geometry
 			//!       signals has been worn by hand (or by a previous call), and
@@ -3863,11 +3863,7 @@ namespace RISE
 			//!
 			//! The set comes from the `curv` descriptor's own quality paragraph
 			//! (ChunkParserRegistry.cpp's expression_painter / scalar_painter
-			//! text, audited 2026-08-30) plus the geometry sources it describes:
-			//!   - `bezierpatch_geometry` / `bilinearpatch_geometry` write
-			//!     dndu = dndv = 0 as STUBS (BezierPatchGeometry.cpp:409,
-			//!     BilinearPatchGeometry.cpp:404) -- 0 as ABSENCE, the one item
-			//!     design sec 13 Phase 4 names as an outright falsehood to fix.
+			//! text) plus the geometry sources it describes:
 			//!   - `infiniteplane_geometry`, `circulardisk_geometry`,
 			//!     `box_geometry`, `clippedplane_geometry` are genuinely PLANAR:
 			//!     0 is the true answer everywhere a ray can land (a box's edges
@@ -3876,21 +3872,21 @@ namespace RISE
 			//!   - `cartesian_disk_geometry` is a flat tessellated sheet: a
 			//!     triangle mesh, so occlusion() bakes on it, but its normal field
 			//!     is constant and `curv` is 0 across every face.
-			//! Everything else -- the analytic curved primitives, the SDF family,
-			//! every mesh family, and the generated forms (sweep/lathe/skin/
-			//! displaced/hair/path_instances) -- carries a real normal field.
+			//! Everything else -- the analytic curved primitives, `bezierpatch_geometry` /
+			//! `bilinearpatch_geometry` (exact analytic Weingarten curvature since DL-20),
+			//! the SDF family, every mesh family, and the generated forms (sweep/lathe/
+			//! skin/displaced/hair/path_instances) -- carries a real normal field.
 			//! NOT barren, but occlusion-neutral: `rawmesh_geometry` (the
-			//! non-indexed legacy loader) has real derivatives, so `curv` reads
-			//! correctly and this predicate does not refuse it -- but it
-			//! publishes no occlusion signal provider, so the composition's
+			//! non-indexed legacy loader) and `bezierpatch_geometry` /
+			//! `bilinearpatch_geometry` have real derivatives, so `curv` reads
+			//! correctly and this predicate does not refuse them -- but they
+			//! publish no occlusion signal provider, so the composition's
 			//! cavity-deepening `occlusion()` term reads neutral there.  The
 			//! curv half of the wear composition still works; only the cavity
 			//! half is inert.
 			bool CurvBarrenGeometryKind_( const std::string& geometryKind )
 			{
-				return geometryKind == "bezierpatch_geometry"   ||
-				       geometryKind == "bilinearpatch_geometry" ||
-				       geometryKind == "infiniteplane_geometry" ||
+				return geometryKind == "infiniteplane_geometry" ||
 				       geometryKind == "circulardisk_geometry"  ||
 				       geometryKind == "cartesian_disk_geometry" ||
 				       geometryKind == "clippedplane_geometry"  ||
@@ -6438,7 +6434,7 @@ namespace RISE
 				//! The BARREN half, added by Phase 3 of the cross-object arc
 				//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6): every material
 				//! that clears clauses (a), (b) and (d) but fails (c) BECAUSE
-				//! every object bound to it sits on planar or patch geometry.
+				//! every object bound to it sits on planar geometry.
 				//! These are exactly the two flagship contact receivers -- a
 				//! plank on a plane, a flange on a box -- so they are kept
 				//! rather than dropped, in a SEPARATE list that ONLY an
@@ -8445,7 +8441,7 @@ namespace RISE
 
 						if( curvKind.empty() ) {
 							c.wearDeclineReasons[pm.name] = sawBarrenOnly
-								? std::string( "every object bound to it sits on planar or patch geometry, where `curv` "
+								? std::string( "every object bound to it sits on planar geometry, where `curv` "
 								               "is 0 everywhere a ray can land -- a curvature wear mask would render "
 								               "exactly the flat colour that is there now" )
 								: std::string( "no `standard_object` binds it to a geometry this scan can identify" );
@@ -40503,7 +40499,7 @@ namespace RISE
 					if( m.name == material ) { pick = &m; break; }
 				// THE BARREN LIST IS CONSULTED BEFORE THE DECLINE REASON, and
 				// the order is the whole point: `wearDeclineReasons` already
-				// carries a "planar or patch geometry" entry for exactly these
+				// carries a "planar geometry" entry for exactly these
 				// materials, so a lookup that ran first would turn
 				// `add_wear { material: "bench_top", contact_radius: 0.002 }`
 				// away with a message about `curv` -- for a call that is not
@@ -40568,7 +40564,7 @@ namespace RISE
 						"on geometry that curves -- it needs a material whose colour slot is bound to a "
 						"uniformcolor_painter (not already varying, not a blackbody/spectral painter) and "
 						"whose objects sit on something with a real normal field (an sdf_geometry, a mesh, a "
-						"sphere/ellipsoid/torus/cylinder -- NOT a plane, disk, box or patch, where `curv` is "
+						"bezier/bilinear patch, or a sphere/ellipsoid/torus/cylinder -- NOT a plane, disk or box, where `curv` is "
 						"0 everywhere). Every material here is either already worn, already varying, "
 						"unreadable, or planar-only. Author such a material first, or bind an "
 						"`expression_painter` reading `curv` by hand (read_skill "

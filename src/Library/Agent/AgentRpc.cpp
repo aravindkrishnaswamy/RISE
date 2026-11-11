@@ -3213,9 +3213,9 @@ namespace RISE
 
 				//--------------------------------------------------------------
 				// populate_scene {notes?}
-				//   -> {ok, provider, model, chunksExtracted,
-				//       created:[{name,geometry,material}],
-				//       rejected:[{name,kind,reason}], chunkResults, retryRan,
+				//   -> {ok, capabilityRefusal?, provider, model, chunksExtracted,
+				//       created:[{name,kind?,geometry?,material?,source?,objects?}],
+				//       rejected:[{name?,kind?,reason}], chunkResults, retryRan,
 				//       retrySucceeded, objectsBefore, objectsAfter, message}
 				//   Arc 82 (2026-08-12), the clean-room POPULATION pass.
 				//   MUTATING -- it inserts the standard_object chunks its pass

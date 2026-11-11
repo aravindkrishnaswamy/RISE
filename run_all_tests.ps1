@@ -36,7 +36,12 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $origRiseTestExtended = $env:RISE_TEST_EXTENDED
+$origTmpDir = $env:TMPDIR
 try {
+if ([string]::IsNullOrEmpty($env:TMPDIR) -and -not [string]::IsNullOrEmpty($env:TEMP)) {
+    # Ensure tests that read std::getenv("TMPDIR") resolve to Windows TEMP rather than "/tmp".
+    $env:TMPDIR = $env:TEMP
+}
 
 $Tier = $Tier.ToLowerInvariant()
 switch ($Tier) {
@@ -371,4 +376,5 @@ exit 0
 
 } finally {
     $env:RISE_TEST_EXTENDED = $origRiseTestExtended
+    $env:TMPDIR = $origTmpDir
 }

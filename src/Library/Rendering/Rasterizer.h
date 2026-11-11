@@ -153,30 +153,21 @@ namespace RISE
 			void ForTest_SetThreadCountOverride( const int count ) {
 				mForTestThreadCountOverride = count;
 			}
-			virtual void AddRasterizerOutput( IRasterizerOutput* ro );
+			void AddRasterizerOutput( IRasterizerOutput* ro ) override;
 			//! Removes exactly one matching output, if present.  This is an
 			//! implementation-level companion to the legacy all-or-nothing
 			//! FreeRasterizerOutputs API, used by transactional callers that must
 			//! roll back one attachment without disturbing outputs added later by
 			//! another owner.
 			virtual void RemoveRasterizerOutput( IRasterizerOutput* ro );
-			virtual void FreeRasterizerOutputs( );
-			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const;
-			virtual void SetProgressCallback( IProgressCallback* pFunc );
+			void FreeRasterizerOutputs( ) override;
+			void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const override;
+			void SetProgressCallback( IProgressCallback* pFunc ) override;
 
 			// L6a — IRasterizer override.  Returns the FrameStore
 			// passed at construction time (may be null until Job
 			// migrates to allocate one).
-			// `virtual` is explicitly written here to match the
-			// style of every other IRasterizer override in this
-			// section (AddRasterizerOutput, SetProgressCallback,
-			// etc. all spell out `virtual`).  `override` is
-			// intentionally OMITTED because the surrounding
-			// overrides aren't marked `override`; adding it here
-			// trips `-Winconsistent-missing-override` against the
-			// pre-existing methods.  See user memory:
-			// `feedback_override_keyword_in_job.md`.
-			virtual FrameStore* GetFrameStore() const
+			FrameStore* GetFrameStore() const override
 				{ return mFrameStore; }
 
 			// L6b — Late-binding FrameStore setter.  Used by `Job` to
@@ -247,6 +238,11 @@ namespace RISE
 			bool GetDenoisingEnabled() const { return bDenoisingEnabled; }
 			void SetDenoisingQuality( OidnQuality quality ) { mDenoisingQuality = quality; }
 			void SetDenoisingDevice( OidnDevice device ) { mDenoisingDevice = device; }
+			bool SetDenoisingOverride( bool enabled ) override { bDenoisingEnabled = enabled; return true; }
+			int GetDenoisingOverride() const override { return bDenoisingEnabled ? 1 : 0; }
+#else
+			bool SetDenoisingOverride( bool enabled ) override { return !enabled; }
+			int GetDenoisingOverride() const override { return 0; }
 #endif
 			//! Retained without OIDN because agent albedo/normal capture uses
 			//! the same fast-versus-accurate surface semantics.

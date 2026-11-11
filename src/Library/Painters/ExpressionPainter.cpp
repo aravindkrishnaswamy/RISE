@@ -40,16 +40,13 @@ namespace
 	//!      dndu/dndv would mean anything, but whose div n_hat is a few field
 	//!      evaluations away and is genuinely smooth and resolution-free;
 	//!   2. otherwise the shape operator over the record's derivatives --
-	//!      triangle meshes and (since Phase 1) the analytic curved
-	//!      primitives, which carry exact closed-form Weingarten maps;
+	//!      triangle meshes, analytic curved primitives, and bezier/bilinear
+	//!      patches, which carry exact closed-form Weingarten maps;
 	//!   3. otherwise 0 -- the `fw` convention: a valid-flag gate with a
 	//!      documented zero fallback, not a fabricated value.  Planar
-	//!      primitives read 0 because they ARE flat; the patch stubs read 0
-	//!      because they report nothing (they are genuinely curved and
-	//!      deliberately kept on the honest-absence path until their
-	//!      derivative stubs are fixed -- design doc 14 item 2).  An
-	//!      expression cannot tell those two zeros apart, which is the same
-	//!      bargain `fw` already makes.
+	//!      primitives read 0 because they ARE flat.  An expression cannot
+	//!      tell flat from absent curvature, which is the same bargain `fw`
+	//!      already makes.
 	//!
 	//! `curv` is the dimensionless one: H x the hit geometry's WORLD
 	//! bounding-box diagonal (`scaleHint`, already folded through the

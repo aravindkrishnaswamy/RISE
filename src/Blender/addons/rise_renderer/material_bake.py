@@ -575,8 +575,8 @@ def bake_material_to_images(
     and drops transmission, sheen, coat, emission, subsurface and alpha lobes.
     Roughness defaults to0.5 if absent; normal is optional. The output PNGs
     are colour-space-tagged appropriately when read
-    back via the bridge (sRGB for diffuse, Linear for roughness,
-    ROMM-Linear for normal).
+    back via the bridge (sRGB for diffuse, Linear for roughness and
+    normal).
     """
 
     if obj is None or material is None or material.node_tree is None:

@@ -85,7 +85,16 @@
 #include "../src/Library/SceneEditor/CameraIntrospection.h"   // doc 91 review: bit-exact camera capture for the restore test
 #include "../src/Library/Interfaces/ICamera.h"
 #include "../src/Library/Interfaces/ICameraManager.h"
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#else
 #include <sys/resource.h>   // getrusage: peak RSS of the bounded-gather test
+#endif
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IFilm.h"
@@ -6637,12 +6646,19 @@ static void RunZoomOverheadUpFallbackTest()
 //----------------------------------------------------------------------
 static long PeakRssKB()
 {
+#ifdef _WIN32
+	PROCESS_MEMORY_COUNTERS pmc = {};
+	pmc.cb = sizeof( pmc );
+	if( !GetProcessMemoryInfo( GetCurrentProcess(), &pmc, sizeof( pmc ) ) ) return -1;
+	return static_cast<long>( pmc.PeakWorkingSetSize / 1024 );
+#else
 	struct rusage ru;
 	if( getrusage( RUSAGE_SELF, &ru ) != 0 ) return -1;
 #if defined(__APPLE__)
 	return (long)( ru.ru_maxrss / 1024 );   // bytes on macOS
 #else
 	return (long)ru.ru_maxrss;              // kilobytes on Linux
+#endif
 #endif
 }
 

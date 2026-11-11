@@ -198,6 +198,21 @@ namespace RISE
 		//! query those UIs consult.  Defaulted + declared last ->
 		//! ABI-stable (same convention as the overrides above).
 		virtual bool HonorsRegion() const { return true; }
+
+		//! Overrides OIDN post-process denoising on an already-constructed
+		//! rasterizer without rebuilding it (preserving attached
+		//! IRasterizerOutput sinks and FrameStore bindings — used by the
+		//! `--denoise` / `--no-denoise` CLI flags).  Returns true if the
+		//! requested state is honored; returns false when `enabled == true`
+		//! on a build without `RISE_ENABLE_OIDN` or on a custom rasterizer
+		//! that does not implement OIDN denoising.  Defaulted + declared
+		//! last -> ABI-stable.
+		virtual bool SetDenoisingOverride( bool enabled ) { (void)enabled; return false; }
+
+		//! Queries the effective OIDN denoising state: 1 = enabled,
+		//! 0 = disabled, -1 = unsupported / unknown.  Defaulted + declared
+		//! last -> ABI-stable.
+		virtual int GetDenoisingOverride() const { return -1; }
 	};
 }
 

@@ -754,6 +754,7 @@ int main()
 	// omission the sweep found seven times; a per-chunk audit stays a
 	// review-time step (docs/skills/bdpt-vcm-mis-balance.md step 0).
 	std::vector<std::string> undenoised;
+	std::vector<std::string> unguardedPosixIncludes;
 	for( const auto& entry : fs::directory_iterator( testsDir ) ) {
 		if( !entry.is_regular_file() ) { continue; }
 		const fs::path& f = entry.path();
@@ -812,9 +813,112 @@ int main()
 				}
 			}
 		}
+
+		// (3) DL-632: build/cmake/rise-tests/CMakeLists.txt compiles every
+		// tests/*.cpp on Windows/MSVC.  Verify no POSIX-only header
+		// (<unistd.h>, <sys/wait.h>, <sys/resource.h>, <dlfcn.h>, <pthread.h>)
+		// is active when _WIN32 is defined.
+		{
+			auto evalWin32Cond = []( const std::string& expr ) -> bool {
+				auto findWinToken = []( const std::string& s, const char* tok, bool& outNegated ) -> bool {
+					const std::size_t tokLen = std::strlen( tok );
+					std::size_t pos = 0;
+					while( ( pos = s.find( tok, pos ) ) != std::string::npos ) {
+						const bool leftBoundary = ( pos == 0 ) ||
+							( !std::isalnum( static_cast<unsigned char>( s[pos - 1] ) ) && s[pos - 1] != '_' );
+						const bool rightBoundary = ( pos + tokLen >= s.size() ) ||
+							( !std::isalnum( static_cast<unsigned char>( s[pos + tokLen] ) ) && s[pos + tokLen] != '_' );
+						if( leftBoundary && rightBoundary ) {
+							std::size_t k = pos;
+							while( k > 0 && ( s[k-1] == ' ' || s[k-1] == '\t' || s[k-1] == '(' ) ) --k;
+							if( k >= 7 && s.compare( k - 7, 7, "defined" ) == 0 ) {
+								k -= 7;
+								while( k > 0 && ( s[k-1] == ' ' || s[k-1] == '\t' || s[k-1] == '(' ) ) --k;
+							}
+							outNegated = ( k > 0 && s[k-1] == '!' );
+							return true;
+						}
+						pos += tokLen;
+					}
+					return false;
+				};
+				bool neg = false;
+				if( findWinToken( expr, "_WIN32", neg ) ) return !neg;
+				if( findWinToken( expr, "WIN32", neg ) )  return !neg;
+				if( findWinToken( expr, "_MSC_VER", neg ) ) return !neg;
+				if( expr.find( "__APPLE__" ) != std::string::npos ||
+				    expr.find( "__linux__" ) != std::string::npos ||
+				    expr.find( "__unix__" ) != std::string::npos )
+					return false;
+				return true; // unknown guard (e.g. RISE_ENABLE_OPENPGL) stays active on MSVC too
+			};
+			struct Frame { bool parentActive; bool taken; bool active; };
+			std::vector<Frame> stack;
+			const std::string stripped = StripCommentsPreservingLayout( src );
+			std::istringstream ls( stripped );
+			std::string line;
+			int lineNo = 0;
+			while( std::getline( ls, line ) ) {
+				++lineNo;
+				std::size_t i = 0;
+				while( i < line.size() && ( line[i] == ' ' || line[i] == '\t' ) ) ++i;
+				if( i >= line.size() || line[i] != '#' ) continue;
+				++i;
+				while( i < line.size() && ( line[i] == ' ' || line[i] == '\t' ) ) ++i;
+				std::size_t kwEnd = i;
+				while( kwEnd < line.size() && std::isalpha( static_cast<unsigned char>( line[kwEnd] ) ) ) ++kwEnd;
+				const std::string kw = line.substr( i, kwEnd - i );
+				const std::string rest = line.substr( kwEnd );
+				const bool curActive = stack.empty() ? true : stack.back().active;
+				if( kw == "ifdef" ) {
+					const bool c = ( rest.find( "_WIN32" ) != std::string::npos ||
+					                 rest.find( "WIN32" ) != std::string::npos ||
+					                 rest.find( "_MSC_VER" ) != std::string::npos ||
+					                 ( rest.find( "__APPLE__" ) == std::string::npos &&
+					                   rest.find( "__linux__" ) == std::string::npos &&
+					                   rest.find( "__unix__" ) == std::string::npos ) );
+					stack.push_back( { curActive, c, curActive && c } );
+				} else if( kw == "ifndef" ) {
+					const bool c = !( rest.find( "_WIN32" ) != std::string::npos ||
+					                  rest.find( "WIN32" ) != std::string::npos ||
+					                  rest.find( "_MSC_VER" ) != std::string::npos );
+					stack.push_back( { curActive, c, curActive && c } );
+				} else if( kw == "if" ) {
+					const bool c = evalWin32Cond( rest );
+					stack.push_back( { curActive, c, curActive && c } );
+				} else if( kw == "elif" && !stack.empty() ) {
+					Frame& top = stack.back();
+					if( !top.parentActive || top.taken ) top.active = false;
+					else { const bool c = evalWin32Cond( rest ); top.taken = c; top.active = c; }
+				} else if( kw == "else" && !stack.empty() ) {
+					Frame& top = stack.back();
+					top.active = top.parentActive && !top.taken;
+					top.taken = true;
+				} else if( kw == "endif" && !stack.empty() ) {
+					stack.pop_back();
+				} else if( kw == "include" && curActive ) {
+					static const char* const kPosixHeaders[] = {
+						"<unistd.h>", "<sys/wait.h>", "<sys/resource.h>", "<dlfcn.h>", "<pthread.h>"
+					};
+					for( const char* ph : kPosixHeaders ) {
+						if( rest.find( ph ) != std::string::npos ) {
+							unguardedPosixIncludes.push_back(
+								f.filename().string() + ":" + std::to_string( lineNo ) + " " + ph );
+						}
+					}
+				}
+			}
+		}
 	}
 
 	Check( scanned > 0, "scanned at least one test file" );
+
+	for( const std::string& o : unguardedPosixIncludes ) {
+		std::cout << "  DL-632 unguarded POSIX header in tests/ (_WIN32 active): " << o << std::endl;
+	}
+	Check( unguardedPosixIncludes.empty(),
+	       "DL-632: no unguarded POSIX-only headers (<unistd.h>, <sys/wait.h>, "
+	       "<sys/resource.h>, <dlfcn.h>, <pthread.h>) active under _WIN32 in tests/" );
 
 	for( const std::string& o : offenders ) {
 		std::cout << "  FORBIDDEN foldable NaN/Inf sentinel: " << o << std::endl;

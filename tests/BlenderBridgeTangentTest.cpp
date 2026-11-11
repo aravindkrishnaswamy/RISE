@@ -1,9 +1,23 @@
 // DL213 missing Blender mesh tangent transport: actual image-space highlight axis.
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <cstdio>
+#ifdef _WIN32
+#include <process.h>
+inline int RiseTestPid() { return _getpid(); }
+#else
 #include <unistd.h>
+inline int RiseTestPid() { return static_cast<int>( ::getpid() ); }
+#endif
+static std::string TempPrefix( const char* stem )
+{
+	std::error_code ec;
+	std::filesystem::path dir = std::filesystem::temp_directory_path( ec );
+	if( ec || dir.empty() ) dir = ".";
+	return ( dir / stem ).generic_string();
+}
 #include "../src/Library/Interfaces/IGeometryManager.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/IObjectPriv.h"
@@ -64,7 +78,7 @@ bool Render(int producer, std::vector<RISE::RISEColor>& pixels) {
    m->DoneIndexedTriangles(); ok=j->AddPrebuiltTriangleMeshGeometry("quad",m); }
   RISE::safe_release(mesh);
  } else if(producer==3 || producer==4) {
-  const std::string stem=std::string("/tmp/rise-dl213-gltf-")+std::to_string(getpid())+"-"+std::to_string(producer);
+  const std::string stem=TempPrefix("rise-dl213-gltf-")+std::to_string(RiseTestPid())+"-"+std::to_string(producer);
   float ns[]={0,0,1,0,0,1,0,0,1,0,0,1},ts[]={0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1};
   const float* selectedUV=producer==3?uv:rotatedUV;float uv2[8];for(int k=0;k<4;++k){uv2[k*2]=selectedUV[k*3];uv2[k*2+1]=selectedUV[k*3+1];}
   {std::ofstream file(stem+".bin",std::ios::binary);file.write(reinterpret_cast<const char*>(verts),48);file.write(reinterpret_cast<const char*>(ns),48);file.write(reinterpret_cast<const char*>(uv2),32);file.write(reinterpret_cast<const char*>(ts),64);file.write(reinterpret_cast<const char*>(idx),24);}
@@ -116,7 +130,7 @@ bool WiringChecks() {
  check(!job->AddIndexedTriangleMeshGeometryWithTangents("badcount",vertices,normals,uv,index,index,ni,3,1,3,1,true,false,tangents,2),"partial tangent payload rejected");
  float bad[]={0,0,0,1,0,1,0,1,0,1,0,1};
  check(!job->AddIndexedTriangleMeshGeometryWithTangents("zero",vertices,normals,uv,index,index,ni,3,1,3,1,true,false,bad,3),"zero authored direction rejected");
- const std::string path=std::string("/tmp/rise-dl213-native-")+std::to_string(getpid())+".RISEscene";
+ const std::string path=TempPrefix("rise-dl213-native-")+std::to_string(RiseTestPid())+".RISEscene";
  {std::ofstream file(path);file<<"RISE ASCII SCENE 7\nindexedmesh_geometry\n{\nname native_tangent\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nnormal 0 0 1\nnormal 0 0 1\nnormal 0 0 1\nuv 0 0\nuv 1 0\nuv 0 1\ntangent 0 1 0 -1\ntangent 0 1 0 -1\ntangent 0 1 0 -1\ntriangle 0 1 2\n}\n";}
  check(job->LoadAsciiSceneViaCst(path.c_str()),"native CST chunk tangent producer derives");std::remove(path.c_str());
  auto* native=job->GetGeometries()->GetItem("native_tangent");check(native!=nullptr,"native geometry registered");

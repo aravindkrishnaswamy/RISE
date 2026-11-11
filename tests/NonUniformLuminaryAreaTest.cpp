@@ -44,8 +44,15 @@
 #include <fstream>
 #include <vector>
 #include <cmath>
+#include <filesystem>
 #include <string>
+#ifdef _WIN32
+#include <process.h>
+inline int RiseTestPid() { return _getpid(); }
+#else
 #include <unistd.h>
+inline int RiseTestPid() { return static_cast<int>( ::getpid() ); }
+#endif
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -98,7 +105,10 @@ static std::string Fmt( const char* f, ... )
 
 static std::string TempPath( const char* tag )
 {
-	return Fmt( "/tmp/dl448_%s_%d.RISEscene", tag, static_cast<int>( ::getpid() ) );
+	std::error_code ec;
+	std::filesystem::path dir = std::filesystem::temp_directory_path( ec );
+	if( ec || dir.empty() ) dir = ".";
+	return ( dir / Fmt( "dl448_%s_%d.RISEscene", tag, RiseTestPid() ) ).generic_string();
 }
 
 //////////////////////////////////////////////////////////////////////

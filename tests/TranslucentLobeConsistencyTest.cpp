@@ -867,7 +867,7 @@ static void GateKrayNM( const IObject* obj, const IObject* other )
 //
 //  WHAT CHANGED.  Pre-DL-24 `CompositeMaterial::GetBSDF()` presented ONE
 //  layer's BSDF (top, else bottom), so `composite { top = translucent }`
-//  (`mat_wax_gold` in scenes/Tests/Materials/composite_material.RISEscene)
+//  (`mat_wax_gold` in scenes/Tests/Legacy/composite_material.RISEscene)
 //  presented a transmitting `TranslucentBSDF` and this gate required the
 //  flag TRUE.  That BSDF priced a transmission the composite's own walk
 //  never produces over an opaque bottom.  Since DL-24 the composite

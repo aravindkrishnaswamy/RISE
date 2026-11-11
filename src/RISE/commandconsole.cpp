@@ -47,6 +47,7 @@
 #include "../Library/Parsers/StdOutProgress.h"
 #include "../Library/Rendering/ViewportFrameStore.h"
 #include "../Library/Rendering/FrameStore.h"
+#include "CliOptions.h"
 
 //
 // Windows version has a windows window that shows the render progress
@@ -770,10 +771,10 @@ int main( int argc, char** argv )
 	// Validation: each numeric flag's value must parse as a strictly
 	// positive number.  `--width foo` (non-numeric) and `--width -5`
 	// (negative) fail loudly rather than silently consuming the next
-	// argv as a malformed override.
-	int  cliFilmWidth   = 0;	// 0 = no override
-	int  cliFilmHeight  = 0;
-	double cliFilmPixelAR = 0.0;
+	// argv as a malformed override.  `--denoise` / `--no-denoise` and
+	// `--camera <name>` (or `--camera=<name>`) are parsed and applied
+	// post-load via `RISE::Cli::PostLoadCliOverrides` (CliOptions.h).
+	RISE::Cli::PostLoadCliOverrides cliOverrides;
 	bool cliArgError = false;
 	bool cliAgentStdio = false;	// Facet 5 slice 0c: JSON-RPC stdio transport
 	bool cliMcp = false;	// Secure-MCP slice 1: speak MCP (not raw JSON-RPC) over that same transport
@@ -845,32 +846,14 @@ int main( int argc, char** argv )
 	const char* sceneArg = 0;
 	for( int ai = 1; ai < argc; ai++ ) {
 		const char* a = argv[ai];
-		auto consumeIntFlag = [&]( const char* name, int& dst ) -> bool {
-			if( ai+1 >= argc ) {
-				std::cerr << "ERROR: " << name << " requires a positive integer; got end-of-args.\n";
-				cliArgError = true; return false;
-			}
-			char* endp = nullptr;
-			const long v = strtol( argv[ai+1], &endp, 10 );
-			if( endp == argv[ai+1] || *endp != '\0' || v <= 0 ) {
-				std::cerr << "ERROR: " << name << " requires a positive integer; got `" << argv[ai+1] << "`.\n";
-				cliArgError = true; return false;
-			}
-			dst = (int)v; ++ai; return true;
-		};
-		auto consumeDoubleFlag = [&]( const char* name, double& dst ) -> bool {
-			if( ai+1 >= argc ) {
-				std::cerr << "ERROR: " << name << " requires a positive float; got end-of-args.\n";
-				cliArgError = true; return false;
-			}
-			char* endp = nullptr;
-			const double v = strtod( argv[ai+1], &endp );
-			if( endp == argv[ai+1] || *endp != '\0' || v <= 0.0 ) {
-				std::cerr << "ERROR: " << name << " requires a positive float; got `" << argv[ai+1] << "`.\n";
-				cliArgError = true; return false;
-			}
-			dst = v; ++ai; return true;
-		};
+		const RISE::Cli::FlagMatch postLoadMatch =
+			RISE::Cli::TryConsumePostLoadCliFlag( argc, argv, ai, cliOverrides, std::cerr );
+		if( postLoadMatch == RISE::Cli::FlagMatch::MatchedOk ) {
+			continue;
+		} else if( postLoadMatch == RISE::Cli::FlagMatch::MatchedError ) {
+			cliArgError = true;
+			continue;
+		}
 
 		if( strcmp(a, "--agent-stdio") == 0 ) {
 			cliAgentStdio = true;
@@ -996,12 +979,6 @@ int main( int argc, char** argv )
 			std::cerr << "ERROR: --agent-autonomy requires the form `--agent-autonomy=read`, "
 			             "`--agent-autonomy=propose`, or `--agent-autonomy=commit`; got `" << a << "`.\n";
 			cliArgError = true;
-		} else if( strcmp(a, "--width") == 0 ) {
-			consumeIntFlag( "--width", cliFilmWidth );
-		} else if( strcmp(a, "--height") == 0 ) {
-			consumeIntFlag( "--height", cliFilmHeight );
-		} else if( strcmp(a, "--pixel-ar") == 0 ) {
-			consumeDoubleFlag( "--pixel-ar", cliFilmPixelAR );
 		} else if( a[0] != '-' && !sceneArg ) {
 			sceneArg = a;	// First non-flag positional = scene file
 		}
@@ -1082,22 +1059,25 @@ int main( int argc, char** argv )
 		return rc;
 	}
 
-	const bool haveCliFilmOverride =
-		( cliFilmWidth > 0 ) || ( cliFilmHeight > 0 ) || ( cliFilmPixelAR > 0.0 );
+	const bool havePostLoadOverride = cliOverrides.HasAnyOverride();
 
 	// Detect mutually-exclusive flag combos: the perf-rating shortcuts
-	// (-pr / -highperf / -highperf2) ignore Film overrides, and a user
+	// (-pr / -highperf / -highperf2) ignore post-load overrides, and a user
 	// who passed both probably misunderstood the CLI.
-	if( haveCliFilmOverride && argc > 1 ) {
+	if( havePostLoadOverride && argc > 1 ) {
 		const char* a1 = argv[1];
 		if( strcmp(a1,"-pr")==0 || strcmp(a1,"-highperf")==0 || strcmp(a1,"-highperf2")==0 ) {
-			std::cerr << "WARNING: --width / --height / --pixel-ar have no effect with "
-			          << a1 << " (the perf-rating path uses a fixed scene).\n";
+			std::cerr << "WARNING: --width / --height / --pixel-ar / --denoise / --no-denoise / --camera "
+			             "have no effect with " << a1 << " (the perf-rating path uses a fixed scene).\n";
+		} else if( !sceneArg ) {
+			std::cerr << "WARNING: post-load CLI overrides (--width / --height / --pixel-ar / --denoise / "
+			             "--no-denoise / --camera) apply only when a scene file is given on the command line.\n";
 		}
 	}
 
 	// A later successful command or quit must not hide an earlier failure.
 	bool consoleFailed = false;
+	bool postLoadOverrideFailed = false;
 
 	// If there was a file specified in the arguments, then assume its an
 	// ascii scene file and load it
@@ -1132,35 +1112,28 @@ int main( int argc, char** argv )
 			StdOutProgress progress( "Parsing scene: " );
 			pJob->SetProgress( &progress );
 			if( LoadScenePerEnv( pJob, sceneArg ) ) {
-				// CLI Film overrides — applied AFTER scene parse so they
-				// replace whatever the scene file's `film` chunk (or
-				// camera-chunk auto-sync) installed.  Partial overrides
-				// (only --width or only --height) preserve the
-				// non-overridden axes from the current Film.
-				if( haveCliFilmOverride ) {
-					const IFilm* curFilm = pJob->GetScene()->GetFilm();
-					const unsigned int w   = ( cliFilmWidth   > 0 ) ? (unsigned)cliFilmWidth   : ( curFilm ? curFilm->GetWidth()   : 960 );
-					const unsigned int h   = ( cliFilmHeight  > 0 ) ? (unsigned)cliFilmHeight  : ( curFilm ? curFilm->GetHeight()  : 540 );
-					const double       pAR = ( cliFilmPixelAR > 0 ) ? cliFilmPixelAR           : ( curFilm ? curFilm->GetPixelAR() : 1.0 );
-					if( !pJob->SetFilm( w, h, pAR ) ) {
-						GlobalLog()->PrintEasyError(
-							"CLI Film override failed (invalid width/height/pixelAR); using scene-file values." );
-						consoleFailed = true;
-					}
-				}
-				const ICamera* pCamera = pJob->GetScene()->GetCamera();
-				if( pCamera ) {
+				// Post-load CLI overrides (--camera, --width/--height/--pixel-ar,
+				// --denoise/--no-denoise) — applied AFTER scene parse and BEFORE
+				// Win32 window creation so the preview window reflects any
+				// overridden camera and film dimensions.
+				if( !RISE::Cli::ApplyPostLoadCliOverrides( pJob, cliOverrides, std::cerr ) ) {
+					consoleFailed = true;
+					postLoadOverrideFailed = true;
+				} else {
+					const ICamera* pCamera = pJob->GetScene()->GetCamera();
+					if( pCamera ) {
 
-					// Don't do this if it is disabled in the options file
-					if( !GlobalOptions().ReadBool( "no_windowed_rasterizer_output", false ) ) {
-						const IFilm* pFilm = pJob->GetScene()->GetFilm();
-						IRasterizerOutput* pWinRO = new Implementation::Win32WindowRasterizerOutput(
-							pFilm->GetWidth(), pFilm->GetHeight(),
-							50, 50, "R.I.S.E. Render Window" );
+						// Don't do this if it is disabled in the options file
+						if( !GlobalOptions().ReadBool( "no_windowed_rasterizer_output", false ) ) {
+							const IFilm* pFilm = pJob->GetScene()->GetFilm();
+							IRasterizerOutput* pWinRO = new Implementation::Win32WindowRasterizerOutput(
+								pFilm->GetWidth(), pFilm->GetHeight(),
+								50, 50, "R.I.S.E. Render Window" );
 
-						GlobalLog()->PrintNew( pWinRO, __FILE__, __LINE__, "window RO" );
-						pJob->GetRasterizer()->AddRasterizerOutput( pWinRO );
-						safe_release( pWinRO );
+							GlobalLog()->PrintNew( pWinRO, __FILE__, __LINE__, "window RO" );
+							pJob->GetRasterizer()->AddRasterizerOutput( pWinRO );
+							safe_release( pWinRO );
+						}
 					}
 				}
 			} else {
@@ -1192,12 +1165,9 @@ int main( int argc, char** argv )
 #else
 			std::cout << "Loading ascii scene file: " << sceneArg << std::endl;
 			if( LoadScenePerEnv( pJob, sceneArg ) ) {
-				if( haveCliFilmOverride ) {
-					const IFilm* curFilm = pJob->GetScene()->GetFilm();
-					const unsigned int w   = ( cliFilmWidth   > 0 ) ? (unsigned)cliFilmWidth   : ( curFilm ? curFilm->GetWidth()   : 960 );
-					const unsigned int h   = ( cliFilmHeight  > 0 ) ? (unsigned)cliFilmHeight  : ( curFilm ? curFilm->GetHeight()  : 540 );
-					const double       pAR = ( cliFilmPixelAR > 0 ) ? cliFilmPixelAR           : ( curFilm ? curFilm->GetPixelAR() : 1.0 );
-					if( !pJob->SetFilm( w, h, pAR ) ) consoleFailed = true;
+				if( !RISE::Cli::ApplyPostLoadCliOverrides( pJob, cliOverrides, std::cerr ) ) {
+					consoleFailed = true;
+					postLoadOverrideFailed = true;
 				}
 			} else {
 				// See the matching `else` in the Windows branch above (bug-fix wave 2026-08-28,
@@ -1209,6 +1179,15 @@ int main( int argc, char** argv )
 				             "=====================================================================\n";
 			}
 #endif
+			if( postLoadOverrideFailed ) {
+				// Fail fast when an explicit post-load CLI override (such as
+				// `--camera <unknown>`) could not be honored, rather than
+				// entering the console loop and rendering from the wrong camera
+				// or denoise setting.
+				safe_release( pJob );
+				GlobalLogCleanupAndShutdown();
+				return 1;
+			}
 		}
 	}
 

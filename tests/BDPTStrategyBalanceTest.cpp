@@ -2476,7 +2476,7 @@ static void TestGGXLambertianControl()
 // the wall is a clear coat (dielectric, ior 1.5) over a red Lambertian
 // across an absorbing 0.1-thick gap, the floor a translucent layer over a
 // gold Lambertian -- the two composite classes the shipped
-// scenes/Tests/Materials/composite_material.RISEscene uses.
+// scenes/Tests/Legacy/composite_material.RISEscene uses.
 //
 // A CONSISTENCY PIN, not a red-proof: this topology passes on the pre-DL-24
 // base too (~0.25 %), because there PT and BDPT shared the same wrong

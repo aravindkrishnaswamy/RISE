@@ -69,12 +69,19 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#include <process.h>
+inline int RiseTestPid() { return _getpid(); }
+#else
 #include <unistd.h>
+inline int RiseTestPid() { return static_cast<int>( ::getpid() ); }
+#endif
 
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
@@ -218,13 +225,13 @@ static FrameStats StatsOverLitPixels( const Frame& f )
 
 static std::string TempPath( const char* tag, const char* ext )
 {
-	const char* t = getenv( "TMPDIR" );
-	std::string dir = ( t && t[0] ) ? t : "/tmp/";
-	if( dir[dir.size()-1] != '/' ) dir += '/';
-	char buf[512];
-	std::snprintf( buf, sizeof(buf), "%swet_texdetail_%s_%d.%s",
-		dir.c_str(), tag, static_cast<int>( ::getpid() ), ext );
-	return std::string( buf );
+	std::error_code ec;
+	std::filesystem::path dir = std::filesystem::temp_directory_path( ec );
+	if( ec || dir.empty() ) dir = ".";
+	char fname[256];
+	std::snprintf( fname, sizeof(fname), "wet_texdetail_%s_%d.%s",
+		tag, RiseTestPid(), ext );
+	return ( dir / fname ).generic_string();
 }
 
 static std::string WriteScene( const std::string& text, const char* tag )

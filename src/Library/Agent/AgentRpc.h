@@ -1022,7 +1022,8 @@
 //                                            `notes`.)
 //      populate_scene {notes?}           -> {ok,capabilityRefusal?,provider,model,
 //                                            chunksExtracted,
-//                                            created:[{name,geometry?,material?}],
+//                                            created:[{name,kind?,geometry?,material?,
+//                                                      source?,objects?}],
 //                                            rejected:[{name?,kind?,reason}],
 //                                            chunkResults,retryRan,retrySucceeded,
 //                                            objectsBefore,objectsAfter,message}
@@ -1039,23 +1040,31 @@
 //                                            plus ONE worked example built from this
 //                                            scene's own names.  HARD CONTRACT: it
 //                                            may create `standard_object` chunks and
-//                                            nothing else, each naming a geometry and
-//                                            a material that ALREADY EXIST -- new form
-//                                            belongs to build_element, and a chunk
-//                                            naming an unknown geometry or material is
-//                                            rejected with that reason.  Validated-
-//                                            inserted through the ordinary
-//                                            InsertChunks path with ONE repair retry;
-//                                            nothing is ever dropped silently.  It
-//                                            forces its own first use by refusing the
-//                                            FIRST compose-phase `render` (once per
-//                                            session, sharing the build-phase refusal
-//                                            cap; pieces-phase renders are never
-//                                            refused).  MUTATING: not read-safe, and
-//                                            deliberately not on the Propose allowlist
-//                                            either, exactly like light_scene.  TAKES
-//                                            NO REQUIRED PARAMS; the only -32602 is a
-//                                            non-string `notes`.)
+//                                            nothing else -- either naming an
+//                                            existing `geometry` and `material`, or
+//                                            cloning an existing object via `source`
+//                                            (preserving its geometry, material, and
+//                                            child subtree, optionally repeating via
+//                                            integer-literal `count_u`/`count_v` and
+//                                            `expr(...)` positions up to 256 objects
+//                                            per chunk and 1024 per call; `created`
+//                                            emits `source` and `objects` for clones).
+//                                            New form belongs to build_element, and a
+//                                            chunk naming an unknown geometry,
+//                                            material, or source is rejected with
+//                                            that reason.  Validated-inserted through
+//                                            the ordinary InsertChunks path with ONE
+//                                            repair retry; nothing is ever dropped
+//                                            silently.  It forces its own first use
+//                                            by refusing the FIRST compose-phase
+//                                            `render` (once per session, sharing the
+//                                            build-phase refusal cap; pieces-phase
+//                                            renders are never refused).  MUTATING:
+//                                            not read-safe, and deliberately not on
+//                                            the Propose allowlist either, exactly
+//                                            like light_scene.  TAKES NO REQUIRED
+//                                            PARAMS; the only -32602 is a non-string
+//                                            `notes`.)
 //      environment_scene {notes?}        -> {ok,capabilityRefusal?,provider,model,
 //                                            chunksExtracted,landed:[string],
 //                                            rejected:[{name?,kind?,reason}],

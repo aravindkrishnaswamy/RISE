@@ -88,6 +88,9 @@
   <ItemGroup>
     <ClCompile Include="..\..\..\src\RISE\commandconsole.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\..\src\RISE\CliOptions.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

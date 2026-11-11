@@ -47,8 +47,15 @@
 #include <string>
 #include <functional>
 #include <chrono>
+#include <filesystem>
 #include <random>
+#ifdef _WIN32
+#include <process.h>
+static int RiseTestPid() { return _getpid(); }
+#else
 #include <unistd.h>
+static int RiseTestPid() { return static_cast<int>( ::getpid() ); }
+#endif
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -524,7 +531,10 @@ public:
 
 static std::string TempPath( const char* tag, const char* ext )
 {
-	return Fmt( "/tmp/dl459_%s_%d.%s", tag, static_cast<int>( ::getpid() ), ext );
+	std::error_code ec;
+	std::filesystem::path dir = std::filesystem::temp_directory_path( ec );
+	if( ec || dir.empty() ) dir = ".";
+	return ( dir / Fmt( "dl459_%s_%d.%s", tag, RiseTestPid(), ext ) ).generic_string();
 }
 
 //! Renders `sceneText` once.  By default single-threaded (deterministic,
@@ -961,7 +971,7 @@ static std::string FieldOf( const std::string& line, const char* key )
 {
 	const std::size_t p = line.find( key );
 	if( p == std::string::npos ) return std::string();
-	const std::size_t e = line.find_first_of( " \n", p );
+	const std::size_t e = line.find_first_of( " \r\n", p );
 	return line.substr( p, e == std::string::npos ? std::string::npos : e - p );
 }
 

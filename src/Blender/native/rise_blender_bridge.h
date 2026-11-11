@@ -48,11 +48,16 @@ enum rise_blender_painter_kind {
 };
 
 enum rise_blender_color_space {
+	// Native working-space linear (`Rec709RGB_Linear`) — bypasses both
+	// gamma decoding and colour-space matrix conversion.  Required for
+	// non-colour scalar data and normal-map painters so RGB-encoded
+	// surface tangents stay bit-exact.
 	RISE_BLENDER_COLOR_LINEAR = 0,
 	RISE_BLENDER_COLOR_SRGB = 1,
-	// ROMM-Linear bypasses both gamma decoding and the
-	// Rec709->ROMM colour matrix — required for normal-map painters
-	// so the RGB-encoded surface tangent stays bit-exact.
+	// Deprecated Stage-A alias for `RISE_BLENDER_COLOR_LINEAR`, retained
+	// for ABI v4+ binary compatibility with older add-on callers that
+	// passed `2` under its documented bit-exact normal-map passthrough
+	// contract (when RISE's internal working space was ROMM RGB).
 	RISE_BLENDER_COLOR_ROMM_LINEAR = 2
 };
 

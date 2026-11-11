@@ -64,7 +64,14 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#ifdef _WIN32
+#include <process.h>
+inline int RiseTestPid() { return _getpid(); }
+#else
 #include <unistd.h>
+inline int RiseTestPid() { return static_cast<int>( ::getpid() ); }
+#endif
 #include <thread>
 
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -129,12 +136,14 @@ struct Fixture
 
 	bool Build( const std::string& sceneText, const char* tag )
 	{
-		char path[512];
-		std::snprintf( path, sizeof(path), "/tmp/optmis_sites_%s_%d.RISEscene",
-			tag, static_cast<int>( ::getpid() ) );
-		scenePath = path;
+		std::error_code ec;
+		std::filesystem::path dir = std::filesystem::temp_directory_path( ec );
+		if( ec || dir.empty() ) dir = ".";
+		char fname[256];
+		std::snprintf( fname, sizeof(fname), "optmis_sites_%s_%d.RISEscene", tag, RiseTestPid() );
+		scenePath = ( dir / fname ).generic_string();
 		{
-			std::ofstream ofs( path );
+			std::ofstream ofs( scenePath );
 			if( !ofs.is_open() ) return false;
 			ofs << sceneText;
 		}

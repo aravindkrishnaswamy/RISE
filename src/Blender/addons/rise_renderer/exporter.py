@@ -45,6 +45,9 @@ FILTER_BILINEAR = 1
 MODIFIER_BUMP = 0
 MODIFIER_NORMAL_MAP = 1
 
+# Deprecated Stage-A alias retained only for ABI v4 enum completeness;
+# post-Stage-B (`RISEPel = Rec709RGBPel`) all non-colour and normal-map
+# painters use `COLOR_SPACE_LINEAR` (`0` = `Rec709RGB_Linear`).
 COLOR_SPACE_ROMM_LINEAR = 2
 
 MATERIAL_LAMBERT = 0
@@ -1590,15 +1593,15 @@ def _build_coat_normal_painter(material, normal_map_node, state: _ExportState) -
 
     filepath, _color_space_ignored = validated
     kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
-    # Same ROMM-Linear bridge convention `_build_normal_map_modifier`
-    # uses for the object-level normal map -- see that function's own
-    # comment.
+    # Same Rec709RGB_Linear (`COLOR_SPACE_LINEAR = 0`) verbatim-passthrough
+    # convention `_build_normal_map_modifier` uses for the object-level
+    # normal map -- see that function's own comment.
     painter_name = _add_texture_painter(
         state,
         f"{material.name_full}_coat_normal",
         filepath,
         kind,
-        COLOR_SPACE_ROMM_LINEAR,
+        COLOR_SPACE_LINEAR,
     )
     painter_name = _maybe_wrap_with_uv_transform(
         state, f"{material.name_full}_coat_normal", painter_name, texture_wrapper)
@@ -1610,8 +1613,9 @@ def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -
     """Translate a ShaderNodeNormalMap into a RISE NormalMap modifier.
 
     Mirrors glTF KHR normalTexture semantics: the painter must be
-    loaded as ROMMRGB_Linear so the RGB-encoded tangent stays
-    bit-exact, and the strength scalar maps to normalTexture.scale.
+    loaded as Rec709RGB_Linear (`COLOR_SPACE_LINEAR = 0`) so the
+    RGB-encoded tangent stays bit-exact, and the strength scalar maps
+    to normalTexture.scale.
     """
 
     if getattr(normal_map_node, "space", "TANGENT") != "TANGENT":
@@ -1635,16 +1639,16 @@ def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -
 
     filepath, _color_space_ignored = validated
     kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
-    # Normal-map painters MUST be loaded as ROMM-Linear to bypass
-    # both gamma decoding AND the Rec709->ROMM matrix that would
-    # otherwise warp the encoded tangent (see RISE comments on
-    # AddNormalMapModifier).
+    # Normal-map painters MUST be loaded as Rec709RGB_Linear
+    # (`COLOR_SPACE_LINEAR = 0`) -- RISE's native working space -- to
+    # bypass both gamma decoding AND any colour-space primary matrix
+    # that would warp the encoded tangent (matching GLTFSceneImporter).
     painter_name = _add_texture_painter(
         state,
         f"{material.name_full}_normal",
         filepath,
         kind,
-        COLOR_SPACE_ROMM_LINEAR,
+        COLOR_SPACE_LINEAR,
     )
     painter_name = _maybe_wrap_with_uv_transform(
         state, f"{material.name_full}_normal", painter_name, texture_wrapper)
@@ -1956,7 +1960,7 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 f"{material.name_full}_baked_normal",
                 baked["normal"],
                 PAINTER_TEXTURE_PNG,
-                COLOR_SPACE_ROMM_LINEAR,
+                COLOR_SPACE_LINEAR,
             )
             modifier_name = _unique_name(state, "mod", f"{material.name_full}_normalmap")
             state.modifiers.append(

@@ -41,17 +41,33 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <cmath>
+#include <cstdio>
 #include <cstddef>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
+
+#ifdef _WIN32
+	#include <process.h>
+	#ifndef getpid
+		#define getpid _getpid
+	#endif
+#else
+	#include <unistd.h>
+#endif
 
 // The unit under test.  See the banner for why this is a .cpp include.
 #include "../src/Blender/native/rise_blender_bridge.cpp"
 
 #include "../src/Library/Interfaces/IMaterialManager.h"
+#include "../src/Library/Interfaces/IModifierManager.h"
 #include "../src/Library/Interfaces/IPainterManager.h"
+#include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Interfaces/IRasterImageWriter.h"
+#include "../src/Library/Interfaces/IWriteBuffer.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/RISE_API.h"
@@ -411,6 +427,150 @@ void TestCoatNormalIndependentOfBaseNormalMap()
 	pNmap->release();
 }
 
+//! Stage-B normal-map colour-space regression (Roadmap 0.1.1):
+//! Post-Stage-B (`RISEPel = Rec709RGBPel`), `eColorSpace_ROMMRGB_Linear` (2)
+//! applies a Bradford + ProPhoto->Rec.709 matrix that warps RGB-encoded
+//! tangent normals (where B ~ 1.0 in ProPhoto pulls R/G strongly negative in
+//! Rec.709).  Both `RISE_BLENDER_COLOR_LINEAR` (0, current `exporter.py`)
+//! and the deprecated v4 `RISE_BLENDER_COLOR_ROMM_LINEAR` alias (2) must
+//! register normal-map PNG and uniform painters as `Rec709RGB_Linear` (0) so
+//! `add_modifier(RISE_BLENDER_MODIFIER_NORMAL_MAP)` and `coat_normal` decode
+//! the exact closed-form normal vector, and `exporter.py` must emit
+//! `COLOR_SPACE_LINEAR` at all normal-map sites.
+void TestNormalMapColorSpacePassthrough()
+{
+	std::cout << "Test: Blender bridge PNG normal-map colour-space passthrough (Rec709RGB_Linear, no ROMM warp)" << std::endl;
+
+	// Pick exact 8-bpc integer/255 encoded channels so an 8-bpc PNG
+	// round-trips with zero quantization error under Rec709RGB_Linear.
+	const double encR = 80.0  / 255.0;	// nx = -0.372549
+	const double encG = 105.0 / 255.0;	// ny = -0.176471
+	const double encB = 244.0 / 255.0;	// ~0.9569 (NormalMap reconstructs nz from sqrt(1 - nx^2 - ny^2))
+	const double nx = 2.0 * encR - 1.0;
+	const double ny = 2.0 * encG - 1.0;
+	const double nz = std::sqrt( 1.0 - nx * nx - ny * ny );
+	// MakeProbe's CreateFromW(0,0,1) gives U=(-1,0,0), V=(0,-1,0), W=(0,0,1),
+	// so world = U*nx + V*ny + W*nz = (-nx, -ny, nz).
+	const RISE::Vector3 expectedWorld = RISE::Vector3Ops::Normalize(
+		RISE::Vector3( -nx, -ny, nz ) );
+
+	std::error_code ec;
+	std::filesystem::path tmpDir = std::filesystem::temp_directory_path( ec );
+	if( ec || tmpDir.empty() ) tmpDir = ".";
+	const std::string pngPath = ( tmpDir / ( "rise_bridge_nmap_" + std::to_string( static_cast<int>( getpid() ) ) + ".png" ) ).generic_string();
+
+	{
+		RISE::IRasterImage* pImg = 0;
+		RISE::IWriteBuffer* pBuf = 0;
+		RISE::IRasterImageWriter* pWriter = 0;
+		const bool createdImg = RISE::RISE_API_CreateRISEColorRasterImage(
+			&pImg, 4, 4, RISE::RISEColor( encR, encG, encB, 1.0 ) );
+		const bool createdBuf = RISE::RISE_API_CreateDiskFileWriteBuffer( &pBuf, pngPath.c_str() );
+		const bool createdWriter = createdBuf && pBuf && RISE::RISE_API_CreatePNGWriter(
+			&pWriter, *pBuf, 8, RISE::eColorSpace_Rec709RGB_Linear );
+		Check( createdImg && createdBuf && createdWriter && pImg && pWriter,
+			"wrote 8-bpc linear PNG normal-map fixture" );
+		if( pImg && pWriter ) {
+			pImg->DumpImage( pWriter );
+		}
+		RISE::safe_release( pWriter );
+		RISE::safe_release( pBuf );
+		RISE::safe_release( pImg );
+	}
+
+	JobHolder job;
+	char err[256] = { 0 };
+
+	auto registerPngNormal = [&]( const char* painterName, const char* modName, const int csEnum ) -> bool {
+		rise_blender_painter p;
+		std::memset( &p, 0, sizeof( p ) );
+		p.name = painterName;
+		p.kind = RISE_BLENDER_PAINTER_TEXTURE_PNG;
+		p.path = pngPath.c_str();
+		p.color_space = csEnum;
+		p.filter_type = 0;
+		p.scale[0] = p.scale[1] = p.scale[2] = 1.0;
+		if( !add_painter( *job, p, err, sizeof( err ) ) ) return false;
+
+		rise_blender_modifier mod;
+		std::memset( &mod, 0, sizeof( mod ) );
+		mod.name = modName;
+		mod.kind = RISE_BLENDER_MODIFIER_NORMAL_MAP;
+		mod.source_painter_name = painterName;
+		mod.scale = 1.0;
+		return add_modifier( *job, mod, err, sizeof( err ) );
+	};
+
+	Check( registerPngNormal( "png_linear_tex", "mod_linear", RISE_BLENDER_COLOR_LINEAR ),
+		std::string( "PNG normal map registered with RISE_BLENDER_COLOR_LINEAR: " ) + err );
+	Check( registerPngNormal( "png_legacy_romm_tex", "mod_legacy_romm", RISE_BLENDER_COLOR_ROMM_LINEAR ),
+		std::string( "PNG normal map registered with legacy RISE_BLENDER_COLOR_ROMM_LINEAR alias: " ) + err );
+
+	const RISE::Vector3 viewDir = RISE::Vector3Ops::Normalize( RISE::Vector3( 0.2, -0.1, 1.0 ) );
+	for( const char* modName : { "mod_linear", "mod_legacy_romm" } ) {
+		RISE::IRayIntersectionModifier* pMod = (*job).GetModifiers() ? (*job).GetModifiers()->GetItem( modName ) : 0;
+		Check( pMod != 0, std::string( "modifier resolved: " ) + modName );
+		if( pMod ) {
+			RISE::RayIntersectionGeometric ri = MakeProbe( viewDir );
+			pMod->Modify( ri );
+			const double cosAngle = RISE::Vector3Ops::Dot( ri.vNormal, expectedWorld );
+			std::cout << "  " << modName << " decoded normal=(" << ri.vNormal.x << ", "
+			          << ri.vNormal.y << ", " << ri.vNormal.z << ") dot(expected)=" << cosAngle << std::endl;
+			// Exact k/255 8-bpc channels decode to cosAngle == 1.0; a Stage-A
+			// ProPhoto->Rec.709 matrix warp drops cosAngle to ~0.957 (~16.8 deg off!).
+			const std::string label = std::string( modName ) + " decodes the unwarped tangent normal verbatim";
+			Check( cosAngle > 0.99999, label );
+			if( cosAngle > 0.99999 ) std::cout << "  PASS: " << label << std::endl;
+		}
+	}
+
+	// Uniform painter alias check through coat_normal as well:
+	{
+		rise_blender_painter up;
+		std::memset( &up, 0, sizeof( up ) );
+		up.name = "uniform_legacy_romm_coat";
+		up.kind = RISE_BLENDER_PAINTER_UNIFORM;
+		up.color[0] = encR;
+		up.color[1] = encG;
+		up.color[2] = encB;
+		up.color_space = RISE_BLENDER_COLOR_ROMM_LINEAR;
+		Check( add_painter( *job, up, err, sizeof( err ) ),
+			std::string( "uniform coat-normal painter registered: " ) + err );
+		const RISE::IPainter* p = (*job).GetPainters() ? (*job).GetPainters()->GetItem( "uniform_legacy_romm_coat" ) : 0;
+		Check( p != 0, "uniform coat-normal painter resolved" );
+		if( p ) {
+			RISE::RayIntersectionGeometric ri = MakeProbe( viewDir );
+			const RISE::RISEPel c = p->GetColor( ri );
+			Check( std::fabs( c[0] - encR ) < 1e-6 &&
+			       std::fabs( c[1] - encG ) < 1e-6 &&
+			       std::fabs( c[2] - encB ) < 1e-6,
+				"RISE_BLENDER_COLOR_ROMM_LINEAR uniform painter preserves verbatim RGB vector components" );
+		}
+	}
+
+	std::remove( pngPath.c_str() );
+
+	// Also guard exporter.py against re-introducing COLOR_SPACE_ROMM_LINEAR
+	// at any call site (only the single constant definition line may name it).
+	{
+		std::ifstream py( "src/Blender/addons/rise_renderer/exporter.py" );
+		if( py ) {
+			std::string line;
+			int uses = 0;
+			while( std::getline( py, line ) ) {
+				const std::size_t commentPos = line.find( '#' );
+				const std::string code = ( commentPos == std::string::npos ) ? line : line.substr( 0, commentPos );
+				if( code.find( "COLOR_SPACE_ROMM_LINEAR" ) != std::string::npos &&
+				    code.find( "COLOR_SPACE_ROMM_LINEAR =" ) == std::string::npos )
+				{
+					++uses;
+				}
+			}
+			Check( uses == 0, "exporter.py passes COLOR_SPACE_LINEAR (never COLOR_SPACE_ROMM_LINEAR) at all call sites" );
+		}
+	}
+}
+
 int main()
 {
 	std::cout << "=== Blender bridge Coat Normal test (DL-192) ===" << std::endl;
@@ -419,6 +579,7 @@ int main()
 	TestNoCoatNormalUnaffected();
 	TestCoatNormalMovesSpecularPeak();
 	TestCoatNormalIndependentOfBaseNormalMap();
+	TestNormalMapColorSpacePassthrough();
 
 	std::cout << "----------------------------------------" << std::endl;
 	std::cout << "checks: " << g_checks << "   failures: " << g_failures << std::endl;

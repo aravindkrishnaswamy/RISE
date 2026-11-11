@@ -61,8 +61,14 @@
 #include <filesystem>
 #include <random>
 #include <chrono>
+#ifdef _WIN32
+#include <process.h>
+static int RiseTestPid() { return _getpid(); }
+#else
 #include <unistd.h>
 #include <sys/resource.h>
+static int RiseTestPid() { return static_cast<int>( ::getpid() ); }
+#endif
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -274,7 +280,11 @@ static int ChildMain( int argc, char** argv )
 		if( threads > 0 ) o << "force_number_of_threads " << threads << "\n";
 		o << "time_indexed_motion_blur " << ( ti ? "true" : "false" ) << "\n";
 	}
+#ifdef _WIN32
+	_putenv_s( "RISE_OPTIONS_FILE", opts.c_str() );
+#else
 	setenv( "RISE_OPTIONS_FILE", opts.c_str(), 1 );
+#endif
 
 	const std::string path = out + ".RISEscene";
 	{ std::ofstream ofs( path ); ofs << Scene( sceneKey, ras, spp ); }
@@ -332,7 +342,15 @@ static ChildResult RunChild( const std::string& scene, const std::string& ras, c
 {
 	static int counter = 0;
 	const std::string out = ( std::filesystem::temp_directory_path() /
-		Fmt( "dl465_%d_%d.txt", int( ::getpid() ), counter++ ) ).string();
+		Fmt( "dl465_%d_%d.txt", RiseTestPid(), counter++ ) ).string();
+#ifdef _WIN32
+	// cmd.exe /c strips the outer quotes when two arguments are quoted; wrap the
+	// whole command in an extra pair of quotes and redirect to NUL.
+	const std::string cmd = Fmt( "\"\"%s\" --child %s %s %d %d %u %d \"%s\" > NUL 2>&1\"",
+		g_self.c_str(), scene.c_str(), ras.c_str(), threads, ti ? 1 : 0, salt, spp, out.c_str() );
+	ChildResult r;
+	const int rc = std::system( cmd.c_str() );
+#else
 	const std::string cmd = Fmt( "\"%s\" --child %s %s %d %d %u %d \"%s\" > /dev/null 2>&1",
 		g_self.c_str(), scene.c_str(), ras.c_str(), threads, ti ? 1 : 0, salt, spp, out.c_str() );
 	ChildResult r;
@@ -343,6 +361,7 @@ static ChildResult RunChild( const std::string& scene, const std::string& ras, c
 	auto sec = []( const struct timeval& t ) { return double( t.tv_sec ) + 1e-6 * double( t.tv_usec ); };
 	r.userCpu = sec( after.ru_utime ) - sec( before.ru_utime );
 	r.sysCpu = sec( after.ru_stime ) - sec( before.ru_stime );
+#endif
 	std::ifstream in( out );
 	int ok = 0;
 	if( in >> ok >> r.hash >> r.mean >> r.seconds >> r.frames ) {

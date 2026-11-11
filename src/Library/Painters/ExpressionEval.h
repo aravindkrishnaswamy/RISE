@@ -27,7 +27,7 @@
 //                                 POSITIVE = convex, negative = concave,
 //                                 0 = flat -- and 0 is also the honest
 //                                 "this geometry reports no curvature"
-//                                 answer (planar primitives, patch stubs),
+//                                 answer (planar primitives),
 //                                 the same convention fw uses.  Computed
 //                                 from the GEOMETRIC normal field, so a
 //                                 bump / normal map does not move them and

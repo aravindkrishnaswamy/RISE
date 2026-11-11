@@ -83,6 +83,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -117,8 +118,7 @@ static void Check( bool c, const std::string& w )
 
 static std::string TempPath( const char* name )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = std::filesystem::temp_directory_path().generic_string();
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 	return dir + name;
 }
@@ -721,7 +721,7 @@ static void TestRefusals()
 		body += "box_geometry\n{\n\tname slab\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
 		body += Ggx( "mat_box", "pnt_bronze", "0.3" );
 		body += Obj( "o1", "slab", "mat_box", 0 );
-		ExpectRefusal( "planar-only", body, "planar or patch geometry", "mat_box" );
+		ExpectRefusal( "planar-only", body, "planar geometry", "mat_box" );
 		ExpectRefusal( "planar-only-bare", body,
 		               "no material in this document is a flat, readable colour" );
 	}
@@ -2795,7 +2795,7 @@ static void TestContactRadius()
 				const Agent::AgentSession::AgentAddWearResult no = sess->AddWear( "mat_deck" );
 				Check( !no.ok && !no.applied,
 				       "P3 MONEY: WITHOUT contact_radius the flat receiver is still refused" );
-				Check( no.message.find( "planar or patch geometry" ) != std::string::npos,
+				Check( no.message.find( "planar geometry" ) != std::string::npos,
 				       "P3: ...with the same clause-(c) words as before -- got: " + no.message );
 			}
 
@@ -3040,6 +3040,88 @@ static void TestContactRadius()
 	}
 }
 
+//! Roadmap 0.1.2: since DL-20 gave BezierPatchGeometry and BilinearPatchGeometry
+//! exact analytical Weingarten curvature at intersection time, neither kind
+//! belongs in CurvBarrenGeometryKind_.  Both must qualify for add_wear
+//! directly without contact_radius, and the resulting curv-driven wear
+//! material must derive and render cleanly on real patch ray hits.
+static void TestPatchGeometriesAccepted()
+{
+	std::printf( "N: PATCH GEOMETRIES -- bezierpatch_geometry and bilinearpatch_geometry qualify for add_wear\n" );
+	{
+		// Self-contained 1-patch curved bicubic Bezier cap facing the camera
+		// at z = 0..0.4 over [-0.8, 0.8]^2 (no RISE_MEDIA_PATH dependency).
+		const std::string bezFile = TempPath( "addwear_cap.bezier" );
+		{
+			std::ofstream o( bezFile.c_str(), std::ios::binary );
+			o << "1\n";
+			const double g[4] = { -0.8, -0.25, 0.25, 0.8 };
+			for( int j = 0; j < 4; ++j ) {
+				for( int k = 0; k < 4; ++k ) {
+					const bool inner = ( j == 1 || j == 2 ) && ( k == 1 || k == 2 );
+					const double z = inner ? 0.45 : 0.0;
+					o << g[k] << " " << g[j] << " " << z << "\n";
+				}
+			}
+		}
+		std::string body = Preamble();
+		body += "bezierpatch_geometry\n{\n\tname teapot_geo\n\tfile " + bezFile + "\n}\n\n";
+		body += Ggx( "mat_bez", "pnt_bronze", "0.3" );
+		body += Obj( "o_bez", "teapot_geo", "mat_bez", 0 );
+		const std::string tmp = TempPath( "addwear_bezier.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N1: bezierpatch fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+			Check( r.ok && r.applied, std::string( "N1 MONEY: add_wear accepts bezierpatch_geometry: " ) + r.message );
+			if( r.ok && r.applied ) std::printf( "  PASS: N1 MONEY: add_wear accepts bezierpatch_geometry\n" );
+			Check( r.material == "mat_bez" && r.geometryKind == "bezierpatch_geometry",
+			       "N1: selects mat_bez on bezierpatch_geometry (got " + r.material + " / " + r.geometryKind + ")" );
+			Agent::AgentRenderParams rp;
+			rp.width = 24; rp.height = 24; rp.samples = 2;
+			const Agent::AgentRenderResult rr = sess->Render( rp );
+			Check( rr.ok && rr.meanR + rr.meanG + rr.meanB > 0.0,
+			       "N1: worn bezierpatch_geometry renders non-black" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+		std::remove( bezFile.c_str() );
+	}
+	{
+		// Self-contained 1-patch non-planar bilinear saddle over [-0.8, 0.8]^2.
+		const std::string bilinFile = TempPath( "addwear_saddle.bilinear" );
+		{
+			std::ofstream o( bilinFile.c_str(), std::ios::binary );
+			o << "1\n"
+			  << "-0.8 -0.8 0.0\n"
+			  << " 0.8 -0.8 0.35\n"
+			  << "-0.8  0.8 0.35\n"
+			  << " 0.8  0.8 0.0\n";
+		}
+		std::string body = Preamble();
+		body += "bilinearpatch_geometry\n{\n\tname bilin_geo\n\tfile " + bilinFile + "\n}\n\n";
+		body += Ggx( "mat_bilin", "pnt_bronze", "0.3" );
+		body += Obj( "o_bilin", "bilin_geo", "mat_bilin", 0 );
+		const std::string tmp = TempPath( "addwear_bilinear.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N2: bilinearpatch fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+			Check( r.ok && r.applied, std::string( "N2 MONEY: add_wear accepts bilinearpatch_geometry: " ) + r.message );
+			Check( r.material == "mat_bilin" && r.geometryKind == "bilinearpatch_geometry",
+			       "N2: selects mat_bilin on bilinearpatch_geometry (got " + r.material + " / " + r.geometryKind + ")" );
+			Agent::AgentRenderParams rp;
+			rp.width = 24; rp.height = 24; rp.samples = 2;
+			const Agent::AgentRenderResult rr = sess->Render( rp );
+			Check( rr.ok && rr.meanR + rr.meanG + rr.meanB > 0.0,
+			       "N2: worn bilinearpatch_geometry renders non-black" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+		std::remove( bilinFile.c_str() );
+	}
+}
+
 int main()
 {
 	std::printf( "AgentAddWearTest -- GEOMETRY_SHADING_SIGNALS sec 11: add_wear\n" );
@@ -3057,6 +3139,7 @@ int main()
 	TestDimHeroLightNote();
 	TestDimLightRemeasureNote();
 	TestContactRadius();
+	TestPatchGeometriesAccepted();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;
 }

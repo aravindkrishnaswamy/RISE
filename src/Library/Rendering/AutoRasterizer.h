@@ -137,6 +137,8 @@ namespace RISE
 			void AddRasterizerOutput( IRasterizerOutput* ro ) override;
 			void RemoveRasterizerOutput( IRasterizerOutput* ro ) override;
 			void FreeRasterizerOutputs() override;
+			bool SetDenoisingOverride( bool enabled ) override;
+			int GetDenoisingOverride() const override;
 
 			//! The integrator the dispatcher resolved to.  `Auto` until
 			//! the first render-time entry runs selection; the concrete

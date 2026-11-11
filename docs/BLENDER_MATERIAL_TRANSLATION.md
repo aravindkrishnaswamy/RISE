@@ -80,7 +80,7 @@ Tangent; this table is not a whitelist for its corner-direction graph.
 | `ShaderNodeMath` (Add/Multiply/Multiply Add when one input is constant) | folded inline at export time | Math nodes that fold to scaling / offsetting of a single value are inlined into the downstream painter (e.g. a Multiply on a noise output absorbed into a ColorRamp position).  The classifier admits Math regardless of operation; this does not promise direct translation of every operation or automatic manual-bake routing. |
 | `ShaderNodeRGBCurve` / `ShaderNodeHueSaturation` / `ShaderNodeBrightContrast` / `ShaderNodeGamma` / `ShaderNodeInvert` | pass-through (currently lossy) | Existing bridge walks through these and ignores the filter; future work could honour them via a remap painter. |
 | `ShaderNodeBump` | `ReliefModifier` attached to the **object** (`IObject`) | Driven by a scalar height painter from a supported chain (`ReliefModifier` replaced the retired `BumpMap`; in RISE, ray-intersection modifiers attach to `standard_object` — via `modifier_stack` when combined — rather than to `IMaterial`) |
-| `ShaderNodeNormalMap` | `NormalMapModifier` attached to the **object** (`IObject`) | Attached to the exported `IObject` (not `IMaterial`, except Principled `Coat Normal` which lives on `CoatedMaterial`). Note: `exporter.py`/bridge currently tag normal-map painters `RISE_BLENDER_COLOR_ROMM_LINEAR` (`ROMMRGB_Linear`, `colorSpace = 2`) as a Stage-A holdover from when ROMM was RISE's working space; post-Stage-B (`RISEPel = Rec709RGBPel`), RISE's native linear passthrough is `Rec709RGB_Linear` (`RISE_BLENDER_COLOR_LINEAR = 0`). |
+| `ShaderNodeNormalMap` | `NormalMapModifier` attached to the **object** (`IObject`) | Attached to the exported `IObject` (not `IMaterial`, except Principled `Coat Normal` which lives on `CoatedMaterial`). Normal-map painters are tagged `RISE_BLENDER_COLOR_LINEAR = 0` (`Rec709RGB_Linear`), matching `GLTFSceneImporter.cpp` for bit-exact tangent-vector passthrough in RISE's working space. |
 
 ## Force-bake list
 
@@ -270,7 +270,7 @@ in the same commit.
 | Base Color (diffuse) | `sRGB` (Cycles' default) |
 | Roughness | `Linear` (`Rec709RGB_Linear`) — scalar data |
 | Metallic | `Linear` — scalar data |
-| Normal map | `ROMM_Linear` (`RISE_BLENDER_COLOR_ROMM_LINEAR = 2`) — **Stage-A holdover** in `exporter.py`/bridge from when ROMM was RISE's internal working space; post-Stage-B (`RISEPel = Rec709RGBPel`), native linear passthrough in RISE core is `Rec709RGB_Linear` (`RISE_BLENDER_COLOR_LINEAR = 0`). |
+| Normal map | `Linear` (`RISE_BLENDER_COLOR_LINEAR = 0` / `Rec709RGB_Linear`) — verbatim working-space passthrough (no gamma decode, no primary matrix; legacy `RISE_BLENDER_COLOR_ROMM_LINEAR = 2` is also aliased to `0` in the native bridge for ABI v4+ compatibility). |
 | Emission Color | `sRGB` |
 | Transmission Weight | `Linear` |
 

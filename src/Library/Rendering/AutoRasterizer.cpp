@@ -393,6 +393,11 @@ AutoRasterizer::AutoRasterizer(
 	// AgentSession. Keep the wrapper's base state identical to the setting
 	// forwarded to every lazily-created delegate.
 	SetDenoisingPrefilter( mOidnPrefilter );
+#ifdef RISE_ENABLE_OIDN
+	SetDenoisingEnabled( mOidnDenoise );
+	SetDenoisingQuality( mOidnQuality );
+	SetDenoisingDevice( mOidnDevice );
+#endif
 }
 
 AutoRasterizer::~AutoRasterizer()
@@ -1177,6 +1182,30 @@ void AutoRasterizer::FreeRasterizerOutputs()
 	if( mDelegate ) {
 		mDelegate->FreeRasterizerOutputs();
 	}
+}
+
+bool AutoRasterizer::SetDenoisingOverride( bool enabled )
+{
+	if( !Rasterizer::SetDenoisingOverride( enabled ) ) {
+		return false;
+	}
+	mOidnDenoise = enabled;
+	if( mDelegate ) {
+		return mDelegate->SetDenoisingOverride( enabled );
+	}
+	return true;
+}
+
+int AutoRasterizer::GetDenoisingOverride() const
+{
+#ifdef RISE_ENABLE_OIDN
+	if( mDelegate ) {
+		return mDelegate->GetDenoisingOverride();
+	}
+	return mOidnDenoise ? 1 : 0;
+#else
+	return 0;
+#endif
 }
 
 unsigned int AutoRasterizer::PredictTimeToRasterizeScene(

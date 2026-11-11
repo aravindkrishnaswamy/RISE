@@ -105,7 +105,7 @@ Return status is nonzero for build, run, count, warning, or arithmetic failure.
 
 ## Test Map
 
-`tests/*.cpp` contains **523** standalone test suites. Do not
+`tests/*.cpp` contains **525** standalone test suites. Do not
 maintain a hand-counted filename inventory here: the CST, editor, GUI,
 FrameStore, agent, and eval work adds tests often enough that static file lists
 drift quickly. Use filesystem/glob discovery as the source of truth:
@@ -121,9 +121,10 @@ Useful filename families:
   autonomy, proposals, renders, viewport reads, trajectories, and evals
 - `Cst*Test.cpp`: lossless parsing, derive contracts, minimal-diff edits,
   identity, reference graphs, scene variants, incremental apply, and cost gates
-- `SceneEditor*Test.cpp`, `Viewport*Test.cpp`, `SourceTraceTest.cpp`, and
-  `EntityTemplatesTest.cpp`: editing, persistence, source traceability,
-  render modes, N-up panes, and entity creation
+- `SceneEditor*Test.cpp`, `Viewport*Test.cpp`, `PainterPreviewTest.cpp`,
+  `MaterialPreviewTest.cpp`, `CliOverridesTest.cpp`, `SourceTraceTest.cpp`, and
+  `EntityTemplatesTest.cpp`: editing, persistence, previews, CLI post-load overrides,
+  source traceability, render modes, N-up panes, and entity creation
 - `FrameStore*Test.cpp`, `FrameEncoderTest.cpp`, and
   `ViewportFrameStoreTest.cpp`: framebuffer storage, color math, encoders, and
   GUI delivery

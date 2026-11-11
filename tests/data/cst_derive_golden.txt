@@ -260,7 +260,6 @@ scenes/Tests/Materials/Enamel/silver_reference.RISEscene  456971d71f37be52f9dc17
 scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene  da170cf1b8819a2dbb70888a720ff1e5aea77673213725a06e3eb2e7ec93f3b4  1566  31
 scenes/Tests/Materials/authored_mesh_tangent.RISEscene  c807e270d309a88cf09063bef8f3164ce0456be13d32c71b1024edf4e31d8d6e  848  24
 scenes/Tests/Materials/coated_material.RISEscene  81186b82e3c54809748f6bcd500d16dc57d16fcf9c42775a50ebfe01260f022c  2181  37
-scenes/Tests/Materials/composite_material.RISEscene  eab6c20eaa7a47fb4d25279e4ed1d0c083105361e4fce7182d67835df9adaa8f  5085  67
 scenes/Tests/Materials/dielectric_dispersion.RISEscene  474dfc394f2b2db465954f1ea0b7b1573b71c25ffb9d31e9e8102f46da75278a  2002  35
 scenes/Tests/Materials/dielectrics_changing_ior.RISEscene  85019633d2644f1ea563242ec6ab02e69dc0eb4dec57c48ebb918a4d7975f779  1976  39
 scenes/Tests/Materials/dielectrics_changing_scat.RISEscene  76cb69368af030695a28375f5bfd59caf04a1e32fc201ce6a74b321f80364e9a  1975  39

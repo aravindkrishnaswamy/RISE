@@ -106,7 +106,9 @@ static const IdentityCase kCases[] = {
 	{ "scenes/Tests/Legacy/translucent_bunny.RISEscene",                      "directlighting_shaderop, iridescent_painter",                  0x1513c77a209e3928ull },
 	{ "scenes/Tests/Legacy/materials.RISEscene",                              "cooktorrance, schlick, ward x2, ashikminshirley materials",    0x01ae464015b8402eull },
 	{ "scenes/Tests/Legacy/blurry_floor.RISEscene",                           "isotropic_phong_material",                                     0xf8dba1adcd1f03a9ull },
-	{ "scenes/Tests/Legacy/teapot.RISEscene",                                 "polished_material, bezierpatch_geometry",                      0x747dd21312bf8410ull },
+	// Re-pinned to 0x18fcfbb657983725ull after DL-616/617 (fef096fde, 2026-10-14)
+	// updated active bezierpatch_geometry crossing/interval seeding semantics.
+	{ "scenes/Tests/Legacy/teapot.RISEscene",                                 "polished_material, bezierpatch_geometry",                      0x18fcfbb657983725ull },
 	// Added by Phase 2 slice B1 (2026-10-10): the last shipped renders of the
 	// spectral caustic photon map, of per-object radiance maps (honoured only by
 	// the legacy chain, so different_rmaps moved here unmigrated) and of a

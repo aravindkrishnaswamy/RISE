@@ -903,6 +903,26 @@ class ExporterCoatNormalAlphaTangentGatingTest(unittest.TestCase):
         self.assertIn('coat_normal_source.bl_idname == "ShaderNodeNormalMap"', body)
         self.assertIn("only supports a direct Normal Map node on Coat Normal", body)
 
+    def test_normal_map_painters_use_linear_not_romm_linear(self):
+        # Post-Stage-B (`RISEPel = Rec709RGBPel`), ROMMRGB_Linear applies a
+        # ProPhoto->Rec.709 primary matrix that warps tangent-space normal
+        # vectors.  All three normal-map painter builders in exporter.py
+        # must emit COLOR_SPACE_LINEAR (0) and never COLOR_SPACE_ROMM_LINEAR.
+        coat_start = self.source.index("def _build_coat_normal_painter(")
+        coat_end = self.source.index("\ndef ", coat_start + 1)
+        coat_body = self.source[coat_start:coat_end]
+        self.assertIn("COLOR_SPACE_LINEAR,", coat_body)
+        self.assertNotIn("COLOR_SPACE_ROMM_LINEAR", coat_body)
+
+        norm_start = self.source.index("def _build_normal_map_modifier(")
+        norm_end = self.source.index("\ndef ", norm_start + 1)
+        norm_body = self.source[norm_start:norm_end]
+        self.assertIn("COLOR_SPACE_LINEAR,", norm_body)
+        self.assertNotIn("COLOR_SPACE_ROMM_LINEAR", norm_body)
+
+        mat_body = self._material_payload_body()
+        self.assertNotIn("COLOR_SPACE_ROMM_LINEAR", mat_body)
+
     # --- Alpha (DL-193) -------------------------------------------------
 
     def test_alpha_socket_is_read(self):

@@ -165,6 +165,8 @@ Flags:
 - `--width N` — image width in pixels (positive integer)
 - `--height N` — image height in pixels (positive integer)
 - `--pixel-ar X` — pixel aspect ratio (positive float; 1.0 = square)
+- `--denoise` / `--no-denoise` — force OIDN post-process denoising on or off (mutually exclusive)
+- `--camera <name>` (or `--camera=<name>`) — switch the active camera to a named camera in the scene
 
 Partial overrides preserve the non-overridden axes from whatever the
 scene file installed.  Order does not matter — the flag scanner accepts
