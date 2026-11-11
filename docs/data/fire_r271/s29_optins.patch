@@ -1,5 +1,5 @@
 diff --git a/src/Library/Utilities/FireCase.cpp b/src/Library/Utilities/FireCase.cpp
-index 124873185..e56d93b25 100644
+index 124873185..970baceba 100644
 --- a/src/Library/Utilities/FireCase.cpp
 +++ b/src/Library/Utilities/FireCase.cpp
 @@ -7,6 +7,7 @@
@@ -10,7 +10,7 @@ index 124873185..e56d93b25 100644
  #include <cstring>
  #include <limits>
  #include <sstream>
-@@ -218,10 +219,34 @@ double RISE::FireCase::ScheduleFlowThroughTimeS(const DerivedV1& derived)
+@@ -218,10 +219,49 @@ double RISE::FireCase::ScheduleFlowThroughTimeS(const DerivedV1& derived)
  		derived.flowThroughTimeS : derived.matchedScheduleFlowThroughTimeS;
  }
  
@@ -35,6 +35,21 @@ index 124873185..e56d93b25 100644
 +	return layer<static_cast<std::size_t>(InertPlumeLayers)?fraction[layer]:0.0;
 +}
 +
++__attribute__((noinline)) double RISE::FireCase::InertPlumeLayerFraction(const std::size_t layer,
++	const double cellWidthM,const double tier8CellWidthM)
++{
++	if(cellWidthM==tier8CellWidthM)return InertPlumeFraction(layer);
++	if(!(cellWidthM>0.0)||!(tier8CellWidthM>0.0))return 0.0;
++	const double low=static_cast<double>(layer)*cellWidthM,high=low+cellWidthM;
++	double sum=0.0;
++	for(std::size_t source=0u;source<static_cast<std::size_t>(InertPlumeLayers);++source){
++		const double a=std::max(low,static_cast<double>(source)*tier8CellWidthM);
++		const double b=std::min(high,static_cast<double>(source+1u)*tier8CellWidthM);
++		if(b>a)sum+=InertPlumeFraction(source)*(b-a)/tier8CellWidthM;
++	}
++	return sum;
++}
++
 +namespace
 +{
 +	// The historical pilot arithmetic, kept out of line so the r271 inert check below cannot perturb its fast-math code.
@@ -46,7 +61,7 @@ index 124873185..e56d93b25 100644
  	result=0.0;
  	if(!FinitePositive(derived.pilotSetpointTemperatureK) ||
  		!FinitePositive(derived.pilotExpansionVolumeRatioCap) ||
-@@ -244,6 +269,24 @@ bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
+@@ -244,6 +284,24 @@ bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
  	}
  	return true;
  }
@@ -71,7 +86,7 @@ index 124873185..e56d93b25 100644
  
  double RISE::FireCase::PilotCommandMaximumStepS(const DerivedV1& derived)
  {
-@@ -267,7 +310,12 @@ double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
+@@ -267,7 +325,12 @@ double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
  		!std::isfinite(diffusivity)||diffusivity<0.0||
  		!std::isfinite(previous)||previous<0.0)return 0.0;
  	double selected=std::numeric_limits<double>::infinity();
@@ -86,10 +101,10 @@ index 124873185..e56d93b25 100644
  		0.5*std::sqrt(2.0*dx/reducedGravity));
  	if(diffusivity>0.0)selected=std::min(selected,dx*dx/(8.0*diffusivity));
 diff --git a/src/Library/Utilities/FireCase.h b/src/Library/Utilities/FireCase.h
-index 920e90ad7..b885f15a6 100644
+index 920e90ad7..029e7d99d 100644
 --- a/src/Library/Utilities/FireCase.h
 +++ b/src/Library/Utilities/FireCase.h
-@@ -93,6 +93,18 @@ namespace RISE
+@@ -93,6 +93,22 @@ namespace RISE
  			const DerivedV1&,bool maskCell,double beginningTimeS,double endTimeS,
  			double& setpointTemperatureK,
  			std::string& error );
@@ -101,6 +116,10 @@ index 920e90ad7..b885f15a6 100644
 +		const int InertPlumeLayers=27;
 +		const double InertPlumeHeatW=26400.0;
 +		double InertPlumeFraction(std::size_t layer);
++		//! The same vertical profile on a grid of another cell width: the tier-8 table is piecewise constant in height
++		//! (layer width tier8CellWidthM) and is integrated over cell layer `layer` of width cellWidthM. Equal widths
++		//! return the table value itself.
++		double InertPlumeLayerFraction(std::size_t layer,double cellWidthM,double tier8CellWidthM);
 +		//! Optional seed (RISE_FIRE_INERT_SEED=eps, 0 when unset): each burner cell's dose is scaled by 1+eps*xi, xi uniform
 +		//! in [-1,1] from a hash of the cell and a 10 ms time bucket, renormalised per layer so the total stays exact.
 +		double InertPlumeSeedAmplitude();
@@ -454,7 +473,7 @@ index 152b24a3e..3d2a17432 100644
  	bool BuildFireProductionFrozenForceFieldsMetal(
  		const FireProductionFrozenForceRequest&,
 diff --git a/src/Library/Utilities/FireProductionSource.cpp b/src/Library/Utilities/FireProductionSource.cpp
-index ddf51eb75..927c55571 100644
+index ddf51eb75..c9c2fd9a2 100644
 --- a/src/Library/Utilities/FireProductionSource.cpp
 +++ b/src/Library/Utilities/FireProductionSource.cpp
 @@ -271,6 +271,9 @@ namespace RISE
@@ -485,7 +504,7 @@ index ddf51eb75..927c55571 100644
  				// r270: the radiatively adiabatic floor returns its convective flux
  				// to the first gas layer as a frozen energy dose, q/dz, before the
  				// expansion target is derived from the packet.
-@@ -359,6 +362,35 @@ namespace RISE
+@@ -359,6 +362,38 @@ namespace RISE
  							"production canonical source floor dose failed its Binary32 certificate");
  					}
  				}
@@ -502,13 +521,16 @@ index ddf51eb75..927c55571 100644
 +					if(seed<0.0)return Fail(error,"production canonical source inert plume seed is invalid");
 +					const std::uint64_t bucket=static_cast<std::uint64_t>(std::floor(request.beginningTimeS/FireCase::InertPlumeSeedBucketS));
 +					std::vector<double> weight(cells,1.0);
-+					for(std::size_t z=0u;z<static_cast<std::size_t>(FireCase::InertPlumeLayers)&&z<request.shape.nz;++z){
++					const double tier8CellWidthM=fireCase.derived.characteristicDiameterM/8.0;
++					for(std::size_t z=0u;z<request.shape.nz;++z){
++						const double layerFraction=FireCase::InertPlumeLayerFraction(z,fireCase.derived.cellWidthM,tier8CellWidthM);
++						if(layerFraction==0.0)continue;
 +						if(seed>0.0){double sum=0.0;
 +							for(std::size_t face=0u;face<floorFaces;++face){if(pattern[face]==0.0)continue;
 +								const std::uint64_t h=FireCase::SplitMix64(bucket*UINT64_C(0x9E3779B97F4A7C15)^static_cast<std::uint64_t>(z*floorFaces+face));
 +								weight[z*floorFaces+face]=1.0+seed*(2.0*static_cast<double>(h>>11)*0x1p-53-1.0);sum+=weight[z*floorFaces+face];}
 +							for(std::size_t face=0u;face<floorFaces;++face)if(pattern[face]!=0.0)weight[z*floorFaces+face]*=masked/sum;}
-+						const double heatWPerM3=FireCase::InertPlumeHeatW*FireCase::InertPlumeFraction(z)/(masked*volume);
++						const double heatWPerM3=FireCase::InertPlumeHeatW*layerFraction/(masked*volume);
 +						for(std::size_t face=0u;face<floorFaces;++face){
 +							if(pattern[face]==0.0)continue;MethaneSourcePacket& packet=packets[z*floorFaces+face];
 +							packet.sensibleEnergyDeltaJPerM3+=weight[z*floorFaces+face]*heatWPerM3*static_cast<double>(request.timeStepS);
@@ -521,7 +543,7 @@ index ddf51eb75..927c55571 100644
  				FireProductionFrozenSourcePacketSeal candidate;
  				candidate.shape_=request.shape;candidate.timeStepS_=request.timeStepS;
  				candidate.beginningTimeS_=request.beginningTimeS;
-@@ -468,6 +500,15 @@ namespace RISE
+@@ -468,6 +503,15 @@ namespace RISE
  					HashByteValues(candidate.sourceInputIdentity_,request.floorAbsorbingFaceMask);
  					HashFloatValues(candidate.sourceInputIdentity_,request.floorTangentialSpeedMPerS);
  				}
@@ -643,7 +665,7 @@ index fca7ad328..fb85a556d 100644
  	//! owner and the production manifold owner use the same rejection budget.
  	constexpr unsigned int FireStepRejectionRetryCap=20u;
 diff --git a/tests/fire_production_fp64/SourceManifest.h b/tests/fire_production_fp64/SourceManifest.h
-index 15203617a..f455f7929 100644
+index 15203617a..d15a6a005 100644
 --- a/tests/fire_production_fp64/SourceManifest.h
 +++ b/tests/fire_production_fp64/SourceManifest.h
 @@ -9,12 +9,12 @@ inline constexpr const char* FireProductionProjectionHeader="0f99ebfd80a56962349
@@ -657,8 +679,8 @@ index 15203617a..f455f7929 100644
  inline constexpr const char* FireSimulationRecordsSource="67b0bf8d90f79e733c04da1562a5c7e427cf6fa9d4ab0042c5c4308efdf4aaab";
 -inline constexpr const char* FireCaseHeader="bcf5a92b511cb6392e2303017276e675f6ea1e9e49c67c013ab6e651e17dc693";
 -inline constexpr const char* FireCaseSource="94832ce0436a976755c29aab0f19b187402ad1bd0daa791eec8f382df3ff6e7b";
-+inline constexpr const char* FireCaseHeader="9302db4fd21addd1272907c113f3b678ad9ff0170a77b6a28f7d72853330dc30";
-+inline constexpr const char* FireCaseSource="3a7c0423c854798c8195b897dd9f83a8af6a6f939e35fb4ab7dc881f8259340a";
++inline constexpr const char* FireCaseHeader="f1928dbb134aa9328b01a654af776c3fbb608d3d96f45915c5f56205b3bd2b55";
++inline constexpr const char* FireCaseSource="f32e0405b808e1d0e3026083d76ecc5757179721b4d4fe9797034ce258ef25c6";
  inline constexpr const char* Generator="851952641f74cc3ba43ff9a2562d11d3d3c14af40c1866e73f9181019ac3ab0d";
  } }
  
@@ -682,7 +704,7 @@ index 9337521b8..9b52b6096 100644
  	//! owner and the production manifold owner use the same rejection budget.
  	constexpr unsigned int FireStepRejectionRetryCap=20u;
 diff --git a/tests/fire_production_trace/SourceManifest.h b/tests/fire_production_trace/SourceManifest.h
-index 6b0f9eeaa..b94d60918 100644
+index 6b0f9eeaa..aee9ff7f4 100644
 --- a/tests/fire_production_trace/SourceManifest.h
 +++ b/tests/fire_production_trace/SourceManifest.h
 @@ -9,12 +9,12 @@ inline constexpr const char* FireProductionProjectionHeader="0f99ebfd80a56962349
@@ -696,8 +718,8 @@ index 6b0f9eeaa..b94d60918 100644
  inline constexpr const char* FireSimulationRecordsSource="67b0bf8d90f79e733c04da1562a5c7e427cf6fa9d4ab0042c5c4308efdf4aaab";
 -inline constexpr const char* FireCaseHeader="bcf5a92b511cb6392e2303017276e675f6ea1e9e49c67c013ab6e651e17dc693";
 -inline constexpr const char* FireCaseSource="94832ce0436a976755c29aab0f19b187402ad1bd0daa791eec8f382df3ff6e7b";
-+inline constexpr const char* FireCaseHeader="9302db4fd21addd1272907c113f3b678ad9ff0170a77b6a28f7d72853330dc30";
-+inline constexpr const char* FireCaseSource="3a7c0423c854798c8195b897dd9f83a8af6a6f939e35fb4ab7dc881f8259340a";
++inline constexpr const char* FireCaseHeader="f1928dbb134aa9328b01a654af776c3fbb608d3d96f45915c5f56205b3bd2b55";
++inline constexpr const char* FireCaseSource="f32e0405b808e1d0e3026083d76ecc5757179721b4d4fe9797034ce258ef25c6";
  inline constexpr const char* TraceAdapter="79588f9e7b3c4508c4f9ba5b768a035a4bf73b1b0369761a79e32f86cfc61f8f";
  inline constexpr const char* TraceCore="e28d986842c30fb74077f4f2acad1b7745667126b198ed7ed039826f66c81325";
  inline constexpr const char* IndependentWalker="43b9bceb346fbbc6fce4a9c889657da3a1d45fa66bd4d0f8ca35361d9c9b6406";

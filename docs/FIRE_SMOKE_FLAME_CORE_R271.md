@@ -1354,6 +1354,17 @@ Centre excess T (K):
 - **Near field: still short.** At 0.5–0.75 m the excess T is 57% above McCaffrey, the mass flux at 0.5–1 m is 73–74% of FDS's (below r270 default's 80–83%, which is helped by its grid noise), and the 90% height is 0.61 m against FDS's 0.43.
 - **Verdict:** the limited carrier is a clean, physically motivated fix worth adopting on the compact stencil, but it is not sufficient: the first metre still under-entrains. This is the same near-source quietness as §30–§31.
 
+## 33. Resolution check of the candidate (2026-11-11, running)
+
+Owner-approved check of whether the remaining first-metre gap is a resolution limit. RISE's capstone supports D*/6, D*/8 and D*/10 natively, so the check uses those tiers on the full production domain instead of a hand-trimmed half-cell domain: no domain change, and only the inert heat source needed generalising.
+
+- **Case:** the §20 non-reacting plume, candidate settings (compact stencil, limited carrier, C_v 0.07), 10 s, frames from 2 s.
+- **Grids:** tier 6 (dx 0.0408 m, 52×52×80, 44 burner cells), tier 8 (0.0306 m, 69×69×106, 69; §31's run), tier 10 (0.0245 m, 86×86×132, 120).
+- **Heat source:** the tier-8 vertical profile is kept in physical height and integrated over each cell layer (`FireCase::InertPlumeLayerFraction`; equal widths return the table value, so tier 8 is unchanged). Part of the uncommitted inert-plume opt-in.
+- **FDS:** `make_inert_fds_tier.py` writes the matching input on RISE's grid, burner mask and per-cell inflow at each tier. At tier 8 it reproduces `make_inert_fds.py`'s input to 2e-15.
+- **Runs:** `r271_inert/res_t6_lc`, `res_t10_lc` (driver `inert_build_res`, `RISE_R271_TIER`), `r271_inert_fds/tier6`, `tier10`.
+- **Measure:** RISE/FDS mass flux, entrainment rate, centre excess T and rms w/w_c at matched heights per tier. A resolution-limited gap should close as the tier rises.
+
 ## Next (owner decisions)
 
 1. **Plan agreed 2026-11-10 (owner):** stop the open-ended floor-mechanism hunt (§30 closes it) and judge a candidate package against physical targets.
@@ -1361,7 +1372,7 @@ Centre excess T (K):
    - Done (§31): the seed adds little on top of the carrier (3 m mass flux 0.764 against 0.725). Package = limited carrier alone.
    - Done (§32): reacting 4 s A/B. Far field within 15–27% of McCaffrey; first metre still 40–57% too hot and the flame 0.61 m against 0.43.
    - **Adopted 2026-11-11 (owner):** the limited momentum carrier with the compact viscous stencil is the default candidate. The carrier is committed as an opt-in (`RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1` with `RISE_FIRE_COMPACT_VISCOUS_STENCIL=1`); the production default is unchanged until the candidate is promoted.
-   - **Approved 2026-11-11 (owner):** the reduced-domain resolution check of both codes for the remaining near-field gap.
+   - **Approved 2026-11-11 (owner):** the resolution check of both codes for the remaining near-field gap. Running as §33 on the native tiers 6 / 8 / 10.
    - In reserve: a reduced-domain resolution check of both codes, if the package falls short.
    - The limited momentum carrier (§29) stays the one identified numerics contributor: 2–3× base unsteadiness with an FDS-like spectrum aloft. Superbee on top adds only 6–9% at k7–k16.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
