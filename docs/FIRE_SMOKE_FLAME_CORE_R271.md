@@ -1354,7 +1354,7 @@ Centre excess T (K):
 - **Near field: still short.** At 0.5–0.75 m the excess T is 57% above McCaffrey, the mass flux at 0.5–1 m is 73–74% of FDS's (below r270 default's 80–83%, which is helped by its grid noise), and the 90% height is 0.61 m against FDS's 0.43.
 - **Verdict:** the limited carrier is a clean, physically motivated fix worth adopting on the compact stencil, but it is not sufficient: the first metre still under-entrains. This is the same near-source quietness as §30–§31.
 
-## 33. Resolution check of the candidate (2026-11-11, running)
+## 33. Resolution check of the candidate: the gap does not close from D*/6 to D*/8 (2026-11-11, tier 10 running)
 
 Owner-approved check of whether the remaining first-metre gap is a resolution limit. RISE's capstone supports D*/6, D*/8 and D*/10 natively, so the check uses those tiers on the full production domain instead of a hand-trimmed half-cell domain: no domain change, and only the inert heat source needed generalising.
 
@@ -1364,6 +1364,22 @@ Owner-approved check of whether the remaining first-metre gap is a resolution li
 - **FDS:** `make_inert_fds_tier.py` writes the matching input on RISE's grid, burner mask and per-cell inflow at each tier. At tier 8 it reproduces `make_inert_fds.py`'s input to 2e-15.
 - **Runs:** `r271_inert/res_t6_lc`, `res_t10_lc` (driver `inert_build_res`, `RISE_R271_TIER`), `r271_inert_fds/tier6`, `tier10`.
 - **Measure:** RISE/FDS mass flux, entrainment rate, centre excess T and rms w/w_c at matched heights per tier. A resolution-limited gap should close as the tier rises.
+
+**Result at tiers 6 and 8 (2026-11-11; tier 10 still running).** `res_compare.py`, window 5–10 s for all runs (the 10 s runs cannot use §31's 6–14 s; RISE is still spinning up, so read the trend across tiers, not the level). Evidence: `s33_runs.txt`.
+
+| RISE / FDS | D*/6 | D*/8 |
+|---|---|---|
+| mass flux at 0.5 / 1.0 / 2.0 / 3.0 m | 0.73 / 0.71 / 0.69 / 0.67 | 0.69 / 0.66 / 0.64 / 0.69 |
+| entrainment rate, 0.3–0.5 m | 0.63 | 0.51 |
+| entrainment rate, 0.5–2.0 m | 0.68–0.69 | 0.62–0.64 |
+| centre excess T at 0.5 / 1.0 / 2.0 m | 1.37 / 1.64 / 1.61 | 1.25 / 1.79 / 1.80 |
+| centre rms w/w_c at 0.3 / 0.5 / 1.0 m | 0.30 / 0.28 / 0.71 | 0.29 / 0.28 / 0.49 |
+
+- **The gap does not close with resolution.** RISE carries about 70% of FDS's mass flux at both cell sizes, and its base fluctuation is 0.3 of FDS's at both. If anything the finer grid is slightly further from FDS in the first metre.
+- **Each code is consistent with itself.** FDS's 3 m mass flux is 0.856 (D*/6) against 0.894 kg/s (D*/8); RISE's is 0.572 against 0.621. Base rms w/w_c: FDS 0.091 / 0.078, RISE 0.027 / 0.022.
+- **Reading:** the remaining deficit is a property of the scheme at a fixed number of cells across the plume (2.4 and 3.1 cells per plume radius here), not something a modestly finer grid buys back. Tier 10 (4 cells) will confirm or qualify this.
+- **Practical gain:** tier 6 reproduces the tier-8 RISE/FDS ratios in 3.4 h for 10 s, so it is the test bed for the next arms.
+- **Follow-up arms launched at tier 6** (carrier, compact, 10 s): `res_t6_lc_cv02` (momentum C_v 0.02) then `res_t6_lc_cv04` (0.04). §31 showed C_v 0.02 alone revives the base but with 2–3× FDS's grid-scale share aloft, while the carrier alone gives a clean spectrum and a quiet base. The arms test whether the two combine: an FDS-like base without the noise.
 
 ## Next (owner decisions)
 
