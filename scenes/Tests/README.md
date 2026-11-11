@@ -27,7 +27,7 @@ fixture preserves the documented approximation rather than correcting it.
 - `Cameras/`: isolated camera-model checks (sensor-format presets, tilt-shift, named-camera selection)
 - `ChunkCoverage/`: minimal parser-chunk acceptance and derive coverage
 - `Caustics/`: compact caustic and SMS comparison scenes
-- `Geometry/`: primitive and CSG sanity scenes, plus the object-parenting scene-graph check, plus
+- `Geometry/`: primitive and CSG sanity scenes, `teapot_watertight_glass` (certified watertight bicubic Bezier teapot + warped bilinear vessel under dielectric refraction, `DL-630`), plus the object-parenting scene-graph check, plus
   `csg_positioned_operands` (a csg_object with its own `position` on top of ALREADY-positioned
   operands -- the "87" operand-rebase semantics, in the supported IN-VIEW case; intentionally
   trips `Job::AddCSGObject`'s parse-time rebase warning, and deliberately omits the

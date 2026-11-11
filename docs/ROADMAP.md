@@ -1,6 +1,6 @@
 # RISE Implementation Roadmap
 
-**Last Verified Against Repository:** `HEAD` (`6946c4c82`, 2026-11-10)
+**Last Verified Against Repository:** `HEAD` (`2026-11-11`, post-Tier-0 completion)
 **Lifecycle:** Active roadmap — authoritative consolidated backlog across core rendering, materials, spectral/color pipeline, GUI/editor, platform bridges, and agentic authoring.
 
 See [README.md](README.md) for the documentation catalog, [DEBT_LEDGER.md](DEBT_LEDGER.md) for the granular correctness-debt tracker, [IMPROVEMENTS.md](IMPROVEMENTS.md) for historical rendering gap criteria, and [GUI_ROADMAP.md](GUI_ROADMAP.md) for the GUI milestone breakdown.
@@ -15,42 +15,36 @@ Before prioritizing new work, note what is **complete in production** as of Nove
 - **Integrators & Transport:** Unidirectional PT, BDPT, VCM (including SPPM auto-radius clipped to pixel footprint, surface + volumetric merging, and continuous-PMF env+light sampling), PSSMLT (frozen legacy tier), Specular Manifold Sampling (`SMS` + `sms_extended` Phases 1–4 across RGB/NM/HWSS), OpenPGL path guiding (one-sample + RIS with exact aggregate MIS partitioning), and the `auto_rasterizer` / `auto_spectral_rasterizer` two-tier router.
 - **Materials, Curves & Signals:** GGX + height-correlated Smith $G_2$ directional/anisotropic energy-compensation LUTs, `pbr_metallic_roughness_material`, `coated_material` (refracted-frame substrate + trapped diffuse recycling + `coat_normal`), `thin_film_material` + GGX Airy thin-film, `fabric_material` (Charlie sheen) + `weave_material` + `add_fuzz`, `hair_geometry` + Chiang `HairBSDF` + Yan 2017 fur medulla (`medulla_ratio`) + `.hair` loader + Hair Phase 4 LOD, Donner-Jensen diffusion + `randomwalk_sss_material` (spectral + relative exterior IOR), scalar material `alpha_coverage`, `relief_modifier` / `glint_modifier` / `add_wetness` / `add_wear`, and cross-object `proximity(r)` / watertight `interior(r)` shading signals.
 - **Spectral & Color Pipeline:** `RISEPel = Rec709RGBPel` (Linear Rec.709 / D65 working space), Stage C illuminant-aware Jakob-Hanika LUT (`100 %` cell convergence; `GetColorNM` vs `GetRadianceNM`), physical-scalar `IScalarPainter` separation, GPU-backed OIDN denoising with albedo/normal AOVs, and `FrameStore` HDR display pipeline.
-- **Multi-Platform GUI, Importers & Agent Surface:** Native macOS SwiftUI + Metal and Windows Qt6 + D3D11/OpenGL editors (with Material Editor Slices 1–6: node graph, `ObjectGraphCanvas`, 3D `MaterialPreview` shaderball, Kelvin/Sellmeier/preset-metal/thin-film spectral controls), Android Compose + NDK viewer/editor, glTF 2.0 importer (9 KHR material/light/transform extensions), Blender 4.x add-on (C ABI v17), and the 38-tool MCP / HTTP / in-app LLM agent with 13 runtime authoring skills and 523 standalone C++ test suites.
+- **Multi-Platform GUI, Importers & Agent Surface:** Native macOS SwiftUI + Metal and Windows Qt6 + D3D11/OpenGL editors (with Material Editor Slices 1–6: node graph, `ObjectGraphCanvas`, 3D `MaterialPreview` shaderball, Kelvin/Sellmeier/preset-metal/thin-film spectral controls, `NamedViewsPanel`, and Keychain / Windows Credential Manager API-key persistence), Android Compose + NDK viewer/editor, glTF 2.0 importer (9 KHR material/light/transform extensions), Blender 4.x add-on (C ABI v17), and the 38-tool MCP / HTTP / in-app LLM agent with 13 runtime authoring skills and 525 standalone C++ test suites.
 
 ---
 
-## Tier 0 — Immediate Bug Fixes, Active Correctness Debts & Parity Quick Wins
+## Tier 0 — Immediate Bug Fixes, Active Correctness Debts & Parity Quick Wins (**COMPLETED 2026-11-11**)
 
-Small, self-contained items with high correctness or usability ROI (days to ~2 weeks):
+All 14 Tier 0 items are **complete, red-proven, and verified green** on `master` (leaving **0 active unparked** items in [DEBT_LEDGER.md](DEBT_LEDGER.md)):
 
-### 0.1 Code & Scene Hygiene Bugs Uncovered in the 2026-11-10 Audit
+### 0.1 Code & Scene Hygiene Bugs (**COMPLETED — `df6877d86`**)
 
-1. **Blender Bridge Normal-Map Color-Space Bug (High Priority):**
-   - `src/Blender/addons/rise_renderer/exporter.py` and `src/Blender/bridge/rise_blender_bridge.cpp` still pass `color_space = 2` (`eColorSpace_ROMMRGB_Linear`) when creating `png_painter` chunks for normal maps and non-color scalar textures — a Stage-A leftover from when `RISEPel` was `ROMMRGBPel`. Since Stage B (`RISEPel = Rec709RGBPel`), `ROMMRGB_Linear` applies a Bradford + primary matrix conversion that warps tangent-space normal vectors; `GLTFSceneImporter.cpp` already uses `0` (`eColorSpace_Rec709RGB_Linear`, verbatim passthrough). Switch the Blender bridge non-color path to `0` and add a bridge regression test (`BlenderBridgeCoatNormalTest` / new normal-decode check).
-2. **Unblock `add_wear` on Analytic Patch Geometries:**
-   - `CurvBarrenGeometryKind_` in [../src/Library/Agent/AgentSession.cpp](../src/Library/Agent/AgentSession.cpp) still rejects `bezierpatch_geometry` and `bilinearpatch_geometry` as curvature-barren, even though `DL-20` implemented analytical Weingarten curvature at intersection time on both classes (`tests/PatchCurvatureTest.cpp`). Remove both from the blocklist and cover with an agent verb test.
-3. **Relocate Stray Frozen-Material Test Scene & Stale RPC Comment:**
-   - Move or migrate `scenes/Tests/Materials/composite_material.RISEscene` (missed during Legacy Phase 2 migration; still authors frozen `composite_material` outside `scenes/Tests/Legacy/`).
-   - Update the stale `AgentPopulateSceneRequest` comment in [../src/Library/Agent/AgentRpc.h](../src/Library/Agent/AgentRpc.h) to match `populate_scene`'s shipped multi-object support (`poisson_disk`, `on_grid`, `along_curve`).
+1. ~~**Blender Bridge Normal-Map Color-Space Bug:**~~ **SHIPPED (`df6877d86`).** Switched Blender normal-map and non-color scalar PNG textures from `COLOR_SPACE_ROMM_LINEAR = 2` to `COLOR_SPACE_LINEAR = 0` (`Rec709RGB_Linear`) in `src/Blender/addons/rise_renderer/{exporter.py,material_bake.py}` and `src/Blender/native/rise_blender_bridge.{h,cpp}`, clamped legacy `color_space == 2` normal-map callers to `0`, and gated in `tests/BlenderBridgeCoatNormalTest.cpp` + `test_hair_export.py`.
+2. ~~**Unblock `add_wear` on Analytic Patch Geometries:**~~ **SHIPPED (`df6877d86`).** Removed `bezierpatch_geometry` and `bilinearpatch_geometry` from `CurvBarrenGeometryKind_` in [../src/Library/Agent/AgentSession.cpp](../src/Library/Agent/AgentSession.cpp), unblocking `add_wear`, `add_wetness`, and `make_fabric` on analytic patches (`tests/AgentAddWearTest.cpp`).
+3. ~~**Relocate Stray Frozen-Material Test Scene & Stale RPC Comment:**~~ **SHIPPED (`df6877d86`).** Removed duplicate `scenes/Tests/Materials/composite_material.RISEscene` (canonical copy kept at `scenes/Tests/Legacy/composite_material.RISEscene`) and aligned `populate_scene` wire-contract comments in [../src/Library/Agent/AgentRpc.h](../src/Library/Agent/AgentRpc.h) / `AgentRpc.cpp`.
 
-### 0.2 Active Un-Parked Correctness Debts ([DEBT_LEDGER.md](DEBT_LEDGER.md) `DL-626..DL-632`)
+### 0.2 Active Un-Parked Correctness Debts ([DEBT_LEDGER.md](DEBT_LEDGER.md) `DL-626..DL-632` — **ALL 7 CLOSED**)
 
-All 7 currently active (non-parked) Debt Ledger items have bounded reproducers ready:
+1. ~~**`DL-632` (Windows Test Portability):**~~ **CLOSED (`df6877d86`).** Guarded all 15 POSIX-dependent test suites for Windows/MSVC, seeded `TMPDIR` in `run_all_tests.ps1`, and added a permanent `_WIN32` POSIX-header scan across all 525 `tests/*.cpp` files in `tests/SourceHygieneTest.cpp`.
+2. ~~**`DL-628` (Deterministic Heterogeneous Medium RNG):**~~ **CLOSED (`f6ac1fc56`).** Added `ScopedMediumTileSeed` + `ActiveMediumRNG{,_NM}()` across all tile/row/light/MLT dispatchers so multi-threaded Pel, NM, and HWSS `HeterogeneousMedium` renders reproduce bit-identically under a fixed `std::srand` (`tests/LuminarySamplerAreaTest.cpp` mode `F`).
+3. ~~**`DL-627` (CSG Subtraction Multi-Lobe Edge Cases):**~~ **CLOSED (`96021fa5c`).** Fixed outside-both covered-lobe advance, 3rd-`B`-lobe interval clamping, unbacked `CoincidenceTol` comparisons across nested CSGs, and shrank per-frame `NextLobeSummary` storage from ~1 KB to ~176 bytes in `src/Library/Objects/CSGObject.cpp` (`tests/CsgMeshOperandTest.cpp` Section `L`, **304/0**).
+4. ~~**`DL-626` (Open-Sheet Seeding & Walk Edge Cases):**~~ **CLOSED (`9ccd85f66`).** Added `ShapeRevision()` tracking for AABB-preserving shape edits, canonical geometric ordering (`SheetGeomOrderLess`), multi-fold `CrossingMedia` enclosure in `ResolveOpenSheetCrossing`, `DetourOriginForSeedExit` past `pSeedObject`, and 64-sample / 32-normal `DescribeOpenSheet` facet coverage ([DL622_OPEN_SHEET_SEEDING_AND_WALK_MEMBERSHIP.md](DL622_OPEN_SHEET_SEEDING_AND_WALK_MEMBERSHIP.md) §5.8; `tests/OpenSheetHalfSpaceSeedingTest.cpp` **205/0**).
+5. ~~**`DL-629` (Non-Rectangular `ClippedPlaneGeometry` Luminary Residual):**~~ **CLOSED (`f6ac1fc56`).** Verified zero luminary sampler bias via high-power $96 \times 96 \times 1024\,\text{spp} \times 64$ quadrature and fixed the four underlying $O(10^{-5}\text{--}10^{-4})$ progressive Pel, `ColorMath::mxRec709toXYZ`, orthographic `BDPTIntegrator`, and odd-dimension `OrthographicCamera` biases (`tests/LuminarySamplerAreaTest.cpp` modes `P`/`Q`, **84/0**).
+6. ~~**`DL-630` (Certified Watertight `.bezier` / `.bilinear` Glass Models):**~~ **CLOSED (`7b12fa9e7`).** Shipped `models/bezier/teapot_watertight.bezier` (632 bicubic patches), `models/raw/vessel_watertight.bilinear` (552 bilinear patches), and `scenes/Tests/Geometry/teapot_watertight_glass.RISEscene`, certified across analytic patch refraction, `DisplacedGeometry`, `SeedFromPoint`, and CSG while preserving historical defective-model census pins (`tests/PatchSetCertificationTest.cpp` **253/0**).
+7. ~~**`DL-631` (`+2 %` Render CPU Drift Bisect):**~~ **CLOSED (`9ccd85f66`).** Replaced `MyIORStack`'s heap `std::vector` base with inline 4-entry SBO (`-65 %` `malloc`/`free` samples), added a `!cat.hasSheets` fast path in `SeedFromPointImpl`, and eliminated duplicate `HWSSLaneSeeds` origin probe walks in `PathTracingIntegrator::IntegrateRayHWSS` (`hwss_prism_dispersion_pt` `-3.23 %` wall time across $n = 6$ `ABBA` pairs; `cornellbox_bdpt_materials_pt` `-0.24 %` user CPU).
 
-1. **`DL-632` (Windows Test Portability):** Replace POSIX `<sys/wait.h>` / `fork()` usage in `tests/LuminarySamplerAreaTest.cpp` so the Windows CMake test build (`rise_all_tests`) compiles and runs cleanly.
-2. **`DL-628` (Deterministic Heterogeneous Medium RNG):** Replace `HeterogeneousMedium`'s `thread_local` `rand()`-seeded ratio-tracking RNG with caller/ray/tile-seeded deterministic sampling so repeated renders and multi-threaded walks are reproducible without fresh-thread test workarounds.
-3. **`DL-627` (CSG Subtraction Multi-Lobe Edge Cases):** Audit and close remaining CSG subtraction boundary/stack interactions on multi-lobe transmissive operands.
-4. **`DL-626` (Open-Sheet Seeding & Walk Edge Cases):** Follow-through on `DL-622` for multi-sheet / uncertified open-boundary dielectric and translucent configurations ([DL622_OPEN_SHEET_SEEDING_AND_WALK_MEMBERSHIP.md](DL622_OPEN_SHEET_SEEDING_AND_WALK_MEMBERSHIP.md)).
-5. **`DL-629` (Non-Rectangular `ClippedPlaneGeometry` Luminary Residual):** Investigate the `2–4e-5` trapezoid area-sampling residual left after `DL-459`/`DL-460`.
-6. **`DL-630` (`.bezier` / `.bilinear` Asset Seam Welding):** Repair/weld patch seam normals/boundaries in legacy `.bezier` / `.bilinear` assets where discontinuous patch seams trip open-sheet or curvature edge cases.
-7. **`DL-631` (`+2 %` Render CPU Drift Bisect):** Profile and bisect the ~`2 %` CPU throughput drift flagged during late-October debt closures under `render_thread_reserve_count 0`.
+### 0.3 Desktop Parity & CLI Quick Wins (**COMPLETED — `df6877d86`, `7236a0135`**)
 
-### 0.3 Desktop Parity & CLI Quick Wins
-
-1. **Windows Qt6 `NamedViewsPanel` Widget (`GUI_ROADMAP` B2 Parity):** `ViewportBridge` on Windows already exposes `getNamedViews`, `saveCurrentCameraAsNamedView`, `applyNamedView`, and `deleteNamedView`, and macOS ships `NamedViewsSection.swift`, but Windows Qt lacks the panel widget. Add `NamedViewsPanel` to `build/VS2022/RISE-GUI/`.
-2. **Windows Credential Manager for LLM API Keys:** Persist `ChatPanel` API keys via Windows `CredWriteW` / `CredReadW` (`wincred.h`) to match macOS Keychain (`KeychainStore.swift`), replacing the current session-only / env-var storage on Windows.
-3. **CLI Overrides (`OIDN-P2-1` & Camera Selection):** Add `--denoise` / `--no-denoise` and `--camera <name>` flags to `src/RISE/commandconsole.cpp` alongside `--width` / `--height` / `--pixel-ar`.
-4. **Standalone `MaterialPreviewTest`:** Add `tests/MaterialPreviewTest.cpp` (planned in [gui/MATERIAL_EDITOR.md](gui/MATERIAL_EDITOR.md) Slice 4) to gate headless `CreateInteractiveMaterialPreviewPipeline` shaderball rendering directly in `fast` CI.
+1. ~~**Windows Qt6 `NamedViewsPanel` Widget (`GUI_ROADMAP` B2 Parity):**~~ **SHIPPED (`7236a0135`).** Added `build/VS2022/RISE-GUI/NamedViewsPanel.{h,cpp}` wired into `MainWindow.{h,cpp}` and `RISE-GUI.vcxproj`.
+2. ~~**Windows Credential Manager for LLM API Keys:**~~ **SHIPPED (`7236a0135`).** Added `build/VS2022/RISE-GUI/CredentialStore.{h,cpp}` (`CredWriteW` / `CredReadW` / `CredDeleteW`) with write-only `ChatPanel` key entry matching macOS `KeychainStore.swift`.
+3. ~~**CLI Overrides (`OIDN-P2-1` & Camera Selection):**~~ **SHIPPED (`df6877d86`).** Added `--denoise` / `--no-denoise` (`IRasterizer::SetDenoisingOverride`) and `--camera <name>` in `src/RISE/CliOptions.h` + `src/RISE/commandconsole.cpp` (`tests/CliOverridesTest.cpp`).
+4. ~~**Standalone `MaterialPreviewTest`:**~~ **SHIPPED (`df6877d86`).** Added `tests/MaterialPreviewTest.cpp` gating headless 3D `MaterialPreview` shaderballs, D1–D3 spectral helpers, and `CreateInteractiveMaterialPreviewPipeline` in `fast` CI.
 
 ---
 

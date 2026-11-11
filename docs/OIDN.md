@@ -828,20 +828,25 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P2 — polish
 
 #### OIDN-P2-1 — CLI override flag for denoise
-- **Status:** Closed (won't do, low ROI) — 2026-04-29.  Editing
-  the scene file is acceptable friction for batch sweeps; the
-  parser already supports per-chunk `oidn_denoise` and
-  `oidn_quality` parameters.  Reopen if a benchmarking workflow
-  emerges that genuinely needs flag-driven override.
-- **Owner:** —
-- **PR:** —
-- **Why:** Today the only way to flip `oidn_denoise` for a scene is to edit
-  the `.RISEscene` file. A CLI flag like `--no-denoise` /
-  `--denoise-quality fast` in the `rise` binary would help for batch sweeps
-  and benchmarking.
-- **Touch:** wherever the CLI lives (e.g. `src/Tools/RenderApp/` or analogue).
+- **Status:** Shipped (2026-11-11, `df6877d86`). `--denoise` and `--no-denoise`
+  (mutually exclusive) are parsed in `src/RISE/CliOptions.h` +
+  `src/RISE/commandconsole.cpp` alongside `--camera <name>`, `--width`,
+  `--height`, and `--pixel-ar`, and applied post-load via
+  `IRasterizer::SetDenoisingOverride` (`Rasterizer.h` and `AutoRasterizer`
+  forwarding), gated by `tests/CliOverridesTest.cpp`.
+- **Owner:** Aravind
+- **PR:** `df6877d86` (Tier 0.3.3)
+- **Why:** Allows batch sweeps and benchmarks to force OIDN post-process
+  denoising on or off from the `rise` / `RISE-CLI` command line without editing
+  `.RISEscene` files.
+- **Touch:** [CliOptions.h](../src/RISE/CliOptions.h),
+  [commandconsole.cpp](../src/RISE/commandconsole.cpp),
+  [IRasterizer.h](../src/Library/Interfaces/IRasterizer.h),
+  [Rasterizer.h](../src/Library/Rendering/Rasterizer.h),
+  [AutoRasterizer.{h,cpp}](../src/Library/Rendering/AutoRasterizer.cpp),
+  [CliOverridesTest.cpp](../tests/CliOverridesTest.cpp).
 - **Effort:** ~1 hour.
-- **Result:** —
+- **Result:** Shipped and covered in `fast` CI (`CliOverridesTest`).
 
 #### OIDN-P2-2 — Write `_albedo` / `_normal` AOVs as separate file outputs
 - **Status:** Closed (won't do, low ROI) — 2026-04-29.  No

@@ -2772,21 +2772,23 @@ namespace RISE
 			}
 		}
 
-		//! DL-618 / DL-622: the certified open sheets whose medium holds @a pos
-		//! under the sheet-normal convention, with the pairwise relations the
-		//! seed uses (same-material siblings keep one; different-material
-		//! siblings or mutual nesting set @a declineSheets).  Shared by
-		//! `SeedFromPointImpl` and `OpenSheetEnclosesCrossing` (DL-622 review
-		//! round 3), so a seed at a point and an unpushed-exit resolution there
-		//! run the same confirmation, with two exceptions:
-		//!  - the exit leaves out the sheet it is crossing (@a pExclude),
-		//!    which the seed would hold only if the point just past the
-		//!    crossing were still in the crossed sheet's medium -- impossible
-		//!    for a planar sheet left through its back face, possible for a
-		//!    CURVED one whose representative (or auxiliary) normal ray from
-		//!    that point still meets it on a back face;
-		//!  - a seed at a luminaire passes its own object as @a pSeedObject
-		//!    (exempt on its first self-hit), the exit passes none.
+		//! DL-618 / DL-622 / DL-626: the certified open sheets whose medium holds
+		//! @a pos under the sheet-normal convention, with the pairwise relations
+		//! the seed uses (same-material siblings keep the geometrically canonical
+		//! one (`A52b`); different-material siblings or mutual nesting set
+		//! @a declineSheets).  Shared by `SeedFromPointImpl`,
+		//! `ResolveOpenSheetCrossing`, and `OpenSheetEnclosesCrossing` (`DL-622`
+		//! review round 3, `DL-626`), so a seed at a point and an exit resolution
+		//! there run the same confirmation:
+		//!  - planar exits pass the crossed sheet as @a pExclude (leaving through
+		//!    a planar sheet's back face cannot remain on its back side), whereas
+		//!    `ResolveOpenSheetCrossing` passes `pExclude = 0` when crossing a
+		//!    non-planar sheet so an overhanging outer fold of the same curved /
+		//!    pleated sheet keeps enclosing @a pos (`A53`);
+		//!  - a luminaire seed passes its own object as @a pSeedObject, exempting
+		//!    only its near-origin self-hit and starting any free-space detour
+		//!    past @a pSeedObject's exit face (`DetourOriginForSeedExit`, `A55`)
+		//!    without tunneling through an enclosing room ceiling/wall.
 		//! @a ordered / @a orderedCount (the closed media containing @a pos)
 		//! only feed each sheet's `closedInner`.
 		inline void ConfirmOpenSheetsAt(
