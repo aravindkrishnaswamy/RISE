@@ -1321,13 +1321,16 @@ A bounded closing step on the floor-layer question, after an owner review of the
 - **The limited carrier closes about 60% of the 3 m mass-flux gap** (0.454 → 0.725; FDS 0.922), slightly more than C_v 0.02, and from 0.5 m up it entrains at 74–87% of FDS's rate against the baseline's 42–54%.
 - **It does so with an FDS-like spectrum.** The grid-scale share matches FDS within 5% from 1.5 m up, where C_v 0.02 carries 2–3× FDS's. The large-scale share is FDS's from 2 m.
 - **The far plume is close to FDS** (excess T 59 against 48 K and w_c 2.62 against 2.67 m/s at 3 m). The first metre is still too steady and too hot: rms w/w_c is a third of FDS's at 0.29–0.50 m, and the excess T at 1 m is 534 K against 339.
-- The seed alone does less at every height. Running: `inert_compact_lc_seed02`, the limited carrier plus the ±20% seed.
+- The seed alone does less at every height.
+- **Limited carrier plus the ±20% seed** (`inert_compact_lc_seed02`, 14 s, exit 98, 2026-11-11) adds little to the carrier alone: 3 m mass flux 0.764 against 0.725 kg/s, entrainment rate +1–8%, centre rms w/w_c at 0.29 / 0.50 m 0.031 / 0.057 against 0.027 / 0.053, excess T at 1 m 523 against 534 K. The seed does not fix the first metre, so the candidate package is the limited carrier alone.
+- Running: reacting 4 s A/B `r271_compact_stencil/ab_lc_compact` (limited carrier, compact stencil, C_v 0.07, from r270 step 9223; driver `ab_build_lc`).
 
 ## Next (owner decisions)
 
 1. **Plan agreed 2026-11-10 (owner):** stop the open-ended floor-mechanism hunt (§30 closes it) and judge a candidate package against physical targets.
    - Done (§31): the limited carrier alone closes about 60% of the inert plume's 3 m mass-flux gap with an FDS-like spectrum; the first metre stays too steady.
-   - Running: `r271_inert/inert_compact_lc_seed02` (limited carrier plus the ±20% seed, 14 s).
+   - Done (§31): the seed adds little on top of the carrier (3 m mass flux 0.764 against 0.725). Package = limited carrier alone.
+   - Running: reacting 4 s A/B `ab_lc_compact`, to be judged on McCaffrey centreline values, entrainment and flame height.
    - Then: limited carrier plus the §22 heat-source seed, judged on McCaffrey centreline values, Heskestad entrainment and flame height, with FDS as a second reference.
    - In reserve: a reduced-domain resolution check of both codes, if the package falls short.
    - The limited momentum carrier (§29) stays the one identified numerics contributor: 2–3× base unsteadiness with an FDS-like spectrum aloft. Superbee on top adds only 6–9% at k7–k16.
