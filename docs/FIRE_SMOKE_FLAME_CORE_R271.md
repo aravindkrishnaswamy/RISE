@@ -1381,6 +1381,21 @@ Owner-approved check of whether the remaining first-metre gap is a resolution li
 - **Practical gain:** tier 6 reproduces the tier-8 RISE/FDS ratios in 3.4 h for 10 s, so it is the test bed for the next arms.
 - **Follow-up arms launched at tier 6** (carrier, compact, 10 s): `res_t6_lc_cv02` (momentum C_v 0.02) then `res_t6_lc_cv04` (0.04). §31 showed C_v 0.02 alone revives the base but with 2–3× FDS's grid-scale share aloft, while the carrier alone gives a clean spectrum and a quiet base. The arms test whether the two combine: an FDS-like base without the noise.
 
+**Carrier + momentum C_v 0.02 at tier 6** (`res_t6_lc_cv02`, exit 98, window 5–10 s; evidence appended to `s33_runs.txt`).
+
+| RISE / FDS at tier 6 | carrier, C_v 0.07 | carrier, C_v 0.02 |
+|---|---|---|
+| mass flux at 0.5 / 1.0 / 2.0 / 3.0 m | 0.73 / 0.71 / 0.69 / 0.67 | 1.04 / 1.08 / 1.09 / 0.98 |
+| entrainment rate, 0.3–2.0 m | 0.63–0.69 | 1.08–1.16 |
+| centre excess T at 0.3 / 0.5 / 1.0 / 2.0 m | 1.22 / 1.37 / 1.64 / 1.61 | 1.00 / 0.96 / 0.94 / 0.96 |
+| centre w at 0.5 / 1.0 / 2.0 m | 1.14 / 1.24 / 1.22 | 0.96 / 0.87 / 0.88 |
+| centre rms w/w_c at 0.3 / 0.5 / 1.0 m | 0.30 / 0.28 / 0.71 | 1.14 / 0.97 / 1.09 |
+| grid-scale w′ share at 0.5 / 1.0 / 2.0 / 3.0 m (FDS 0.23 / 0.19 / 0.13 / 0.08) | 0.34 / 0.22 / 0.15 / 0.11 | 0.39 / 0.38 / 0.34 / 0.30 |
+
+- **The means match FDS.** Mass flux within 10%, centre excess T within 7% up to 2 m, and the base fluctuation is FDS's. The first metre is fixed in the inert plume.
+- **The cost is grid noise.** The grid-scale share of w′ stays at 0.30–0.44 at every height, 2–3.5× FDS's from 1 m up. Entrainment overshoots by 8–16% below 2 m and falls to 0.72 at 2.5–3 m.
+- **Next, running:** `res_t6_lc_cv04` (C_v 0.04, to see whether the base survives with less noise) and the reacting 4 s A/B `r271_compact_stencil/ab_lc_cv02_compact` (carrier, compact, C_v 0.02, tier 8), which is the real test: in §28 C_v 0.02 alone left the reacting base unchanged on the compact stencil.
+
 ## Next (owner decisions)
 
 1. **Plan agreed 2026-11-10 (owner):** stop the open-ended floor-mechanism hunt (§30 closes it) and judge a candidate package against physical targets.
