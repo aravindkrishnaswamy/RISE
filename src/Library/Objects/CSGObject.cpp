@@ -32,7 +32,7 @@
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/GeometricUtilities.h"
-#include <optional>
+#include <limits>
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"
 
@@ -1255,6 +1255,105 @@ namespace
 		}
 	}
 
+	//! DL-627: compact summary (~176 bytes vs ~1 KB `RayIntersection`) of an
+	//! operand's next outside lobe along the ray, keeping recursive CSG stack
+	//! frames small across `ExtendInsideExitThroughTouchingLobes` and the
+	//! multi-lobe interval-end clamps.
+	struct NextLobeSummary
+	{
+		bool valid = false;
+		bool bHit = false;
+		bool hasBoundaryRange = false;
+		bool hasBoundaryRange2 = false;
+		bool bGeomNormalRayDerived = false;
+		Scalar range = 0;
+		Scalar range2 = 0;
+		Scalar boundaryRange = 0;
+		Scalar boundaryRange2 = 0;
+		Vector3 vNormal{ 0, 0, 0 };
+		Vector3 vGeomNormal{ 0, 0, 0 };
+		Vector3 vNormal2{ 0, 0, 0 };
+		Vector3 vGeomNormal2{ 0, 0, 0 };
+		const IMaterial* pMaterial = 0;
+		const IShader* pShader = 0;
+		const IRayIntersectionModifier* pModifier = 0;
+		const IObject* pObject = 0;
+		const IRadianceMap* pRadianceMap = 0;
+
+		static NextLobeSummary FromHit( const RayIntersection& h )
+		{
+			NextLobeSummary s;
+			s.valid = true;
+			s.bHit = h.geometric.bHit;
+			s.hasBoundaryRange = h.hasBoundaryRange;
+			s.hasBoundaryRange2 = h.hasBoundaryRange2;
+			s.bGeomNormalRayDerived = h.geometric.bGeomNormalRayDerived;
+			s.range = h.geometric.range;
+			s.range2 = h.geometric.range2;
+			s.boundaryRange = h.boundaryRange;
+			s.boundaryRange2 = h.boundaryRange2;
+			s.vNormal = h.geometric.vNormal;
+			s.vGeomNormal = h.geometric.vGeomNormal;
+			s.vNormal2 = h.geometric.vNormal2;
+			s.vGeomNormal2 = h.geometric.vGeomNormal2;
+			s.pMaterial = h.pMaterial;
+			s.pShader = h.pShader;
+			s.pModifier = h.pModifier;
+			s.pObject = h.pObject;
+			s.pRadianceMap = h.pRadianceMap;
+			return s;
+		}
+
+		void ApplyToOperandHit( RayIntersection& dst ) const
+		{
+			dst.geometric.bHit = bHit;
+			dst.hasBoundaryRange = hasBoundaryRange;
+			dst.hasBoundaryRange2 = hasBoundaryRange2;
+			dst.geometric.bGeomNormalRayDerived = bGeomNormalRayDerived;
+			dst.geometric.range = range;
+			dst.geometric.range2 = range2;
+			dst.boundaryRange = boundaryRange;
+			dst.boundaryRange2 = boundaryRange2;
+			dst.geometric.vNormal = vNormal;
+			dst.geometric.vGeomNormal = vGeomNormal;
+			dst.geometric.vNormal2 = vNormal2;
+			dst.geometric.vGeomNormal2 = vGeomNormal2;
+			dst.pMaterial = pMaterial;
+			dst.pShader = pShader;
+			dst.pModifier = pModifier;
+			dst.pObject = pObject;
+			dst.pRadianceMap = pRadianceMap;
+		}
+	};
+
+	//! DL-627: unbacked geometric boundary coordinates (`boundaryRange` /
+	//! `boundaryRange2`) do not accumulate `SURFACE_INTERSEC_ERROR` across CSG
+	//! nesting levels, so comparing operand interval endpoints in unbacked
+	//! coordinates with a scale-relative ULP margin avoids phantom slivers or
+	//! misordered front/back faces when coincident A/B surfaces sit at
+	//! different nesting depths.
+	inline Scalar EntryCoord( const RayIntersection& h )
+	{
+		return h.hasBoundaryRange ? h.boundaryRange : h.geometric.range;
+	}
+
+	inline Scalar ExitCoord( const RayIntersection& h )
+	{
+		return h.hasBoundaryRange2 ? h.boundaryRange2 : h.geometric.range2;
+	}
+
+	inline Scalar EntryCoord( const NextLobeSummary& s )
+	{
+		return s.hasBoundaryRange ? s.boundaryRange : s.range;
+	}
+
+	inline Scalar CoincidenceTol( const Scalar t, const Scalar subScale, const bool bothUnbacked, const Scalar fallbackBackoff )
+	{
+		const Scalar ulpTol = Scalar( 64 ) * std::numeric_limits<Scalar>::epsilon() *
+			( Scalar( 1 ) + subScale + std::fabs( t ) );
+		return bothUnbacked ? ulpTol : ( ulpTol + fallbackBackoff );
+	}
+
 	//! DL-621(b): when a non-convex or multi-lobe closed operand's first
 	//! [range, range2] interval along `localRay` ends in empty space at or
 	//! before `targetRange` (the other operand's entry), advance along the
@@ -1287,7 +1386,7 @@ namespace
 			riOperand.geometric.bHit &&
 			riOperand.geometric.range2 > 0 &&
 			riOperand.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
-			riOperand.geometric.range2 <= targetRange;
+			ExitCoord( riOperand ) <= targetRange;
 			--budget )
 		{
 			const Scalar tStart = riOperand.geometric.range2 + OpenSheetRecastStep( riOperand.geometric.range2, scale );
@@ -1344,7 +1443,106 @@ namespace
 			riOperand.geometric.bHit &&
 			riOperand.geometric.range2 > 0 &&
 			riOperand.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
-			riOperand.geometric.range2 <= targetRange;
+			ExitCoord( riOperand ) <= targetRange;
+	}
+
+	bool AdvanceOperandSummaryPast(
+		const IObjectPriv* pOperand,
+		const Ray& localRay,
+		const Scalar dHowFar2,
+		const Scalar scale,
+		const Scalar targetRange,
+		const RayIntersectionGeometric* castInputs,
+		const RasterizerState& rast,
+		const OperandFacts& facts,
+		unsigned int& budget,
+		const RayIntersection& startInsideHit,
+		NextLobeSummary& outSummary )
+	{
+		RayIntersection cur( localRay, rast );
+		cur.geometric.bHit = startInsideHit.geometric.bHit;
+		cur.geometric.range = startInsideHit.geometric.range;
+		cur.geometric.range2 = startInsideHit.geometric.range;
+		cur.hasBoundaryRange = startInsideHit.hasBoundaryRange;
+		cur.boundaryRange = startInsideHit.boundaryRange;
+		cur.hasBoundaryRange2 = startInsideHit.hasBoundaryRange;
+		cur.boundaryRange2 = startInsideHit.boundaryRange;
+		const bool ranOut = AdvanceOperandPast(
+			pOperand, localRay, dHowFar2, scale, targetRange,
+			castInputs, rast, facts, budget, cur );
+		outSummary = NextLobeSummary::FromHit( cur );
+		return ranOut;
+	}
+
+	//! DL-627: steps once past an outside operand's current exit `range2`.
+	//! If the step lands inside a touching continuation lobe (`range2 == 0`),
+	//! extends `riOperand`'s exit in place and returns TRUE so the caller
+	//! re-evaluates the widened interval.  Otherwise records the next outside
+	//! lobe (or miss) in `outNextLobe` and returns FALSE.
+	bool ProbeOutsideExitOrNextLobe(
+		const IObjectPriv* pOperand,
+		const Ray& localRay,
+		const Scalar dHowFar2,
+		const Scalar scale,
+		const RayIntersectionGeometric* castInputs,
+		const RasterizerState& rast,
+		const OperandFacts& facts,
+		unsigned int& budget,
+		RayIntersection& riOperand,
+		NextLobeSummary& outNextLobe )
+	{
+		outNextLobe = NextLobeSummary{};
+		if( budget == 0 || !riOperand.geometric.bHit ||
+			!( riOperand.geometric.range2 > 0 ) ||
+			!( riOperand.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY ) ) {
+			return false;
+		}
+		const Scalar tStart = riOperand.geometric.range2 + OpenSheetRecastStep( riOperand.geometric.range2, scale );
+		if( !( tStart < dHowFar2 ) ) {
+			outNextLobe.valid = true;
+			outNextLobe.bHit = false;
+			return false;
+		}
+		Ray next( localRay );
+		next.origin = localRay.PointAtLength( tStart );
+		if( next.hasDifferentials ) {
+			next.diffs.rxOrigin = next.diffs.rxOrigin + next.diffs.rxDir * tStart;
+			next.diffs.ryOrigin = next.diffs.ryOrigin + next.diffs.ryDir * tStart;
+		}
+		RayIntersection riNext( next, rast );
+		if( castInputs ) {
+			riNext.geometric.PropagateCastInputs( *castInputs );
+		}
+		const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
+		pOperand->IntersectRay( riNext, remFar, true, true, true );
+		RecoverContainedOperand( pOperand, riNext, facts );
+		--budget;
+		if( riNext.geometric.bHit && riNext.geometric.range2 == 0 ) {
+			riOperand.geometric.range2 = tStart + riNext.geometric.range;
+			if( riNext.hasBoundaryRange ) {
+				riOperand.boundaryRange2 = tStart + riNext.boundaryRange;
+				riOperand.hasBoundaryRange2 = true;
+			} else {
+				riOperand.hasBoundaryRange2 = false;
+			}
+			riOperand.geometric.vNormal2 = riNext.geometric.vNormal;
+			riOperand.geometric.vGeomNormal2 = riNext.geometric.vGeomNormal;
+			return true;
+		}
+		if( riNext.geometric.bHit ) {
+			riNext.geometric.range += tStart;
+			if( riNext.hasBoundaryRange ) {
+				riNext.boundaryRange += tStart;
+			}
+			if( riNext.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY ) {
+				riNext.geometric.range2 += tStart;
+				if( riNext.hasBoundaryRange2 ) {
+					riNext.boundaryRange2 += tStart;
+				}
+			}
+		}
+		outNextLobe = NextLobeSummary::FromHit( riNext );
+		return false;
 	}
 
 	//! Test hook (`CSGObject::SetAdvanceBudgetForTesting`): 0 = the
@@ -1366,10 +1564,10 @@ namespace
 	//!
 	//! The re-cast that finds the ray OUTSIDE is exactly the first step an
 	//! `AdvanceOperandPast` past that exit would take (same start, same
-	//! cast), so it is handed back through `outNextLobe` -- the operand's
-	//! next lobe in this frame, or a record with `bHit == false` when it has
-	//! none -- for the caller to reuse instead of re-casting.  Returns TRUE
-	//! when the allowance ran out while the ray was still inside.
+	//! cast), so it is handed back through `outNextLobe` -- a compact summary
+	//! of the operand's next lobe in this frame, or a record with `bHit == false`
+	//! when it has none -- for the caller to reuse instead of re-casting.
+	//! Returns TRUE when the allowance ran out while the ray was still inside.
 	bool ExtendInsideExitThroughTouchingLobes(
 		const IObjectPriv* pOperand,
 		const Ray& localRay,
@@ -1380,7 +1578,7 @@ namespace
 		const OperandFacts& facts,
 		unsigned int& budget,
 		RayIntersection& riOperand,
-		std::optional<RayIntersection>* outNextLobe )
+		NextLobeSummary* outNextLobe )
 	{
 		while( riOperand.geometric.bHit && riOperand.geometric.range2 == 0 ) {
 			if( budget == 0 ) {
@@ -1389,8 +1587,9 @@ namespace
 			const Scalar tStart = riOperand.geometric.range + OpenSheetRecastStep( riOperand.geometric.range, scale );
 			if( !( tStart < dHowFar2 ) ) {
 				if( outNextLobe ) {
-					*outNextLobe = riOperand;
-					( *outNextLobe )->geometric.bHit = false;
+					*outNextLobe = NextLobeSummary{};
+					outNextLobe->valid = true;
+					outNextLobe->bHit = false;
 				}
 				return false;
 			}
@@ -1412,7 +1611,6 @@ namespace
 				// Left the operand: the exit is real, and riNext is its
 				// next lobe (or none), as an advance would have found it.
 				if( outNextLobe ) {
-					riNext.geometric.ray = localRay;
 					if( riNext.geometric.bHit ) {
 						riNext.geometric.range += tStart;
 						if( riNext.hasBoundaryRange ) {
@@ -1425,7 +1623,7 @@ namespace
 							}
 						}
 					}
-					*outNextLobe = riNext;
+					*outNextLobe = NextLobeSummary::FromHit( riNext );
 				}
 				return false;
 			}
@@ -1677,7 +1875,8 @@ static void RecoverContainedOperand( const IObjectPriv* operand, RayIntersection
 				exitHit.geometric.bGeomNormalOrientedToRay );
 			hit.geometric.vNormal2 = exitN.shade;
 			hit.geometric.vGeomNormal2 = exitN.geom;
-			hit.boundaryRange2 = hit.geometric.range2;
+			hit.boundaryRange2 = exitHit.hasBoundaryRange ?
+				( t0 + exitHit.boundaryRange ) : hit.geometric.range2;
 			hit.hasBoundaryRange2 = true;
 			if( inwardEntry && !hit.geometric.bGeomNormalRayDerived ) {
 				const ExitNormals entryN = OrientExitNormalsAlongRay(
@@ -2267,9 +2466,13 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			if( riObjA.geometric.range2 > 0 && riObjB.geometric.range2 == 0 &&
 				riObjB.geometric.range <= riObjA.geometric.range ) {
 				riObjB.geometric.range2 = riObjB.geometric.range;
+				riObjB.boundaryRange2 = riObjB.boundaryRange;
+				riObjB.hasBoundaryRange2 = riObjB.hasBoundaryRange;
 			} else if( riObjB.geometric.range2 > 0 && riObjA.geometric.range2 == 0 &&
 				riObjA.geometric.range <= riObjB.geometric.range ) {
 				riObjA.geometric.range2 = riObjA.geometric.range;
+				riObjA.boundaryRange2 = riObjA.boundaryRange;
+				riObjA.hasBoundaryRange2 = riObjA.hasBoundaryRange;
 			}
 			const bool insideA = (riObjA.geometric.range2 == 0);
 			const bool insideB = (riObjB.geometric.range2 == 0);
@@ -2447,11 +2650,15 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			if( !LocalBoxDiagonal( subScale ) || !( subScale > 0 ) ) {
 				subScale = 1;
 			}
+			const Scalar fallbackBackoff = Scalar( 16 ) * SURFACE_INTERSEC_ERROR;
+			const auto coincTol = [&]( const Scalar t, const bool unbackedA, const bool unbackedB ) {
+				return CoincidenceTol( t, subScale, unbackedA && unbackedB, fallbackBackoff );
+			};
 			// A touching later lobe makes an inside operand's reported exit
 			// a seam, not a surface: carry the exit on through it.  B's
 			// probe past its (final) exit is kept as `nextB`, its next lobe.
 			bool ranOut = false;
-			std::optional<RayIntersection> nextB;
+			NextLobeSummary nextB;
 			if( !( certBits & kSingleLobeA ) && riObjA.geometric.range2 == 0 ) {
 				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectA, ri.geometric.ray, dHowFar2, subScale, &ri.geometric, ri.geometric.rast,
 					factsA, advanceBudget, riObjA, 0 ) || ranOut;
@@ -2469,20 +2676,28 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			// has one -- the same reading.  A collapsed A that is never
 			// advanced past it (single-lobe) leaves nothing.
 			bool aCollapsed = false;
-			if( riObjA.geometric.range2 == 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 &&
-				riObjA.geometric.range <= riObjB.geometric.range ) {
-				riObjA.geometric.range2 = riObjA.geometric.range;
-				aCollapsed = true;
+			if( riObjA.geometric.range2 == 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 ) {
+				const Scalar bExit = EntryCoord( riObjB );
+				const Scalar tol = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				if( EntryCoord( riObjA ) <= bExit + tol ) {
+					riObjA.geometric.range2 = riObjA.geometric.range;
+					riObjA.boundaryRange2 = riObjA.boundaryRange;
+					riObjA.hasBoundaryRange2 = riObjA.hasBoundaryRange;
+					aCollapsed = true;
+				}
 			}
 			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 &&
-				riObjA.geometric.range <= riObjB.geometric.range &&
-				!( riObjB.geometric.range < riObjA.geometric.range2 ) &&
 				!( certBits & kSingleLobeA ) ) {
-				ranOut = AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, subScale,
-					riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
-					factsA, advanceBudget, riObjA ) || ranOut;
-				if( !riObjA.geometric.bHit ) {
-					break;
+				const Scalar bExit = EntryCoord( riObjB );
+				const Scalar tolIn = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				const Scalar tolOut = coincTol( bExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange );
+				if( EntryCoord( riObjA ) <= bExit + tolIn && !( bExit + tolOut < ExitCoord( riObjA ) ) ) {
+					ranOut = AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, subScale,
+						bExit + tolOut, &ri.geometric, ri.geometric.rast,
+						factsA, advanceBudget, riObjA ) || ranOut;
+					if( !riObjA.geometric.bHit ) {
+						break;
+					}
 				}
 			}
 			// Ran out before a walk that decides WHETHER there is a surface
@@ -2491,22 +2706,34 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			if( ranOut ) {
 				break;
 			}
-			if( aCollapsed && !( riObjA.geometric.range2 > riObjA.geometric.range ) ) {
-				break;
+			if( aCollapsed ) {
+				const Scalar aEn = EntryCoord( riObjA );
+				const Scalar tolA = coincTol( aEn, riObjA.hasBoundaryRange, riObjA.hasBoundaryRange2 );
+				if( !( ExitCoord( riObjA ) > aEn + tolA ) ) {
+					break;
+				}
 			}
 			bool bLeftFromInside = false;
-			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit &&
-				riObjB.geometric.range2 == 0 && riObjB.geometric.range <= riObjA.geometric.range ) {
-				bLeftFromInside = true;
-				// Origin is inside a lobe of B that exits in empty space at or
-				// before A's entry: treat that exit as the end of B's first
-				// interval and let the outside-both path advance to any later
-				// lobe of B.
-				riObjB.geometric.range2 = riObjB.geometric.range;
+			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 ) {
+				const Scalar bExit = EntryCoord( riObjB );
+				const Scalar tol = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				if( bExit <= EntryCoord( riObjA ) + tol ) {
+					bLeftFromInside = true;
+					// Origin is inside a lobe of B that exits in empty space at or
+					// before A's entry: treat that exit as the end of B's first
+					// interval and let the outside-both path advance to any later
+					// lobe of B.
+					riObjB.geometric.range2 = riObjB.geometric.range;
+					riObjB.boundaryRange2 = riObjB.boundaryRange;
+					riObjB.hasBoundaryRange2 = riObjB.hasBoundaryRange;
+				}
 			}
 			if( riObjA.geometric.range2 == 0 && riObjB.geometric.range2 == 0 ) {
 				// If we are inside both objects, then as long as we hit B before leaving A
-				if( riObjB.geometric.range < riObjA.geometric.range ) {
+				const Scalar bExit = EntryCoord( riObjB );
+				const Scalar aExit = EntryCoord( riObjA );
+				const Scalar tol = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				if( bExit + tol < aExit ) {
 					ri = riObjB;
 					ri.geometric.range2 = riObjA.geometric.range;
 					ri.boundaryRange2 = riObjA.boundaryRange; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange;
@@ -2602,22 +2829,23 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					if( !( certBits & kSingleLobeB ) ) {
 						// Only TIGHTENS an established interval: on running out
 						// it keeps the untightened end (the exhaustion rule).
-						RayIntersection riNextB = riObjB;
-						riNextB.geometric.range2 = riNextB.geometric.range;
+						NextLobeSummary clampB = nextB;
 						bool clampRanOut = false;
-						if( nextB ) {
-							riNextB = *nextB;
-						} else {
-							clampRanOut = AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, subScale,
-								riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
-								factsB, advanceBudget, riNextB );
+						if( !clampB.valid ) {
+							clampRanOut = AdvanceOperandSummaryPast( pObjectB, ri.geometric.ray, dHowFar2, subScale,
+								bExit + tol, &ri.geometric, ri.geometric.rast,
+								factsB, advanceBudget, riObjB, clampB );
 						}
-						if( !clampRanOut && riNextB.geometric.bHit && riNextB.geometric.range > riObjB.geometric.range &&
-							riNextB.geometric.range < ri.geometric.range2 ) {
-							ri.geometric.range2 = riNextB.geometric.range;
-							ri.boundaryRange2 = riNextB.boundaryRange; ri.hasBoundaryRange2 = riNextB.hasBoundaryRange;
-							ri.geometric.vNormal2 = -riNextB.geometric.vNormal;
-							ri.geometric.vGeomNormal2 = -riNextB.geometric.vGeomNormal;
+						if( !clampRanOut && clampB.bHit ) {
+							const Scalar nbEntry = EntryCoord( clampB );
+							const Scalar tolLo = coincTol( bExit, clampB.hasBoundaryRange, riObjB.hasBoundaryRange );
+							const Scalar tolHi = coincTol( aExit, clampB.hasBoundaryRange, riObjA.hasBoundaryRange );
+							if( nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
+								ri.geometric.range2 = clampB.range;
+								ri.boundaryRange2 = clampB.boundaryRange; ri.hasBoundaryRange2 = clampB.hasBoundaryRange;
+								ri.geometric.vNormal2 = -clampB.vNormal;
+								ri.geometric.vGeomNormal2 = -clampB.vGeomNormal;
+							}
 						}
 					}
 				}
@@ -2625,7 +2853,16 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				// If we are inside A but not inside B
 				// Then as long as we hit B before dHowFar then its all good
 				// should always be true
-				if( riObjB.geometric.bHit && riObjB.geometric.range < riObjA.geometric.range ) {
+				const Scalar aExit = EntryCoord( riObjA );
+				bool bCarvesBeforeExit = false;
+				if( riObjB.geometric.bHit ) {
+					const Scalar bEntry = EntryCoord( riObjB );
+					const Scalar bExit = ExitCoord( riObjB );
+					const Scalar tolEA = coincTol( aExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+					const Scalar tolBB = coincTol( bEntry, riObjB.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+					bCarvesBeforeExit = ( bEntry + tolEA < aExit ) && ( bExit > bEntry + tolBB );
+				}
+				if( bCarvesBeforeExit ) {
 					ri = riObjB;
 					ri.geometric.vNormal = -riObjB.geometric.vNormal;
 					ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal;
@@ -2678,8 +2915,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				// exit: the ray is inside A when B ends, so the surface is
 				// B's exit, closed by A's exit or by a later lobe of B
 				// re-entering first.
-				if( riObjA.geometric.range < riObjB.geometric.range &&
-					riObjB.geometric.range < riObjA.geometric.range2 ) {
+				const Scalar bExit = EntryCoord( riObjB );
+				const Scalar aEntry = EntryCoord( riObjA );
+				const Scalar aExit = ExitCoord( riObjA );
+				const Scalar tolIn = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				const Scalar tolOut = coincTol( bExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange );
+				if( aEntry < bExit + tolIn && bExit + tolOut < aExit ) {
 					ri = riObjB;
 					ri.geometric.range2 = riObjA.geometric.range2;
 					ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
@@ -2733,169 +2974,162 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// A multi-lobe B may re-enter before A's lobe ends: the
 					// composite interval then closes at that entry.
 					if( !( certBits & kSingleLobeB ) ) {
-						Scalar scale = 1;
-						if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
-							scale = 1;
-						}
 						// Only TIGHTENS an established interval: on running out
 						// it keeps the untightened end (the exhaustion rule).
-						RayIntersection riNextB = riObjB;
-						riNextB.geometric.range2 = riNextB.geometric.range;
+						NextLobeSummary clampB = nextB;
 						bool clampRanOut = false;
-						if( nextB ) {
-							riNextB = *nextB;
-						} else {
-							clampRanOut = AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
-								riObjB.geometric.range, &ri.geometric, ri.geometric.rast,
-								factsB, advanceBudget, riNextB );
+						if( !clampB.valid ) {
+							clampRanOut = AdvanceOperandSummaryPast( pObjectB, ri.geometric.ray, dHowFar2, subScale,
+								bExit + tolOut, &ri.geometric, ri.geometric.rast,
+								factsB, advanceBudget, riObjB, clampB );
 						}
-						if( !clampRanOut && riNextB.geometric.bHit && riNextB.geometric.range > riObjB.geometric.range &&
-							riNextB.geometric.range < ri.geometric.range2 ) {
-							ri.geometric.range2 = riNextB.geometric.range;
-							ri.boundaryRange2 = riNextB.boundaryRange; ri.hasBoundaryRange2 = riNextB.hasBoundaryRange;
-							ri.geometric.vNormal2 = -riNextB.geometric.vNormal;
-							ri.geometric.vGeomNormal2 = -riNextB.geometric.vGeomNormal;
+						if( !clampRanOut && clampB.bHit ) {
+							const Scalar nbEntry = EntryCoord( clampB );
+							const Scalar tolLo = coincTol( bExit, clampB.hasBoundaryRange, riObjB.hasBoundaryRange );
+							const Scalar tolHi = coincTol( aExit, clampB.hasBoundaryRange, riObjA.hasBoundaryRange2 );
+							if( nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
+								ri.geometric.range2 = clampB.range;
+								ri.boundaryRange2 = clampB.boundaryRange; ri.hasBoundaryRange2 = clampB.hasBoundaryRange;
+								ri.geometric.vNormal2 = -clampB.vNormal;
+								ri.geometric.vGeomNormal2 = -clampB.vGeomNormal;
+							}
 						}
 					}
 				}
 			} else {
 				// Neither A nor B contains the ray origin -- both hits are
-				// plain entry/exit interval pairs [range, range2].  DL-621(b):
-				// if B is a multi-lobe solid whose first lobe ends in empty
-				// space at or before A's entry, advance B along the ray so a
-				// later lobe overlapping A is not missed.
-				// B was left from inside: its first step past that exit
-				// was already taken by the touching-lobe probe.
-				if( bLeftFromInside && nextB &&
-					riObjB.geometric.range2 <= riObjA.geometric.range ) {
-					riObjB = *nextB;
-				}
-				if( riObjB.geometric.bHit &&
-					!( certBits & kSingleLobeB ) &&
-					riObjB.geometric.range2 > 0 &&
-					riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
-					riObjB.geometric.range2 <= riObjA.geometric.range ) {
-					Scalar scale = 1;
-					if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
-						scale = 1;
-					}
-					if( AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, scale,
-							riObjA.geometric.range, &ri.geometric, ri.geometric.rast,
-							factsB, advanceBudget, riObjB ) ) {
-						break;	// ran out: an unvisited lobe of B may hide A (see the top of this case)
+				// plain entry/exit interval pairs [range, range2].  DL-621(b)
+				// + DL-627: advance B past lobes ending at or before A's
+				// entry, advance a multi-lobe A past any lobe wholly covered
+				// by B, and probe a multi-lobe B once past a carving exit so
+				// touching B lobes continue and a third B lobe clamps range2.
+				if( bLeftFromInside && nextB.valid ) {
+					const Scalar bEx = ExitCoord( riObjB );
+					const Scalar tol = coincTol( bEx, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+					if( bEx <= EntryCoord( riObjA ) + tol ) {
+						nextB.ApplyToOperandHit( riObjB );
+						nextB.valid = false;
 					}
 				}
-				if( !riObjB.geometric.bHit ) {
-					// Never hit B at all -- composite is just A.
-					ri = riObjA;
-				} else {
-					// We hit B too.  Test DISJOINTNESS FIRST (P1-b): B's
-					// interval [range, range2] either doesn't overlap A's
-					// interval at all (B begins after A ends, or B ends
-					// before A begins), in which case nothing is carved out
-					// of A's visible span and the composite is exactly A --
-					// or it does overlap, in which case exactly one of the
-					// two overlap branches below applies.  The two overlap
-					// conditions were PREVIOUSLY tested before disjointness,
-					// so a disjoint B could still satisfy one of them by
-					// accident and produce a phantom surface (see the two
-					// bugs documented at each branch below, both now
-					// unreachable once disjointness is excluded up front).
-					if( (riObjB.geometric.range >= riObjA.geometric.range2) ||
-						(riObjB.geometric.range2 <= riObjA.geometric.range) )
+				NextLobeSummary clampNextB;
+				bool dropUnconfirmed = false;
+				while( riObjA.geometric.bHit )
+				{
+					clampNextB = NextLobeSummary{};
+					if( riObjB.geometric.bHit &&
+						!( certBits & kSingleLobeB ) &&
+						riObjB.geometric.range2 > 0 &&
+						riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY )
 					{
-						ri = riObjA;
-					}
-					else if( riObjA.geometric.range < riObjB.geometric.range )
-					{
-						// A enters first and (excluded disjoint above) B's
-						// interval overlaps A's -- so B's entry necessarily
-						// lands strictly inside A's span.  The carve's near
-						// wall (B's entry) becomes the visible surface's
-						// exit; this covers B fully contained in A AND B
-						// overhanging A's tail (B.range2 > A.range2) --
-						// either way the visible portion of A-minus-B still
-						// starts at A's entry and ends at B's entry.
-						//
-						// PRE-FIX BUG: without the disjointness test above,
-						// this branch's condition (`A.range < B.range`) is
-						// trivially true whenever B is wholly AFTER A ends
-						// too, which set range2 = B.range regardless -- an
-						// extended phantom interval reaching all the way out
-						// to a B that never touches A.
-						ri = riObjA;
-						ri.geometric.range2 = riObjB.geometric.range;
-						ri.boundaryRange2 = riObjB.boundaryRange; ri.hasBoundaryRange2 = riObjB.hasBoundaryRange;
-						ri.geometric.vNormal2 = -riObjB.geometric.vNormal;
-						ri.geometric.vGeomNormal2 = -riObjB.geometric.vGeomNormal;
-					}
-					else if( riObjB.geometric.range2 < riObjA.geometric.range2 )
-					{
-						// B enters first (or at the same range as A) and
-						// (excluded disjoint above) overlaps A's interval,
-						// AND exits before A does -- so B's exit necessarily
-						// lands strictly inside A's span (B doesn't swallow
-						// A whole).  The carve's far wall (B's exit) is the
-						// visible surface's entry, extending to A's exit.
-						//
-						// PRE-FIX BUG: without the disjointness test above,
-						// this branch's condition (`B.range2 < A.range2`) is
-						// trivially true whenever B is wholly BEFORE A
-						// begins too (B ends long before A even starts) --
-						// reporting a phantom surface at B's back face in
-						// empty space, nowhere near A.
-						//
-						// EXIT-designated boundary: the composite's entry
-						// here is B's EXIT face (B.vNormal2), not B's entry
-						// face.  `ri = riObjB` still carries B's auxiliary
-						// payload from B's ENTRY hit -- no RISE geometry
-						// computes a second payload set for the exit hit,
-						// only the exit NORMAL is available.  Recover B's
-						// REAL exit-face payload via a reverse probe (P2-e);
-						// on a probe miss, fall back to B's entry-hit
-						// payload with wire-edge info cleared (it belongs to
-						// the wrong face in that fallback).
-						//
-						// dndu/dndv SIGN, RESOLVED 2026-08-29 (was a disclosed P1-1
-						// residual): the probe's payload carries derivatives of the
-						// PROBE's own reported normal, while this branch reports
-						// -riObjB.vNormal2.  For a direction-independent normal field
-						// (every analytic primitive, and the SDF family) those two
-						// disagree in sign, which would ship a convex-reading curvature
-						// on a concave cavity wall.  That case was UNREACHABLE while only
-						// triangle meshes populated derivatives; analytic primitives now
-						// do (design doc 5.4), so it is live -- and
-						// AdoptCsgExitFacePayloadViaProbe now re-pairs the adopted
-						// dndu/dndv (and the SDF's direct `curvature`) against the
-						// caller's already-set vNormal via a dot-product test.  See that
-						// function's tail.  NOTE the probe-MISS fallback is unchanged and
-						// still leaves B's ENTRY-face derivatives in place for an
-						// EXIT-face boundary; that is a pre-existing, separately-disclosed
-						// residual (the callers clear only bHasWireEdgeInfo), not
-						// something this arc introduced.
-						ri = riObjB;
-						ri.geometric.range = riObjB.geometric.range2;
-						ri.boundaryRange = riObjB.boundaryRange2; ri.hasBoundaryRange = riObjB.hasBoundaryRange2;
-						ri.geometric.range2 = riObjA.geometric.range2;
-						ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
-						// Reverse the normal
-						ri.geometric.vNormal = -riObjB.geometric.vNormal2;
-						ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal2;
-						if( !ri.geometric.bGeomNormalRayDerived ) {
-							ri.geometric.bGeomNormalOrientedToRay = false;
-						}
-						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
-						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
-						if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2, riObjB.geometric.vGeomNormal2 ) ) {
-							ri.geometric.bHasWireEdgeInfo = false;
+						const Scalar aEntry = EntryCoord( riObjA );
+						const Scalar tolBA = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+						if( ExitCoord( riObjB ) <= aEntry + tolBA ) {
+							if( AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, subScale,
+									aEntry + tolBA, &ri.geometric, ri.geometric.rast,
+									factsB, advanceBudget, riObjB ) ) {
+								dropUnconfirmed = true;
+								break;
+							}
 						}
 					}
-					// else: B enters at/before A AND does not exit before A
-					// (range2B >= range2A) -- B fully contains A's interval,
-					// so A-minus-B is empty across this whole span.  Leave
-					// `ri` unhit (matches the pre-existing fallthrough: none
-					// of the branches assign `ri`, so `ri.geometric.bHit`
-					// stays false from the top of IntersectRay).
+					if( !riObjB.geometric.bHit ) {
+						break;
+					}
+					const Scalar aEntry = EntryCoord( riObjA );
+					const Scalar aExit = ExitCoord( riObjA );
+					const Scalar bEntry = EntryCoord( riObjB );
+					const Scalar bExit = ExitCoord( riObjB );
+					const Scalar tolIn = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+					const Scalar tolOut = coincTol( aExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange2 );
+					if( bEntry <= aEntry + tolIn ) {
+						if( bExit + tolOut >= aExit ) {
+							if( certBits & kSingleLobeA ) {
+								dropUnconfirmed = true;
+								break;
+							}
+							if( AdvanceOperandPast( pObjectA, ri.geometric.ray, dHowFar2, subScale,
+									aExit + coincTol( aExit, riObjA.hasBoundaryRange2, true ),
+									&ri.geometric, ri.geometric.rast,
+									factsA, advanceBudget, riObjA ) ) {
+								dropUnconfirmed = true;
+								break;
+							}
+							if( !riObjA.geometric.bHit ) {
+								dropUnconfirmed = true;
+								break;
+							}
+							continue;
+						}
+						if( !( certBits & kSingleLobeB ) && advanceBudget > 0 ) {
+							if( ProbeOutsideExitOrNextLobe( pObjectB, ri.geometric.ray, dHowFar2, subScale,
+									&ri.geometric, ri.geometric.rast,
+									factsB, advanceBudget, riObjB, clampNextB ) ) {
+								continue;
+							}
+						}
+					}
+					break;
+				}
+				if( !dropUnconfirmed && riObjA.geometric.bHit ) {
+					if( !riObjB.geometric.bHit ) {
+						// Never hit B at all -- composite is just A.
+						ri = riObjA;
+					} else {
+						const Scalar aEntry = EntryCoord( riObjA );
+						const Scalar aExit = ExitCoord( riObjA );
+						const Scalar bEntry = EntryCoord( riObjB );
+						const Scalar bExit = ExitCoord( riObjB );
+						const Scalar tolDisjointEnd = coincTol( aExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange );
+						const Scalar tolDisjointStart = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+						const Scalar tolIn = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+						const Scalar tolOut = coincTol( aExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange2 );
+						// Test DISJOINTNESS FIRST (P1-b): B's interval either
+						// begins at/after A ends or ends at/before A begins.
+						if( ( bEntry + tolDisjointEnd >= aExit ) ||
+							( bExit <= aEntry + tolDisjointStart ) )
+						{
+							ri = riObjA;
+						}
+						else if( aEntry + tolIn < bEntry )
+						{
+							ri = riObjA;
+							ri.geometric.range2 = riObjB.geometric.range;
+							ri.boundaryRange2 = riObjB.boundaryRange; ri.hasBoundaryRange2 = riObjB.hasBoundaryRange;
+							ri.geometric.vNormal2 = -riObjB.geometric.vNormal;
+							ri.geometric.vGeomNormal2 = -riObjB.geometric.vGeomNormal;
+						}
+						else if( bExit + tolOut < aExit )
+						{
+							ri = riObjB;
+							ri.geometric.range = riObjB.geometric.range2;
+							ri.boundaryRange = riObjB.boundaryRange2; ri.hasBoundaryRange = riObjB.hasBoundaryRange2;
+							ri.geometric.range2 = riObjA.geometric.range2;
+							ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
+							// Reverse the normal
+							ri.geometric.vNormal = -riObjB.geometric.vNormal2;
+							ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal2;
+							if( !ri.geometric.bGeomNormalRayDerived ) {
+								ri.geometric.bGeomNormalOrientedToRay = false;
+							}
+							ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+							ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
+							if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2, riObjB.geometric.vGeomNormal2 ) ) {
+								ri.geometric.bHasWireEdgeInfo = false;
+							}
+							if( clampNextB.valid && clampNextB.bHit ) {
+								const Scalar nbEntry = EntryCoord( clampNextB );
+								const Scalar tolLo = coincTol( bExit, clampNextB.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+								const Scalar tolHi = coincTol( aExit, clampNextB.hasBoundaryRange, riObjA.hasBoundaryRange2 );
+								if( nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
+									ri.geometric.range2 = clampNextB.range;
+									ri.boundaryRange2 = clampNextB.boundaryRange; ri.hasBoundaryRange2 = clampNextB.hasBoundaryRange;
+									ri.geometric.vNormal2 = -clampNextB.vNormal;
+									ri.geometric.vGeomNormal2 = -clampNextB.vGeomNormal;
+								}
+							}
+						}
+						// else: B covers A's interval within coincidence tolerance -> miss.
+					}
 				}
 			}
 		}
@@ -3488,9 +3722,13 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 			if( riObjA.geometric.range2 > 0 && riObjB.geometric.range2 == 0 &&
 				riObjB.geometric.range <= riObjA.geometric.range ) {
 				riObjB.geometric.range2 = riObjB.geometric.range;
+				riObjB.boundaryRange2 = riObjB.boundaryRange;
+				riObjB.hasBoundaryRange2 = riObjB.hasBoundaryRange;
 			} else if( riObjB.geometric.range2 > 0 && riObjA.geometric.range2 == 0 &&
 				riObjA.geometric.range <= riObjB.geometric.range ) {
 				riObjA.geometric.range2 = riObjA.geometric.range;
+				riObjA.boundaryRange2 = riObjA.boundaryRange;
+				riObjA.hasBoundaryRange2 = riObjA.hasBoundaryRange;
 			}
 			const bool insideA = (riObjA.geometric.range2 == 0);
 			const bool insideB = (riObjB.geometric.range2 == 0);
@@ -3575,11 +3813,15 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 			if( !LocalBoxDiagonal( subScale ) || !( subScale > 0 ) ) {
 				subScale = 1;
 			}
+			const Scalar fallbackBackoff = Scalar( 16 ) * SURFACE_INTERSEC_ERROR;
+			const auto coincTol = [&]( const Scalar t, const bool unbackedA, const bool unbackedB ) {
+				return CoincidenceTol( t, subScale, unbackedA && unbackedB, fallbackBackoff );
+			};
 			// A touching later lobe makes an inside operand's reported exit
 			// a seam, not a surface: carry the exit on through it.  B's
 			// probe past its (final) exit is kept as `nextB`, its next lobe.
 			bool ranOut = false;
-			std::optional<RayIntersection> nextB;
+			NextLobeSummary nextB;
 			if( !( certBits & kSingleLobeA ) && riObjA.geometric.range2 == 0 ) {
 				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectA, orig, dHowFar2, subScale, 0, nullRasterizerState,
 					factsA, advanceBudget, riObjA, 0 ) || ranOut;
@@ -3588,29 +3830,29 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectB, orig, dHowFar2, subScale, 0, nullRasterizerState,
 					factsB, advanceBudget, riObjB, &nextB ) || ranOut;
 			}
-			// Inside BOTH, and A is left first or at the same distance:
-			// A's first interval lies inside B and contributes nothing.
-			// Read it as the zero-length interval [A.range, A.range] so the
-			// inside-B logic below advances a multi-lobe A past B's exit
-			// (straddle / later lobe).  On a tie both operands end together:
-			// whatever follows is outside B, so it is A's later lobe if A
-			// has one -- the same reading.  A collapsed A that is never
-			// advanced past it (single-lobe) leaves nothing.
 			bool aCollapsed = false;
-			if( riObjA.geometric.range2 == 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 &&
-				riObjA.geometric.range <= riObjB.geometric.range ) {
-				riObjA.geometric.range2 = riObjA.geometric.range;
-				aCollapsed = true;
+			if( riObjA.geometric.range2 == 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 ) {
+				const Scalar bExit = EntryCoord( riObjB );
+				const Scalar tol = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				if( EntryCoord( riObjA ) <= bExit + tol ) {
+					riObjA.geometric.range2 = riObjA.geometric.range;
+					riObjA.boundaryRange2 = riObjA.boundaryRange;
+					riObjA.hasBoundaryRange2 = riObjA.hasBoundaryRange;
+					aCollapsed = true;
+				}
 			}
 			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 &&
-				riObjA.geometric.range <= riObjB.geometric.range &&
-				!( riObjB.geometric.range < riObjA.geometric.range2 ) &&
 				!( certBits & kSingleLobeA ) ) {
-				ranOut = AdvanceOperandPast( pObjectA, orig, dHowFar2, subScale,
-					riObjB.geometric.range, 0, nullRasterizerState,
-					factsA, advanceBudget, riObjA ) || ranOut;
-				if( !riObjA.geometric.bHit ) {
-					return false;
+				const Scalar bExit = EntryCoord( riObjB );
+				const Scalar tolIn = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				const Scalar tolOut = coincTol( bExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange );
+				if( EntryCoord( riObjA ) <= bExit + tolIn && !( bExit + tolOut < ExitCoord( riObjA ) ) ) {
+					ranOut = AdvanceOperandPast( pObjectA, orig, dHowFar2, subScale,
+						bExit + tolOut, 0, nullRasterizerState,
+						factsA, advanceBudget, riObjA ) || ranOut;
+					if( !riObjA.geometric.bHit ) {
+						return false;
+					}
 				}
 			}
 			// Ran out before a walk that decides WHETHER there is a surface
@@ -3619,74 +3861,147 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 			if( ranOut ) {
 				return false;
 			}
-			if( aCollapsed && !( riObjA.geometric.range2 > riObjA.geometric.range ) ) {
-				return false;
+			if( aCollapsed ) {
+				const Scalar aEn = EntryCoord( riObjA );
+				const Scalar tolA = coincTol( aEn, riObjA.hasBoundaryRange, riObjA.hasBoundaryRange2 );
+				if( !( ExitCoord( riObjA ) > aEn + tolA ) ) {
+					return false;
+				}
 			}
 			bool bLeftFromInside = false;
-			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit &&
-				riObjB.geometric.range2 == 0 && riObjB.geometric.range <= riObjA.geometric.range ) {
-				bLeftFromInside = true;
-				riObjB.geometric.range2 = riObjB.geometric.range;
+			if( riObjA.geometric.range2 > 0 && riObjB.geometric.bHit && riObjB.geometric.range2 == 0 ) {
+				const Scalar bExit = EntryCoord( riObjB );
+				const Scalar tol = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				if( bExit <= EntryCoord( riObjA ) + tol ) {
+					bLeftFromInside = true;
+					riObjB.geometric.range2 = riObjB.geometric.range;
+					riObjB.boundaryRange2 = riObjB.boundaryRange;
+					riObjB.hasBoundaryRange2 = riObjB.hasBoundaryRange;
+				}
 			}
 			if( riObjA.geometric.range2 == 0 && riObjB.geometric.range2 == 0 ) {
-				// If we are inside both objects, then as long as we hit A before leaving B
-				// B before we exit A we are ok
-				return (riObjB.geometric.range < riObjA.geometric.range && riObjB.geometric.range < dHowFar2 );
+				const Scalar bExit = EntryCoord( riObjB );
+				const Scalar aExit = EntryCoord( riObjA );
+				const Scalar tol = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				return ( bExit + tol < aExit && riObjB.geometric.range < dHowFar2 );
 			} else if( riObjA.geometric.range2 == 0 ) {
 				// Inside A, outside B: the ray is inside the composite, whose
 				// first boundary is B's entry (the carved cavity) or A's exit,
-				// whichever comes first.  It occludes only when that boundary
-				// lies before the shadow ray's end -- this used to return
-				// TRUE unconditionally, so a short shadow ray inside the
-				// composite was blocked by a surface it never reaches.
-				const Scalar tOcc = ( riObjB.geometric.bHit && riObjB.geometric.range < riObjA.geometric.range ) ?
-					riObjB.geometric.range : riObjA.geometric.range;
-				return (tOcc < dHowFar2 && tOcc > 0);
+				// whichever comes first.
+				const Scalar aExit = EntryCoord( riObjA );
+				bool bCarvesBeforeExit = false;
+				if( riObjB.geometric.bHit ) {
+					const Scalar bEntry = EntryCoord( riObjB );
+					const Scalar bExit = ExitCoord( riObjB );
+					const Scalar tolEA = coincTol( aExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+					const Scalar tolBB = coincTol( bEntry, riObjB.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+					bCarvesBeforeExit = ( bEntry + tolEA < aExit ) && ( bExit > bEntry + tolBB );
+				}
+				const Scalar tOcc = bCarvesBeforeExit ? riObjB.geometric.range : riObjA.geometric.range;
+				return ( tOcc < dHowFar2 && tOcc > 0 );
 			} else if( riObjB.geometric.range2 == 0 ) {
-				// If we are inside B but not inside A: the composite starts at
-				// B's exit only if the ray is inside A there.  An A interval
-				// that ends at or before B's exit lies wholly inside the
-				// subtracted B (see IntersectRay); only a later lobe of a
-				// multi-lobe A can still occlude.
-				if( riObjB.geometric.range < riObjA.geometric.range2 ) {
-					return (riObjB.geometric.range < dHowFar2 );
+				const Scalar bExit = EntryCoord( riObjB );
+				const Scalar aEntry = EntryCoord( riObjA );
+				const Scalar aExit = ExitCoord( riObjA );
+				const Scalar tolIn = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				const Scalar tolOut = coincTol( bExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange );
+				if( aEntry < bExit + tolIn && bExit + tolOut < aExit ) {
+					return ( riObjB.geometric.range < dHowFar2 );
 				}
 				return false;
 			} else {
 				// B was left from inside: its first step past that exit
 				// was already taken by the touching-lobe probe.
-				if( bLeftFromInside && nextB &&
-					riObjB.geometric.range2 <= riObjA.geometric.range ) {
-					riObjB = *nextB;
-				}
-				if( riObjB.geometric.bHit &&
-					!( certBits & kSingleLobeB ) &&
-					riObjB.geometric.range2 > 0 &&
-					riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
-					riObjB.geometric.range2 <= riObjA.geometric.range ) {
-					Scalar scale = 1;
-					if( !LocalBoxDiagonal( scale ) || !( scale > 0 ) ) {
-						scale = 1;
-					}
-					if( AdvanceOperandPast( pObjectB, orig, dHowFar2, scale,
-							riObjA.geometric.range, 0, nullRasterizerState,
-							factsB, advanceBudget, riObjB ) ) {
-						return false;	// ran out: an unvisited lobe of B may hide A (see the top of this case)
+				if( bLeftFromInside && nextB.valid ) {
+					const Scalar bEx = ExitCoord( riObjB );
+					const Scalar tol = coincTol( bEx, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+					if( bEx <= EntryCoord( riObjA ) + tol ) {
+						nextB.ApplyToOperandHit( riObjB );
+						nextB.valid = false;
 					}
 				}
-				// If we never hit B, or if B begins after A ends, or if B ends before A can begin
-				// then we only have A
-				if( !riObjB.geometric.bHit ||
-					(riObjB.geometric.range >= riObjA.geometric.range2) || 
-					(riObjB.geometric.range2 <= riObjA.geometric.range) ) {
-					return (riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0);
-				} else {
-					if( riObjA.geometric.range < riObjB.geometric.range && riObjA.geometric.range2 != 0 ) {
-						return (riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0);
+				NextLobeSummary clampNextB;
+				bool dropUnconfirmed = false;
+				while( riObjA.geometric.bHit )
+				{
+					clampNextB = NextLobeSummary{};
+					if( riObjB.geometric.bHit &&
+						!( certBits & kSingleLobeB ) &&
+						riObjB.geometric.range2 > 0 &&
+						riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY )
+					{
+						const Scalar aEntry = EntryCoord( riObjA );
+						const Scalar tolBA = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+						if( ExitCoord( riObjB ) <= aEntry + tolBA ) {
+							if( AdvanceOperandPast( pObjectB, orig, dHowFar2, subScale,
+									aEntry + tolBA, 0, nullRasterizerState,
+									factsB, advanceBudget, riObjB ) ) {
+								dropUnconfirmed = true;
+								break;
+							}
+						}
 					}
-					else if( riObjB.geometric.range2 < riObjA.geometric.range2 ) {
-						return (riObjB.geometric.range2 < dHowFar2 && riObjB.geometric.range2 > 0);
+					if( !riObjB.geometric.bHit ) {
+						break;
 					}
+					const Scalar aEntry = EntryCoord( riObjA );
+					const Scalar aExit = ExitCoord( riObjA );
+					const Scalar bEntry = EntryCoord( riObjB );
+					const Scalar bExit = ExitCoord( riObjB );
+					const Scalar tolIn = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+					const Scalar tolOut = coincTol( aExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange2 );
+					if( bEntry <= aEntry + tolIn ) {
+						if( bExit + tolOut >= aExit ) {
+							if( certBits & kSingleLobeA ) {
+								dropUnconfirmed = true;
+								break;
+							}
+							if( AdvanceOperandPast( pObjectA, orig, dHowFar2, subScale,
+									aExit + coincTol( aExit, riObjA.hasBoundaryRange2, true ),
+									0, nullRasterizerState,
+									factsA, advanceBudget, riObjA ) ) {
+								dropUnconfirmed = true;
+								break;
+							}
+							if( !riObjA.geometric.bHit ) {
+								dropUnconfirmed = true;
+								break;
+							}
+							continue;
+						}
+						if( !( certBits & kSingleLobeB ) && advanceBudget > 0 ) {
+							if( ProbeOutsideExitOrNextLobe( pObjectB, orig, dHowFar2, subScale,
+									0, nullRasterizerState,
+									factsB, advanceBudget, riObjB, clampNextB ) ) {
+								continue;
+							}
+						}
+					}
+					break;
+				}
+				if( dropUnconfirmed || !riObjA.geometric.bHit ) {
+					return false;
+				}
+				if( !riObjB.geometric.bHit ) {
+					return ( riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0 );
+				}
+				const Scalar aEntry = EntryCoord( riObjA );
+				const Scalar aExit = ExitCoord( riObjA );
+				const Scalar bEntry = EntryCoord( riObjB );
+				const Scalar bExit = ExitCoord( riObjB );
+				const Scalar tolDisjointEnd = coincTol( aExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange );
+				const Scalar tolDisjointStart = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+				const Scalar tolIn = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+				const Scalar tolOut = coincTol( aExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange2 );
+				if( ( bEntry + tolDisjointEnd >= aExit ) ||
+					( bExit <= aEntry + tolDisjointStart ) ) {
+					return ( riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0 );
+				}
+				if( aEntry + tolIn < bEntry && riObjA.geometric.range2 != 0 ) {
+					return ( riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0 );
+				}
+				if( bExit + tolOut < aExit ) {
+					return ( riObjB.geometric.range2 < dHowFar2 && riObjB.geometric.range2 > 0 );
 				}
 			}
 		}

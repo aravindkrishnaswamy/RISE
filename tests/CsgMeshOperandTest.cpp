@@ -1079,9 +1079,223 @@ static void TestTiesAndSmallBudgets()
 	CSGObject::SetAdvanceBudgetForTesting( 0 );
 }
 
+//////////////////////////////////////////////////////////////////////
+// L. DL-627: outside-both covered-A advance, third-B range2 clamp,
+//    coincident surfaces across nesting depths, and small budgets
+//////////////////////////////////////////////////////////////////////
+
+static Object* MakeIntervalSphereX( Scalar ox, Scalar lo, Scalar hi )
+{
+	return MakeSphereObject( Scalar( 0.5 ) * ( hi - lo ), Point3( ox + Scalar( 0.5 ) * ( lo + hi ), 0, 0 ) );
+}
+
+static void TestSubtractionMultiLobeResidualsDL627()
+{
+	std::cout << "L. DL-627: outside-both covered-A, third-B clamp, and cross-depth coincidence" << std::endl;
+	const int failsBefore = failCount;
+	const Point3 oOut( -6.0, 0, 0 );
+	const Point3 oIn( -3.5, 0, 0 );
+	const Vector3 dx( 1, 0, 0 );
+
+	// L1a: outside-both, B = [1.5, 3.0] covers A's first lobe [2.0, 2.6];
+	// A's second lobe [4.5, 5.5] survives, and single-lobe B is cast once.
+	{
+		CSGObject* uniA = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 2.6 ),
+			MakeIntervalSphereX( oOut.x, 4.5, 5.5 ) );
+		CountingSphere* gB = new CountingSphere( 0.75 );
+		Object* oB = new Object( gB );
+		gB->release();
+		oB->SetPosition( Point3( oOut.x + 2.25, 0, 0 ) );
+		oB->FinalizeTransformations();
+		CSGObject* csg = Subtract( uniA, oB );
+		gB->casts = 0;
+		const RayIntersection h = CastObj( *csg, oOut, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range - 4.5 ) < 1e-6 &&
+			std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"L: covered first A lobe advances to free second A lobe [4.5, 5.5] (got hit=" +
+			std::to_string( h.geometric.bHit ) + " [" + std::to_string( h.geometric.range ) +
+			", " + std::to_string( h.geometric.range2 ) + "])" );
+		Check( gB->casts == 1,
+			"L: single-lobe B covering first A lobe is still cast once (got " + std::to_string( gB->casts ) + ")" );
+		CheckShadowAgreesWithHit( *csg, oOut, dx, "L: covered first A lobe, free second lobe", 4.5 );
+		safe_release( csg );
+	}
+
+	// L1b: outside-both, B = [1.5, 3.5] covers A's first lobe [2.0, 2.6]
+	// and carves the front of A's straddling second lobe [2.8, 5.0] -> [3.5, 5.0].
+	{
+		CSGObject* uniA = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 2.6 ),
+			MakeIntervalSphereX( oOut.x, 2.8, 5.0 ) );
+		CSGObject* csg = Subtract( uniA, MakeIntervalSphereX( oOut.x, 1.5, 3.5 ) );
+		CheckShadowAgreesWithHit( *csg, oOut, dx, "L: covered first A lobe, straddling second A lobe", 3.5 );
+		const RayIntersection h = CastObj( *csg, oOut, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.0 ) < 1e-6 && h.geometric.vNormal.x < 0,
+			"L: straddling second A lobe closes at 5.0 with cavity normal -x" );
+		safe_release( csg );
+	}
+
+	// L1c: multi-lobe A ([2.3, 3.7] U [7.0, 9.0]) minus torus B ([2.0, 4.0] U [8.0, 10.0] from x=-6):
+	// torus lobe 1 covers A lobe 1, torus lobe 2 clamps A lobe 2 to [7.0, 8.0].
+	{
+		CSGObject* uniA = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.3, 3.7 ),
+			MakeIntervalSphereX( oOut.x, 7.0, 9.0 ) );
+		CSGObject* csg = Subtract( uniA, MakeTorusObject() );
+		CheckShadowAgreesWithHit( *csg, oOut, dx, "L: multi-lobe A minus torus B from outside", 7.0 );
+		const RayIntersection h = CastObj( *csg, oOut, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 8.0 ) < 1e-6 && h.geometric.vNormal2.x > 0,
+			"L: torus second lobe clamps A's second lobe to [7.0, 8.0] (got range2=" +
+			std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+	}
+
+	// L2a: three-lobe B ([0.5, 1.0] U [2.0, 4.0] U [6.0, 7.0]) minus-carving A = [2.5, 8.0]:
+	// B lobe 1 passed, B lobe 2 carves A's front to 4.0, third B lobe shortens range2 to 6.0.
+	{
+		CSGObject* b23 = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 4.0 ),
+			MakeIntervalSphereX( oOut.x, 6.0, 7.0 ) );
+		CSGObject* b123 = new CSGObject( CSG_UNION );
+		Object* b1 = MakeIntervalSphereX( oOut.x, 0.5, 1.0 );
+		b123->AssignObjects( b1, b23 );
+		b123->FinalizeTransformations();
+		safe_release( b1 );
+		safe_release( b23 );
+		CSGObject* csg = Subtract( MakeIntervalSphereX( oOut.x, 2.5, 8.0 ), b123 );
+		CheckShadowAgreesWithHit( *csg, oOut, dx, "L: three-lobe B shortens carved interval", 4.0 );
+		const RayIntersection h = CastObj( *csg, oOut, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 6.0 ) < 1e-6 && h.geometric.vNormal2.x > 0,
+			"L: third B lobe shortens range2 from 8.0 to 6.0 with +x exit normal (got range2=" +
+			std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+	}
+
+	// L2b: nested union B where an inner union reports [2.1, 2.3] first while
+	// an outer sibling [2.0, 4.0] overlaps [3.8, 8.5] inside the inner union:
+	// B continuously covers [2.0, 8.5], so A = [2.5, 8.0] is completely hidden.
+	{
+		CSGObject* innerB = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.1, 2.3 ),
+			MakeIntervalSphereX( oOut.x, 3.8, 8.5 ) );
+		CSGObject* outerB = new CSGObject( CSG_UNION );
+		Object* bFront = MakeIntervalSphereX( oOut.x, 2.0, 4.0 );
+		outerB->AssignObjects( bFront, innerB );
+		outerB->FinalizeTransformations();
+		safe_release( bFront );
+		safe_release( innerB );
+		CSGObject* csg = Subtract( MakeIntervalSphereX( oOut.x, 2.5, 8.0 ), outerB );
+		CheckMiss( *csg, oOut, dx, "L: overlapping nested-union B lobes hide all of A" );
+		safe_release( csg );
+	}
+
+	// L3a: inside-both coincidence across different CSG nesting depths
+	// (`MakeTieSubtraction(false)`: leaf A at depth 1 vs union B at depth 2).
+	{
+		CSGObject* csg = MakeTieSubtraction( false );
+		CheckMiss( *csg, oIn, dx, "L: MakeTieSubtraction(false) cross-depth coincident inside exit" );
+		safe_release( csg );
+	}
+
+	// L3b: outside-both front-face coincidence across nesting depths:
+	// depth-2 A ([2.0, 5.0] U [12.0, 13.0]) minus depth-1 B ([2.0, 3.5]) -> [3.5, 5.0]
+	// (no phantom cap at 2.0 from A's 2x SURFACE_INTERSEC_ERROR front backoff).
+	{
+		CSGObject* deepA = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 5.0 ),
+			MakeIntervalSphereX( oOut.x, 12.0, 13.0 ) );
+		CSGObject* csg = Subtract( deepA, MakeIntervalSphereX( oOut.x, 2.0, 3.5 ) );
+		CheckShadowAgreesWithHit( *csg, oOut, dx, "L: cross-depth coincident front face carves to 3.5", 3.5 );
+		const RayIntersection h = CastObj( *csg, oOut, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.0 ) < 1e-6 && h.geometric.vNormal.x < 0,
+			"L: cross-depth front carve reports [3.5, 5.0] with -x cavity normal (got [" +
+			std::to_string( h.geometric.range ) + ", " + std::to_string( h.geometric.range2 ) + "])" );
+		safe_release( csg );
+	}
+
+	// L3c: outside-both full and back-face coincidence across 3 nesting levels:
+	// (i) single-interval depth-3 A ([2,4] n [1,5] n [0.5,6]) minus depth-1 B [2,4] -> miss;
+	// (ii) depth-1 A [2,4] minus depth-3 B ([1,4] n [0.5,5] n [0.2,6]) -> miss;
+	// (iii) multi-lobe depth-2 A ([2,4] U [12,13]) minus depth-1 B [2,4] skips [2,4] with no sliver and hits 12.0.
+	{
+		auto IntersectOf = []( IObjectPriv* a, IObjectPriv* b ) -> CSGObject* {
+			CSGObject* c = new CSGObject( CSG_INTERSECTION );
+			c->AssignObjects( a, b );
+			c->FinalizeTransformations();
+			safe_release( a );
+			safe_release( b );
+			return c;
+		};
+		CSGObject* deepA = IntersectOf(
+			IntersectOf( MakeIntervalSphereX( oOut.x, 2.0, 4.0 ), MakeIntervalSphereX( oOut.x, 1.0, 5.0 ) ),
+			MakeIntervalSphereX( oOut.x, 0.5, 6.0 ) );
+		CSGObject* csgSame = Subtract( deepA, MakeIntervalSphereX( oOut.x, 2.0, 4.0 ) );
+		CheckMiss( *csgSame, oOut, dx, "L: depth-3 A [2,4] minus depth-1 B [2,4] has no sliver" );
+		safe_release( csgSame );
+
+		CSGObject* deepB = IntersectOf(
+			IntersectOf( MakeIntervalSphereX( oOut.x, 1.0, 4.0 ), MakeIntervalSphereX( oOut.x, 0.5, 5.0 ) ),
+			MakeIntervalSphereX( oOut.x, 0.2, 6.0 ) );
+		CSGObject* csgBack = Subtract( MakeIntervalSphereX( oOut.x, 2.0, 4.0 ), deepB );
+		CheckMiss( *csgBack, oOut, dx, "L: depth-1 A [2,4] minus depth-3 B [1,4] has no back sliver" );
+		safe_release( csgBack );
+
+		CSGObject* u2 = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 4.0 ),
+			MakeIntervalSphereX( oOut.x, 12.0, 13.0 ) );
+		CSGObject* csgAdvance = Subtract( u2, MakeIntervalSphereX( oOut.x, 2.0, 4.0 ) );
+		CheckShadowAgreesWithHit( *csgAdvance, oOut, dx, "L: depth-2 ([2,4] U [12,13]) minus [2,4] skips first lobe cleanly", 12.0 );
+		safe_release( csgAdvance );
+	}
+
+	// L4: radiance and shadow agree at every small allowance 1..8 on the new fixtures.
+	for( unsigned int budget = 1; budget <= 8; ++budget ) {
+		CSGObject::SetAdvanceBudgetForTesting( budget );
+		const std::string tag = " @ L allowance " + std::to_string( budget );
+		CSGObject* uniA1 = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 2.6 ),
+			MakeIntervalSphereX( oOut.x, 2.8, 5.0 ) );
+		CSGObject* f1 = Subtract( uniA1, MakeIntervalSphereX( oOut.x, 1.5, 3.5 ) );
+		CheckAgreement( *f1, oOut, dx, "covered+straddle" + tag );
+		safe_release( f1 );
+
+		CSGObject* uniA2 = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.3, 3.7 ),
+			MakeIntervalSphereX( oOut.x, 7.0, 9.0 ) );
+		CSGObject* f2 = Subtract( uniA2, MakeTorusObject() );
+		CheckAgreement( *f2, oOut, dx, "outside torus clamp" + tag );
+		safe_release( f2 );
+
+		CSGObject* b23 = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 4.0 ),
+			MakeIntervalSphereX( oOut.x, 6.0, 7.0 ) );
+		CSGObject* b123 = new CSGObject( CSG_UNION );
+		Object* b1 = MakeIntervalSphereX( oOut.x, 0.5, 1.0 );
+		b123->AssignObjects( b1, b23 );
+		b123->FinalizeTransformations();
+		safe_release( b1 );
+		safe_release( b23 );
+		CSGObject* f3 = Subtract( MakeIntervalSphereX( oOut.x, 2.5, 8.0 ), b123 );
+		CheckAgreement( *f3, oOut, dx, "three-lobe B clamp" + tag );
+		safe_release( f3 );
+
+		CSGObject* f4 = MakeTieSubtraction( false );
+		CheckAgreement( *f4, oIn, dx, "cross-depth tie" + tag );
+		safe_release( f4 );
+	}
+	CSGObject::SetAdvanceBudgetForTesting( 0 );
+
+	if( failCount == failsBefore ) {
+		std::cout << "  PASS: [DL-627-SUMMARY] subtraction multi-lobe residuals" << std::endl;
+	} else {
+		std::cout << "  FAIL: [DL-627-SUMMARY] " << ( failCount - failsBefore ) << " assertion(s) failed" << std::endl;
+	}
+}
+
 int main()
 {
-	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13) ===" << std::endl;
+	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13 + DL-627) ===" << std::endl;
 	TestAnalyticOperandsCastOnce();
 	TestNoAdvancePastSingleLobe();
 	TestNearClosedMeshRole();
@@ -1093,6 +1307,7 @@ int main()
 	TestSubtractionInsideMultiLobeB();
 	TestSubtractionInsideBoth();
 	TestTiesAndSmallBudgets();
+	TestSubtractionMultiLobeResidualsDL627();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }
