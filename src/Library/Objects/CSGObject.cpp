@@ -1271,6 +1271,8 @@ namespace
 		RayIntersection* outHit,
 		Scalar& outT )
 	{
+		unsigned int* const pAdvBudget =
+			ScopedCsgQueryBudget::ActiveSlot() ? ScopedCsgQueryBudget::ActiveSlot()->pAdvanceBudget : 0;
 		RayIntersection cur( firstSheetHit );
 		Scalar tBase = 0;
 		for( unsigned int k = 0; ; ++k ) {
@@ -1281,7 +1283,8 @@ namespace
 			if( !( tHit <= dHowFar2 ) ) {
 				return false;
 			}
-			const int inside = ( k >= kMaxOpenSheetWalk ) ? 0 :
+			const bool exhausted = ( k >= kMaxOpenSheetWalk ) || ( pAdvBudget && *pAdvBudget == 0 );
+			const int inside = exhausted ? 0 :
 				ClosedOperandContains( pSolid, localRay.PointAtLength( tHit ), localRay.Dir(), scale );
 			if( inside == 0 || ( inside > 0 ) == keepInside ) {
 				if( outHit ) {
@@ -1300,6 +1303,9 @@ namespace
 			const Scalar tStart = tHit + OpenSheetRecastStep( tHit, scale );
 			if( !( tStart < dHowFar2 ) ) {
 				return false;
+			}
+			if( pAdvBudget ) {
+				--*pAdvBudget;
 			}
 			Ray next( localRay );
 			next.origin = localRay.PointAtLength( tStart );
@@ -1420,6 +1426,11 @@ namespace
 		return s.hasBoundaryRange ? s.boundaryRange : s.range;
 	}
 
+	inline Scalar ExitCoord( const NextLobeSummary& s )
+	{
+		return s.hasBoundaryRange2 ? s.boundaryRange2 : s.range2;
+	}
+
 	inline Scalar CoincidenceTol( const Scalar t, const Scalar subScale, const bool bothUnbacked, const Scalar fallbackBackoff )
 	{
 		const Scalar ulpTol = Scalar( 64 ) * std::numeric_limits<Scalar>::epsilon() *
@@ -1464,7 +1475,7 @@ namespace
 			--budget )
 		{
 			const Scalar tStart = riOperand.geometric.range2 + OpenSheetRecastStep( riOperand.geometric.range2, scale );
-			if( !( tStart < dHowFar2 ) ) {
+			if( !std::isfinite( tStart ) || !( riOperand.geometric.range2 < dHowFar2 ) ) {
 				riOperand.geometric.bHit = false;
 				break;
 			}
@@ -1478,8 +1489,10 @@ namespace
 			if( castInputs ) {
 				riNext.geometric.PropagateCastInputs( *castInputs );
 			}
-			const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
-			pOperand->IntersectRay( riNext, remFar, true, true, true );
+			// Always probe `pOperand` without a `dHowFar2 - tStart` cap so an
+			// inside-origin touching continuation lobe (`riNext.range2 == 0`)
+			// whose far exit exceeds `dHowFar2` is never misread as empty space.
+			pOperand->IntersectRay( riNext, RISE_INFINITY, true, true, true );
 			RecoverContainedOperand( pOperand, riNext, facts );
 			if( !riNext.geometric.bHit ) {
 				riOperand.geometric.bHit = false;
@@ -1567,7 +1580,7 @@ namespace
 			return false;
 		}
 		const Scalar tStart = riOperand.geometric.range2 + OpenSheetRecastStep( riOperand.geometric.range2, scale );
-		if( !( tStart < dHowFar2 ) ) {
+		if( !std::isfinite( tStart ) || !( riOperand.geometric.range2 < dHowFar2 ) ) {
 			outNextLobe.valid = true;
 			outNextLobe.bHit = false;
 			return false;
@@ -1582,8 +1595,7 @@ namespace
 		if( castInputs ) {
 			riNext.geometric.PropagateCastInputs( *castInputs );
 		}
-		const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
-		pOperand->IntersectRay( riNext, remFar, true, true, true );
+		pOperand->IntersectRay( riNext, RISE_INFINITY, true, true, true );
 		RecoverContainedOperand( pOperand, riNext, facts );
 		--budget;
 		if( riNext.geometric.bHit && riNext.geometric.range2 == 0 ) {
@@ -1609,8 +1621,90 @@ namespace
 					riNext.boundaryRange2 += tStart;
 				}
 			}
+			if( !( riNext.geometric.range < dHowFar2 ) ) {
+				riNext.geometric.bHit = false;
+			}
 		}
 		outNextLobe = NextLobeSummary::FromHit( riNext );
+		return false;
+	}
+
+	//! DL-627: advances a multi-lobe subtracted operand `B` past degenerate
+	//! zero-thickness intervals (`ExitCoord(B) <= EntryCoord(B) + tolBB`, e.g.
+	//! tangent grazes or pinched seams on an earlier union lobe) up to
+	//! `maxEntry` so a genuine positive-thickness cavity lobe behind the
+	//! tangent touch is not masked, and so an interval exit is never clamped
+	//! at a zero-volume graze.  Returns TRUE when `budget` ran out before a
+	//! positive-thickness lobe or miss was reached.
+	bool SkipDegenerateMultiLobeB(
+		const IObjectPriv* pObjectB,
+		const Ray& localRay,
+		const Scalar dHowFar2,
+		const Scalar scale,
+		const Scalar maxEntry,
+		const Scalar fallbackBackoff,
+		const RayIntersectionGeometric* castInputs,
+		const RasterizerState& rast,
+		const OperandFacts& factsB,
+		unsigned int& budget,
+		RayIntersection& riObjB )
+	{
+		while( riObjB.geometric.bHit &&
+			riObjB.geometric.range2 > 0 &&
+			riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY )
+		{
+			const Scalar bEntry = EntryCoord( riObjB );
+			const Scalar bExit = ExitCoord( riObjB );
+			const Scalar tolBB = CoincidenceTol(
+				bEntry, scale,
+				riObjB.hasBoundaryRange && riObjB.hasBoundaryRange2,
+				fallbackBackoff );
+			if( bExit > bEntry + tolBB || !( bEntry < maxEntry ) ) {
+				return false;
+			}
+			if( AdvanceOperandPast( pObjectB, localRay, dHowFar2, scale,
+					bExit + tolBB, castInputs, rast, factsB, budget, riObjB ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool SkipDegenerateClampSummaryB(
+		const IObjectPriv* pObjectB,
+		const Ray& localRay,
+		const Scalar dHowFar2,
+		const Scalar scale,
+		const Scalar maxEntry,
+		const Scalar fallbackBackoff,
+		const RayIntersectionGeometric* castInputs,
+		const RasterizerState& rast,
+		const OperandFacts& factsB,
+		unsigned int& budget,
+		RayIntersection& scratchB,
+		NextLobeSummary& summaryB )
+	{
+		while( summaryB.valid && summaryB.bHit &&
+			summaryB.range2 > 0 &&
+			summaryB.range2 < Scalar( 0.5 ) * RISE_INFINITY )
+		{
+			const Scalar nbEntry = EntryCoord( summaryB );
+			const Scalar nbExit = ExitCoord( summaryB );
+			const Scalar tolBB = CoincidenceTol(
+				nbEntry, scale,
+				summaryB.hasBoundaryRange && summaryB.hasBoundaryRange2,
+				fallbackBackoff );
+			if( nbExit > nbEntry + tolBB || !( nbEntry < maxEntry ) ) {
+				return false;
+			}
+			summaryB.ApplyToOperandHit( scratchB );
+			const bool ranOut = AdvanceOperandPast( pObjectB, localRay, dHowFar2, scale,
+				nbExit + tolBB, castInputs, rast, factsB, budget, scratchB );
+			summaryB = NextLobeSummary::FromHit( scratchB );
+			if( ranOut ) {
+				return true;
+			}
+		}
 		return false;
 	}
 
@@ -1644,7 +1738,7 @@ namespace
 				return true;
 			}
 			const Scalar tStart = riOperand.geometric.range + OpenSheetRecastStep( riOperand.geometric.range, scale );
-			if( !( tStart < dHowFar2 ) ) {
+			if( !std::isfinite( tStart ) || !( riOperand.geometric.range < dHowFar2 ) ) {
 				if( outNextLobe ) {
 					*outNextLobe = NextLobeSummary{};
 					outNextLobe->valid = true;
@@ -1662,8 +1756,7 @@ namespace
 			if( castInputs ) {
 				riNext.geometric.PropagateCastInputs( *castInputs );
 			}
-			const Scalar remFar = ( dHowFar2 == RISE_INFINITY ) ? RISE_INFINITY : ( dHowFar2 - tStart );
-			pOperand->IntersectRay( riNext, remFar, true, true, true );
+			pOperand->IntersectRay( riNext, RISE_INFINITY, true, true, true );
 			RecoverContainedOperand( pOperand, riNext, facts );
 			--budget;
 			if( !riNext.geometric.bHit || riNext.geometric.range2 != 0 ) {
@@ -1680,6 +1773,9 @@ namespace
 							if( riNext.hasBoundaryRange2 ) {
 								riNext.boundaryRange2 += tStart;
 							}
+						}
+						if( !( riNext.geometric.range < dHowFar2 ) ) {
+							riNext.geometric.bHit = false;
 						}
 					}
 					*outNextLobe = NextLobeSummary::FromHit( riNext );
@@ -2331,9 +2427,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	ScopedCsgQueryBudget queryBudget;
 	unsigned int& advanceBudget = *queryBudget.pAdvanceBudget;
 	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
-	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
 	RecoverContainedOperand( pObjectA, riObjA, factsA );
-	RecoverContainedOperand( pObjectB, riObjB, factsB );
+	if( op != CSG_SUBTRACTION || riObjA.geometric.bHit || ( certBits & kTrimSheetB ) ) {
+		const Scalar limitB = ( op == CSG_SUBTRACTION ) ? RISE_INFINITY : dHowFar2;
+		pObjectB->IntersectRay( riObjB, limitB, true, true, true );
+		RecoverContainedOperand( pObjectB, riObjB, factsB );
+	}
 
 	// DL-617: a sheet-trimming composite (see ComputeCertificateBits)
 	// treats its sheet operand as a zero-thickness surface, not the
@@ -2720,11 +2819,11 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			bool ranOut = false;
 			NextLobeSummary nextB;
 			if( !( certBits & kSingleLobeA ) && riObjA.geometric.range2 == 0 ) {
-				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectA, ri.geometric.ray, dHowFar2, subScale, &ri.geometric, ri.geometric.rast,
+				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectA, ri.geometric.ray, RISE_INFINITY, subScale, &ri.geometric, ri.geometric.rast,
 					factsA, advanceBudget, riObjA, 0 ) || ranOut;
 			}
 			if( riObjB.geometric.bHit && !( certBits & kSingleLobeB ) && riObjB.geometric.range2 == 0 ) {
-				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectB, ri.geometric.ray, dHowFar2, subScale, &ri.geometric, ri.geometric.rast,
+				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectB, ri.geometric.ray, RISE_INFINITY, subScale, &ri.geometric, ri.geometric.rast,
 					factsB, advanceBudget, riObjB, &nextB ) || ranOut;
 			}
 			// Inside BOTH, and A is left first or at the same distance:
@@ -2893,15 +2992,23 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						NextLobeSummary clampB = nextB;
 						bool clampRanOut = false;
 						if( !clampB.valid ) {
-							clampRanOut = AdvanceOperandSummaryPast( pObjectB, ri.geometric.ray, dHowFar2, subScale,
+							clampRanOut = AdvanceOperandSummaryPast( pObjectB, ri.geometric.ray, RISE_INFINITY, subScale,
 								bExit + tol, &ri.geometric, ri.geometric.rast,
 								factsB, advanceBudget, riObjB, clampB );
 						}
 						if( !clampRanOut && clampB.bHit ) {
+							clampRanOut = SkipDegenerateClampSummaryB(
+								pObjectB, ri.geometric.ray, RISE_INFINITY, subScale,
+								aExit, fallbackBackoff, &ri.geometric, ri.geometric.rast,
+								factsB, advanceBudget, riObjB, clampB );
+						}
+						if( !clampRanOut && clampB.bHit ) {
 							const Scalar nbEntry = EntryCoord( clampB );
+							const Scalar nbExit = ExitCoord( clampB );
+							const Scalar tolBB = coincTol( nbEntry, clampB.hasBoundaryRange, clampB.hasBoundaryRange2 );
 							const Scalar tolLo = coincTol( bExit, clampB.hasBoundaryRange, bOrigHasBoundary );
 							const Scalar tolHi = coincTol( aExit, clampB.hasBoundaryRange, riObjA.hasBoundaryRange );
-							if( nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
+							if( nbExit > nbEntry + tolBB && nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
 								ri.geometric.range2 = clampB.range;
 								ri.boundaryRange2 = clampB.boundaryRange; ri.hasBoundaryRange2 = clampB.hasBoundaryRange;
 								ri.geometric.vNormal2 = -clampB.vNormal;
@@ -2915,6 +3022,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				// Then as long as we hit B before dHowFar then its all good
 				// should always be true
 				const Scalar aExit = EntryCoord( riObjA );
+				if( riObjB.geometric.bHit && !( certBits & kSingleLobeB ) ) {
+					SkipDegenerateMultiLobeB(
+						pObjectB, ri.geometric.ray, RISE_INFINITY, subScale,
+						aExit, fallbackBackoff, &ri.geometric, ri.geometric.rast,
+						factsB, advanceBudget, riObjB );
+				}
 				bool bCarvesBeforeExit = false;
 				if( riObjB.geometric.bHit ) {
 					const Scalar bEntry = EntryCoord( riObjB );
@@ -3041,15 +3154,23 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						NextLobeSummary clampB = nextB;
 						bool clampRanOut = false;
 						if( !clampB.valid ) {
-							clampRanOut = AdvanceOperandSummaryPast( pObjectB, ri.geometric.ray, dHowFar2, subScale,
+							clampRanOut = AdvanceOperandSummaryPast( pObjectB, ri.geometric.ray, RISE_INFINITY, subScale,
 								bExit + tolOut, &ri.geometric, ri.geometric.rast,
 								factsB, advanceBudget, riObjB, clampB );
 						}
 						if( !clampRanOut && clampB.bHit ) {
+							clampRanOut = SkipDegenerateClampSummaryB(
+								pObjectB, ri.geometric.ray, RISE_INFINITY, subScale,
+								aExit, fallbackBackoff, &ri.geometric, ri.geometric.rast,
+								factsB, advanceBudget, riObjB, clampB );
+						}
+						if( !clampRanOut && clampB.bHit ) {
 							const Scalar nbEntry = EntryCoord( clampB );
+							const Scalar nbExit = ExitCoord( clampB );
+							const Scalar tolBB = coincTol( nbEntry, clampB.hasBoundaryRange, clampB.hasBoundaryRange2 );
 							const Scalar tolLo = coincTol( bExit, clampB.hasBoundaryRange, bOrigHasBoundary );
 							const Scalar tolHi = coincTol( aExit, clampB.hasBoundaryRange, riObjA.hasBoundaryRange2 );
-							if( nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
+							if( nbExit > nbEntry + tolBB && nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
 								ri.geometric.range2 = clampB.range;
 								ri.boundaryRange2 = clampB.boundaryRange; ri.hasBoundaryRange2 = clampB.hasBoundaryRange;
 								ri.geometric.vNormal2 = -clampB.vNormal;
@@ -3086,14 +3207,33 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY )
 					{
 						const Scalar aEntry = EntryCoord( riObjA );
+						const Scalar aExit = ExitCoord( riObjA );
 						const Scalar tolBA = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
 						if( ExitCoord( riObjB ) <= aEntry + tolBA ) {
 							bSummaryApplied = false;
-							if( AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, subScale,
+							if( AdvanceOperandPast( pObjectB, ri.geometric.ray, RISE_INFINITY, subScale,
 									aEntry + tolBA, &ri.geometric, ri.geometric.rast,
 									factsB, advanceBudget, riObjB ) ) {
 								dropUnconfirmed = true;
 								break;
+							}
+						}
+						if( riObjB.geometric.bHit ) {
+							const Scalar bEn = EntryCoord( riObjB );
+							const Scalar tolBB = coincTol( bEn, riObjB.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+							if( ExitCoord( riObjB ) <= bEn + tolBB && bEn < aExit ) {
+								bSummaryApplied = false;
+								const bool ranOutDegen = SkipDegenerateMultiLobeB(
+									pObjectB, ri.geometric.ray, RISE_INFINITY, subScale,
+									aExit, fallbackBackoff, &ri.geometric, ri.geometric.rast,
+									factsB, advanceBudget, riObjB );
+								if( ranOutDegen && riObjB.geometric.bHit ) {
+									const Scalar tolIn = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+									if( EntryCoord( riObjB ) <= aEntry + tolIn ) {
+										dropUnconfirmed = true;
+										break;
+									}
+								}
 							}
 						}
 					}
@@ -3128,20 +3268,17 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						if( !( certBits & kSingleLobeB ) &&
 							riObjB.geometric.range2 > 0 &&
 							riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY ) {
-							const Scalar tStepB = riObjB.geometric.range2 + OpenSheetRecastStep( riObjB.geometric.range2, subScale );
-							if( tStepB < dHowFar2 ) {
-								if( advanceBudget == 0 ) {
-									// Exhaustion rule: cannot verify whether a
-									// touching continuation lobe of B erases
-									// this candidate surface, so drop it.
-									dropUnconfirmed = true;
-									break;
-								}
-								if( ProbeOutsideExitOrNextLobe( pObjectB, ri.geometric.ray, dHowFar2, subScale,
-										&ri.geometric, ri.geometric.rast,
-										factsB, advanceBudget, riObjB, clampNextB ) ) {
-									continue;
-								}
+							if( advanceBudget == 0 ) {
+								// Exhaustion rule: cannot verify whether a
+								// touching continuation lobe of B erases
+								// this candidate surface, so drop it.
+								dropUnconfirmed = true;
+								break;
+							}
+							if( ProbeOutsideExitOrNextLobe( pObjectB, ri.geometric.ray, RISE_INFINITY, subScale,
+									&ri.geometric, ri.geometric.rast,
+									factsB, advanceBudget, riObjB, clampNextB ) ) {
+								continue;
 							}
 						}
 					}
@@ -3156,14 +3293,18 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						const Scalar aExit = ExitCoord( riObjA );
 						const Scalar bEntry = EntryCoord( riObjB );
 						const Scalar bExit = ExitCoord( riObjB );
+						const Scalar tolBB = coincTol( bEntry, riObjB.hasBoundaryRange, riObjB.hasBoundaryRange2 );
 						const Scalar tolDisjointEnd = coincTol( aExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange );
 						const Scalar tolDisjointStart = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
 						const Scalar tolIn = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
 						const Scalar tolOut = coincTol( aExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange2 );
-						// Test DISJOINTNESS FIRST (P1-b): B's interval either
-						// begins at/after A ends or ends at/before A begins.
+						// Test DISJOINTNESS (or a zero-thickness B graze left
+						// after budget exhaustion) FIRST: B's interval either
+						// begins at/after A ends, ends at/before A begins, or
+						// has zero volume inside A.
 						if( ( bEntry + tolDisjointEnd >= aExit ) ||
-							( bExit <= aEntry + tolDisjointStart ) )
+							( bExit <= aEntry + tolDisjointStart ) ||
+							( bExit <= bEntry + tolBB ) )
 						{
 							ri = riObjA;
 						}
@@ -3211,14 +3352,23 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 								ri.geometric.bHasWireEdgeInfo = false;
 							}
 							if( clampNextB.valid && clampNextB.bHit ) {
-								const Scalar nbEntry = EntryCoord( clampNextB );
-								const Scalar tolLo = coincTol( bExit, clampNextB.hasBoundaryRange, riObjB.hasBoundaryRange2 );
-								const Scalar tolHi = coincTol( aExit, clampNextB.hasBoundaryRange, riObjA.hasBoundaryRange2 );
-								if( nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
-									ri.geometric.range2 = clampNextB.range;
-									ri.boundaryRange2 = clampNextB.boundaryRange; ri.hasBoundaryRange2 = clampNextB.hasBoundaryRange;
-									ri.geometric.vNormal2 = -clampNextB.vNormal;
-									ri.geometric.vGeomNormal2 = -clampNextB.vGeomNormal;
+								RayIntersection scratchClampB = riObjB;
+								const bool clampRanOut = SkipDegenerateClampSummaryB(
+									pObjectB, ri.geometric.ray, RISE_INFINITY, subScale,
+									aExit, fallbackBackoff, &ri.geometric, ri.geometric.rast,
+									factsB, advanceBudget, scratchClampB, clampNextB );
+								if( !clampRanOut && clampNextB.bHit ) {
+									const Scalar nbEntry = EntryCoord( clampNextB );
+									const Scalar nbExit = ExitCoord( clampNextB );
+									const Scalar nbTolBB = coincTol( nbEntry, clampNextB.hasBoundaryRange, clampNextB.hasBoundaryRange2 );
+									const Scalar tolLo = coincTol( bExit, clampNextB.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+									const Scalar tolHi = coincTol( aExit, clampNextB.hasBoundaryRange, riObjA.hasBoundaryRange2 );
+									if( nbExit > nbEntry + nbTolBB && nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
+										ri.geometric.range2 = clampNextB.range;
+										ri.boundaryRange2 = clampNextB.boundaryRange; ri.hasBoundaryRange2 = clampNextB.hasBoundaryRange;
+										ri.geometric.vNormal2 = -clampNextB.vNormal;
+										ri.geometric.vGeomNormal2 = -clampNextB.vGeomNormal;
+									}
 								}
 							}
 						}
@@ -3721,9 +3871,12 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	ScopedCsgQueryBudget queryBudget;
 	unsigned int& advanceBudget = *queryBudget.pAdvanceBudget;
 	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
-	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
 	RecoverContainedOperand( pObjectA, riObjA, factsA );
-	RecoverContainedOperand( pObjectB, riObjB, factsB );
+	if( op != CSG_SUBTRACTION || riObjA.geometric.bHit || ( certBits & kTrimSheetB ) ) {
+		const Scalar limitB = ( op == CSG_SUBTRACTION ) ? RISE_INFINITY : dHowFar2;
+		pObjectB->IntersectRay( riObjB, limitB, true, true, true );
+		RecoverContainedOperand( pObjectB, riObjB, factsB );
+	}
 
 	// DL-617: sheet-trimming composite -- see IntersectRay.
 	if( certBits & ( kTrimSheetA | kTrimSheetB ) )
@@ -3918,11 +4071,11 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 			bool ranOut = false;
 			NextLobeSummary nextB;
 			if( !( certBits & kSingleLobeA ) && riObjA.geometric.range2 == 0 ) {
-				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectA, orig, dHowFar2, subScale, 0, nullRasterizerState,
+				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectA, orig, RISE_INFINITY, subScale, 0, nullRasterizerState,
 					factsA, advanceBudget, riObjA, 0 ) || ranOut;
 			}
 			if( riObjB.geometric.bHit && !( certBits & kSingleLobeB ) && riObjB.geometric.range2 == 0 ) {
-				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectB, orig, dHowFar2, subScale, 0, nullRasterizerState,
+				ranOut = ExtendInsideExitThroughTouchingLobes( pObjectB, orig, RISE_INFINITY, subScale, 0, nullRasterizerState,
 					factsB, advanceBudget, riObjB, &nextB ) || ranOut;
 			}
 			bool aCollapsed = false;
@@ -3978,12 +4131,18 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				const Scalar bExit = EntryCoord( riObjB );
 				const Scalar aExit = EntryCoord( riObjA );
 				const Scalar tol = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
-				return ( bExit + tol < aExit && riObjB.geometric.range < dHowFar2 );
+				return ( bExit + tol < aExit && riObjB.geometric.range > 0 && riObjB.geometric.range < dHowFar2 );
 			} else if( riObjA.geometric.range2 == 0 ) {
 				// Inside A, outside B: the ray is inside the composite, whose
 				// first boundary is B's entry (the carved cavity) or A's exit,
 				// whichever comes first.
 				const Scalar aExit = EntryCoord( riObjA );
+				if( riObjB.geometric.bHit && !( certBits & kSingleLobeB ) ) {
+					SkipDegenerateMultiLobeB(
+						pObjectB, orig, dHowFar2, subScale,
+						std::min( aExit, dHowFar2 ), fallbackBackoff, 0, nullRasterizerState,
+						factsB, advanceBudget, riObjB );
+				}
 				bool bCarvesBeforeExit = false;
 				if( riObjB.geometric.bHit ) {
 					const Scalar bEntry = EntryCoord( riObjB );
@@ -4001,7 +4160,7 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				const Scalar tolIn = coincTol( bExit, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
 				const Scalar tolOut = coincTol( bExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange );
 				if( aEntry < bExit + tolIn && bExit + tolOut < aExit ) {
-					return ( riObjB.geometric.range < dHowFar2 );
+					return ( riObjB.geometric.range > 0 && riObjB.geometric.range < dHowFar2 );
 				}
 				return false;
 			} else {
@@ -4035,6 +4194,20 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 								break;
 							}
 						}
+						if( riObjB.geometric.bHit ) {
+							const Scalar bEn = EntryCoord( riObjB );
+							const Scalar tolBB = coincTol( bEn, riObjB.hasBoundaryRange, riObjB.hasBoundaryRange2 );
+							const Scalar tolIn = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
+							if( ExitCoord( riObjB ) <= bEn + tolBB && bEn <= aEntry + tolIn ) {
+								if( SkipDegenerateMultiLobeB(
+										pObjectB, orig, dHowFar2, subScale,
+										aEntry + tolIn + tolBB, fallbackBackoff, 0, nullRasterizerState,
+										factsB, advanceBudget, riObjB ) ) {
+									dropUnconfirmed = true;
+									break;
+								}
+							}
+						}
 					}
 					if( !riObjB.geometric.bHit ) {
 						break;
@@ -4066,18 +4239,16 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 						}
 						if( !( certBits & kSingleLobeB ) &&
 							riObjB.geometric.range2 > 0 &&
-							riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY ) {
-							const Scalar tStepB = riObjB.geometric.range2 + OpenSheetRecastStep( riObjB.geometric.range2, subScale );
-							if( tStepB < dHowFar2 ) {
-								if( advanceBudget == 0 ) {
-									dropUnconfirmed = true;
-									break;
-								}
-								if( ProbeOutsideExitOrNextLobe( pObjectB, orig, dHowFar2, subScale,
-										0, nullRasterizerState,
-										factsB, advanceBudget, riObjB, clampNextB ) ) {
-									continue;
-								}
+							riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY &&
+							riObjB.geometric.range2 < dHowFar2 ) {
+							if( advanceBudget == 0 ) {
+								dropUnconfirmed = true;
+								break;
+							}
+							if( ProbeOutsideExitOrNextLobe( pObjectB, orig, RISE_INFINITY, subScale,
+									0, nullRasterizerState,
+									factsB, advanceBudget, riObjB, clampNextB ) ) {
+								continue;
 							}
 						}
 					}
@@ -4093,12 +4264,14 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				const Scalar aExit = ExitCoord( riObjA );
 				const Scalar bEntry = EntryCoord( riObjB );
 				const Scalar bExit = ExitCoord( riObjB );
+				const Scalar tolBB = coincTol( bEntry, riObjB.hasBoundaryRange, riObjB.hasBoundaryRange2 );
 				const Scalar tolDisjointEnd = coincTol( aExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange );
 				const Scalar tolDisjointStart = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
 				const Scalar tolIn = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
 				const Scalar tolOut = coincTol( aExit, riObjA.hasBoundaryRange2, riObjB.hasBoundaryRange2 );
 				if( ( bEntry + tolDisjointEnd >= aExit ) ||
-					( bExit <= aEntry + tolDisjointStart ) ) {
+					( bExit <= aEntry + tolDisjointStart ) ||
+					( bExit <= bEntry + tolBB ) ) {
 					return ( riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0 );
 				}
 				if( aEntry + tolIn < bEntry && riObjA.geometric.range2 != 0 ) {

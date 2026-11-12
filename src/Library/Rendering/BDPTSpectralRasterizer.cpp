@@ -801,12 +801,10 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	// Track total adaptive samples for splat film normalization.
-	// Use the delta (samples rendered THIS pass) to avoid double-counting
-	// across progressive passes.  See BDPTPelRasterizer::IntegratePixel.
-	if( adaptive ) {
-		AddAdaptiveSamples( pixelSampleIndex - passStartSampleIndex );
-	}
+	// Track total completed samples for splat film (`t == 1`) normalization
+	// unconditionally across adaptive and non-adaptive passes so progressive
+	// previews and mid-render cancellations normalize by completed samples.
+	AddAdaptiveSamples( pixelSampleIndex - passStartSampleIndex );
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		const Scalar t = Scalar(pixelSampleIndex) / Scalar(targetSamples);

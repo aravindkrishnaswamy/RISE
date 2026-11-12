@@ -407,6 +407,45 @@ static void TestDenoiseOverrides()
 		}
 		std::remove( path.c_str() );
 	}
+
+	// Case D: AutoRasterizer (spectral mode: auto_spectral_rasterizer) both pre-resolve and post-resolve
+	{
+		const std::string path = TempScenePath( "auto_spec_denoise" );
+		{
+			std::ofstream ofs( path );
+			ofs << MultiCamScene( "auto_spectral_rasterizer\n{\n\tsamples 1\n\toidn_denoise FALSE\n}" );
+		}
+		IJobPriv* pJob = nullptr;
+		if( RISE_CreateJobPriv( &pJob ) && pJob ) {
+			Check( pJob->LoadAsciiSceneAuto( path.c_str() ), "loaded auto_spectral_rasterizer scene with oidn_denoise FALSE" );
+			DenoiseTrackingOutput* out = new DenoiseTrackingOutput();
+			pJob->GetRasterizer()->AddRasterizerOutput( out );
+
+			Cli::PostLoadCliOverrides ovOn;
+			ovOn.denoiseMode = 1;
+			std::ostringstream err;
+			Check( Cli::ApplyPostLoadCliOverrides( pJob, ovOn, err ),
+				"--denoise applied on auto_spectral_rasterizer before lazy delegate resolution" );
+			Check( pJob->Rasterize(), "auto_spectral_rasterizer first render (with --denoise)" );
+			Check( out->sawPreDenoised && out->sawDenoised && !out->sawRaw,
+				"auto_spectral_rasterizer forwarded pre-resolve --denoise to lazily built spectral delegate" );
+
+			out->sawRaw = false;
+			out->sawPreDenoised = false;
+			out->sawDenoised = false;
+			Cli::PostLoadCliOverrides ovOff;
+			ovOff.denoiseMode = 0;
+			Check( Cli::ApplyPostLoadCliOverrides( pJob, ovOff, err ),
+				"--no-denoise applied on auto_spectral_rasterizer after delegate resolution" );
+			Check( pJob->Rasterize(), "auto_spectral_rasterizer second render (with --no-denoise)" );
+			Check( out->sawRaw && !out->sawPreDenoised && !out->sawDenoised,
+				"auto_spectral_rasterizer forwarded post-resolve --no-denoise to live spectral delegate" );
+
+			safe_release( out );
+			safe_release( pJob );
+		}
+		std::remove( path.c_str() );
+	}
 #endif
 }
 

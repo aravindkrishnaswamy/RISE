@@ -1339,7 +1339,7 @@ static double RunConvexityQuadrature(
 	const std::vector<SDFGeometry::Part>& parts, const Point3& camLoc, double fovDeg,
 	const std::string& exprBody, int N, double* outMin, double* outMax, int* outCount )
 {
-	const double halfFov = fovDeg * 0.5 * (M_PI / 180.0);
+	const double halfFov = fovDeg * 0.5 * (PI / 180.0);
 	const double tanHalf = std::tan( halfFov );
 	double sum = 0.0;
 	int count = 0;

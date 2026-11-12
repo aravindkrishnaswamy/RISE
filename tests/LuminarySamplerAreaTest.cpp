@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <vector>
 #include <cmath>
 #include <string>
@@ -1230,7 +1231,7 @@ static void TestProgressiveColorAndOrthoCamera()
 			Fmt( "P: %s 32-pass progressive vs single-pass mean diff %.3e < 5e-7", rasts[r][0], passParityErr ) );
 
 		// 3. Live intermediate tile previews (OutputIntermediateImage on passes 1..3)
-		//    and cancelled mid-pass-2 progressive renders must retain full cumulative
+		//    and cancelled mid-pass-3 progressive renders must retain full cumulative
 		//    luminance (regression guard against 1/(k+1) pass-delta darkening).
 		const char* liveRasts[3] = {
 			"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n",
@@ -1341,6 +1342,90 @@ static void TestProgressiveColorAndOrthoCamera()
 		const double cancelRatio = ( fullMean > 0.0 ) ? ( cancelMean / fullMean ) : 0.0;
 		Check( okLiveCancel && wasCancelled && cancelRatio > 0.85 && cancelRatio < 1.15,
 			Fmt( "P: %s mid-pass-3 cancelled progressive output retains full luminance (ratio %.3f in [0.85, 1.15])", rasts[r][0], cancelRatio ) );
+	}
+
+	// 4. Perspective (`pinhole_camera`) + `spot_light` -> `perfectreflector_material`
+	//    mirror -> `lambertian_material` wall non-adaptive progressive BDPT across
+	//    Pel, Spectral (NM), and Spectral HWSS: `s=0/1/2` are identically zero on
+	//    this caustic (`spot_light` has zero area and points away from the wall;
+	//    `perfectreflector_material` has delta BSDF), so 100% of image radiance
+	//    comes from `(s = 3, t = 1)` light-to-camera splats in `pSplatFilm`.
+	//    Cancelling after pass 1/4 must normalize `pSplatFilm` by completed samples
+	//    (4 SPP) rather than full-render target SPP (16 SPP, which darkened by 4x).
+	{
+		struct PerspCase { const char* label; const char* rast; };
+		const PerspCase perspCases[3] = {
+			{ "bdpt_pel", "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tadaptive_max_samples 0\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" },
+			{ "bdpt_spectral_nm", "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tadaptive_max_samples 0\n\thwss FALSE\n\tnmbegin 500\n\tnmend 600\n\tnum_wavelengths 16\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" },
+			{ "bdpt_spectral_hwss", "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tadaptive_max_samples 0\n\thwss TRUE\n\tnmbegin 500\n\tnmend 600\n\tnum_wavelengths 16\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" }
+		};
+		for( int pc = 0; pc < 3; ++pc ) {
+			std::ostringstream sc;
+			sc << "RISE ASCII SCENE 7\n"
+			   << "film\n{\n\twidth 32\n\theight 32\n\tpixelAR 1.0\n}\n\n"
+			   << "pinhole_camera\n{\n\tlocation 0 0 2.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
+			   << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			   << perspCases[pc].rast
+			   << "uniformcolor_painter\n{\n\tname p_white\n\tcolor 0.9 0.9 0.9\n\tcolorspace RISERGB\n}\n\n"
+			   << "lambertian_material\n{\n\tname m_wall\n\treflectance p_white\n}\n\n"
+			   << "perfectreflector_material\n{\n\tname m_mirror\n\treflectance p_white\n}\n\n"
+			   << "clippedplane_geometry\n{\n\tname g_wall\n\tpta -4 -4 0\n\tptb 4 -4 0\n\tptc 4 4 0\n\tptd -4 4 0\n\tdoublesided TRUE\n}\n\n"
+			   << "standard_object\n{\n\tname wall\n\tgeometry g_wall\n\tmaterial m_wall\n}\n\n"
+			   << "clippedplane_geometry\n{\n\tname g_mirror\n\tpta -4 -4 3.5\n\tptb 4 -4 3.5\n\tptc 4 4 3.5\n\tptd -4 4 3.5\n\tdoublesided TRUE\n}\n\n"
+			   << "standard_object\n{\n\tname mirror\n\tgeometry g_mirror\n\tmaterial m_mirror\n}\n\n"
+			   << "spot_light\n{\n\tname key\n\tpower 40.0\n\tinner 20.0\n\touter 30.0\n\tposition 0 0 2.5\n\ttarget 0 0 3.5\n\tcolor 1.0 1.0 1.0\n}\n";
+			const std::string scText = sc.str();
+			auto runPersp = [&]( double cancelFrac, double& outMean, bool& outCancelled ) -> bool {
+				const std::string pth = TempPath( "prog_persp_bdpt", "RISEscene" );
+				{ std::ofstream ofs( pth ); ofs << scText; }
+				bool okRun = false;
+				IJobPriv* pJob = nullptr;
+				if( RISE_CreateJobPriv( &pJob ) && pJob && pJob->LoadAsciiSceneViaCst( pth.c_str() ) ) {
+					pJob->RemoveRasterizerOutputs();
+					CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+					GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
+					pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+					if( Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() ) ) {
+						pRas->ForTest_SetThreadCountOverride( 1 );
+					}
+					CancellingProgressCallback cb;
+					cb.cancelFraction = cancelFrac;
+					if( cancelFrac <= 1.0 ) {
+						pJob->SetProgress( &cb );
+					}
+					SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 7777u, 0x459u ) );
+					std::srand( 7777u );
+					GlobalRNG().Reseed( 7777u );
+					pJob->Rasterize();
+					SobolSamplerTestHooks::ValueSalt().store( 0u );
+					pJob->SetProgress( nullptr );
+					outCancelled = cb.cancelled;
+					if( !pCap->pixels.empty() ) {
+						double sum = 0.0;
+						for( const RISEColor& c : pCap->pixels ) {
+							sum += ( c.base.r + c.base.g + c.base.b ) * c.a / 3.0;
+						}
+						outMean = sum / double( pCap->pixels.size() );
+						okRun = std::isfinite( outMean ) && outMean > 0.0;
+					}
+					safe_release( pCap );
+				}
+				safe_release( pJob );
+				std::remove( pth.c_str() );
+				return okRun;
+			};
+			double meanFull16 = 0.0, meanCancelPass1 = 0.0;
+			bool dummyC = false, didC = false;
+			const bool ok16 = runPersp( 2.0, meanFull16, dummyC );
+			// Cancel at 0.25 (cleanly after pass 1 of 4 completes = 4 of 16 SPP): without
+			// unconditional AddAdaptiveSamples, t==1 splats divide by 16 instead of 4,
+			// dropping total output luminance to ~0.625x of full brightness!
+			const bool okC1 = runPersp( 0.25, meanCancelPass1, didC );
+			const double ratioP1 = ( meanFull16 > 0.0 ) ? ( meanCancelPass1 / meanFull16 ) : 0.0;
+			Check( ok16 && okC1 && didC && ratioP1 > 0.88 && ratioP1 < 1.12,
+				Fmt( "P.4: %s pinhole+omni progressive cancel after pass 1/4 retains full t==1 splat luminance (ratio %.3f in [0.88, 1.12])",
+					perspCases[pc].label, ratioP1 ) );
+		}
 	}
 }
 

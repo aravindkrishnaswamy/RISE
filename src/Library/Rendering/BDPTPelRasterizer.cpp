@@ -445,17 +445,13 @@ void BDPTPelRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	// Track total adaptive samples for splat film normalization.
-	// Use the delta (samples rendered THIS pass) to avoid double-counting
-	// across progressive passes.  Gated on `adaptive` only: in non-
-	// adaptive progressive mode every pixel takes the full configured
-	// SPP, so the static mSplatTotalSamples set in BDPTRasterizerBase::
-	// RasterizeScene is the correct splat divisor.  Tracking the live
-	// per-pass count made sense only when adaptive convergence could
-	// give pixels different sample counts.
-	if( adaptive ) {
-		AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
-	}
+	// Track total completed samples for splat film (`t == 1`) normalization.
+	// Use the delta (samples rendered THIS pass) unconditionally across
+	// both adaptive and non-adaptive passes so intermediate progressive
+	// previews, regional renders, and mid-render cancellations divide
+	// `pSplatFilm` by the exact completed sample count rather than the
+	// full-render target SPP.
+	AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
 
 	if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphas );

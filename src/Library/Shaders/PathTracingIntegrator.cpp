@@ -4219,7 +4219,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			Value scatterThroughput = PTScatterKray<Tag>( *pS ) * ( Scalar( 1 ) / selectProb );
 			Scalar effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf;
 			const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : &iorStack;
-			IORStack guidedIorStack( iorStack );
+#ifdef RISE_ENABLE_OPENPGL
+			std::optional<IORStack> guidedIorStack;
+#endif
 			// DL-67: the aggregate `ISPF::Pdf()` at `traceRay`'s direction,
 			// when a guided branch below already evaluated it (-1 = not
 			// yet); the MIS-partner block reuses it rather than calling
@@ -4364,8 +4366,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							guideTemplateRay.ray = Ray( ri.geometric.ptIntersection, d1 );
 							pS = &guideTemplateRay;
 							traceRay = Ray( pS->ray.origin, d1 );
+							guidedIorStack.emplace( iorStack );
 							traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-								*pS, iorStack, ri, traceRay.Dir(), guidedIorStack );
+								*pS, iorStack, ri, traceRay.Dir(), *guidedIorStack );
 						} else if( !pS->isDelta ) {
 							// Training density: the kept draw's contribution
 							// reads `kray p_agg / (q (g + p_agg))` times the
@@ -4416,8 +4419,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							guideTemplateRay.ray = Ray( ri.geometric.ptIntersection, guidedDir );
 							pS = &guideTemplateRay;
 							traceRay = Ray( pS->ray.origin, guidedDir );
+							guidedIorStack.emplace( iorStack );
 							traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-								*pS, iorStack, ri, traceRay.Dir(), guidedIorStack );
+								*pS, iorStack, ri, traceRay.Dir(), *guidedIorStack );
 							smplBsdfPdf = bsdfPdfGuided;
 							smplGuidePdf = guidePdf;
 							smplCombinedPdf = pMix;

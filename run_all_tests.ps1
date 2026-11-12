@@ -42,6 +42,15 @@ if ([string]::IsNullOrEmpty($env:TMPDIR) -and -not [string]::IsNullOrEmpty($env:
     # Ensure tests that read std::getenv("TMPDIR") resolve to Windows TEMP rather than "/tmp".
     $env:TMPDIR = $env:TEMP
 }
+# Ensure `\tmp` exists on the current drive root so legacy tests with literal
+# "/tmp/..." scratch paths can open temporary files on Windows.
+$driveRoot = [System.IO.Path]::GetPathRoot((Get-Location).Path)
+if (-not [string]::IsNullOrEmpty($driveRoot)) {
+    $rootTmp = Join-Path $driveRoot 'tmp'
+    if (-not (Test-Path -LiteralPath $rootTmp)) {
+        New-Item -ItemType Directory -Path $rootTmp -Force | Out-Null
+    }
+}
 
 $Tier = $Tier.ToLowerInvariant()
 switch ($Tier) {

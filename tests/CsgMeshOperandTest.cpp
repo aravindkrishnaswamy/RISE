@@ -1402,6 +1402,103 @@ static void TestSubtractionMultiLobeResidualsDL627()
 		safe_release( top );
 	}
 
+	// L8: finite `dHowFar` strictly inside `(b1Exit, b1Exit + OpenSheetRecastStep)` on
+	// empty `A \ B = empty` must still probe touching continuation lobes of B rather
+	// than fabricating a phantom hit/occlusion at `b1Exit` (both outside-origin and
+	// inside-origin rays).
+	{
+		CSGObject* touchB = UnionOf(
+			MakeIntervalSphereX( oOut.x, 1.0, 4.0 ),
+			MakeIntervalSphereX( oOut.x, 4.0, 7.0 ) );
+		CSGObject* csgEmpty = Subtract( MakeIntervalSphereX( oOut.x, 2.0, 6.0 ), touchB );
+
+		// Outside ray from oOut: b1Exit = 4.0; choose dHowFar = 4.0 + 2e-5 (< recast step ~1e-4).
+		const Scalar tightFarOut = Scalar( 4.00002 );
+		RayIntersection hOut( Ray( oOut, dx ), nullRasterizerState );
+		csgEmpty->IntersectRay( hOut, tightFarOut, true, true, true );
+		const bool occOut = csgEmpty->IntersectRay_IntersectionOnly( Ray( oOut, dx ), tightFarOut, true, true );
+		Check( !hOut.geometric.bHit && !occOut,
+			"L8a: outside ray with dHowFar inside recast step of touching B seam reports miss (no phantom hit at 4.0)" );
+
+		// Inside-both ray from oOut.x + 2.5: b1Exit = 1.5; choose dHowFar = 1.5 + 2e-5.
+		const Point3 oInSeam( oOut.x + 2.5, 0, 0 );
+		const Scalar tightFarIn = Scalar( 1.50002 );
+		RayIntersection hIn( Ray( oInSeam, dx ), nullRasterizerState );
+		csgEmpty->IntersectRay( hIn, tightFarIn, true, true, true );
+		const bool occIn = csgEmpty->IntersectRay_IntersectionOnly( Ray( oInSeam, dx ), tightFarIn, true, true );
+		Check( !hIn.geometric.bHit && !occIn,
+			"L8b: inside-both ray with dHowFar inside recast step of touching B seam reports miss (no phantom hit at 1.5)" );
+		safe_release( csgEmpty );
+	}
+
+	// L9: multi-lobe B with a degenerate zero-thickness pinch (`[3, 3] = [1, 3] n [3, 5]`)
+	// ahead of a positive-thickness cavity `[5, 7]` in `A \ B` (`A = [1, 9]`):
+	//  - Quadrant 2 (inside A at x = oOut.x + 2): skips `[3, 3]` and hits cavity at range 3.0 (`x = 5`);
+	//  - Quadrant 4 (outside A at oOut): skips `[3, 3]` and reports `[1, 5]` (not `[1, 3]`);
+	//  - `clampB` (inside B0 `[0.5, 2]`): skips `[4, 4]` and clamps `range2` at `[6, 8]` -> `[2, 6]`.
+	{
+		auto Intersect2 = []( IObjectPriv* a, IObjectPriv* b ) -> CSGObject* {
+			CSGObject* c = new CSGObject( CSG_INTERSECTION );
+			c->AssignObjects( a, b );
+			c->FinalizeTransformations();
+			safe_release( a );
+			safe_release( b );
+			return c;
+		};
+		CSGObject* pinchAt3 = Intersect2(
+			MakeIntervalSphereX( oOut.x, 1.0, 3.0 ),
+			MakeIntervalSphereX( oOut.x, 3.0, 5.0 ) );
+		CSGObject* bPinchThenCavity = UnionOf(
+			pinchAt3,
+			MakeIntervalSphereX( oOut.x, 5.0, 7.0 ) );
+		CSGObject* csg = Subtract( MakeIntervalSphereX( oOut.x, 1.0, 9.0 ), bPinchThenCavity );
+
+		// Quadrant 2: origin inside A at oOut.x + 2.0 -> pinch is at range 1.0, cavity at range 3.0, A exit at 7.0.
+		// Exiting solid A \ B into the carved cavity at x = oOut.x + 5.0 yields outward normal +x (range2 == 0).
+		const Point3 oInsideA( oOut.x + 2.0, 0, 0 );
+		const RayIntersection hQ2 = CastObj( *csg, oInsideA, dx );
+		const bool occBeforeCavity = csg->IntersectRay_IntersectionOnly( Ray( oInsideA, dx ), Scalar( 2.0 ), true, true );
+		const bool occQ2 = csg->IntersectRay_IntersectionOnly( Ray( oInsideA, dx ), Scalar( 4.0 ), true, true );
+		Check( hQ2.geometric.bHit &&
+			std::fabs( hQ2.geometric.range - 3.0 ) < 1e-5 &&
+			hQ2.geometric.range2 == 0 &&
+			std::fabs( hQ2.geometric.vNormal.x - 1.0 ) < 1e-5 &&
+			!occBeforeCavity && occQ2,
+			"L9a: Quadrant 2 skips zero-thickness B pinch at +1.0 and hits cavity wall at +3.0 in radiance & shadow (got range=" +
+			std::to_string( hQ2.geometric.range ) + ")" );
+
+		// Quadrant 4: origin outside A at oOut -> entry at 1.0, exit clamped at cavity 5.0 (NOT pinch 3.0!).
+		const RayIntersection hQ4 = CastObj( *csg, oOut, dx );
+		Check( hQ4.geometric.bHit &&
+			std::fabs( hQ4.geometric.range - 1.0 ) < 1e-5 &&
+			std::fabs( hQ4.geometric.range2 - 5.0 ) < 1e-5,
+			"L9b: Quadrant 4 skips zero-thickness B pinch at 3.0 and clamps range2 at cavity 5.0 (got [" +
+			std::to_string( hQ4.geometric.range ) + ", " + std::to_string( hQ4.geometric.range2 ) + "])" );
+		safe_release( csg );
+
+		// clampB: B = [0.5, 2.0] U ([2.5, 4.0] n [4.0, 5.5]) U [6.0, 8.0] carving A = [1.0, 9.0] -> [2.0, 6.0].
+		CSGObject* pinchAt4 = Intersect2(
+			MakeIntervalSphereX( oOut.x, 2.5, 4.0 ),
+			MakeIntervalSphereX( oOut.x, 4.0, 5.5 ) );
+		CSGObject* bTail = UnionOf( pinchAt4, MakeIntervalSphereX( oOut.x, 6.0, 8.0 ) );
+		CSGObject* bAll = new CSGObject( CSG_UNION );
+		Object* bHead = MakeIntervalSphereX( oOut.x, 0.5, 2.0 );
+		bAll->AssignObjects( bHead, bTail );
+		bAll->FinalizeTransformations();
+		safe_release( bHead );
+		safe_release( bTail );
+		CSGObject* csgClamp = Subtract( MakeIntervalSphereX( oOut.x, 1.0, 9.0 ), bAll );
+		const Point3 oInsideBoth( oOut.x + 1.5, 0, 0 );
+		const RayIntersection hClamp1 = CastObj( *csgClamp, oInsideBoth, dx );
+		const RayIntersection hClamp4 = CastObj( *csgClamp, oOut, dx );
+		Check( hClamp1.geometric.bHit && std::fabs( hClamp1.geometric.range - 0.5 ) < 1e-5 &&
+			std::fabs( hClamp1.geometric.range2 - 4.5 ) < 1e-5 &&
+			hClamp4.geometric.bHit && std::fabs( hClamp4.geometric.range - 2.0 ) < 1e-5 &&
+			std::fabs( hClamp4.geometric.range2 - 6.0 ) < 1e-5,
+			"L9c: clampB / clampNextB skip zero-thickness B pinch at 4.0 and clamp at cavity 6.0" );
+		safe_release( csgClamp );
+	}
+
 	if( failCount == failsBefore ) {
 		std::cout << "  PASS: [DL-627-SUMMARY] subtraction multi-lobe residuals" << std::endl;
 	} else {

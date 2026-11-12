@@ -641,6 +641,9 @@ namespace RISE
 
 		IORStack& operator=( const IORStack& s )
 		{
+			if( this == &s ) {
+				return *this;
+			}
 			iorstack = s.iorstack;
 			pCurrentObject = s.pCurrentObject;
 			crossingEtaFrom = 0;

@@ -44,6 +44,7 @@
 #include <filesystem>
 #ifdef _WIN32
   #include <process.h>
+  #define getpid _getpid
 #else
   #include <unistd.h>
 #endif
@@ -525,18 +526,20 @@ int main( int argc, char** argv )
 	// `render_thread_reserve_count` is an OPTIONS-file setting, not a
 	// scene parameter, read lazily by `GlobalOptions()` on first access,
 	// so this MUST run before any Job/Rasterizer touches it.
-	char optsPath[512];
-	std::snprintf( optsPath, sizeof(optsPath), "/tmp/pavilion_colonnade_bench_opts_%d.txt",
-		static_cast<int>( ::getpid() ) );
+	const std::string optsPathStr = ( fs::temp_directory_path() /
+		( "pavilion_colonnade_bench_opts_" + std::to_string( static_cast<int>( getpid() ) ) + ".txt" ) ).string();
+	static char s_optsCleanupPath[512];
+	std::snprintf( s_optsCleanupPath, sizeof(s_optsCleanupPath), "%s", optsPathStr.c_str() );
+	std::atexit( []() { if( s_optsCleanupPath[0] ) std::remove( s_optsCleanupPath ); } );
 	{
-		std::ofstream ofs( optsPath );
+		std::ofstream ofs( optsPathStr );
 		ofs << "render_thread_reserve_count 0\n";
 		ofs << "force_all_threads_low_priority false\n";
 	}
 #ifdef _WIN32
-	_putenv_s( "RISE_OPTIONS_FILE", optsPath );
+	_putenv_s( "RISE_OPTIONS_FILE", optsPathStr.c_str() );
 #else
-	setenv( "RISE_OPTIONS_FILE", optsPath, 1 );
+	setenv( "RISE_OPTIONS_FILE", optsPathStr.c_str(), 1 );
 #endif
 
 	const fs::path root = FindRepoRoot();
@@ -1001,7 +1004,8 @@ int main( int argc, char** argv )
 		}
 	}
 
-	::remove( optsPath );
+	std::remove( optsPathStr.c_str() );
+	s_optsCleanupPath[0] = '\0';
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;

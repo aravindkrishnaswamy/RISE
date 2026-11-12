@@ -500,16 +500,8 @@ void VCMPelRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	// Track total samples for the splat film normalization.  In
-	// adaptive mode add the live delta (samples rendered THIS pass);
-	// otherwise add the static batch (every pixel takes the full
-	// configured SPP each pass since convergence-based skip is gated
-	// on `adaptive` only — see Welford comment above).
-	if( adaptive ) {
-		AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
-	} else {
-		AddAdaptiveSamples( batchSize );
-	}
+	// Track actual completed samples this pass for splat film normalization.
+	AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
 
 	if( pAOVBuffers && alphasAccrued > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphasAccrued );

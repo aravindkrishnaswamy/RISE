@@ -85,9 +85,9 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 
 Headless CLI flags include resolution, denoise, and camera overrides (`--width N`,
 `--height N`, `--pixel-ar X`, `--denoise` / `--no-denoise`, `--camera <name>`) and
-agent/MCP/eval modes (`--mcp` / `--agent-stdio`,
-`--agent-http[=PORT]`, `--agent-autonomy=observe-only|edit-and-preview|full`,
-`--agent-eval --scenario <path>`).
+agent/MCP/eval modes (`--agent-stdio`, `--agent-stdio --mcp`,
+`--agent-http[=PORT]`, `--agent-autonomy=read|propose|commit`,
+`--agent-eval <runconfig.json>`).
 
 ### macOS release DMG
 

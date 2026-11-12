@@ -755,11 +755,73 @@ int main()
 	// review-time step (docs/skills/bdpt-vcm-mis-balance.md step 0).
 	std::vector<std::string> undenoised;
 	std::vector<std::string> unguardedPosixIncludes;
+	auto stripLiteralsPreservingLayout = []( const std::string& s ) -> std::string {
+		std::string out = s;
+		const std::size_t n = s.size();
+		std::size_t i = 0;
+		while( i < n ) {
+			if( s[i] == 'R' && i + 1 < n && s[i + 1] == '"' ) {
+				const std::size_t openParen = s.find( '(', i + 2 );
+				if( openParen != std::string::npos && openParen - ( i + 2 ) <= 16 ) {
+					const std::string delim = ")" + s.substr( i + 2, openParen - ( i + 2 ) ) + "\"";
+					const std::size_t endRaw = s.find( delim, openParen + 1 );
+					const std::size_t stop = ( endRaw == std::string::npos ) ? n : ( endRaw + delim.size() );
+					for( std::size_t k = i + 2; k < stop; ++k ) {
+						if( out[k] != '\n' ) out[k] = ' ';
+					}
+					i = stop;
+					continue;
+				}
+			}
+			if( s[i] == '"' || s[i] == '\'' ) {
+				const char quote = s[i];
+				++i;
+				while( i < n ) {
+					if( s[i] == '\\' ) {
+						if( out[i] != '\n' ) out[i] = ' ';
+						if( i + 1 < n && out[i + 1] != '\n' ) out[i + 1] = ' ';
+						i += 2;
+						continue;
+					}
+					if( s[i] == quote || s[i] == '\n' ) { ++i; break; }
+					out[i] = ' ';
+					++i;
+				}
+				continue;
+			}
+			++i;
+		}
+		return out;
+	};
+	auto hasDefineToken = []( const std::string& commentFree, const char* macroName ) -> bool {
+		std::istringstream ss( commentFree );
+		std::string ln;
+		const std::size_t mLen = std::strlen( macroName );
+		while( std::getline( ss, ln ) ) {
+			std::size_t p = 0;
+			while( p < ln.size() && ( ln[p] == ' ' || ln[p] == '\t' ) ) ++p;
+			if( p >= ln.size() || ln[p] != '#' ) continue;
+			++p;
+			while( p < ln.size() && ( ln[p] == ' ' || ln[p] == '\t' ) ) ++p;
+			if( ln.compare( p, 6, "define" ) != 0 ) continue;
+			p += 6;
+			if( p >= ln.size() || ( ln[p] != ' ' && ln[p] != '\t' ) ) continue;
+			while( p < ln.size() && ( ln[p] == ' ' || ln[p] == '\t' ) ) ++p;
+			if( ln.compare( p, mLen, macroName ) == 0 ) {
+				const std::size_t after = p + mLen;
+				if( after >= ln.size() ||
+					( !std::isalnum( static_cast<unsigned char>( ln[after] ) ) && ln[after] != '_' ) ) {
+					return true;
+				}
+			}
+		}
+		return false;
+	};
 	for( const auto& entry : fs::directory_iterator( testsDir ) ) {
 		if( !entry.is_regular_file() ) { continue; }
 		const fs::path& f = entry.path();
 		const std::string ext = f.extension().string();
-		if( ext != ".cpp" && ext != ".h" && ext != ".inl" ) { continue; }
+		if( ext != ".cpp" && ext != ".h" && ext != ".hpp" && ext != ".inl" ) { continue; }
 		if( f.filename() == "SourceHygieneTest.cpp" ) { continue; }   // don't scan ourselves
 		++scanned;
 
@@ -799,7 +861,7 @@ int main()
 
 		// (2) Check capturing IRasterizerOutput sinks for oidn_denoise FALSE
 		// across both .cpp tests and shared test fixture .h headers.
-		if( ext == ".cpp" || ext == ".h" ) {
+		if( ext == ".cpp" || ext == ".h" || ext == ".hpp" ) {
 			const bool definesCapturingSink =
 				src.find( "public IRasterizerOutput" ) != std::string::npos
 				|| src.find( "public virtual IRasterizerOutput" ) != std::string::npos;
@@ -855,28 +917,89 @@ int main()
 			struct Frame { bool parentActive; bool taken; bool active; };
 			std::vector<Frame> stack;
 			const std::string stripped = StripCommentsPreservingLayout( src );
-			const bool fileHasWinGetpidShim =
-				stripped.find( "process.h" ) != std::string::npos ||
-				stripped.find( "SMSRenderTestSupport.h" ) != std::string::npos ||
-				stripped.find( "SMSDomainReplayFixture.h" ) != std::string::npos ||
-				stripped.find( "CompositeEnergyFixture.h" ) != std::string::npos;
-			std::istringstream ls( stripped );
-			std::string line;
+			const std::string codeNoStrings = stripLiteralsPreservingLayout( stripped );
+			// Inspect local `#include "..."` headers in `tests/` for shims (`#define getpid`, `_USE_MATH_DEFINES`).
+			bool headerDefinesGetpid = false;
+			bool headerDefinesUseMath = false;
+			{
+				std::istringstream incStream( stripped );
+				std::string incLine;
+				while( std::getline( incStream, incLine ) ) {
+					std::size_t p = 0;
+					while( p < incLine.size() && ( incLine[p] == ' ' || incLine[p] == '\t' ) ) ++p;
+					if( p >= incLine.size() || incLine[p] != '#' ) continue;
+					++p;
+					while( p < incLine.size() && ( incLine[p] == ' ' || incLine[p] == '\t' ) ) ++p;
+					if( incLine.compare( p, 7, "include" ) != 0 ) continue;
+					const std::size_t q1 = incLine.find( '"', p + 7 );
+					const std::size_t q2 = ( q1 == std::string::npos ) ? std::string::npos : incLine.find( '"', q1 + 1 );
+					if( q1 != std::string::npos && q2 != std::string::npos ) {
+						const fs::path hdrPath = f.parent_path() / incLine.substr( q1 + 1, q2 - q1 - 1 );
+						if( fs::exists( hdrPath ) && fs::is_regular_file( hdrPath ) ) {
+							const std::string hdrStripped = StripCommentsPreservingLayout( SlurpFile( hdrPath ) );
+							if( hasDefineToken( hdrStripped, "getpid" ) ) headerDefinesGetpid = true;
+							if( hasDefineToken( hdrStripped, "_USE_MATH_DEFINES" ) ) headerDefinesUseMath = true;
+						}
+					}
+				}
+			}
+			bool activeDefinesGetpid = headerDefinesGetpid;
+			bool activeDefinesUseMath = headerDefinesUseMath;
+			std::vector<std::string> activeDefinedMacros;
+			auto isMacroDefined = [&]( const char* m ) -> bool {
+				for( const std::string& d : activeDefinedMacros ) {
+					if( d == m ) return true;
+				}
+				return false;
+			};
+			static const char* const kPosixMathMacros[] = {
+				"M_PI", "M_PI_2", "M_PI_4", "M_1_PI", "M_2_PI", "M_2_SQRTPI",
+				"M_SQRT2", "M_SQRT1_2", "M_E", "M_LOG2E", "M_LOG10E", "M_LN2", "M_LN10"
+			};
+			std::istringstream lsRaw( stripped );
+			std::istringstream lsNoStr( codeNoStrings );
+			std::string line, lineNoStr;
 			int lineNo = 0;
-			while( std::getline( ls, line ) ) {
+			while( std::getline( lsRaw, line ) && std::getline( lsNoStr, lineNoStr ) ) {
 				++lineNo;
 				const bool curActive = stack.empty() ? true : stack.back().active;
-				if( ext == ".cpp" && curActive && !fileHasWinGetpidShim ) {
-					std::size_t gp = 0;
-					while( ( gp = line.find( "getpid(", gp ) ) != std::string::npos ) {
-						const bool isWordStart = ( gp == 0 ) ||
-							( !std::isalnum( static_cast<unsigned char>( line[gp - 1] ) ) && line[gp - 1] != '_' );
-						if( isWordStart ) {
-							unguardedPosixIncludes.push_back(
-								f.filename().string() + ":" + std::to_string( lineNo ) + " unshimmed getpid()" );
-							break;
+				if( curActive ) {
+					if( !activeDefinesGetpid ) {
+						std::size_t gp = 0;
+						while( ( gp = lineNoStr.find( "getpid(", gp ) ) != std::string::npos ) {
+							const bool isWordStart = ( gp == 0 ) ||
+								( !std::isalnum( static_cast<unsigned char>( lineNoStr[gp - 1] ) ) && lineNoStr[gp - 1] != '_' );
+							if( isWordStart ) {
+								unguardedPosixIncludes.push_back(
+									f.filename().string() + ":" + std::to_string( lineNo ) + " unshimmed getpid()" );
+								break;
+							}
+							gp += 7;
 						}
-						gp += 7;
+					}
+					if( !activeDefinesUseMath ) {
+						std::size_t pHash = 0;
+						while( pHash < lineNoStr.size() && ( lineNoStr[pHash] == ' ' || lineNoStr[pHash] == '\t' ) ) ++pHash;
+						const bool isPreprocLine = ( pHash < lineNoStr.size() && lineNoStr[pHash] == '#' );
+						if( !isPreprocLine ) {
+							for( const char* mm : kPosixMathMacros ) {
+								if( isMacroDefined( mm ) ) continue;
+								const std::size_t mLen = std::strlen( mm );
+								std::size_t mp = 0;
+								while( ( mp = lineNoStr.find( mm, mp ) ) != std::string::npos ) {
+									const bool leftOk = ( mp == 0 ) ||
+										( !std::isalnum( static_cast<unsigned char>( lineNoStr[mp - 1] ) ) && lineNoStr[mp - 1] != '_' );
+									const bool rightOk = ( mp + mLen >= lineNoStr.size() ) ||
+										( !std::isalnum( static_cast<unsigned char>( lineNoStr[mp + mLen] ) ) && lineNoStr[mp + mLen] != '_' );
+									if( leftOk && rightOk ) {
+										unguardedPosixIncludes.push_back(
+											f.filename().string() + ":" + std::to_string( lineNo ) + " unguarded " + mm );
+										break;
+									}
+									mp += mLen;
+								}
+							}
+						}
 					}
 				}
 				std::size_t i = 0;
@@ -888,13 +1011,34 @@ int main()
 				while( kwEnd < line.size() && std::isalpha( static_cast<unsigned char>( line[kwEnd] ) ) ) ++kwEnd;
 				const std::string kw = line.substr( i, kwEnd - i );
 				const std::string rest = line.substr( kwEnd );
-				if( kw == "ifdef" ) {
-					const bool c = ( rest.find( "_WIN32" ) != std::string::npos ||
-					                 rest.find( "WIN32" ) != std::string::npos ||
-					                 rest.find( "_MSC_VER" ) != std::string::npos ||
-					                 ( rest.find( "__APPLE__" ) == std::string::npos &&
-					                   rest.find( "__linux__" ) == std::string::npos &&
-					                   rest.find( "__unix__" ) == std::string::npos ) );
+				if( kw == "define" && curActive ) {
+					std::size_t mStart = 0;
+					while( mStart < rest.size() && ( rest[mStart] == ' ' || rest[mStart] == '\t' ) ) ++mStart;
+					std::size_t mEnd = mStart;
+					while( mEnd < rest.size() &&
+						( std::isalnum( static_cast<unsigned char>( rest[mEnd] ) ) || rest[mEnd] == '_' ) ) ++mEnd;
+					const std::string mName = rest.substr( mStart, mEnd - mStart );
+					if( mName == "getpid" ) activeDefinesGetpid = true;
+					else if( mName == "_USE_MATH_DEFINES" ) activeDefinesUseMath = true;
+					else if( !mName.empty() ) activeDefinedMacros.push_back( mName );
+				} else if( kw == "ifdef" ) {
+					std::size_t mStart = 0;
+					while( mStart < rest.size() && ( rest[mStart] == ' ' || rest[mStart] == '\t' ) ) ++mStart;
+					std::size_t mEnd = mStart;
+					while( mEnd < rest.size() &&
+						( std::isalnum( static_cast<unsigned char>( rest[mEnd] ) ) || rest[mEnd] == '_' ) ) ++mEnd;
+					const std::string mName = rest.substr( mStart, mEnd - mStart );
+					bool isPosixMath = false;
+					for( const char* mm : kPosixMathMacros ) {
+						if( mName == mm ) { isPosixMath = true; break; }
+					}
+					const bool c = isPosixMath ? isMacroDefined( mName.c_str() ) :
+						( rest.find( "_WIN32" ) != std::string::npos ||
+						  rest.find( "WIN32" ) != std::string::npos ||
+						  rest.find( "_MSC_VER" ) != std::string::npos ||
+						  ( rest.find( "__APPLE__" ) == std::string::npos &&
+						    rest.find( "__linux__" ) == std::string::npos &&
+						    rest.find( "__unix__" ) == std::string::npos ) );
 					stack.push_back( { curActive, c, curActive && c } );
 				} else if( kw == "ifndef" ) {
 					const bool c = !( rest.find( "_WIN32" ) != std::string::npos ||
@@ -932,11 +1076,10 @@ int main()
 	Check( scanned > 0, "scanned at least one test file" );
 
 	for( const std::string& o : unguardedPosixIncludes ) {
-		std::cout << "  DL-632 unguarded POSIX header in tests/ (_WIN32 active): " << o << std::endl;
+		std::cout << "  DL-632 unguarded POSIX header/symbol in tests/ (_WIN32 active): " << o << std::endl;
 	}
 	Check( unguardedPosixIncludes.empty(),
-	       "DL-632: no unguarded POSIX-only headers (<unistd.h>, <sys/wait.h>, "
-	       "<sys/resource.h>, <dlfcn.h>, <pthread.h>) active under _WIN32 in tests/" );
+	       "DL-632: no unguarded POSIX-only headers, unshimmed getpid(), or unguarded M_PI/M_E math macros active under _WIN32 in tests/" );
 
 	for( const std::string& o : offenders ) {
 		std::cout << "  FORBIDDEN foldable NaN/Inf sentinel: " << o << std::endl;
@@ -3318,7 +3461,7 @@ int main()
 		for( const auto& e : fs::directory_iterator( agentDir ) ) {
 			if( !e.is_regular_file() ) { continue; }
 			const std::string ext = e.path().extension().string();
-			if( ext == ".cpp" || ext == ".h" ) { agentFiles.push_back( e.path() ); }
+			if( ext == ".cpp" || ext == ".h" || ext == ".hpp" ) { agentFiles.push_back( e.path() ); }
 		}
 		std::sort( agentFiles.begin(), agentFiles.end() );
 		Check( agentFiles.size() >= 5,

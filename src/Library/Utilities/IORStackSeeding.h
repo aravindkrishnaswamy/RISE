@@ -432,7 +432,9 @@ namespace RISE
 		};
 
 		//! Pure geometric ordering tie-break between two sheet objects (DL-626:
-		//! avoids catalog / chunk-declaration order dependence).
+		//! avoids catalog / chunk-declaration order dependence, breaking
+		//! identical-AABB ties via world transform matrix elements before falling
+		//! back to pointer identity for truly identical coincident clones).
 		inline bool SheetGeomKeyLess( const IObject* a, const IObject* b )
 		{
 			if( a == b ) return false;
@@ -443,6 +445,23 @@ namespace RISE
 			const Scalar kb[6] = { bb.ll.x, bb.ll.y, bb.ll.z, bb.ur.x, bb.ur.y, bb.ur.z };
 			for( int i = 0; i < 6; ++i ) {
 				if( ka[i] != kb[i] ) return ka[i] < kb[i];
+			}
+			const Matrix4 ma = a->GetFinalTransformMatrix();
+			const Matrix4 mb = b->GetFinalTransformMatrix();
+			const Scalar maEl[16] = {
+				ma._00, ma._01, ma._02, ma._03,
+				ma._10, ma._11, ma._12, ma._13,
+				ma._20, ma._21, ma._22, ma._23,
+				ma._30, ma._31, ma._32, ma._33
+			};
+			const Scalar mbEl[16] = {
+				mb._00, mb._01, mb._02, mb._03,
+				mb._10, mb._11, mb._12, mb._13,
+				mb._20, mb._21, mb._22, mb._23,
+				mb._30, mb._31, mb._32, mb._33
+			};
+			for( int i = 0; i < 16; ++i ) {
+				if( maEl[i] != mbEl[i] ) return maEl[i] < mbEl[i];
 			}
 			return a < b;
 		}
@@ -1026,6 +1045,7 @@ namespace RISE
 			Point3 origin;
 			std::vector<std::size_t> sheetIndices;
 			std::vector<Scalar> heights;
+			std::vector<Scalar> planeOffsets;
 			std::vector<Scalar> uMin, uMax, vMin, vMax;
 			Scalar maxHeight;
 
@@ -1283,6 +1303,8 @@ namespace RISE
 				if( std::isfinite( vPad ) ) { vMinS -= vPad; vMaxS += vPad; }
 				grp.sheetIndices.push_back( idx );
 				grp.heights.push_back( hMaxS );
+				grp.planeOffsets.push_back(
+					Vector3Ops::Dot( Vector3Ops::mkVector3( s.p0, grp.origin ), grp.normal ) );
 				grp.uMin.push_back( uMinS );
 				grp.uMax.push_back( uMaxS );
 				grp.vMin.push_back( vMinS );
@@ -1421,8 +1443,29 @@ namespace RISE
 				bool repush;
 				Scalar ior[kMaxSeedLanes];
 			};
-			std::vector<Rec> recs;
-			LaneSeed() : K( 0 ), diverged( false ) {}
+			static const std::size_t kInlineRecs = 8;
+			Rec inlineRecs[kInlineRecs];
+			std::size_t recCount;
+			std::vector<Rec> overflowRecs;
+
+			LaneSeed() : K( 0 ), diverged( false ), recCount( 0 ) {}
+
+			inline void pushRec( const Rec& rec )
+			{
+				if( recCount < kInlineRecs ) {
+					inlineRecs[recCount++] = rec;
+				} else {
+					overflowRecs.push_back( rec );
+					++recCount;
+				}
+			}
+
+			inline std::size_t recSize() const { return recCount; }
+
+			inline const Rec& recAt( const std::size_t idx ) const
+			{
+				return idx < kInlineRecs ? inlineRecs[idx] : overflowRecs[idx - kInlineRecs];
+			}
 		};
 
 		/// Walks one probe ray from `pos` along `dir` and fills `out` with
@@ -1514,7 +1557,7 @@ namespace RISE
 							for( unsigned int k = 0; k < pLanes->K; ++k ) {
 								rec.ior[k] = laneIor[k];
 							}
-							pLanes->recs.push_back( rec );
+							pLanes->pushRec( rec );
 						}
 					}
 					if( e )
@@ -2817,7 +2860,7 @@ namespace RISE
 						coRi.pObject = activeObjects[idx];
 						coRi.pMaterial = activeObjects[idx]->GetMaterial();
 						activeObjects[idx]->IntersectRay( coRi, Scalar( 4 ) * kSeedEps, true, true, false );
-						if( !coRi.geometric.bHit ) {
+						if( !coRi.geometric.bHit || coRi.geometric.range > Scalar( 4 ) * kSeedEps ) {
 							continue;
 						}
 						if( !coRi.pObject ) coRi.pObject = activeObjects[idx];
@@ -2942,7 +2985,7 @@ namespace RISE
 						const OpenSheetCatalogEntry& ce = ( *pSheets )[grp.sheetIndices[k]];
 						if( ce.pObj != pExclude && CheckSheetAloneAlongRay( ce.pObj, pos, grp.normal, true ) ) {
 							activeObjects.push_back( ce.pObj );
-							activeDists.push_back( grp.heights[k] - hPos );
+							activeDists.push_back( grp.planeOffsets[k] - hPos );
 						}
 					}
 					if( !activeObjects.empty() ) {
@@ -2997,6 +3040,15 @@ namespace RISE
 						if( ha != hb ) {
 							return ha < hb;
 						}
+						if( a.entryCtx.rayDir.x != b.entryCtx.rayDir.x ) return a.entryCtx.rayDir.x < b.entryCtx.rayDir.x;
+						if( a.entryCtx.rayDir.y != b.entryCtx.rayDir.y ) return a.entryCtx.rayDir.y < b.entryCtx.rayDir.y;
+						if( a.entryCtx.rayDir.z != b.entryCtx.rayDir.z ) return a.entryCtx.rayDir.z < b.entryCtx.rayDir.z;
+						if( a.entryCtx.vNormal.x != b.entryCtx.vNormal.x ) return a.entryCtx.vNormal.x < b.entryCtx.vNormal.x;
+						if( a.entryCtx.vNormal.y != b.entryCtx.vNormal.y ) return a.entryCtx.vNormal.y < b.entryCtx.vNormal.y;
+						if( a.entryCtx.vNormal.z != b.entryCtx.vNormal.z ) return a.entryCtx.vNormal.z < b.entryCtx.vNormal.z;
+						if( a.entryCtx.ptIntersection.x != b.entryCtx.ptIntersection.x ) return a.entryCtx.ptIntersection.x < b.entryCtx.ptIntersection.x;
+						if( a.entryCtx.ptIntersection.y != b.entryCtx.ptIntersection.y ) return a.entryCtx.ptIntersection.y < b.entryCtx.ptIntersection.y;
+						if( a.entryCtx.ptIntersection.z != b.entryCtx.ptIntersection.z ) return a.entryCtx.ptIntersection.z < b.entryCtx.ptIntersection.z;
 						return SheetGeomKeyLess( a.pObj, b.pObj );
 					} );
 			}
@@ -3553,9 +3605,10 @@ namespace RISE
 				for( std::size_t i = 1; i < primary.Depth() && ok; ++i ) {
 					const IObject* pObj = primary.ObjectAt( i );
 					const LaneSeed::Rec* rec = 0;
-					for( std::size_t r = 0; r < lanes.recs.size(); ++r ) {
-						if( lanes.recs[r].pObj == pObj ) {
-							rec = &lanes.recs[r];
+					for( std::size_t r = 0; r < lanes.recSize(); ++r ) {
+						const LaneSeed::Rec& cand = lanes.recAt( r );
+						if( cand.pObj == pObj ) {
+							rec = &cand;
 							break;
 						}
 					}

@@ -627,7 +627,7 @@ no `~ScatteredRay` frame; the container destructor 128 samples plus
 `DeleteStack` 10, against master's 191).  `hwss_prism_dispersion_pt`,
 interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
 
-### 5.8 Tier 0 closure of `DL-626` and `DL-631` (2026-11-11, `9ccd85f66`, `0f39278cb`)
+### 5.8 Tier 0 closure of `DL-626` and `DL-631` (2026-11-12)
 
 **`DL-626` (open-sheet seeding & walk membership residuals):**
 
@@ -641,24 +641,28 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    transform and world AABB so corner/vertex/radius edits that leave both the
    transform and world AABB unchanged still re-describe the sheet without
    flushing `OpenSheetCatalogEpoch`.
-2. **Declaration-order invariance & opaque-curtain separation (`A52a`, `A52b`, `A56`):**
+2. **Declaration-order invariance & non-axis co-normal offsets (`A52a`, `A52b`, `A56`, `A59`, `A60a`, `A60b`):**
    `SheetGeomKeyLess` orders `OpenSheetsOf`, `OpenSheetNormalGroup` members,
-   `HasFreeSpaceDetourToSheets` column reach (`ColumnReachEntry`, with
-   `Snapshot::columnDist` bounding closed blockers to the target sheet's column
-   segment), and same-material sibling deduplication by pure geometric keys
-   (distance along the column / world AABB / normal; exact shared-geometry
-   identity uses `!SheetGeomKeyLess(a,b) && !SheetGeomKeyLess(b,a)` rather than
-   hash equality) instead of manager/chunk declaration order.
-   `SheetsMutuallyUnblocked` refuses same-material deduplication across an
-   intervening opaque curtain (`A56`).
+   `HasFreeSpaceDetourToSheets` column reach (`Snapshot::columnDist` bounding
+   closed blockers to the target sheet's column segment), and same-material
+   sibling deduplication by pure geometric keys (world AABB, normal, and
+   `GetFinalTransformMatrix()` tie-breaking when two tilted panes share
+   identical AABB and normal; exact shared-geometry identity uses
+   `!SheetGeomKeyLess(a,b) && !SheetGeomKeyLess(b,a)` rather than hash
+   equality), while `ConfirmOpenSheetsAt` breaks equal-distance confirmation
+   ties via `ConfirmedSheetHitLess` and uses per-sheet
+   `OpenSheetNormalGroup::planeOffsets` (`Dot(s.p0 - grp.origin, grp.normal)`)
+   for `activeDists` and `ConfirmSharedNormalRay` (`coRi.geometric.range > 4 * kSeedEps`).
+   Same-material panes separated by an intervening opaque curtain are kept
+   distinct via `columnBlockerCounts` / `Snapshot::columnDist` (`A56`).
 3. **Multi-fold curved/pleated sheet crossings (`A53`, `A58`):** When a ray
    crosses an inner fold's back face on a non-planar certified open sheet while
    an overhanging outer fold of that same sheet still encloses
    `PointPastBackFaceCrossing(ri, d)`, `ResolveOpenSheetCrossing` runs
    `CrossingMedia::ConfirmAt(..., pExclude = 0)` and retains/pushes `pSelf`
-   (`ConfirmsObject` / `ShouldPushUnpushedSelf`, with `FindRetainedSelf`
-   requiring matching `GetMaterial()` before substituting a deduplicated sibling
-   sheet `A58`) so pushed and unpushed walks agree with `SeedFromPoint`.
+   (`FindRetainedSelf` requiring matching `GetMaterial()` before substituting a
+   deduplicated sibling sheet `A58`) so pushed and unpushed walks agree with
+   `SeedFromPoint`.
 4. **Luminaire seed self-exit vs enclosing room ceiling (`A55`):**
    `DetourOriginForSeedExit` advances detour Segment 1 just past
    `pSeedObject`'s own exit face (resetting `columnHits`) when that exit
@@ -673,7 +677,7 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    normal prisms of a planar sheet, point-based `SeedFromPoint` ==
    `ResolveUnpushedExit` parity (§5.2, `B5`: PT/BDPT `0.9969 +/- 0.0103` vs
    walk-history `0.7905`) remains the deliberate reciprocal convention.
-   `OpenSheetHalfSpaceSeedingTest`: **215 passed, 0 failed** (`200/0` Part A +
+   `OpenSheetHalfSpaceSeedingTest`: **219 passed, 0 failed** (`204/0` Part A +
    `15/0` Part B; `red_prove.sh` RED -> GREEN on `[DL-626-SUMMARY]`).
 
 **`DL-631` (hot-path overhead on scenes without open sheets):**
@@ -681,7 +685,10 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
 - Replaced `MyIORStack`'s heap-backed `std::vector<IORDATA>` base and
   `MyIORStack::ObjectList` (`std::vector<EntryContext>`) in
   `src/Library/Utilities/IORStack.h` with inline 4-entry SBO (`m_inline[4]`,
-  spilling to heap only above depth 4) and `static const IORStack kQueryStack(1.0)`
+  spilling to heap only above depth 4, plus self-assignment safety on
+  `IORStack::operator=`; copy-on-write `ContextList` stays out-of-line and is
+  allocated only for open-sheet pushes), added 8-entry inline SBO (`inlineRecs[8]`)
+  in `LaneSeed` (`SeedLanesFromPoint`), and used `static const IORStack kQueryStack(1.0)`
   in `ClassifyMembershipHit` / `MaterialMayRefract` (`sample` `malloc` frames
   **584 -> 205 (-65 %)**, `free` **198 -> 71 (-64 %)**).
 - Added `!cat.hasTrackableMedia` 0-ray immediate return on all-opaque scenes
@@ -693,7 +700,8 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
   (`SeedLanesFromPoint`), forwarded `preseededOriginLanes_` into
   `IntegrateFromHitHWSS` Fallbacks 1 & 2 (`HWSSLaneSeeds` frames **74 -> 0**),
   preserving dispersive specular-continuation lane stacks across bounces, and
-  restored lazy `ior_stack` bounce copy when `!pScat->ior_stack` in Pel/NM PT.
+  restored lazy `ior_stack` bounce copy when `!pScat->ior_stack` plus lazy
+  `#ifdef RISE_ENABLE_OPENPGL` `guidedIorStack` construction in PT.
 - Interleaved `ABBA` x 3 ($n = 6$ per binary, `render_thread_reserve_count 0`,
   `--no-denoise`): `hwss_prism_dispersion_pt` wall **13.895 +/- 0.151 s ->
   13.446 +/- 0.159 s (-3.23 %, paired $t = -7.9$)**;

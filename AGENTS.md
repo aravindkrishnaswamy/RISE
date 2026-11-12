@@ -92,7 +92,7 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 - Windows tests run: `.\run_all_tests.ps1` (`-Tier all|fast|extended` [default `all`], `-Filter "<glob>"`, `-TimeoutSeconds <sec>`)
 - Windows tests run (Debug): `.\run_all_tests.ps1 -Config Debug`
 - Batch scene render: `./run_scenes.sh`
-- Agent / MCP / eval CLI entry points: `./bin/rise --mcp` (or `--agent-stdio`), `./bin/rise --agent-http[=PORT]`, `./bin/rise --agent-eval --scenario <dir>`
+- Agent / MCP / eval CLI entry points: `./bin/rise --agent-stdio [--mcp]`, `./bin/rise --agent-http[=PORT]`, `./bin/rise --agent-eval <runconfig.json>`
 - Sample scene render:
 
 ```sh

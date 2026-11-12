@@ -38,7 +38,8 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
   (`alpha_coverage`, `alpha_mode`, `alpha_cutoff`), CSG inheritance, SSS/SMS
   endpoint rules
 - [THIN_FILM_INTERFERENCE.md](THIN_FILM_INTERFERENCE.md): Airy thin-film
-  interference (`thin_film_material` and GGX thin-film mode)
+  interference (`ggx_material` `fresnel_mode thinfilm` and `dielectric_material`
+  `ar_layer`)
 - [WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md): `coated_material` wetness
   darkening, `add_wetness` verb, and `sample()` / `sample_scalar()` rules
 - [RELIEF_MODIFIER_DESIGN.md](RELIEF_MODIFIER_DESIGN.md): height/bump/normal
@@ -76,7 +77,7 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
   spectral uplift (`GetColorNM` vs `GetRadianceNM`) and historical Stage A
   gamut analysis
 - [DEBT_LEDGER.md](DEBT_LEDGER.md): repository-wide correctness debt ledger
-  (357 tracked `DL-*` rows: 332 closed, 18 parked, 7 active open)
+  (357 tracked `DL-*` rows: 339 closed, 18 parked, 0 active open)
 - [LEGACY_DEPRECATION_ASSESSMENT.md](LEGACY_DEPRECATION_ASSESSMENT.md):
   canonical frozen/deprecated tier policy for legacy shader-dispatch rasterizers,
   legacy non-PBR materials, and legacy build/plugin surfaces

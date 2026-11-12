@@ -51,7 +51,7 @@ namespace RISE
 	{
 		RISEPel ProgressivePixel::LoadPelPassInit() const
 		{
-			return ( sampleIndex == 0 ) ? RISEPel( colorSum ) : RISEPel( 0, 0, 0 );
+			return RISEPel( 0, 0, 0 );
 		}
 
 		RISEPel ProgressivePixel::StorePelPassDelta( const RISEPel passDelta )
@@ -985,7 +985,7 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		for( unsigned int i=0; i<numseq; i++ ) {
 			const Rect rect = seq.GetNextRegion();
 
-			if( pProgressFunc && i>0 )	{
+			if( pProgressFunc && ( i > 0 || ( mProgressTotal > 0 && mProgressBase > 0 ) ) )	{
 				double num, denom;
 				if( mProgressTotal > 0 ) {
 					num   = mProgressBase + static_cast<double>(i) * mProgressWeight;
@@ -1601,7 +1601,7 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 		for( unsigned int i=0; i<numseq; i++ ) {
 			const Rect rect = seq.GetNextRegion();
 
-			if( pProgressFunc && i>0 )	{
+			if( pProgressFunc && ( i > 0 || ( mProgressTotal > 0 && mProgressBase > 0 ) ) )	{
 				// Match the multithreaded dispatcher: in weighted mode
 				// (mProgressTotal>0, set by the animation driver) report a
 				// single movie-wide fraction so single-threaded / exposure
@@ -2034,6 +2034,8 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			}
 		}
 
+		double accumulatedFrameProgress = 0.0;
+
 		for( unsigned int passIdx = 0; passIdx < numPasses; passIdx++ )
 		{
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
@@ -2055,15 +2057,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			}
 
 			// Extend mProgressBase by the cumulative tile-sample units
-			// consumed by earlier passes in THIS frame.  With weighted
-			// mode (mProgressTotal>0) the block dispatcher reports a
-			// single 0..1 across all frames × passes; without it (legacy)
-			// the adjustment is harmless because progressTotal=0 still
-			// triggers the per-pass 0..1 fallback in GetNextBlock.
-			mProgressBase   = frameStartBase
-			                + static_cast<double>( passIdx )
-			                * static_cast<double>( animNumTiles )
-			                * static_cast<double>( passSPP );
+			// consumed by earlier passes in THIS frame (including uneven tail
+			// passes when totalSPP is not a multiple of spp).
+			mProgressBase   = frameStartBase + accumulatedFrameProgress;
 			mProgressWeight = static_cast<double>( passSPP );
 
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdgeAnim );
@@ -2073,6 +2069,8 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
 			safe_release( pPassSampling );
 
+			accumulatedFrameProgress += static_cast<double>( animNumTiles ) * static_cast<double>( passSPP );
+
 			// Cancellation between passes — break before the remaining
 			// iterations so the outer animation loop can flush this
 			// frame's partial image (or decide to skip it).  Use the
@@ -2081,7 +2079,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			if( pProgressFunc ) {
 				double num, denom;
 				if( mProgressTotal > 0 ) {
-					num   = mProgressBase + static_cast<double>(animNumTiles) * static_cast<double>(passSPP);
+					num   = frameStartBase + accumulatedFrameProgress;
 					denom = mProgressTotal;
 				} else {
 					num   = static_cast<double>(passIdx+1);

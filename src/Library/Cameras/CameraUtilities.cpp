@@ -44,6 +44,9 @@ struct OrthoAccessor : public OrthographicCamera {
 	static Vector2 GetViewportScale( const OrthographicCamera& c ) {
 		return static_cast<const OrthoAccessor&>(c).viewportScale;
 	}
+	static OrthonormalBasis3D GetBasis( const OrthographicCamera& c ) {
+		return static_cast<const OrthoAccessor&>(c).frame.GetBasis();
+	}
 };
 
 //
@@ -561,16 +564,11 @@ namespace {
 			return false;	// Behind camera
 		}
 
-		// Project onto the image plane (remove component along optical axis)
-		const Vector3 projected(
-			toPoint.x - dist * optAxis.x,
-			toPoint.y - dist * optAxis.y,
-			toPoint.z - dist * optAxis.z );
-
-		// Invert the origin offset mapping:
-		//   projected.x = (px - w/2) / w * vpScale.x
-		//   projected.y = (py - h/2) / h * vpScale.y
+		// Invert OrthographicCamera::GenerateRay's camera-basis origin offset:
+		//   offset = basis.u() * ((w/2 - px) / w * vpScale.x)
+		//          + basis.v() * ((py - h/2) / h * vpScale.y)
 		const Vector2 vpScale = OrthoAccessor::GetViewportScale( cam );
+		const OrthonormalBasis3D basis = OrthoAccessor::GetBasis( cam );
 		const Scalar width = Scalar( cam.GetWidth() );
 		const Scalar height = Scalar( cam.GetHeight() );
 
@@ -578,8 +576,10 @@ namespace {
 			return false;
 		}
 
-		const Scalar px = projected.x * width / vpScale.x + width * 0.5;
-		const Scalar py = projected.y * height / vpScale.y + height * 0.5;
+		const Scalar uCoord = Vector3Ops::Dot( toPoint, basis.u() );
+		const Scalar vCoord = Vector3Ops::Dot( toPoint, basis.v() );
+		const Scalar px = width * 0.5 - uCoord * width / vpScale.x;
+		const Scalar py = height * 0.5 + vCoord * height / vpScale.y;
 
 		// DL-294: film membership is the splat film's decision.
 		//

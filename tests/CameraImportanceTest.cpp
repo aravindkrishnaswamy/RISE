@@ -55,6 +55,7 @@
 #include "../src/Library/Cameras/ThinLensCamera.h"
 #include "../src/Library/Cameras/PinholeCamera.h"
 #include "../src/Library/Cameras/FisheyeCamera.h"
+#include "../src/Library/Cameras/OrthographicCamera.h"
 #include "../src/Library/Cameras/CameraUtilities.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Math3D/Constants.h"
@@ -1052,6 +1053,18 @@ static void TestProjectionCoversEyeFilm()
 		{ "fisheye scale 1 64x64", new FisheyeCamera(
 			Point3( 0, 0, kCamZ ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
 			kWidth, kHeight, 1.0, 0.0, 0.0, 0.0, Vector3( 0, 0, 0 ), Vector2( 0, 0 ), 1.0 ), kWidth, kHeight, nullptr },
+		{ "ortho -Z/+Y 64x64", new OrthographicCamera(
+			Point3( 0, 0, kCamZ ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
+			kWidth, kHeight, Vector2( 4.0, 4.0 ), 1.0, 0.0, 0.0, 0.0, Vector3( 0, 0, 0 ), Vector2( 0, 0 ) ), kWidth, kHeight, nullptr },
+		{ "ortho top-down 64x64", new OrthographicCamera(
+			Point3( 0, 10.0, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 0, -1 ),
+			kWidth, kHeight, Vector2( 6.0, 4.0 ), 1.0, 0.0, 0.0, 0.0, Vector3( 0, 0, 0 ), Vector2( 0, 0 ) ), kWidth, kHeight, nullptr },
+		{ "ortho +X/+Y 64x64", new OrthographicCamera(
+			Point3( -8.0, 0, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
+			kWidth, kHeight, Vector2( 5.0, 3.0 ), 1.0, 0.0, 0.0, 0.0, Vector3( 0, 0, 0 ), Vector2( 0, 0 ) ), kWidth, kHeight, nullptr },
+		{ "ortho oblique 64x64", new OrthographicCamera(
+			Point3( 4.0, 5.0, 6.0 ), Point3( -1.0, 0.5, 0.0 ), Vector3( 0.2, 1.0, -0.3 ),
+			kWidth, kHeight, Vector2( 4.5, 3.5 ), 1.0, 0.0, 0.0, 0.0, Vector3( 0, 0, 0 ), Vector2( 0, 0 ) ), kWidth, kHeight, nullptr },
 	};
 	for( Case& c : cases ) {
 		if( c.thin ) c.cam = c.thin;
@@ -1105,8 +1118,9 @@ static void TestProjectionCoversEyeFilm()
 		EXPECT( rejected == 0 );
 		EXPECT( wrongPixel == 0 );
 		EXPECT_NEAR( worstErr, 0.0, 1e-8 );
-		std::printf( "    %-26s tried %u  rejected by projection %u  landed in the wrong/no pixel %u  worst round trip %.2e px\n",
-			c.name, tried, rejected, wrongPixel, worstErr );
+		std::printf( "    %-26s tried %u  rejected by projection %u  landed in the wrong/no pixel %u  worst round trip %.2e px [%s: %s]\n",
+			c.name, tried, rejected, wrongPixel, worstErr,
+			( tried > 0 && rejected == 0 && wrongPixel == 0 && worstErr <= 1e-8 ) ? "PASS" : "FAIL", c.name );
 		c.cam->release();
 	}
 }

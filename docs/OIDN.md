@@ -828,15 +828,16 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P2 — polish
 
 #### OIDN-P2-1 — CLI override flag for denoise
-- **Status:** Shipped (2026-11-11, `df6877d86`, `0f39278cb`). `--denoise` and `--no-denoise`
+- **Status:** Shipped (2026-11-12). `--denoise` and `--no-denoise`
   (mutually exclusive) are parsed in `src/RISE/CliOptions.h` +
   `src/RISE/commandconsole.cpp` alongside `--camera <name>`, `--width`,
   `--height`, and `--pixel-ar`, and applied post-load via
-  `IRasterizer::SetDenoisingOverride` (`Rasterizer.h`, `AutoRasterizer`,
-  `AutoSpectralRasterizer`, and post-resolve `PixelBasedRasterizerHelper`
-  checks), gated by `tests/CliOverridesTest.cpp` (`50/0`).
+  `IRasterizer::SetDenoisingOverride` (`Rasterizer.h`, `AutoRasterizer` for
+  both `auto_rasterizer` and `auto_spectral_rasterizer` via `mSpectral`, and
+  post-resolve `PixelBasedRasterizerHelper` checks), gated by
+  `tests/CliOverridesTest.cpp` (`57/0`).
 - **Owner:** Aravind
-- **PR:** `df6877d86`, `0f39278cb` (Tier 0.3.3)
+- **PR:** Tier 0.3.3 (`df6877d86`..`HEAD`)
 - **Why:** Allows batch sweeps and benchmarks to force OIDN post-process
   denoising on or off from the `rise` / `RISE-CLI` command line without editing
   `.RISEscene` files.
@@ -942,18 +943,18 @@ Any P0 or P1 change additionally needs:
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
 
-### 2026-11-11 — OIDN-P2-1 shipped (`--denoise` / `--no-denoise` CLI override)
-- Reopened and shipped `OIDN-P2-1` as part of Tier `0.3.3` (`df6877d86`,
-  `0f39278cb`) to allow headless renders, benchmarks (`--no-denoise`), and
-  A/B sweeps to force OIDN post-process denoising on or off without mutating
-  `.RISEscene` files.
+### 2026-11-12 — OIDN-P2-1 shipped (`--denoise` / `--no-denoise` CLI override)
+- Reopened and shipped `OIDN-P2-1` as part of Tier `0.3.3` to allow headless
+  renders, benchmarks (`--no-denoise`), and A/B sweeps to force OIDN
+  post-process denoising on or off without mutating `.RISEscene` files.
 - `src/RISE/CliOptions.h` and `src/RISE/commandconsole.cpp` parse mutually
   exclusive `--denoise` / `--no-denoise` flags (rejecting conflicts with exit
   status) and apply `IRasterizer::SetDenoisingOverride(bool enable)` after
-  scene load, forwarding through `AutoRasterizer` and `AutoSpectralRasterizer`
-  into the resolved rasterizer and honoring mid-render/post-resolve checks in
+  scene load, forwarding through `AutoRasterizer` (covering both
+  `auto_rasterizer` and `auto_spectral_rasterizer` via `mSpectral`) into the
+  resolved rasterizer and honoring mid-render/post-resolve checks in
   `PixelBasedRasterizerHelper.cpp`.
-- Gated in `fast` CI by `tests/CliOverridesTest.cpp` (**50/0**).
+- Gated in `fast` CI by `tests/CliOverridesTest.cpp` (**57/0**).
 
 ### 2026-04-29 — MLT animation rendering with per-frame OIDN denoise
 - Closes the "MLT animation gap" called out in the prior animation-
@@ -1539,4 +1540,4 @@ from a reviewer, or has its priority moved. Most recent first.
 - **2026-04-29 — `OIDN-P0-4` (error callback + `OIDN_VERBOSE` pass-through):** Registered `OidnErrorCallback` after device resolution and polled post-setup / post-execute errors into RISE's `GlobalLog()`.
 - **2026-04-29 / 2026-06-02 — `OIDN-P1-1` (inline AOV accumulation + `oidn_prefilter`):** Shipped `oidn_prefilter` (`fast` / `accurate`) and 3-filter auxiliary prefiltering alongside inline AOV accumulation across Pel PT (v1, 2026-04-29), BDPT + VCM Pel/Spectral (v2, 2026-04-29), and Spectral PT + `pixelintegratingspectral` (2026-06-02), later extended with channel-planned `AOVBuffers::Plan` (albedo/normal guides + depth).
 - **2026-04-29 / 2026-10-03 — `OIDN-P1-2` (CPU `newSharedBuffer` zero-copy + `DL-440` ownership fix):** Replaced host `memcpy` staging on CPU devices with shared buffers for beauty/output and `fast` aux inputs; `DL-440` (2026-10-03) switched `accurate` aux prefilter buffers to reusable owned storage with per-call input copies so const caller guides are never mutated in place.
-- **2026-11-11 — `OIDN-P2-1` (`--denoise` / `--no-denoise` CLI flags):** Added mutually exclusive `--denoise` and `--no-denoise` headless CLI overrides (`CliOptions.h`, `commandconsole.cpp`, `IRasterizer::SetDenoisingOverride`, `AutoRasterizer`, `AutoSpectralRasterizer`; `df6877d86`, `0f39278cb`), gated by `tests/CliOverridesTest.cpp` (**50/0**).
+- **2026-11-12 — `OIDN-P2-1` (`--denoise` / `--no-denoise` CLI flags):** Added mutually exclusive `--denoise` and `--no-denoise` headless CLI overrides (`CliOptions.h`, `commandconsole.cpp`, `IRasterizer::SetDenoisingOverride`, `AutoRasterizer` for both `auto_rasterizer` and `auto_spectral_rasterizer`), gated by `tests/CliOverridesTest.cpp` (**57/0**).

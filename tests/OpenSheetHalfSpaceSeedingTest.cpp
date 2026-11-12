@@ -2357,6 +2357,54 @@ static void PartA()
 		}
 	}
 
+	// A60: Tilted (45-degree) coplanar open sheets of different extents & materials
+	// in `ConfirmSharedNormalRay` must detect sibling overlap (`planeOffsets[k] - hPos`
+	// rather than `heights[k] - hPos`) and decline in BOTH declaration orders; and
+	// tilted same-material crossed sheets sharing an identical world AABB tie-break
+	// deterministically via transform / confirmation-hit geometry rather than pointer order.
+	{
+		auto makeTiltedCoplanar = [&]( bool smallFirst ) -> std::string {
+			// Plane y + z = 2 (unit normal (0, 1/sqrt(2), 1/sqrt(2)) pointing toward +y,+z;
+			// origin (0,0,0) sits on the back side at normal distance sqrt(2)).
+			const double bL[3] = { -4,  5, -3 }, aL[3] = {  4,  5, -3 }, dL[3] = {  4, -1,  3 }, cL[3] = { -4, -1,  3 };
+			const double bS[3] = { -1,  2,  0 }, aS[3] = {  1,  2,  0 }, dS[3] = {  1,  0,  2 }, cS[3] = { -1,  0,  2 };
+			const std::string big   = SheetQuad( "g_tilt_big",   aL, bL, cL, dL ) + Obj( "tilt_big",   "g_tilt_big",   "glass15" );
+			const std::string small = SheetQuad( "g_tilt_small", aS, bS, cS, dS ) + Obj( "tilt_small", "g_tilt_small", "glass133" );
+			return Header() + ( smallFirst ? ( small + big ) : ( big + small ) );
+		};
+		Loaded sA( makeTiltedCoplanar( false ) );
+		Loaded sB( makeTiltedCoplanar( true ) );
+		Check( sA.ok && sB.ok, "A60a [DL-626] tilted 45-degree coplanar sheets load in both orders" );
+		if( sA.ok && sB.ok ) {
+			const IORStack stA = sA.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stB = sB.Seed( Point3( 0, 0, 0 ) );
+			Check( stA.Depth() == 1 && stB.Depth() == 1,
+				"A60a [DL-626]: tilted 45-degree coplanar sheets of different sizes & materials decline in both orders" );
+		}
+
+		auto makeIdenticalBoxCrossed = [&]( bool swapOrder ) -> std::string {
+			// Two tilted glass15 panes sharing identical world AABB [-2,2] x [-2,2] x [-2,2]:
+			// panePlus on x + y = 0 (normal (+1,+1,0)/sqrt(2), enclosing (0,-1,0)),
+			// paneMinus on y - x = 0 (normal (-1,+1,0)/sqrt(2), enclosing (0,-1,0)).
+			const double aP[3] = { -2,  2, -2 }, bP[3] = { -2,  2,  2 }, cP[3] = {  2, -2,  2 }, dP[3] = {  2, -2, -2 };
+			const double aM[3] = {  2,  2,  2 }, bM[3] = {  2,  2, -2 }, cM[3] = { -2, -2, -2 }, dM[3] = { -2, -2,  2 };
+			const std::string plus  = SheetQuad( "g_xp", aP, bP, cP, dP ) + Obj( "xp", "g_xp", "glass15" );
+			const std::string minus = SheetQuad( "g_xm", aM, bM, cM, dM ) + Obj( "xm", "g_xm", "glass15" );
+			return Header() + ( swapOrder ? ( minus + plus ) : ( plus + minus ) );
+		};
+		Loaded x1( makeIdenticalBoxCrossed( false ) );
+		Loaded x2( makeIdenticalBoxCrossed( true ) );
+		Check( x1.ok && x2.ok, "A60b [DL-626] identical-AABB crossed tilted panes load in both orders" );
+		if( x1.ok && x2.ok ) {
+			const IORStack st1 = x1.Seed( Point3( 0, -1, 0 ) );
+			const IORStack st2 = x2.Seed( Point3( 0, -1, 0 ) );
+			const bool pickedXp1 = ( st1.Depth() == 2 && st1.topObject() == x1.O( "xp" ) );
+			const bool pickedXp2 = ( st2.Depth() == 2 && st2.topObject() == x2.O( "xp" ) );
+			Check( st1.Depth() == 2 && st2.Depth() == 2 && pickedXp1 == pickedXp2,
+				"A60b [DL-626]: identical-AABB crossed same-material panes pick the same geometric winner in both declaration orders" );
+		}
+	}
+
 	const int dl626NewFails = failCount - dl626FailBefore;
 	std::cout << "[DL-626-SUMMARY] " << ( dl626NewFails == 0 ? "PASS" : "FAIL" )
 		<< " (new_failures=" << dl626NewFails << ")" << std::endl;
