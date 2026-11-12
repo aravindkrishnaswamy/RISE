@@ -1018,14 +1018,11 @@ ChatPanel::ChatPanel(QWidget* parent)
     connect(m_modelEdit, &QLineEdit::editingFinished,
             this, &ChatPanel::modelEditingFinished);
     // Start screen readiness (spec §6): agentConfigured() reads the
-    // applied provider + the key field's live text.  The key field
-    // covers every keystroke; applyProviderToLoop() (below) emits
-    // explicitly for the applied-provider transition itself, since
-    // QLineEdit::setText is a no-op-and-no-signal when the incoming key
-    // happens to match what's already shown (e.g. switching between two
-    // providers that both currently have an empty stashed key) -- that
-    // case must still be able to flip agentConfigured() (Local is
-    // keyless; every other provider isn't).
+    // applied provider, m_storedKeys, and any pending text in the write-only
+    // key field.  textChanged covers typing into the draft field;
+    // applyProviderToLoop() (below) emits explicitly for the applied-provider
+    // transition itself (switching providers clears the write-only field,
+    // which is a no-op-and-no-signal when the field was already empty).
     connect(m_apiKeyEdit, &QLineEdit::textChanged,
             this, [this](const QString&) {
                 m_keySaveNotice.clear();
@@ -1883,10 +1880,9 @@ void ChatPanel::applyProviderToLoop(bool resetModelToDefault)
     updateKeyControls();
 
     // Start screen readiness (spec §6): the applied provider just changed
-    // (or was (re)confirmed) -- explicit emit because the key-field
-    // textChanged connection above can miss this transition (setText is a
-    // no-op-and-no-signal when the incoming key equals what's already
-    // shown).
+    // (or was (re)confirmed) -- explicit emit because the write-only key
+    // field stays empty across saved-key providers (clear() emits nothing
+    // when the field was already empty).
     emit agentConfiguredChanged();
 }
 

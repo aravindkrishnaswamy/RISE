@@ -8,7 +8,7 @@ int main(int argc,char** argv) {
     if(argc>1 && std::strcmp(argv[1],"--child")==0) return ChildMain(argc,argv);
     if(argc==2 && std::strcmp(argv[1],"--eligibility-only")==0) {
         const std::string scene="RISE ASCII SCENE 7\nfilm\n{\n\twidth 16\n\theight 16\n}\npinhole_camera\n{\n\tlocation 0 0 5\n\tlookat 0 0 0\n\texposure 1\n}\nuniformcolor_painter\n{\n\tname p\n\tcolor 0.5 0.5 0.5\n}\nlambertian_material\n{\n\tname m\n\treflectance p\n}\nsphere_geometry\n{\n\tname g\n\tradius 1\n}\nstandard_object\n{\n\tname o\n\tgeometry g\n\tmaterial m\n}\n"+Timeline("painter","p","risepel","0.2 0.1 0.05","0.8 0.4 0.2")+"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n"+Rasterizer("pt",1);
-        const std::string path=Fmt("tests/painter_eligibility_%d.RISEscene",getpid());
+        const std::string path=Fmt("tests/painter_eligibility_%d.RISEscene",RiseTestPid());
         { std::ofstream f(path);f<<scene; }
         IJobPriv* job=nullptr;
         if(!RISE_CreateJobPriv(&job)||!job||!job->LoadAsciiSceneViaCst(path.c_str())) return 2;

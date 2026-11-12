@@ -423,6 +423,7 @@ void SphereGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 			m_dRadius = *(Scalar*)val.getValue();
 			m_dOVRadius = (m_dRadius != 0) ? 1.0/m_dRadius : 0;
 			m_dSqrRadius = m_dRadius*m_dRadius;
+			BumpShapeRevision();
 		}
 		break;
 	}

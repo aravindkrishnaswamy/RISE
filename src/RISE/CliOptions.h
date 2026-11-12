@@ -21,6 +21,8 @@
 #ifndef RISE_CLI_OPTIONS_H_
 #define RISE_CLI_OPTIONS_H_
 
+#include <cerrno>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <ostream>
@@ -83,9 +85,10 @@ namespace RISE
 					err << "ERROR: " << name << " requires a positive integer; got end-of-args.\n";
 					return FlagMatch::MatchedError;
 				}
+				errno = 0;
 				char* endp = nullptr;
 				const long v = std::strtol( argv[ai + 1], &endp, 10 );
-				if( endp == argv[ai + 1] || *endp != '\0' || v <= 0 ) {
+				if( errno == ERANGE || endp == argv[ai + 1] || *endp != '\0' || v <= 0 || v > INT_MAX ) {
 					err << "ERROR: " << name << " requires a positive integer; got `" << argv[ai + 1] << "`.\n";
 					return FlagMatch::MatchedError;
 				}
@@ -188,7 +191,7 @@ namespace RISE
 					struct NameCollector : public IEnumCallback<const char*>
 					{
 						std::vector<std::string> names;
-						bool operator()( const char* const& nm )
+						bool operator()( const char* const& nm ) override
 						{
 							if( nm && *nm ) names.push_back( nm );
 							return true;

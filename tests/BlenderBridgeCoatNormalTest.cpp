@@ -52,11 +52,10 @@
 
 #ifdef _WIN32
 	#include <process.h>
-	#ifndef getpid
-		#define getpid _getpid
-	#endif
+	static int RiseTestPid() { return _getpid(); }
 #else
 	#include <unistd.h>
+	static int RiseTestPid() { return static_cast<int>( ::getpid() ); }
 #endif
 
 // The unit under test.  See the banner for why this is a .cpp include.
@@ -457,7 +456,7 @@ void TestNormalMapColorSpacePassthrough()
 	std::error_code ec;
 	std::filesystem::path tmpDir = std::filesystem::temp_directory_path( ec );
 	if( ec || tmpDir.empty() ) tmpDir = ".";
-	const std::string pngPath = ( tmpDir / ( "rise_bridge_nmap_" + std::to_string( static_cast<int>( getpid() ) ) + ".png" ) ).generic_string();
+	const std::string pngPath = ( tmpDir / ( "rise_bridge_nmap_" + std::to_string( RiseTestPid() ) + ".png" ) ).generic_string();
 
 	{
 		RISE::IRasterImage* pImg = 0;
@@ -553,7 +552,12 @@ void TestNormalMapColorSpacePassthrough()
 	// Also guard exporter.py against re-introducing COLOR_SPACE_ROMM_LINEAR
 	// at any call site (only the single constant definition line may name it).
 	{
-		std::ifstream py( "src/Blender/addons/rise_renderer/exporter.py" );
+		std::filesystem::path pyPath = "src/Blender/addons/rise_renderer/exporter.py";
+		if( !std::filesystem::exists( pyPath ) ) {
+			pyPath = std::filesystem::path( __FILE__ ).parent_path().parent_path() / "src/Blender/addons/rise_renderer/exporter.py";
+		}
+		std::ifstream py( pyPath );
+		Check( py.good(), "exporter.py opened for COLOR_SPACE_LINEAR call-site audit" );
 		if( py ) {
 			std::string line;
 			int uses = 0;

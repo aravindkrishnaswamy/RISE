@@ -345,7 +345,8 @@ void NamedViewsPanel::rebuildRows()
         restoreBtn->setIconSize(QSize(12, 12));
         restoreBtn->setIcon(Theme::icon(QStringLiteral("eye"), 12, Theme::textDim, Theme::textDisabled));
         restoreBtn->setFont(Theme::sans(11));
-        const QString elided = restoreBtn->fontMetrics().elidedText(name, Qt::ElideMiddle, 175);
+        QString elided = restoreBtn->fontMetrics().elidedText(name, Qt::ElideMiddle, 175);
+        elided.replace(QLatin1Char('&'), QStringLiteral("&&"));
         restoreBtn->setText(elided);
         restoreBtn->setToolTip(tr("Restore \"%1\" (non-destructive)").arg(name));
         restoreBtn->setStyleSheet(QStringLiteral(

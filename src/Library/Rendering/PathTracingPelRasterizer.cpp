@@ -491,7 +491,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		px.StorePelPassDelta( colAccrued );
+		colAccrued = px.StorePelPassDelta( colAccrued );
 		px.weightSum = weights;
 		px.alphaSum = alphas;
 		px.wMean = wMean;

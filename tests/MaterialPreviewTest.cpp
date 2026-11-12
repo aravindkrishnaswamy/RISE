@@ -212,7 +212,7 @@ namespace
 		Check( sss.status == MaterialPreview::Status::Ok, "randomwalk_sss_material shaderball succeeds" );
 		if( sss.status == MaterialPreview::Status::Ok ) {
 			const std::size_t cIdx = ( (std::size_t)( H / 2 ) * W + ( W / 2 ) ) * 4;
-			// Absorption is lowest in red (0.02 vs 0.35 blue) and scattering highest in red (2.4 vs 1.2)
+			// Absorption is much lower in red than blue (0.01 vs 5.00, equal scattering 3.0)
 			Check( sss.rgba[cIdx+0] > sss.rgba[cIdx+2],
 			       "SSS wrap preview reflects lower red absorption / stronger red scattering" );
 		}

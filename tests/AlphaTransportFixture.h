@@ -10,11 +10,14 @@
 #include <cmath>
 #include <string>
 #include <sstream>
+#include <filesystem>
 #ifdef _WIN32
 	#include <process.h>
 	#define getpid _getpid
+	inline int RiseTestPid() { return _getpid(); }
 #else
 	#include <unistd.h>
+	inline int RiseTestPid() { return static_cast<int>( ::getpid() ); }
 #endif
 
 #include "../src/Library/Interfaces/IJob.h"
@@ -112,11 +115,20 @@ inline double MeanLuminance( const CapturingRasterizerOutput& cap )
 	return sum / double( cap.pixels.size() );
 }
 
+inline std::string AlphaTempScenePath( const char* tag )
+{
+	std::error_code ec;
+	std::filesystem::path dir = std::filesystem::temp_directory_path( ec );
+	if( ec || dir.empty() ) dir = ".";
+	char leaf[256];
+	std::snprintf( leaf, sizeof(leaf), "alpha_intersection_%s_%d.RISEscene", tag, RiseTestPid() );
+	return ( dir / leaf ).generic_string();
+}
+
 inline double Render( const std::string& sceneText, const char* tag )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/alpha_intersection_%s_%d.RISEscene",
-		tag, static_cast<int>( ::getpid() ) );
+	const std::string pathStr = AlphaTempScenePath( tag );
+	const char* path = pathStr.c_str();
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return -1.0;

@@ -73,6 +73,7 @@
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IObject.h"
 #include <atomic>
+#include <memory>
 #include <stack>
 #include <vector>
 
@@ -238,8 +239,15 @@ namespace RISE
 			std::size_t m_size;
 			std::vector<IORDATA>* m_heap;
 
-			inline IORDATA* entries() { return m_heap ? m_heap->data() : m_inline; }
-			inline const IORDATA* entries() const { return m_heap ? m_heap->data() : m_inline; }
+			//! Representation invariant:
+			//!  - `m_size <= kInlineCap`: live entries reside in `m_inline[0..m_size-1]`.
+			//!    `m_heap` is either null or an empty retained spare buffer so bouncing
+			//!    between depth 4 and depth 5 never thrashes `new`/`delete` or stays
+			//!    permanently stuck on the cold heap path.
+			//!  - `m_size > kInlineCap`: `m_heap != 0` and live entries reside in
+			//!    `(*m_heap)[0..m_size-1]` (`m_heap->size() == m_size`).
+			inline IORDATA* entries() { return ( m_size > kInlineCap ) ? m_heap->data() : m_inline; }
+			inline const IORDATA* entries() const { return ( m_size > kInlineCap ) ? m_heap->data() : m_inline; }
 
 			RISE_IORSTACK_COLD static std::vector<IORDATA>* CloneHeap( const std::vector<IORDATA>& src )
 			{
@@ -263,9 +271,19 @@ namespace RISE
 
 			RISE_IORSTACK_COLD void SpillAndPush( const IORDATA& d )
 			{
-				if( !m_heap ) {
-					m_heap = new std::vector<IORDATA>();
-					m_heap->reserve( kInlineCap * 2 );
+				if( m_size <= kInlineCap ) {
+					if( !m_heap ) {
+						std::unique_ptr<std::vector<IORDATA>> heap( new std::vector<IORDATA>() );
+						heap->reserve( kInlineCap * 2 );
+						for( std::size_t i = 0; i < m_size; ++i ) {
+							heap->push_back( m_inline[i] );
+						}
+						heap->push_back( d );
+						m_size = heap->size();
+						m_heap = heap.release();
+						return;
+					}
+					m_heap->clear();
 					for( std::size_t i = 0; i < m_size; ++i ) {
 						m_heap->push_back( m_inline[i] );
 					}
@@ -277,14 +295,22 @@ namespace RISE
 			RISE_IORSTACK_COLD void EraseHeapAt( const std::size_t idx )
 			{
 				m_heap->erase( m_heap->begin() + static_cast<std::ptrdiff_t>( idx ) );
-				m_size = m_heap->size();
+				const std::size_t newSize = m_heap->size();
+				if( newSize <= kInlineCap ) {
+					const IORDATA* src = m_heap->data();
+					for( std::size_t i = 0; i < newSize; ++i ) {
+						m_inline[i] = src[i];
+					}
+					m_heap->clear();
+				}
+				m_size = newSize;
 			}
 
 		public:
 
 			//! Null for every stack with no context-carrying entry -- every
 			//! stack in a scene without open sheets.  On that path a copy, a
-			//! destruction, a push and an erase each test `m_heap` and `ctxs`
+			//! destruction, a push and an erase each test `m_size` and `ctxs`
 			//! and nothing else; everything that allocates, counts or re-indexes
 			//! lives in the out-of-line (RISE_IORSTACK_COLD) helpers, so the
 			//! inlined code a hot caller carries stays heap-free up to depth 4.
@@ -297,9 +323,8 @@ namespace RISE
 			  ctxs( s.ctxs )
 			{
 				if( m_size <= kInlineCap ) {
-					const IORDATA* src = s.entries();
 					for( std::size_t i = 0; i < m_size; ++i ) {
-						m_inline[i] = src[i];
+						m_inline[i] = s.m_inline[i];
 					}
 				} else {
 					m_heap = CloneHeap( *s.m_heap );
@@ -315,12 +340,10 @@ namespace RISE
 				}
 				if( s.m_size <= kInlineCap ) {
 					if( m_heap ) {
-						FreeHeap( m_heap );
-						m_heap = 0;
+						m_heap->clear();
 					}
-					const IORDATA* src = s.entries();
 					for( std::size_t i = 0; i < s.m_size; ++i ) {
-						m_inline[i] = src[i];
+						m_inline[i] = s.m_inline[i];
 					}
 					m_size = s.m_size;
 				} else {
@@ -419,13 +442,57 @@ namespace RISE
 
 			void pushEntry( const IORDATA& d, const EntryContext* pCtx )
 			{
-				if( !m_heap && m_size < kInlineCap ) {
+				if( m_size < kInlineCap ) {
 					m_inline[m_size++] = d;
 				} else {
 					SpillAndPush( d );
 				}
 				if( pCtx && pCtx->bHasContext ) {
 					AppendContext( *pCtx );
+				}
+			}
+
+			RISE_IORSTACK_COLD void insertEntryAt( const std::size_t idx, const IORDATA& d, const EntryContext* pCtx )
+			{
+				const std::size_t pos = idx < m_size ? idx : m_size;
+				if( pos == m_size ) {
+					pushEntry( d, pCtx );
+					return;
+				}
+				if( m_size < kInlineCap ) {
+					for( std::size_t j = m_size; j > pos; --j ) {
+						m_inline[j] = m_inline[j - 1];
+					}
+					m_inline[pos] = d;
+					++m_size;
+				} else if( m_size == kInlineCap ) {
+					SpillAndPush( m_inline[kInlineCap - 1] );
+					for( std::size_t j = kInlineCap - 1; j > pos; --j ) {
+						( *m_heap )[j] = ( *m_heap )[j - 1];
+					}
+					( *m_heap )[pos] = d;
+				} else {
+					m_heap->insert( m_heap->begin() + static_cast<std::ptrdiff_t>( pos ), d );
+					m_size = m_heap->size();
+				}
+				const bool attach = pCtx && pCtx->bHasContext;
+				if( ctxs || attach ) {
+					std::vector<IndexedContext> items;
+					bool placed = false;
+					if( ctxs ) {
+						for( std::size_t k = 0; k < ctxs->items.size(); ++k ) {
+							const IndexedContext& ec = ctxs->items[k];
+							if( !placed && ec.first >= pos ) {
+								if( attach ) items.push_back( IndexedContext( pos, *pCtx ) );
+								placed = true;
+							}
+							items.push_back( IndexedContext( ec.first >= pos ? ec.first + 1 : ec.first, ec.second ) );
+						}
+					}
+					if( !placed && attach ) {
+						items.push_back( IndexedContext( pos, *pCtx ) );
+					}
+					ReplaceContexts( items );
 				}
 			}
 
@@ -499,7 +566,7 @@ namespace RISE
 						if( ctxs ) {
 							EraseContextIndex( i );
 						}
-						if( m_heap ) {
+						if( m_size > kInlineCap ) {
 							EraseHeapAt( i );
 						} else {
 							for( std::size_t j = i + 1; j < m_size; ++j ) {
@@ -717,6 +784,12 @@ namespace RISE
 		{
 			if( i > 0 && i < iorstack.depth() ) {
 				iorstack.setContextAt( i, ctx );
+			}
+		}
+		inline void InsertOpenSheetAt( const std::size_t i, const IObject* pObj, const Scalar ior, const EntryContext& ctx )
+		{
+			if( pObj && i > 0 ) {
+				iorstack.insertEntryAt( i, IORDATA( pObj, ior, true ), &ctx );
 			}
 		}
 		inline const EntryContext& TopContext() const { return iorstack.topContext(); }

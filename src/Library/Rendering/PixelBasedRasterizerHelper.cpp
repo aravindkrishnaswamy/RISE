@@ -54,13 +54,14 @@ namespace RISE
 			return ( sampleIndex == 0 ) ? RISEPel( colorSum ) : RISEPel( 0, 0, 0 );
 		}
 
-		void ProgressivePixel::StorePelPassDelta( const RISEPel passDelta )
+		RISEPel ProgressivePixel::StorePelPassDelta( const RISEPel passDelta )
 		{
 			if( sampleIndex == 0 ) {
 				colorSum = passDelta;
-			} else {
-				colorSum = colorSum + XYZPel( passDelta );
+				return passDelta;
 			}
+			colorSum = colorSum + XYZPel( passDelta );
+			return RISEPel( colorSum );
 		}
 	}
 }
@@ -985,12 +986,25 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 			const Rect rect = seq.GetNextRegion();
 
 			if( pProgressFunc && i>0 )	{
-				if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) ) ) {
+				double num, denom;
+				if( mProgressTotal > 0 ) {
+					num   = mProgressBase + static_cast<double>(i) * mProgressWeight;
+					denom = mProgressTotal;
+				} else {
+					num   = static_cast<double>(i);
+					denom = static_cast<double>(numseq-1);
+				}
+				if( !pProgressFunc->Progress( num, denom ) ) {
 					completed = false;
 					break;		// abort the render
 				}
 			}
 
+			const unsigned int spMediumSeed =
+				( static_cast<unsigned int>( mProgressBase ) * 2654435761u ) ^
+				( static_cast<unsigned int>( pass ) * 2246822519u ) ^
+				( i * 3266489917u ) ^ 0x6D2B79F5u;
+			ScopedMediumTileSeed mediumSeed( spMediumSeed );
 			SPRasterizeSingleBlock( rc, image, scene, rect, height );
 			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
 				completed = false;
@@ -1275,6 +1289,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 				GlobalLog()->PrintEx( eLog_Event,
 					"Progressive:: Cancelled after pass %u/%u",
 					passIdx+1, numPasses );
+				if( progFilm.CountDone( 1, pRect ) > 0 ) {
+					FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
+				}
 				mainPassCompleted = false;
 				break;
 			}
@@ -1604,6 +1622,11 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 				}
 			}
 
+			const unsigned int spAnimMediumSeed =
+				( static_cast<unsigned int>( mProgressBase ) * 2654435761u ) ^
+				( static_cast<unsigned int>( pass ) * 2246822519u ) ^
+				( i * 3266489917u ) ^ 0x9E3779B9u;
+			ScopedMediumTileSeed mediumSeed( spAnimMediumSeed );
 			SPRasterizeSingleBlockOfAnimation( rc, image, pScene, rect, height, framedata );
 			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
 				completed = false;

@@ -506,6 +506,7 @@ void CircularDiskGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 			radius = *(Scalar*)val.getValue();
 			OVRadius = (radius != 0) ? 1.0/radius : 0;
 			sqrRadius = radius*radius;
+			BumpShapeRevision();
 		}
 		break;
 	}

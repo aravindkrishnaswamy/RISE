@@ -83,6 +83,13 @@ namespace RISE
 	protected:
 	#if ((defined MERSENNE53) || (defined MERSENNE))
 		mutable MersenneTwister mt;
+	#elif !(defined DRAND48)
+		mutable unsigned long long fallbackState;
+
+		static inline unsigned long long SeedFallbackState( const unsigned int seed )
+		{
+			return ( static_cast<unsigned long long>( seed ) << 1 ) | 0x9E3779B97F4A7C15ULL;
+		}
 	#endif
 
 	public:
@@ -92,8 +99,16 @@ namespace RISE
 		mt( seed )
 		{
 		};
+	#elif defined DRAND48
+		RandomNumberGenerator( unsigned int seed = LockedLibcRand() )
+		{
+			srand48( seed );
+		};
 	#else
-		RandomNumberGenerator( unsigned int = 0 ){};
+		RandomNumberGenerator( unsigned int seed = LockedLibcRand() ) :
+		fallbackState( SeedFallbackState( seed ) )
+		{
+		};
 	#endif
 
 		virtual ~RandomNumberGenerator( )
@@ -108,7 +123,7 @@ namespace RISE
 #elif defined MERSENNE53 || defined MERSENNE
             mt.init_genrand(seed);
 #else
-            srand(seed);
+            fallbackState = SeedFallbackState( seed );
 #endif
         }
 
@@ -122,10 +137,14 @@ namespace RISE
 				return mt.genrand_real2();
 			#else
 				// Fallback build only (neither MERSENNE53 nor MERSENNE; the
-				// shipped Config.common defines MERSENNE53): this draws from
-				// the shared libc stream, serialized but NOT per generator,
-				// so draws interleave across threads.
-				return LockedLibcRand() * (0.9999999 / double(RAND_MAX));  
+				// shipped Config.common defines MERSENNE53): per-instance
+				// SplitMix64 state so independent generators stay isolated and
+				// thread-safe without contending on libc rand().
+				unsigned long long z = ( fallbackState += 0x9E3779B97F4A7C15ULL );
+				z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
+				z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
+				z ^= z >> 31;
+				return static_cast<double>( z >> 11 ) * ( 1.0 / 9007199254740992.0 );
 			#endif
 		}
 

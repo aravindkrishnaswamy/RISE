@@ -1034,6 +1034,10 @@ void BDPTRasterizerBase::RasterizeScene(
 				GlobalLog()->PrintEx( eLog_Event,
 					"BDPT Progressive:: Cancelled after pass %u/%u",
 					passIdx+1, numPasses );
+				if( progFilm.CountDone( 1, pRect ) > 0 ) {
+					FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
+				}
 				break;
 			}
 
@@ -1146,6 +1150,10 @@ void BDPTRasterizerBase::RasterizeScene(
 					}
 				}
 
+				const unsigned int spBdptMediumSeed =
+					( static_cast<unsigned int>( mProgressBase ) * 2654435761u ) ^
+					( i * 3266489917u ) ^ 0x6D2B79F5u;
+				ScopedMediumTileSeed mediumSeed( spBdptMediumSeed );
 				SPRasterizeSingleBlock( rc, *pImage, pScene, rect, height );
 			}
 

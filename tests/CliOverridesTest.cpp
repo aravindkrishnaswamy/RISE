@@ -182,6 +182,9 @@ static void TestFlagParsing()
 		{ "--camera=" },
 		{ "--width", "0" },
 		{ "--width", "-8" },
+		{ "--width", "3000000000" },
+		{ "--width", "4294967297" },
+		{ "--height", "99999999999" },
 		{ "--height", "abc" },
 		{ "--pixel-ar", "0" },
 		{ "--pixel-ar", "-1.5" }

@@ -1286,6 +1286,122 @@ static void TestSubtractionMultiLobeResidualsDL627()
 	}
 	CSGObject::SetAdvanceBudgetForTesting( 0 );
 
+	// L5: exhaustion rule on multi-lobe B continuation probe (`SetAdvanceBudgetForTesting(1)`):
+	// `A = [2.5, 5.5]`, `B = [2.0, 3.5] U ([3.4, 4.6] U [4.5, 6.0])` covers all of A
+	// (`A \ B == empty`).  At `budget = 1`, one step extends B across `[3.4, 4.6]` to `4.6`,
+	// exhausting `advanceBudget == 0` before `[4.5, 6.0]` can be probed; both `IntersectRay`
+	// and `IntersectRay_IntersectionOnly` must drop the unconfirmed candidate at `4.6`
+	// (`miss` / `false`) rather than inventing a non-existent surface inside empty `A \ B`.
+	{
+		CSGObject* bTail = UnionOf(
+			MakeIntervalSphereX( oOut.x, 3.4, 4.6 ),
+			MakeIntervalSphereX( oOut.x, 4.5, 6.0 ) );
+		CSGObject* bAll = new CSGObject( CSG_UNION );
+		Object* bHead = MakeIntervalSphereX( oOut.x, 2.0, 3.5 );
+		bAll->AssignObjects( bHead, bTail );
+		bAll->FinalizeTransformations();
+		safe_release( bHead );
+		safe_release( bTail );
+		CSGObject* csgEmpty = Subtract( MakeIntervalSphereX( oOut.x, 2.5, 5.5 ), bAll );
+		CSGObject::SetAdvanceBudgetForTesting( 1 );
+		CheckMiss( *csgEmpty, oOut, dx, "L5: budget=1 exhaustion drops unconfirmed B exit on empty A \\ B" );
+		CSGObject::SetAdvanceBudgetForTesting( 0 );
+		CheckMiss( *csgEmpty, oOut, dx, "L5: full budget confirms A \\ B is empty" );
+		safe_release( csgEmpty );
+	}
+
+	// L6: per-operand material binding & exit-face payload hygiene when B = B1 U B2
+	// has distinct materials on B1 and B2:
+	//  (a) origin inside B1 (`[-0.5, 0.5]`), A = `[2.5, 6.0]`, B2 = `[2.0, 4.0]`:
+	//      `nextB.ApplyToOperandHit` + `AdoptCsgExitFacePayloadViaProbe` must report
+	//      `B2`'s material (`matB2`), never `B1`'s (`matB1`) or `A`'s (`matA`), and
+	//      stamp `ptIntersection` at `x = oIn.x + 4.0`;
+	//  (b) origin outside both (`oOut`), A = `[2.5, 6.0]`, B = `[2.0, 4.0]` (`matB2`):
+	//      `AdoptCsgExitFacePayloadViaProbe` adopts `B2`'s material on the carved cavity wall.
+	{
+		class TagMaterial : public virtual IMaterial, public virtual Reference
+		{
+		public:
+			IBSDF* GetBSDF() const override { return 0; }
+			ISPF* GetSPF() const override { return 0; }
+			IEmitter* GetEmitter() const override { return 0; }
+		protected:
+			virtual ~TagMaterial() {}
+		};
+		TagMaterial* matA = new TagMaterial();
+		TagMaterial* matB1 = new TagMaterial();
+		TagMaterial* matB2 = new TagMaterial();
+		Object* objA = MakeIntervalSphereX( oIn.x, 2.5, 6.0 );
+		objA->AssignMaterial( *matA );
+		Object* objB1 = MakeIntervalSphereX( oIn.x, -0.5, 0.5 );
+		objB1->AssignMaterial( *matB1 );
+		Object* objB2 = MakeIntervalSphereX( oIn.x, 2.0, 4.0 );
+		objB2->AssignMaterial( *matB2 );
+		CSGObject* bUnion = new CSGObject( CSG_UNION );
+		bUnion->AssignObjects( objB1, objB2 );
+		bUnion->FinalizeTransformations();
+		safe_release( objB1 );
+		safe_release( objB2 );
+		CSGObject* csgMat = Subtract( objA, bUnion );
+		const RayIntersection hitFromB1 = CastObj( *csgMat, oIn, dx );
+		Check( hitFromB1.geometric.bHit &&
+			std::fabs( hitFromB1.geometric.range - 4.0 ) < 1e-6 &&
+			hitFromB1.pMaterial == matB2 &&
+			std::fabs( hitFromB1.geometric.ptIntersection.x - ( oIn.x + 4.0 ) ) < 1e-5,
+			"L6a: inside-B1 -> outside-B2 subtraction exit adopts B2 material and exact ptIntersection" );
+		const RayIntersection hitOutside = CastObj( *csgMat, Point3( oIn.x - 2.0, 0, 0 ), dx );
+		Check( hitOutside.geometric.bHit &&
+			std::fabs( hitOutside.geometric.range - 6.0 ) < 1e-6 &&
+			hitOutside.pMaterial == matB2,
+			"L6b: outside subtraction exit adopts B2 material via AdoptCsgExitFacePayloadViaProbe" );
+		safe_release( csgMat );
+		safe_release( matA );
+		safe_release( matB1 );
+		safe_release( matB2 );
+	}
+
+	// L7: nested CSG trees share one top-level `ScopedCsgQueryBudget` rather than
+	// compounding `O(budget^depth)` re-casts across recursive CSG frames.
+	{
+		CountingSphere* gCount = new CountingSphere( 0.15 );
+		auto makeCountedAt = [&]( double cx ) -> Object* {
+			Object* o = new Object( gCount );
+			o->SetPosition( Point3( oOut.x + cx, 0, 0 ) );
+			o->FinalizeTransformations();
+			return o;
+		};
+		// Chain 8 disjoint small spheres along +x before A = [20, 22] in a right-leaning CSG_UNION tree.
+		IObjectPriv* chain = makeCountedAt( 1.0 );
+		for( int i = 2; i <= 8; ++i ) {
+			CSGObject* u = new CSGObject( CSG_UNION );
+			Object* next = makeCountedAt( double( i ) );
+			u->AssignObjects( chain, next );
+			u->FinalizeTransformations();
+			safe_release( chain );
+			safe_release( next );
+			chain = u;
+		}
+		gCount->release();
+		CSGObject* top = new CSGObject( CSG_SUBTRACTION );
+		Object* targetA = MakeIntervalSphereX( oOut.x, 20.0, 22.0 );
+		top->AssignObjects( targetA, chain );
+		top->FinalizeTransformations();
+		safe_release( targetA );
+		safe_release( chain );
+
+		gCount->casts = 0;
+		CSGObject::SetAdvanceBudgetForTesting( 2 );
+		const RayIntersection hCapped = CastObj( *top, oOut, dx );
+		const unsigned int castsAt2 = gCount->casts.load();
+		CSGObject::SetAdvanceBudgetForTesting( 0 );
+		// Initial traversal casts the 8 leaves once (8), plus at most `budget = 2` shared
+		// re-cast evaluations across the nested union (2 * 8 = 16) = <= 24 leaf casts total
+		// (vs > 60 without shared ScopedCsgQueryBudget).
+		Check( !hCapped.geometric.bHit && castsAt2 <= 24,
+			"L7: nested CSG shares top-level advanceBudget (casts=" + std::to_string( castsAt2 ) + " <= 24)" );
+		safe_release( top );
+	}
+
 	if( failCount == failsBefore ) {
 		std::cout << "  PASS: [DL-627-SUMMARY] subtraction multi-lobe residuals" << std::endl;
 	} else {

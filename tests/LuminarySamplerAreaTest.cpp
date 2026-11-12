@@ -48,6 +48,7 @@
 #include <functional>
 #include <chrono>
 #include <filesystem>
+#include <mutex>
 #include <random>
 #ifdef _WIN32
 #include <process.h>
@@ -517,11 +518,57 @@ static void TestUniformity()
 class CapturingRasterizerOutput : public virtual IRasterizerOutput, public virtual Reference
 {
 public:
+	struct IntermCapture
+	{
+		bool fullFrame;
+		Rect region;
+		double meanAll;
+		double meanInterior;
+	};
 	std::vector<RISEColor> pixels;
+	std::vector<IntermCapture> intermediateCaptures;
+	bool captureIntermediate = false;
+	std::mutex intermediateMutex;
 protected:
 	virtual ~CapturingRasterizerOutput() {}
 public:
-	virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	virtual void OutputIntermediateImage( const IRasterImage& img, const Rect* rcRegion ) override
+	{
+		if( !captureIntermediate ) return;
+		const unsigned int x0 = rcRegion ? rcRegion->left : 0;
+		const unsigned int y0 = rcRegion ? rcRegion->top : 0;
+		const unsigned int x1 = rcRegion ? std::min<unsigned int>( rcRegion->right + 1, img.GetWidth() ) : img.GetWidth();
+		const unsigned int y1 = rcRegion ? std::min<unsigned int>( rcRegion->bottom + 1, img.GetHeight() ) : img.GetHeight();
+		if( x1 <= x0 || y1 <= y0 ) return;
+		double sumAll = 0.0, sumInt = 0.0;
+		unsigned int cntAll = 0, cntInt = 0;
+		const unsigned int ix0 = rcRegion ? ( x0 + 5 ) : x0;
+		const unsigned int iy0 = rcRegion ? ( y0 + 5 ) : y0;
+		const unsigned int ix1 = ( rcRegion && x1 > 5 ) ? ( x1 - 5 ) : x0;
+		const unsigned int iy1 = ( rcRegion && y1 > 5 ) ? ( y1 - 5 ) : y0;
+		for( unsigned int y = y0; y < y1; ++y ) {
+			for( unsigned int x = x0; x < x1; ++x ) {
+				const RISEColor c = img.GetPEL( x, y );
+				const double v = ( c.base.r + c.base.g + c.base.b ) * c.a / 3.0;
+				sumAll += v;
+				++cntAll;
+				if( !rcRegion || ( x >= ix0 && x < ix1 && y >= iy0 && y < iy1 ) ) {
+					sumInt += v;
+					++cntInt;
+				}
+			}
+		}
+		if( cntAll > 0 ) {
+			const double mAll = sumAll / double( cntAll );
+			const double mInt = ( cntInt > 0 ) ? ( sumInt / double( cntInt ) ) : mAll;
+			std::lock_guard<std::mutex> lk( intermediateMutex );
+			intermediateCaptures.push_back( IntermCapture{
+				rcRegion == nullptr,
+				rcRegion ? *rcRegion : Rect( 0, 0, 0, 0 ),
+				mAll,
+				mInt } );
+		}
+	}
 	virtual void OutputImage( const IRasterImage& img, const Rect*, const unsigned int ) override
 	{
 		pixels.resize( img.GetWidth() * img.GetHeight() );
@@ -529,6 +576,23 @@ public:
 			for( unsigned int x = 0; x < img.GetWidth(); x++ )
 				pixels[y * img.GetWidth() + x] = img.GetPEL( x, y );
 	}
+};
+
+class CancellingProgressCallback : public IProgressCallback
+{
+public:
+	double cancelFraction = 2.0;
+	bool cancelled = false;
+	bool Progress( const double progress, const double total ) override
+	{
+		if( total > 0.0 && ( progress / total ) >= cancelFraction ) {
+			cancelled = true;
+			return false;
+		}
+		return true;
+	}
+	void SetTitle( const char* ) override {}
+	bool IsCancelled() const override { return cancelled; }
 };
 
 static std::string TempPath( const char* tag, const char* ext )
@@ -1164,6 +1228,119 @@ static void TestProgressiveColorAndOrthoCamera()
 			Fmt( "P: %s 32-pass progressive matches single XYZ round-trip to %.3e < 1e-13 (zero multi-pass compounding)", rasts[r][0], maxSingleRoundTripDiff ) );
 		Check( okProg && okSingle && passParityErr < 5e-7,
 			Fmt( "P: %s 32-pass progressive vs single-pass mean diff %.3e < 5e-7", rasts[r][0], passParityErr ) );
+
+		// 3. Live intermediate tile previews (OutputIntermediateImage on passes 1..3)
+		//    and cancelled mid-pass-2 progressive renders must retain full cumulative
+		//    luminance (regression guard against 1/(k+1) pass-delta darkening).
+		const char* liveRasts[3] = {
+			"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n",
+			"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n",
+			"vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled false\n}\n\n"
+		};
+		std::string liveScene = RenderScene( emit, liveRasts[r] );
+		{
+			const std::string from = "width 24\n\theight 24";
+			liveScene.replace( liveScene.find( from ), from.size(), "width 64\n\theight 64" );
+		}
+		auto runLiveOrCancel = [&]( double cancelFrac, std::vector<CapturingRasterizerOutput::IntermCapture>& outInterm, std::vector<RISEColor>& outPx, double& outFinalMean, bool& didCancel ) -> bool {
+			const std::string pth = TempPath( "prog_live", "RISEscene" );
+			{ std::ofstream ofs( pth ); ofs << liveScene; }
+			bool okRun = false;
+			IJobPriv* pJob = nullptr;
+			if( RISE_CreateJobPriv( &pJob ) && pJob && pJob->LoadAsciiSceneViaCst( pth.c_str() ) ) {
+				pJob->RemoveRasterizerOutputs();
+				CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+				pCap->captureIntermediate = true;
+				GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
+				pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+				if( Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() ) ) {
+					pRas->ForTest_SetThreadCountOverride( 1 );
+				}
+				CancellingProgressCallback cb;
+				cb.cancelFraction = cancelFrac;
+				if( cancelFrac <= 1.0 ) {
+					pJob->SetProgress( &cb );
+				}
+				SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 4242u, 0x459u ) );
+				std::srand( 4242u );
+				GlobalRNG().Reseed( 4242u );
+				pJob->Rasterize();
+				SobolSamplerTestHooks::ValueSalt().store( 0u );
+				pJob->SetProgress( nullptr );
+				didCancel = cb.cancelled;
+				outInterm = pCap->intermediateCaptures;
+				outPx = pCap->pixels;
+				if( !pCap->pixels.empty() ) {
+					double sum = 0.0;
+					for( const RISEColor& c : pCap->pixels ) {
+						sum += ( c.base.r + c.base.g + c.base.b ) * c.a / 3.0;
+					}
+					outFinalMean = sum / double( pCap->pixels.size() );
+					okRun = std::isfinite( outFinalMean ) && outFinalMean > 0.0;
+				}
+				safe_release( pCap );
+			}
+			safe_release( pJob );
+			std::remove( pth.c_str() );
+			return okRun;
+		};
+		std::vector<CapturingRasterizerOutput::IntermCapture> intermFull, intermCancel;
+		std::vector<RISEColor> fullPx, cancelPx;
+		double fullMean = 0.0, cancelMean = 0.0;
+		bool dummyCancel = false, wasCancelled = false;
+		const bool okLiveFull = runLiveOrCancel( 2.0, intermFull, fullPx, fullMean, dummyCancel );
+		const bool okLiveCancel = runLiveOrCancel( 0.60, intermCancel, cancelPx, cancelMean, wasCancelled );
+		auto regionRefMean = [&]( const CapturingRasterizerOutput::IntermCapture& cap, bool interiorOnly ) -> double {
+			if( cap.fullFrame || fullPx.size() != 64u * 64u ) return fullMean;
+			unsigned int x0 = cap.region.left, y0 = cap.region.top;
+			unsigned int x1 = std::min<unsigned int>( cap.region.right + 1, 64u );
+			unsigned int y1 = std::min<unsigned int>( cap.region.bottom + 1, 64u );
+			if( interiorOnly && x1 > x0 + 10 && y1 > y0 + 10 ) {
+				x0 += 5; y0 += 5; x1 -= 5; y1 -= 5;
+			}
+			double s = 0.0;
+			unsigned int n = 0;
+			for( unsigned int y = y0; y < y1; ++y ) {
+				for( unsigned int x = x0; x < x1; ++x ) {
+					const RISEColor& c = fullPx[y * 64u + x];
+					s += ( c.base.r + c.base.g + c.base.b ) * c.a / 3.0;
+					++n;
+				}
+			}
+			return n > 0 ? ( s / double( n ) ) : fullMean;
+		};
+		// Index 0 is PrepareImageForNewRender's pre-render pastel clear.
+		// Thereafter, PT/BDPT emit strictly paired per-block notifications
+		// (even blockNotifyIdx = pre-block with 5-px DimTileBorder, odd =
+		// post-block freshly written cret) plus full-frame pass previews;
+		// VCM skips per-block output and emits full-frame pass previews
+		// (ti >= 1).  Without cumulative StorePelPassDelta, late-pass
+		// post-block cret drops to 1/(k+1) = 0.25x of its final tile mean.
+		const bool expectsBlockFlushes = ( r < 2 );
+		bool allLateTilesFullBrightness = expectsBlockFlushes ? ( intermFull.size() >= 17 ) : ( intermFull.size() >= 2 );
+		double minLateRatio = 1.0, maxLateRatio = 1.0;
+		const std::size_t startIdx = expectsBlockFlushes ? ( intermFull.size() / 2 ) : 1;
+		std::size_t blockNotifyIdx = 0;
+		for( std::size_t ti = 1; ti < intermFull.size() && fullMean > 0.0; ++ti ) {
+			const auto& cap = intermFull[ti];
+			const bool isPostBlock = !cap.fullFrame && ( ( blockNotifyIdx++ % 2 ) == 1 );
+			if( ti < startIdx ) continue;
+			const bool fullTile = ( cap.fullFrame || isPostBlock );
+			const double sampleMean = fullTile ? cap.meanAll : cap.meanInterior;
+			const double refMean = regionRefMean( cap, !fullTile );
+			const double ratio = ( refMean > 0.0 ) ? ( sampleMean / refMean ) : 0.0;
+			minLateRatio = std::min( minLateRatio, ratio );
+			maxLateRatio = std::max( maxLateRatio, ratio );
+			if( ratio < 0.90 || ratio > 1.10 ) {
+				allLateTilesFullBrightness = false;
+			}
+		}
+		Check( okLiveFull && allLateTilesFullBrightness,
+			Fmt( "P: %s multi-pass OutputIntermediateImage retains full luminance (n=%zu, late-pass ratio [%.3f, %.3f] in [0.90, 1.10])",
+				rasts[r][0], intermFull.size(), minLateRatio, maxLateRatio ) );
+		const double cancelRatio = ( fullMean > 0.0 ) ? ( cancelMean / fullMean ) : 0.0;
+		Check( okLiveCancel && wasCancelled && cancelRatio > 0.85 && cancelRatio < 1.15,
+			Fmt( "P: %s mid-pass-3 cancelled progressive output retains full luminance (ratio %.3f in [0.85, 1.15])", rasts[r][0], cancelRatio ) );
 	}
 }
 

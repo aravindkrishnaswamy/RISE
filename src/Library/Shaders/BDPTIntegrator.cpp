@@ -2025,8 +2025,8 @@ namespace {
 		// Seed from the camera position: if the camera sits inside a
 		// dielectric (submerged camera, camera inside a medium volume),
 		// the first scatter needs the stack to reflect that containment.
-		// For cameras in free space this is a no-op — the probe finds no
-		// enclosing objects and leaves the stack as-is.
+		// Opaque scenes skip in O(1) (`!cat.hasTrackableMedia`); scenes with
+		// closed dielectrics pay one +Z probe when the camera is in free space.
 		if( pCamera ) {
 			// Seed from the CAMERA VERTEX, which on a finite-aperture
 			// camera is the sampled lens point rather than the lens

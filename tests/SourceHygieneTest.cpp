@@ -855,11 +855,30 @@ int main()
 			struct Frame { bool parentActive; bool taken; bool active; };
 			std::vector<Frame> stack;
 			const std::string stripped = StripCommentsPreservingLayout( src );
+			const bool fileHasWinGetpidShim =
+				stripped.find( "process.h" ) != std::string::npos ||
+				stripped.find( "SMSRenderTestSupport.h" ) != std::string::npos ||
+				stripped.find( "SMSDomainReplayFixture.h" ) != std::string::npos ||
+				stripped.find( "CompositeEnergyFixture.h" ) != std::string::npos;
 			std::istringstream ls( stripped );
 			std::string line;
 			int lineNo = 0;
 			while( std::getline( ls, line ) ) {
 				++lineNo;
+				const bool curActive = stack.empty() ? true : stack.back().active;
+				if( ext == ".cpp" && curActive && !fileHasWinGetpidShim ) {
+					std::size_t gp = 0;
+					while( ( gp = line.find( "getpid(", gp ) ) != std::string::npos ) {
+						const bool isWordStart = ( gp == 0 ) ||
+							( !std::isalnum( static_cast<unsigned char>( line[gp - 1] ) ) && line[gp - 1] != '_' );
+						if( isWordStart ) {
+							unguardedPosixIncludes.push_back(
+								f.filename().string() + ":" + std::to_string( lineNo ) + " unshimmed getpid()" );
+							break;
+						}
+						gp += 7;
+					}
+				}
 				std::size_t i = 0;
 				while( i < line.size() && ( line[i] == ' ' || line[i] == '\t' ) ) ++i;
 				if( i >= line.size() || line[i] != '#' ) continue;
@@ -869,7 +888,6 @@ int main()
 				while( kwEnd < line.size() && std::isalpha( static_cast<unsigned char>( line[kwEnd] ) ) ) ++kwEnd;
 				const std::string kw = line.substr( i, kwEnd - i );
 				const std::string rest = line.substr( kwEnd );
-				const bool curActive = stack.empty() ? true : stack.back().active;
 				if( kw == "ifdef" ) {
 					const bool c = ( rest.find( "_WIN32" ) != std::string::npos ||
 					                 rest.find( "WIN32" ) != std::string::npos ||

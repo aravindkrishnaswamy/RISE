@@ -490,7 +490,7 @@ void VCMPelRasterizer::IntegratePixel(
 	// Write back persistent state for progressive rendering.
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		px.StorePelPassDelta( colAccrued );
+		colAccrued = px.StorePelPassDelta( colAccrued );
 		px.weightSum = weightsAccrued;
 		px.alphaSum = alphasAccrued;
 		px.wMean = wMean;

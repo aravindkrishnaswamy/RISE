@@ -5032,7 +5032,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// dielectric (submerged camera, camera inside a medium volume), the
 	// first boundary crossing must see bFromInside==true or the
 	// DielectricSPF wrong-side test drops the transmission lobe entirely.
-	// Free-space cameras: the probe finds no enclosing objects, no-op.
+	// Opaque scenes skip in O(1) (`!cat.hasTrackableMedia`); scenes with
+	// closed dielectrics pay one +Z probe when the camera is in free space.
 	// Mirrors the eye-subpath seeding in BDPTIntegrator (GenerateEyeSubpath).
 	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene, PTTagNm( tag ) );
 	sampler.StartStream( 16 );
@@ -5930,7 +5931,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				// Replay physical containment for each lane (seeded for every
 				// lane at once above): a camera already inside a dispersive
 				// ambient must not inherit the hero index.
-				IORStack laneStack = preseededOriginLanes_ ? preseededOriginLanes_[i] : laneSeeds->s[i];
+				IORStack laneStack = preseededOriginLanes_ ? IORStack( preseededOriginLanes_[i] ) : std::move( laneSeeds->s[i] );
 				// DL-292: the midpoint seed recorded a graded medium's
 				// index at the MIDPOINT; the delegated walk's first
 				// Advance must telescope from the segment's start.
@@ -5989,7 +5990,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				{
 					// Replay physical containment for each lane (seeded for
 					// every lane at once above).
-					IORStack laneStack = preseededOriginLanes_ ? preseededOriginLanes_[i] : laneSeeds->s[i];
+					IORStack laneStack = preseededOriginLanes_ ? IORStack( preseededOriginLanes_[i] ) : std::move( laneSeeds->s[i] );
 					// DL-292: the midpoint seed recorded a graded medium's
 					// index at the MIDPOINT; the delegated walk's first
 					// Advance must telescope from the segment's start.
@@ -7613,41 +7614,49 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	IORStack laneStacks[SampledWavelengths::N] = {
 		IORStack( 1.0 ), IORStack( 1.0 ), IORStack( 1.0 ), IORStack( 1.0 )
 	};
-	IORStack* laneTargets[SampledWavelengths::N];
-	Scalar laneNms[SampledWavelengths::N];
-	unsigned int activeLaneIndices[SampledWavelengths::N];
-	unsigned int numActiveLanes = 0;
-	laneTargets[numActiveLanes] = &laneStacks[0];
-	laneNms[numActiveLanes] = swl.HeroLambda();
-	activeLaneIndices[numActiveLanes] = 0;
-	++numActiveLanes;
-	for( unsigned int w = 1; w < SampledWavelengths::N; ++w ) {
-		if( swl.terminated[w] ) continue;
-		laneTargets[numActiveLanes] = &laneStacks[w];
-		laneNms[numActiveLanes] = swl.lambda[w];
-		activeLaneIndices[numActiveLanes] = w;
-		++numActiveLanes;
-	}
-	IORStackSeeding::SeedLanesFromPoint(
-		laneTargets, numActiveLanes, laneNms, cameraRay.origin, scene );
 	IORStack& iorStack = laneStacks[0];
-
-	bool dispersiveContainment = false;
-	for( unsigned int j = 1; j < numActiveLanes; ++j ) {
-		if( !laneStacks[activeLaneIndices[j]].SameInterfaces( iorStack ) ) {
-			dispersiveContainment = true;
-			break;
-		}
-	}
-	if( dispersiveContainment ) {
+	const IORStack* preseededOriginLanes = laneStacks;
+	if( !IORStackSeeding::SceneHasTrackableMedia( scene ) ) {
 		for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
-			if( !swl.terminated[w] ) result[w] = IntegrateRayNM( rc, rast, cameraRay,
-				swl.lambda[w], scene, caster, sampler, pRadianceMap, pAOV );
+			laneStacks[w].SetMediumProbeScene( &scene );
 		}
-		return;
+	} else {
+		IORStack* laneTargets[SampledWavelengths::N];
+		Scalar laneNms[SampledWavelengths::N];
+		unsigned int activeLaneIndices[SampledWavelengths::N];
+		unsigned int numActiveLanes = 0;
+		laneTargets[numActiveLanes] = &laneStacks[0];
+		laneNms[numActiveLanes] = swl.HeroLambda();
+		activeLaneIndices[numActiveLanes] = 0;
+		++numActiveLanes;
+		for( unsigned int w = 1; w < SampledWavelengths::N; ++w ) {
+			if( swl.terminated[w] ) continue;
+			laneTargets[numActiveLanes] = &laneStacks[w];
+			laneNms[numActiveLanes] = swl.lambda[w];
+			activeLaneIndices[numActiveLanes] = w;
+			++numActiveLanes;
+		}
+		IORStackSeeding::SeedLanesFromPoint(
+			laneTargets, numActiveLanes, laneNms, cameraRay.origin, scene );
+
+		bool dispersiveContainment = false;
+		for( unsigned int j = 1; j < numActiveLanes; ++j ) {
+			if( !laneStacks[activeLaneIndices[j]].SameInterfaces( iorStack ) ) {
+				dispersiveContainment = true;
+				break;
+			}
+		}
+		if( dispersiveContainment ) {
+			for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
+				if( !swl.terminated[w] ) result[w] = IntegrateRayNM( rc, rast, cameraRay,
+					swl.lambda[w], scene, caster, sampler, pRadianceMap, pAOV );
+			}
+			return;
+		}
+		if( IORStackSeeding::StackHasOpenSheet( iorStack ) ) {
+			preseededOriginLanes = nullptr;
+		}
 	}
-	const IORStack* preseededOriginLanes =
-		IORStackSeeding::StackHasOpenSheet( iorStack ) ? nullptr : laneStacks;
 
 	sampler.StartStream( 16 );
 

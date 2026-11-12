@@ -459,7 +459,7 @@ namespace
 	//! (the operand's own entry-hit payload already sitting in `dst`, with
 	//! wire-edge info cleared).
 	bool AdoptCsgExitFacePayloadViaProbe(
-		RayIntersectionGeometric& dst,
+		RayIntersection& dstRi,
 		IObjectPriv* operand,
 		Scalar exitRangeCsgLocal,
 		const Vector3& exitGeomNormalCsgLocal )
@@ -470,6 +470,7 @@ namespace
 			return false;
 		}
 
+		RayIntersectionGeometric& dst = dstRi.geometric;
 		const Vector3 dir = dst.ray.Dir();
 		const Point3 ptExitLocal = dst.ray.PointAtLength( exitRangeCsgLocal );
 
@@ -768,6 +769,7 @@ namespace
 		}
 
 		AdoptCsgSurfacePayload( dst, probe.geometric );
+		AdoptCsgSurfaceBindings( dstRi, probe );
 
 		// RE-PAIR the adopted normal-derivative fields with the normal field
 		// the CALLER is actually reporting (the geometry-shading-signals arc,
@@ -963,18 +965,81 @@ namespace
 	//! unit has not run out (the walks report running out explicitly).
 	static const unsigned int kMaxOpenSheetWalk = 4096;
 
+	//! Test hook (`CSGObject::SetAdvanceBudgetForTesting`): 0 = the
+	//! default per-query re-cast allowance `kMaxOpenSheetWalk`.
+	std::atomic<unsigned int> s_advanceBudgetOverride{ 0 };
+
+	unsigned int QueryAdvanceBudget()
+	{
+		const unsigned int b = s_advanceBudgetOverride.load( std::memory_order_relaxed );
+		return b ? b : kMaxOpenSheetWalk;
+	}
+
+	//! DL-627 review: shared per-top-level-query budgets so nested CSG trees
+	//! cannot compound `O(kMaxOpenSheetWalk^depth)` advance re-casts or
+	//! `LeafCrossingParity` casts across recursive `CSGObject::IntersectRay*`
+	//! frames.  Re-entrant nested CSG calls share the outermost frame's
+	//! `advanceBudget` and `parityRayBudget`.
+	struct ScopedCsgQueryBudget
+	{
+		unsigned int ownAdvanceBudget;
+		unsigned int ownParityRayBudget;
+		unsigned int* pAdvanceBudget;
+		unsigned int* pParityRayBudget;
+		bool isRoot;
+
+		static ScopedCsgQueryBudget*& ActiveSlot()
+		{
+			static thread_local ScopedCsgQueryBudget* tl_active = 0;
+			return tl_active;
+		}
+
+		ScopedCsgQueryBudget() :
+			ownAdvanceBudget( QueryAdvanceBudget() ),
+			ownParityRayBudget( kMaxOpenSheetWalk * 4 ),
+			pAdvanceBudget( &ownAdvanceBudget ),
+			pParityRayBudget( &ownParityRayBudget ),
+			isRoot( false )
+		{
+			ScopedCsgQueryBudget*& slot = ActiveSlot();
+			if( !slot ) {
+				slot = this;
+				isRoot = true;
+			} else {
+				pAdvanceBudget = slot->pAdvanceBudget;
+				pParityRayBudget = slot->pParityRayBudget;
+			}
+		}
+
+		~ScopedCsgQueryBudget()
+		{
+			if( isRoot ) {
+				ActiveSlot() = 0;
+			}
+		}
+	};
+
 	//! Crossing parity of one closed surface from `pt` to infinity along
 	//! `dir`: +1 odd (inside), -1 even (outside), 0 undecided.  Every
 	//! crossing is found by re-casting just past the previous one.  A hit
 	//! at or beyond half of RISE_INFINITY (the sentinel a geometry without
 	//! exit information leaves in range / range2) is NOT a crossing, and a
 	//! re-cast origin that leaves the finite range, or a walk past
-	//! `kMaxOpenSheetWalk` crossings, is undecided rather than guessed.
+	//! `kMaxOpenSheetWalk` crossings (or exhausting the top-level CSG query's
+	//! `parityRayBudget`), is undecided rather than guessed.
 	int LeafCrossingParity( const IObjectPriv* pSolid, const Point3& pt, const Vector3& dir, const Scalar scale )
 	{
+		unsigned int* const pParityBudget =
+			ScopedCsgQueryBudget::ActiveSlot() ? ScopedCsgQueryBudget::ActiveSlot()->pParityRayBudget : 0;
 		Ray probeRay( pt, dir );
 		unsigned int crossings = 0;
 		for( unsigned int k = 0; k < kMaxOpenSheetWalk; ++k ) {
+			if( pParityBudget ) {
+				if( *pParityBudget == 0 ) {
+					return 0;
+				}
+				--*pParityBudget;
+			}
 			RayIntersection probe( probeRay, nullRasterizerState );
 			pSolid->IntersectRay( probe, RISE_INFINITY, true, true, false );
 			const Scalar t = probe.geometric.range;
@@ -1306,6 +1371,8 @@ namespace
 
 		void ApplyToOperandHit( RayIntersection& dst ) const
 		{
+			const RayIntersectionGeometric cleanGeom( dst.geometric.ray, dst.geometric.rast );
+			AdoptCsgSurfacePayload( dst.geometric, cleanGeom );
 			dst.geometric.bHit = bHit;
 			dst.hasBoundaryRange = hasBoundaryRange;
 			dst.hasBoundaryRange2 = hasBoundaryRange2;
@@ -1318,6 +1385,12 @@ namespace
 			dst.geometric.vGeomNormal = vGeomNormal;
 			dst.geometric.vNormal2 = vNormal2;
 			dst.geometric.vGeomNormal2 = vGeomNormal2;
+			if( bHit ) {
+				dst.geometric.ptIntersection = dst.geometric.ray.PointAtLength( range );
+				if( range2 > 0 && range2 < Scalar( 0.5 ) * RISE_INFINITY ) {
+					dst.geometric.ptExit = dst.geometric.ray.PointAtLength( range2 );
+				}
+			}
 			dst.pMaterial = pMaterial;
 			dst.pShader = pShader;
 			dst.pModifier = pModifier;
@@ -1362,11 +1435,12 @@ namespace
 	//!
 	//! Callers skip it for a single-lobe operand (`kSingleLobeA/B`: a
 	//! convex analytic leaf, for which a re-cast past its only interval
-	//! can only miss).  `budget` is the query's TOTAL re-cast allowance,
-	//! shared with the caller's own loop, so one query costs at most
-	//! `kMaxOpenSheetWalk` re-casts however the two loops nest.  Returns
-	//! TRUE when the allowance ran out while the walk still had to go on
-	//! (the operand then holds an intermediate interval; see the
+	//! can only miss).  `budget` is the top-level CSG query's TOTAL re-cast
+	//! allowance (`ScopedCsgQueryBudget`), shared across the caller's own
+	//! loop AND any nested CSG child frames, so one top-level query costs at
+	//! most `QueryAdvanceBudget()` advance re-casts regardless of tree depth.
+	//! Returns TRUE when the allowance ran out while the walk still had to go
+	//! on (the operand then holds an intermediate interval; see the
 	//! exhaustion rule at `kMaxOpenSheetWalk`), FALSE when it finished --
 	//! including on its last unit.
 	bool AdvanceOperandPast(
@@ -1456,21 +1530,16 @@ namespace
 		const RasterizerState& rast,
 		const OperandFacts& facts,
 		unsigned int& budget,
-		const RayIntersection& startInsideHit,
+		RayIntersection& scratchInsideHit,
 		NextLobeSummary& outSummary )
 	{
-		RayIntersection cur( localRay, rast );
-		cur.geometric.bHit = startInsideHit.geometric.bHit;
-		cur.geometric.range = startInsideHit.geometric.range;
-		cur.geometric.range2 = startInsideHit.geometric.range;
-		cur.hasBoundaryRange = startInsideHit.hasBoundaryRange;
-		cur.boundaryRange = startInsideHit.boundaryRange;
-		cur.hasBoundaryRange2 = startInsideHit.hasBoundaryRange;
-		cur.boundaryRange2 = startInsideHit.boundaryRange;
+		scratchInsideHit.geometric.range2 = scratchInsideHit.geometric.range;
+		scratchInsideHit.hasBoundaryRange2 = scratchInsideHit.hasBoundaryRange;
+		scratchInsideHit.boundaryRange2 = scratchInsideHit.boundaryRange;
 		const bool ranOut = AdvanceOperandPast(
 			pOperand, localRay, dHowFar2, scale, targetRange,
-			castInputs, rast, facts, budget, cur );
-		outSummary = NextLobeSummary::FromHit( cur );
+			castInputs, rast, facts, budget, scratchInsideHit );
+		outSummary = NextLobeSummary::FromHit( scratchInsideHit );
 		return ranOut;
 	}
 
@@ -1543,16 +1612,6 @@ namespace
 		}
 		outNextLobe = NextLobeSummary::FromHit( riNext );
 		return false;
-	}
-
-	//! Test hook (`CSGObject::SetAdvanceBudgetForTesting`): 0 = the
-	//! default per-query re-cast allowance `kMaxOpenSheetWalk`.
-	std::atomic<unsigned int> s_advanceBudgetOverride{ 0 };
-
-	unsigned int QueryAdvanceBudget()
-	{
-		const unsigned int b = s_advanceBudgetOverride.load( std::memory_order_relaxed );
-		return b ? b : kMaxOpenSheetWalk;
 	}
 
 	//! DL-621 review: an operand the ray STARTS inside reports its exit as
@@ -2268,12 +2327,13 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	};
 	const OperandFacts factsA = factsFromBits( true );
 	const OperandFacts factsB = factsFromBits( false );
+	// Shared top-level query budget across all nested CSG frames (`DL-627` review).
+	ScopedCsgQueryBudget queryBudget;
+	unsigned int& advanceBudget = *queryBudget.pAdvanceBudget;
 	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
 	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
 	RecoverContainedOperand( pObjectA, riObjA, factsA );
 	RecoverContainedOperand( pObjectB, riObjB, factsB );
-	// One re-cast allowance for every `AdvanceOperandPast` this query makes.
-	unsigned int advanceBudget = QueryAdvanceBudget();
 
 	// DL-617: a sheet-trimming composite (see ComputeCertificateBits)
 	// treats its sheet operand as a zero-thickness surface, not the
@@ -2382,7 +2442,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// via a reverse probe (P2-e); on a probe miss, fall back
 					// to B's entry-hit payload with wire-edge info cleared
 					// (it belongs to the wrong face in that fallback).
-					if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2, riObjB.geometric.vGeomNormal2 ) ) {
+					if( !AdoptCsgExitFacePayloadViaProbe( ri, pObjectB, riObjB.geometric.range2, riObjB.geometric.vGeomNormal2 ) ) {
 						ri.geometric.bHasWireEdgeInfo = false;
 					}
 				} else {
@@ -2410,7 +2470,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// via a reverse probe (P2-e); on a probe miss, fall back
 					// to A's entry-hit payload with wire-edge info cleared
 					// (it belongs to the wrong face in that fallback).
-					if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectA, riObjA.geometric.range2, riObjA.geometric.vGeomNormal2 ) ) {
+					if( !AdoptCsgExitFacePayloadViaProbe( ri, pObjectA, riObjA.geometric.range2, riObjA.geometric.vGeomNormal2 ) ) {
 						ri.geometric.bHasWireEdgeInfo = false;
 					}
 				} else {
@@ -2829,6 +2889,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					if( !( certBits & kSingleLobeB ) ) {
 						// Only TIGHTENS an established interval: on running out
 						// it keeps the untightened end (the exhaustion rule).
+						const bool bOrigHasBoundary = riObjB.hasBoundaryRange;
 						NextLobeSummary clampB = nextB;
 						bool clampRanOut = false;
 						if( !clampB.valid ) {
@@ -2838,7 +2899,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						}
 						if( !clampRanOut && clampB.bHit ) {
 							const Scalar nbEntry = EntryCoord( clampB );
-							const Scalar tolLo = coincTol( bExit, clampB.hasBoundaryRange, riObjB.hasBoundaryRange );
+							const Scalar tolLo = coincTol( bExit, clampB.hasBoundaryRange, bOrigHasBoundary );
 							const Scalar tolHi = coincTol( aExit, clampB.hasBoundaryRange, riObjA.hasBoundaryRange );
 							if( nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
 								ri.geometric.range2 = clampB.range;
@@ -2976,6 +3037,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					if( !( certBits & kSingleLobeB ) ) {
 						// Only TIGHTENS an established interval: on running out
 						// it keeps the untightened end (the exhaustion rule).
+						const bool bOrigHasBoundary = riObjB.hasBoundaryRange;
 						NextLobeSummary clampB = nextB;
 						bool clampRanOut = false;
 						if( !clampB.valid ) {
@@ -2985,7 +3047,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						}
 						if( !clampRanOut && clampB.bHit ) {
 							const Scalar nbEntry = EntryCoord( clampB );
-							const Scalar tolLo = coincTol( bExit, clampB.hasBoundaryRange, riObjB.hasBoundaryRange );
+							const Scalar tolLo = coincTol( bExit, clampB.hasBoundaryRange, bOrigHasBoundary );
 							const Scalar tolHi = coincTol( aExit, clampB.hasBoundaryRange, riObjA.hasBoundaryRange2 );
 							if( nbEntry > bExit + tolLo && nbEntry + tolHi < aExit ) {
 								ri.geometric.range2 = clampB.range;
@@ -3003,12 +3065,14 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				// entry, advance a multi-lobe A past any lobe wholly covered
 				// by B, and probe a multi-lobe B once past a carving exit so
 				// touching B lobes continue and a third B lobe clamps range2.
+				bool bSummaryApplied = false;
 				if( bLeftFromInside && nextB.valid ) {
 					const Scalar bEx = ExitCoord( riObjB );
 					const Scalar tol = coincTol( bEx, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
 					if( bEx <= EntryCoord( riObjA ) + tol ) {
 						nextB.ApplyToOperandHit( riObjB );
 						nextB.valid = false;
+						bSummaryApplied = true;
 					}
 				}
 				NextLobeSummary clampNextB;
@@ -3024,6 +3088,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						const Scalar aEntry = EntryCoord( riObjA );
 						const Scalar tolBA = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
 						if( ExitCoord( riObjB ) <= aEntry + tolBA ) {
+							bSummaryApplied = false;
 							if( AdvanceOperandPast( pObjectB, ri.geometric.ray, dHowFar2, subScale,
 									aEntry + tolBA, &ri.geometric, ri.geometric.rast,
 									factsB, advanceBudget, riObjB ) ) {
@@ -3060,11 +3125,23 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 							}
 							continue;
 						}
-						if( !( certBits & kSingleLobeB ) && advanceBudget > 0 ) {
-							if( ProbeOutsideExitOrNextLobe( pObjectB, ri.geometric.ray, dHowFar2, subScale,
-									&ri.geometric, ri.geometric.rast,
-									factsB, advanceBudget, riObjB, clampNextB ) ) {
-								continue;
+						if( !( certBits & kSingleLobeB ) &&
+							riObjB.geometric.range2 > 0 &&
+							riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY ) {
+							const Scalar tStepB = riObjB.geometric.range2 + OpenSheetRecastStep( riObjB.geometric.range2, subScale );
+							if( tStepB < dHowFar2 ) {
+								if( advanceBudget == 0 ) {
+									// Exhaustion rule: cannot verify whether a
+									// touching continuation lobe of B erases
+									// this candidate surface, so drop it.
+									dropUnconfirmed = true;
+									break;
+								}
+								if( ProbeOutsideExitOrNextLobe( pObjectB, ri.geometric.ray, dHowFar2, subScale,
+										&ri.geometric, ri.geometric.rast,
+										factsB, advanceBudget, riObjB, clampNextB ) ) {
+									continue;
+								}
 							}
 						}
 					}
@@ -3113,7 +3190,24 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 							}
 							ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 							ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
-							if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2, riObjB.geometric.vGeomNormal2 ) ) {
+							if( !AdoptCsgExitFacePayloadViaProbe( ri, pObjectB, riObjB.geometric.range2, riObjB.geometric.vGeomNormal2 ) ) {
+								if( bSummaryApplied &&
+									riObjB.geometric.range > Scalar( 0 ) &&
+									riObjB.geometric.range < Scalar( 0.5 ) * RISE_INFINITY ) {
+									const Scalar tEntryProbe = std::max( Scalar( 0 ),
+										riObjB.geometric.range - OpenSheetRecastStep( riObjB.geometric.range, subScale ) );
+									Ray entryProbeRay( ri.geometric.ray );
+									entryProbeRay.origin = ri.geometric.ray.PointAtLength( tEntryProbe );
+									RayIntersection entryProbe( entryProbeRay, ri.geometric.rast );
+									entryProbe.geometric.PropagateCastInputs( ri.geometric );
+									const Scalar maxEntryProbe = ( riObjB.geometric.range - tEntryProbe ) +
+										Scalar( 4 ) * OpenSheetRecastStep( riObjB.geometric.range, subScale );
+									pObjectB->IntersectRay( entryProbe, maxEntryProbe, true, true, false );
+									if( entryProbe.geometric.bHit ) {
+										AdoptCsgSurfacePayload( ri.geometric, entryProbe.geometric );
+										AdoptCsgSurfaceBindings( ri, entryProbe );
+									}
+								}
 								ri.geometric.bHasWireEdgeInfo = false;
 							}
 							if( clampNextB.valid && clampNextB.bHit ) {
@@ -3624,11 +3718,12 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	};
 	const OperandFacts factsA = factsFromBits( true );
 	const OperandFacts factsB = factsFromBits( false );
+	ScopedCsgQueryBudget queryBudget;
+	unsigned int& advanceBudget = *queryBudget.pAdvanceBudget;
 	pObjectA->IntersectRay( riObjA, dHowFar2, true, true, true );
 	pObjectB->IntersectRay( riObjB, dHowFar2, true, true, true );
 	RecoverContainedOperand( pObjectA, riObjA, factsA );
 	RecoverContainedOperand( pObjectB, riObjB, factsB );
-	unsigned int advanceBudget = QueryAdvanceBudget();
 
 	// DL-617: sheet-trimming composite -- see IntersectRay.
 	if( certBits & ( kTrimSheetA | kTrimSheetB ) )
@@ -3969,11 +4064,20 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 							}
 							continue;
 						}
-						if( !( certBits & kSingleLobeB ) && advanceBudget > 0 ) {
-							if( ProbeOutsideExitOrNextLobe( pObjectB, orig, dHowFar2, subScale,
-									0, nullRasterizerState,
-									factsB, advanceBudget, riObjB, clampNextB ) ) {
-								continue;
+						if( !( certBits & kSingleLobeB ) &&
+							riObjB.geometric.range2 > 0 &&
+							riObjB.geometric.range2 < Scalar( 0.5 ) * RISE_INFINITY ) {
+							const Scalar tStepB = riObjB.geometric.range2 + OpenSheetRecastStep( riObjB.geometric.range2, subScale );
+							if( tStepB < dHowFar2 ) {
+								if( advanceBudget == 0 ) {
+									dropUnconfirmed = true;
+									break;
+								}
+								if( ProbeOutsideExitOrNextLobe( pObjectB, orig, dHowFar2, subScale,
+										0, nullRasterizerState,
+										factsB, advanceBudget, riObjB, clampNextB ) ) {
+									continue;
+								}
 							}
 						}
 					}

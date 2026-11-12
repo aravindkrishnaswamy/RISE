@@ -37,16 +37,26 @@ namespace RISE
 		{
 			// PBRT-v4 RGBFilm-style storage: per-pixel accumulator is in
 			// CIE XYZ tristimulus (a linear color space, no gamut),
-			// converted to RISEPel ROMM RGB exactly once at Resolve.
-			// Eliminates the per-sample chromaticity gamut clip
-			// (MoveXYZIntoROMMRGBGamut, fired by the implicit
-			// RISEPel(XYZPel) conversion) that systematically suppressed
-			// out-of-gamut spectral-locus contributions toward white.
-			// For RGB rasterizers: implicit XYZPel(const ROMMRGBPel&)
-			// at write is a lossless 3x3 matrix multiply (no clip);
-			// implicit RISEPel(const XYZPel&) at read does fire the
-			// chromaticity clip, but for in-gamut RGB samples the clip
-			// is a no-op, so RGB rasterizers behave identically.
+			// converted to RISEPel (Rec.709 linear RGB) at Resolve / live
+			// display time.  Eliminates the per-sample chromaticity gamut
+			// clip (MoveXYZIntoROMMRGBGamut, fired by the implicit
+			// ROMMRGBPel(XYZPel) path on legacy ROMM builds) that
+			// systematically suppressed out-of-gamut spectral-locus
+			// contributions toward white.
+			//
+			// DL-629: RGB Pel rasterizers must NOT seed a pass's RISEPel
+			// accumulator by reading `RISEPel(colorSum)` on passes k >= 1
+			// and writing `colorSum = colAccrued` back at pass end:
+			// `mxXYZtoRec709 * mxRec709toXYZ` differs from identity by
+			// ~0.73 ppm (rounded 4-decimal Rec.709 primaries), which
+			// compounds linearly across N progressive passes.  Instead,
+			// Pel rasterizers call `LoadPelPassInit()` (zero on passes
+			// k >= 1) to accumulate only the current pass's linear RGB
+			// delta, then call `StorePelPassDelta(passDelta)` to add
+			// `XYZPel(passDelta)` into `colorSum` and return the
+			// cumulative unnormalized `RISEPel` for live tile display
+			// without ever writing an XYZ->RGB conversion back into
+			// `colorSum`.
 			XYZPel		colorSum;		///< Weighted XYZ accumulator (linear, no clip)
 			Scalar		weightSum;		///< Weight accumulator (for averaging)
 			Scalar		alphaSum;		///< Alpha accumulator
@@ -70,8 +80,20 @@ namespace RISE
 			  converged( false )
 			{}
 
+			/// Returns `(0,0,0)` on every progressive pass so the caller
+			/// accumulates only the current pass's `RISEPel` delta.
+			/// Out-of-line by-value HFA ABI preserves register allocation
+			/// in single-pass Pel loops.
 			RISEPel LoadPelPassInit() const;
-			void StorePelPassDelta( RISEPel passDelta );
+
+			/// Adds `passDelta` into `colorSum` (assigning directly when
+			/// `sampleIndex == 0`, adding `XYZPel(passDelta)` on subsequent
+			/// passes so `XYZ->RGB` rounding never feeds back into
+			/// `colorSum`) and returns the cumulative unnormalized `RISEPel`
+			/// (`passDelta` on pass 0, `RISEPel(colorSum)` on passes k >= 1)
+			/// so dividing by cumulative `alphas` yields true luminance for
+			/// live per-tile previews and converged-pixel skips.
+			RISEPel StorePelPassDelta( RISEPel passDelta );
 		};
 
 		class ProgressiveFilm

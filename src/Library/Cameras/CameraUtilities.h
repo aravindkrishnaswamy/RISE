@@ -376,11 +376,15 @@ namespace RISE
 			Point2& rasterPoint						///< [out] Resulting raster coordinates
 			);
 
-		/// True if the camera emits importance from a region of
-		/// non-zero AREA (a thin lens with a real aperture), as opposed
-		/// to a single point.  Bidirectional integrators use this to
-		/// decide whether the camera path vertex sits at the sampled
-		/// ray origin (finite aperture) or at `GetLocation()`.
+		/// True if the camera samples an entrance aperture of non-zero
+		/// AREA on a single lens plane (e.g. a thin-lens camera with a
+		/// real aperture), as opposed to a pinhole (`t == 1` lens-area
+		/// sampling in `SampleAperture` / `PdfDirection`).  Note that
+		/// bidirectional integrators check `HasFiniteAperture(cam) ||
+		/// IsDeltaDirection(cam)` when placing `eyeVerts[0].position` at
+		/// `cameraRay.origin`, because orthographic cameras have a zero
+		/// entrance aperture (`HasFiniteAperture == false`) yet vary
+		/// `cameraRay.origin` across the image plane (`IsDeltaDirection == true`).
 		///
 		/// It does NOT change how MIS treats the camera vertex: the
 		/// aperture-positional density is the same under every

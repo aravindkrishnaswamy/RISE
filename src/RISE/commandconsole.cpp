@@ -1027,6 +1027,11 @@ int main( int argc, char** argv )
 	// (LoadFromFile), so it does not use the `pJob` created above -- release
 	// that here and hand control to the stdio loop, which owns its lifetime.
 	// EOF on stdin -> clean exit 0.
+	if( cliOverrides.HasAnyOverride() && ( cliAgentStdio || cliAgentHttp || cliAgentEval ) ) {
+		std::cerr << "WARNING: --width / --height / --pixel-ar / --denoise / --no-denoise / --camera "
+		             "have no effect with --agent-stdio / --mcp / --agent-http / --agent-eval.\n";
+	}
+
 	// Secure-MCP slice 1: `--mcp` (only meaningful alongside `--agent-stdio`)
 	// swaps the raw-JSON-RPC loop for the MCP-envelope loop over the SAME
 	// stdin/stdout transport -- same session construction, same stdout

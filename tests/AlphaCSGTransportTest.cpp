@@ -5,9 +5,8 @@
 
 inline double Render( const std::string& sceneText, const char* tag )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/alpha_intersection_%s_%d.RISEscene",
-		tag, static_cast<int>( ::getpid() ) );
+	const std::string pathStr = AlphaTempScenePath( tag );
+	const char* path = pathStr.c_str();
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return -1.0;
