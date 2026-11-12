@@ -56,6 +56,7 @@
 #include "../src/Library/SceneEditor/ReferenceGraph.h"
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Parsers/IAsciiChunkParser.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -89,7 +90,7 @@ namespace
 	std::string TempPath( const char* name )
 	{
 		const char* base = std::getenv( "TMPDIR" );
-		std::string dir = base ? base : "/tmp";
+		std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir.back() != '/' ) dir += '/';
 		return dir + name;
 	}

@@ -80,7 +80,14 @@ int main() {
     failure(run(scene,"not_a_command\nquit\n"),"unknown command then quit remains failure");
     failure(run(scene,"not_a_command"),"unterminated failing command at EOF remains failure");
     failure(run({},"render\nquit\n"),"render without camera/rasterizer remains failure");
-    failure(run({},"load "+broken.generic_string()+"\nquit\n"),"interactive load failure remains failure");
+    const fs::path spacedDir = dir / "sub dir";
+    fs::create_directories(spacedDir);
+    const fs::path spacedScene = spacedDir / "tiny.RISEscene";
+    const fs::path spacedBroken = spacedDir / "broken.RISEscene";
+    Write(spacedScene, tiny);
+    Write(spacedBroken, "RISE ASCII SCENE 7\nnot_a_chunk\n{\n}\n");
+    success(run({},"load \""+spacedScene.generic_string()+"\"\nquit\n"),"interactive quoted load with spaces succeeds");
+    failure(run({},"load \""+spacedBroken.generic_string()+"\"\nquit\n"),"interactive load failure remains failure");
     failure(run(scene,std::string(9000,'x')+"\nquit\n"),"overlong command input returns failure");
     fs::remove_all(dir);
     std::cout<<pass<<" passed, "<<fail<<" failed\n";

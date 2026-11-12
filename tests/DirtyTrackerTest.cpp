@@ -36,6 +36,7 @@
 #include "../src/Library/SceneEditor/DirtyTracker.h"
 #include "../src/Library/SceneEditor/SceneEdit.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -60,9 +61,9 @@ static void Check( bool cond, const char* msg )
 
 static IJobPriv* LoadTwoObjectScene( const char* tag )
 {
-    char path[512];
+    char path[1024];
     std::snprintf( path, sizeof(path),
-        "/tmp/dirty_tracker_test_%s_%d.RISEscene", tag, (int)::getpid() );
+        "%s/dirty_tracker_test_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, (int)::getpid() );
     std::ofstream ofs( path );
     if( !ofs.is_open() ) return nullptr;
     ofs << "RISE ASCII SCENE 7\n"

@@ -198,7 +198,7 @@ In `RefreshLegacySeedFallbackNM(chain, nm, start, scene, starting)` (`src/Librar
 ---
 
 #### 3.2.3 Gap (1) — Constructive Free-Space Detour Certificate Around Submerged Opaque Bodies (`HasFreeSpaceDetourToSheet` in `IORStackSeeding.h`)
-*(Section 5.4: Segment 1 now blocks on every surface with a side, and all detour rays of one seed share a 256-ray budget.)*
+*(Sections 5.4 & 5.8: Segment 1 blocks on every surface with a side, and each group or single-sheet certificate spends at most `kGroupDetourRayBudget = 1024` scene rays beyond its first column walk.)*
 When `OpenSheetNormalRayReaches` (`allowDetour == true`) encounters an opaque obstacle `B = ri.pObject` (`kMembershipBlock`) at $t > \text{selfTol}$ that is not `pSeedObject`:
 1. **Immediate Rejection Conditions:**
    - If `B` is a non-open surface (`!ri.geometric.bProvablyNoInterior && !ri.geometric.bOpenSheet`) and `ri.geometric.TrueGeomFacing(normal) > 0` (an EXIT face of a closed solid), `pos` is inside `B`: return `false` immediately.
@@ -467,14 +467,19 @@ walk-history exception.
   are refused -- only this group's detour candidates, never a sheet its
   shared normal ray reached directly -- deterministically in (point, group),
   and since seeds and exit resolutions both decide through
-  `ConfirmOpenSheetsAt` they refuse alike (A48, budget forced to 60: a
+  `ConfirmOpenSheetsAt` they refuse alike (A48, budget forced to 10: a
   partial seed, and an exit resolution at the same point keeping exactly
   the seeded panes).  A46, 20 glass shelves each carrying an opaque vase
   over the camera's column (every shelf its own box): **287** scene rays per
   seed, all 20 shelves seeded (a 4-box cap, tried first, read 109 rays but
   refused 15 shelves, so it was replaced by the ray budget).  Ungrouped
-  sheets (no co-normal partner) still run one single-sheet certificate each
-  (at most 17 walks of `MaxSceneWalkSteps` steps).
+  sheets (no co-normal partner) still run one single-sheet certificate each:
+  a planar ungrouped sheet takes at most 2 uncharged walks (`sheet.normal`
+  plus its first `vertProbe` column scan) plus up to `kGroupDetourRayBudget`
+  detour rays, while a non-planar ungrouped sheet (`auxNormals`, §5.8) tests
+  at most `1 + kMaxAuxNormals = 33` normal rays plus 1 uncharged `vertProbe`
+  column scan (`columnWalkUsed`) and shares a single `kGroupDetourRayBudget`
+  across all subsequent `vertProbe` column steps and waypoint walks (`A62`, `A64a`).
 - Stack depth (review round 3, P3-2): `SeedFromPointImpl`'s ~12.8 KB frame
   (six 64-entry probe tables) exists only while a seed runs and is a LEAF:
   every caller (camera and light roots, photon emission, HWSS lane
@@ -641,24 +646,30 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    transform and world AABB so corner/vertex/radius edits that leave both the
    transform and world AABB unchanged still re-describe the sheet without
    flushing `OpenSheetCatalogEpoch`.
-2. **Declaration-order invariance, coplanar sibling confirmation & detour ray budgets (`A52a`, `A52b`, `A56`, `A60a`, `A60b`, `A61a`–`A61c`, `A62`):**
-   `SheetGeomKeyLess` orders `OpenSheetsOf`, `OpenSheetNormalGroup` members,
-   `HasFreeSpaceDetourToSheets` column reach (`Snapshot::columnDist`, `SameBox`,
-   and `opaqueObjs` parity tracking), and same-material sibling deduplication by
-   pure geometric keys (world AABB, normal, and `GetFinalTransformMatrix()`
-   tie-breaking when two tilted panes share identical AABB and normal; exact
-   shared-geometry identity uses `!SheetGeomKeyLess(a,b) && !SheetGeomKeyLess(b,a)`
-   rather than hash equality), while `ConfirmOpenSheetsAt` breaks equal-distance
-   confirmation ties via its inline `hitHeight` / `entryCtx` / `SheetGeomKeyLess`
-   comparator (`A56`), passes exact ray-hit distances `aloneDist` from
-   `CheckSheetAloneAlongRay` into `ConfirmSharedNormalRay` (`activeDists`,
-   `A61c`), confirms coplanar siblings within `2 * kSeedEps` via
-   `ProbeCoplanarSheetBackAt` (`PointNearSheetBounds`) across
-   `ConfirmSharedNormalRay`, `HasFreeSpaceDetourToSheets` (column + Segment-2
-   walks, `A61a`), `HasFreeSpaceDetourToSheet` (column walk), and
-   `OpenSheetNormalRayReaches` (`A61b`), and enforces a shared per-step
-   `GroupDetourRayBudget()` counter across `sheet.normal` + `auxNormals` in
-   `OpenSheetHoldsPoint` (`A62`).
+2. **Declaration-order / TLAS-order invariance, coplanar ties & detour ray budgets (`A52a`, `A52b`, `A56`, `A60a`, `A60b`, `A61a`–`A61c`, `A62`, `A63a`, `A63b`, `A64a`, `A64b`):**
+   `SheetGeomKeyLess` orders `OpenSheetsOf`, `OpenSheetCatalog::closedTrackable`,
+   `OpenSheetNormalGroup` members, `SeedFromPointImpl`'s equal-`firstExitStep`
+   `ordered` ties, `HasFreeSpaceDetourToSheets` column reach (`Snapshot::columnDist`,
+   `SameBox`, and `opaqueObjs` parity tracking), and same-material sibling
+   deduplication by pure geometric keys (world AABB, normal, and
+   `GetFinalTransformMatrix()` tie-breaking when two tilted panes share identical
+   AABB and normal; exact shared-geometry identity uses
+   `!SheetGeomKeyLess(a,b) && !SheetGeomKeyLess(b,a)` rather than hash equality),
+   while `ConfirmOpenSheetsAt` caches per-confirmation group pose validity once in
+   $O(N)$, breaks equal-distance confirmation ties via its inline `hitHeight` /
+   `entryCtx` / `SheetGeomKeyLess` comparator (`A56`), passes exact scalar ray-hit
+   distances (`aloneDist` / `activeDists` / `sheetColDists`) from
+   `CheckSheetAloneAlongRay` into `ConfirmSharedNormalRay`, `HasFreeSpaceDetourToSheets`,
+   `OpenSheetNormalRayReaches`, and `HasFreeSpaceDetourToSheet` (`A61c`, `A64b` —
+   0 coplanar object ray casts on 40 parallel $45^\circ$-tilted panes), confirms
+   coplanar siblings, flush closed-dielectric / open-sheet ties (`TallyProbe`
+   `closedTrackable` window + `RecordCoplanarOrderedExitsAt`, `A63a`), and zero-gap
+   opposing/blocking open sheets (`ProbeCoplanarBlockingOpenSheetAt` using sorted
+   `OpenSheetNormalGroup::PlaneBand` interval binary search + cached `ce.box`,
+   `A63b`) across direct and detour walks (`A61a`–`A61b`), and enforces a shared
+   per-step `GroupDetourRayBudget()` counter plus `columnWalkUsed` (charging every
+   `vertProbe` column walk after the first normal) across `sheet.normal` +
+   `auxNormals` in `OpenSheetHoldsPoint` (`A62`, `A64a`).
 3. **Multi-fold curved/pleated sheet crossings (`A53`, `A57a`–`A57c`):** When a ray
    crosses an inner fold's back face on a non-planar certified open sheet while
    an overhanging outer fold of that same sheet still encloses
@@ -681,8 +692,8 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    normal prisms of a planar sheet, point-based `SeedFromPoint` ==
    `ResolveUnpushedExit` parity (§5.2, `B5`: PT/BDPT `0.9969 +/- 0.0103` vs
    walk-history `0.7905`) remains the deliberate reciprocal convention.
-   `OpenSheetHalfSpaceSeedingTest`: **226 passed, 0 failed** (`211/0` Part A +
-   `15/0` Part B; `red_prove.sh` RED -> GREEN on `[DL-626-SUMMARY]`).
+   `OpenSheetHalfSpaceSeedingTest`: **239 passed, 0 failed** (`224/0` Part A +
+   `15/0` Part B; `red_prove.sh` RED -> GREEN on `DL-626-SUMMARY`).
 
 **`DL-631` (hot-path overhead on scenes without open sheets):**
 
@@ -699,10 +710,11 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
   (`A59`) and a `!cat.hasSheets` fast path in `SeedFromPointImpl` (honoring
   `cat.walkSteps` `A58`) using a single 32-entry stack buffer (`ProbeEntry[32]`)
   with immediate return when the forward `TallyProbe` finds `!anyCandidate`,
-  plus lane-0 stack copy when `pLanes->nm[0] == nm`.
+  plus `TallyProbe` reuse of `info.ior` for `laneIor[0]` when `pLanes->nm[0] == nm`.
 - Seeded all 4 HWSS lanes once in `PathTracingIntegrator::IntegrateRayHWSS`
-  (`SeedLanesFromPoint`), forwarded `preseededOriginLanes_` into
-  `IntegrateFromHitHWSS` Fallbacks 1 & 2 (`HWSSLaneSeeds` frames **74 -> 0**),
+  (`SeedLanesFromPoint`, setting `iorStack = laneStacks[0]`), forwarded
+  `preseededOriginLanes_` into `IntegrateFromHitHWSS` Fallbacks 1 & 2
+  (`HWSSLaneSeeds` frames **74 -> 0**),
   preserving dispersive specular-continuation lane stacks across bounces, and
   restored lazy `ior_stack` bounce copy when `!pScat->ior_stack` plus lazy
   `#ifdef RISE_ENABLE_OPENPGL` `guidedIorStack` construction in PT.

@@ -93,6 +93,7 @@
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/Color/SampledWavelengths.h"
 #include "../src/Library/RISE_API.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -152,9 +153,9 @@ public:
 //////////////////////////////////////////////////////////////////////
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/raycaster_envmis_%s_%d.RISEscene",
+		"%s/raycaster_envmis_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

@@ -1018,8 +1018,8 @@ ChatPanel::ChatPanel(QWidget* parent)
     connect(m_modelEdit, &QLineEdit::editingFinished,
             this, &ChatPanel::modelEditingFinished);
     // Start screen readiness (spec §6): agentConfigured() reads the
-    // applied provider, m_storedKeys, and any pending text in the write-only
-    // key field.  textChanged covers typing into the draft field;
+    // applied provider, hasStoredApiKey(...) (CredentialStore), and any pending
+    // text in the write-only key field.  textChanged covers typing into the draft field;
     // applyProviderToLoop() (below) emits explicitly for the applied-provider
     // transition itself (switching providers clears the write-only field,
     // which is a no-op-and-no-signal when the field was already empty).

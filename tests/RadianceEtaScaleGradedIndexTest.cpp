@@ -107,6 +107,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -247,9 +248,9 @@ static void TestNonfiniteCandidateRejected()
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/radiance_eta_graded_%s_%d.RISEscene",
+		"%s/radiance_eta_graded_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

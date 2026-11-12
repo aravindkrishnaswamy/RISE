@@ -104,6 +104,7 @@
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
+#include "TestTempDir.h"
 
 // DL-03 gate hygiene: seed each render invocation explicitly.
 static unsigned int g_renderSeed = 1729u;
@@ -240,9 +241,9 @@ static bool ChannelsAgree(
 //////////////////////////////////////////////////////////////////////
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/ior_seed_regression_%s_%d.RISEscene",
+		"%s/ior_seed_regression_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

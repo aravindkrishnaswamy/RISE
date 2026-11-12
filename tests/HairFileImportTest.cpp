@@ -115,6 +115,7 @@
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -223,7 +224,7 @@ struct HairFileSpec
 std::string TempDir()
 {
 	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? tmp : "/tmp/";
+	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	return dir;
 }

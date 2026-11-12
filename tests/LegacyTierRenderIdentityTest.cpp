@@ -78,6 +78,7 @@
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Utilities/MediaPathLocator.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -175,7 +176,7 @@ static unsigned long long PixelHash( const std::vector<RISEColor>& px )
 static std::string TempPath( const std::string& name )
 {
 	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 	return dir + name;
 }
@@ -241,7 +242,7 @@ static bool HashScene( const std::string& scenePath, unsigned long long& hash )
 	return ok;
 }
 
-static char g_optPath[512] = { 0 };
+static char g_optPath[1024] = { 0 };
 
 int main( int argc, char** argv )
 {

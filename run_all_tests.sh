@@ -49,6 +49,12 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
+# Clear any caller-inherited RISE_MEDIA_PATH (mirroring run_all_tests.ps1) so
+# tests running from repo root resolve relative `scenes/...` and `models/...`
+# paths cleanly even if the user shell set RISE_MEDIA_PATH without a trailing
+# separator or pointing at another checkout.
+unset RISE_MEDIA_PATH || true
+
 case "$TIER" in
 	all)
 		export RISE_TEST_EXTENDED="${RISE_TEST_EXTENDED:-1}"

@@ -131,6 +131,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -293,10 +294,10 @@ static bool TestCompositedStats()
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
 		"%s/vcm_strategy_balance_%s_%d.RISEscene",
-		std::getenv( "TMPDIR" ) ? std::getenv( "TMPDIR" ) : "/tmp", tag, static_cast<int>(::getpid()) );
+		RISE::TestSupport::ScratchBaseDir().c_str(), tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) return std::string();

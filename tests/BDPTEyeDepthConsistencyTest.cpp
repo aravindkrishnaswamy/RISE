@@ -81,6 +81,7 @@
 #include "../src/Library/Shaders/BDPTIntegrator.h"
 #include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -288,8 +289,8 @@ static const char* kEnclosedBoxSceneTemplate =
 
 static std::string MakeSceneFile( const std::string& sceneContent )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/bdpt_eye_depth_%d.RISEscene",
+	char path[1024];
+	std::snprintf( path, sizeof(path), "%s/bdpt_eye_depth_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		static_cast<int>(::getpid()) );
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) {

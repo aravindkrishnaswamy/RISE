@@ -156,6 +156,7 @@
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "DataDrivenTestTables.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -324,10 +325,10 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 //////////////////////////////////////////////////////////////////////
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
 		"%s/bdpt_strategy_balance_%s_%d.RISEscene",
-		std::getenv( "TMPDIR" ) ? std::getenv( "TMPDIR" ) : "/tmp", tag, static_cast<int>(::getpid()) );
+		RISE::TestSupport::ScratchBaseDir().c_str(), tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) {
@@ -2623,7 +2624,7 @@ static void TestDataDrivenSPFDL325()
 	char bdf[256];
 	{
 		const char* td = std::getenv( "TMPDIR" );
-		std::string dir = ( td && *td ) ? td : "/tmp";
+		std::string dir = ( ( td && *td ) ? td : RISE::TestSupport::ScratchBaseDir().c_str() );
 		if( dir.back() != '/' ) dir += '/';
 		std::snprintf( bdf, sizeof( bdf ), "%sdl325_const04_%d.bdf", dir.c_str(), static_cast<int>( ::getpid() ) );
 	}

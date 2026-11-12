@@ -143,6 +143,7 @@
 #include "../src/Library/Materials/HairBSDF.h"
 #include "../src/Library/Materials/HairMaterial.h"
 #include "../src/Library/Utilities/Reference.h"   // Implementation::Reference -- base for the linear-ramp IFunction2D below (P1 bump-normalize test)
+#include "TestTempDir.h"
 
 using RISE::Implementation::HairBRDF;
 using RISE::Implementation::HairGeometry;
@@ -168,7 +169,7 @@ namespace {
 std::string TempPath( const std::string& tag )
 {
 	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? tmp : "/tmp/";
+	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) {
 		dir += "/";
 	}

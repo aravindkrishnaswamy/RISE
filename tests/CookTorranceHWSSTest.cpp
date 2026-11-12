@@ -68,6 +68,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -200,9 +201,9 @@ static void TestNonfiniteCandidateRejected()
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/cooktorrance_hwss_test_%s_%d.RISEscene",
+		"%s/cooktorrance_hwss_test_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
@@ -296,7 +297,7 @@ static std::string RasterizerPTSpectral( unsigned int samples, bool hwss, unsign
 		"\thwss " << (hwss ? "true" : "false") << "\n"
 		"\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/cooktorrance_hwss_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern cooktorrance_hwss_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
 	return ss.str();
 }
 

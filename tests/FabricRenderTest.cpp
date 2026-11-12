@@ -141,6 +141,7 @@
 // R8 P1.1: test 7 reads the shipped Charlie directional-albedo table to
 // derive its own bound rather than hard-coding one.
 #include "../src/Library/Materials/SheenDirectionalAlbedo.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -293,9 +294,9 @@ static void TestNonfiniteCandidateRejected()
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/fabric_render_test_%s_%d.RISEscene",
+		"%s/fabric_render_test_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

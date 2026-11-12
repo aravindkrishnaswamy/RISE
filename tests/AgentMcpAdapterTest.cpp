@@ -45,6 +45,7 @@
 	#include <unistd.h>			// getpid()
 #endif
 #include <vector>
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -75,7 +76,7 @@ static const char* const kScene =
 static std::string WriteTemp( const char* name, const std::string& text )
 {
 	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh

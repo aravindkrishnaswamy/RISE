@@ -70,6 +70,7 @@
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/AgentDiagnostic.h"
 #include "../src/Library/Agent/Json.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -83,7 +84,7 @@ static void Check( bool c, const std::string& w )
 static std::string TempPath( const std::string& name )
 {
 	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 	return dir + name;
 }

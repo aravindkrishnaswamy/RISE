@@ -62,6 +62,7 @@
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Utilities/OrthonormalBasis3D.h"
 #include "../src/Library/Utilities/Color/Color.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -94,7 +95,7 @@ namespace
 			dir = t;
 			if( dir.back() != '/' ) dir += '/';
 		} else {
-			dir = "/tmp/";
+			dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		}
 		std::string path = dir + "rise_thinfilm_parse_" + tag + ".RISEscene";
 		std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );

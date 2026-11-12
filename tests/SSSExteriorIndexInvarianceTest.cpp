@@ -185,6 +185,7 @@
 #include "../src/Library/Shaders/BSSRDFEntryAdapters.h"
 #include "../src/Library/Shaders/BDPTVertex.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1134,8 +1135,8 @@ namespace
 
 	std::string WriteScene( const std::string& text, const std::string& tag )
 	{
-		char path[512];
-		std::snprintf( path, sizeof( path ), "%s/dl49_invariance_%s_%d.RISEscene", std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp", tag.c_str(), static_cast<int>( ::getpid() ) );
+		char path[1024];
+		std::snprintf( path, sizeof( path ), "%s/dl49_invariance_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag.c_str(), static_cast<int>( ::getpid() ) );
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return std::string();
 		ofs << text;

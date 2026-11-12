@@ -144,6 +144,7 @@
 #include "../src/Library/Utilities/BDPTUtilities.h"
 #include "../src/Library/Utilities/PathTransportUtilities.h"
 #include "../src/Library/Utilities/StabilityConfig.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -203,9 +204,9 @@ struct Stats
 static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned int seedBase )
 {
 	Stats st = { 0, 0, n, false };
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path), "%s/bdpt_depthcap_mis_%d.RISEscene",
-		std::getenv( "TMPDIR" ) ? std::getenv( "TMPDIR" ) : "/tmp", static_cast<int>(::getpid()) );
+		RISE::TestSupport::ScratchBaseDir().c_str(), static_cast<int>(::getpid()) );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return st;
@@ -1150,9 +1151,9 @@ static void RowN()
 
 static void CoatedSingleThreadOptions()
 {
-    char path[512];
+    char path[1024];
     std::snprintf(path,sizeof(path),"%s/coated_cap_options_%d.txt",
-        std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp",int(::getpid()));
+        RISE::TestSupport::ScratchBaseDir().c_str(),int(::getpid()));
     std::ofstream file(path); file << "force_number_of_threads 1\nrender_thread_reserve_count 0\n"; file.close();
 #ifdef _WIN32
     _putenv_s("RISE_OPTIONS_FILE",path);

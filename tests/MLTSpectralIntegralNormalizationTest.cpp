@@ -71,6 +71,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -144,7 +145,7 @@ struct Image
 static Image RenderOnce( const std::string& scene, const char* tag, unsigned salt )
 {
 	Image out;
-	const std::string path = Fmt( "/tmp/mlt_spectral_norm_%s_%d.RISEscene", tag, int( getpid() ) );
+	const std::string path = Fmt( "%s/mlt_spectral_norm_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, int( getpid() ) );
 	{
 		std::ofstream ofs( path.c_str() );
 		ofs << scene;

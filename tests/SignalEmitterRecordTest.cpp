@@ -421,6 +421,7 @@
 // make the comparison vacuous.
 #include "../src/Library/Utilities/SurfaceCurvature.h"
 #include "../src/Library/Interfaces/ISurfaceSignalProvider.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -548,9 +549,9 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/signal_emitter_record_%s_%d.RISEscene",
+		"%s/signal_emitter_record_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

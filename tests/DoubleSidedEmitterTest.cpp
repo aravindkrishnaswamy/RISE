@@ -116,6 +116,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -194,8 +195,8 @@ static const uint32_t kSaltTag = 0x320u;
 static RenderResult Render( const std::string& sceneText, const char* tag )
 {
 	RenderResult r{ 0, 0, false };
-	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/dl320_%s_%d.RISEscene", tag, static_cast<int>( ::getpid() ) );
+	char path[1024];
+	std::snprintf( path, sizeof(path), "%s/dl320_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, static_cast<int>( ::getpid() ) );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return r;

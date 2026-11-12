@@ -107,6 +107,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -139,7 +140,7 @@ static const char* const kScene =
 static std::string TempPath( const char* name )
 {
 	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir[dir.size() - 1] != '/' ) dir += '/';
 	// Per-process: nothing stops two copies of this binary running at once,
 	// and a fixed name would let them clobber each other's scene file.

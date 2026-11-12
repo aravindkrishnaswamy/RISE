@@ -64,6 +64,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -72,7 +73,7 @@ namespace RISE { bool RISE_CreateJobPriv( IJobPriv** ppi ); }
 
 namespace
 {
-	char workerOptionsPath[512] = {};
+	char workerOptionsPath[1024] = {};
 	int passCount = 0;
 	int failCount = 0;
 	unsigned int g_renderIndex = 0;
@@ -181,8 +182,8 @@ namespace
 
 	bool RenderOnce( const std::string& scene, double out[3] )
 	{
-		char path[512];
-		std::snprintf( path, sizeof( path ), "/tmp/dl357_sss_%d.RISEscene", static_cast<int>( ::getpid() ) );
+		char path[1024];
+		std::snprintf( path, sizeof( path ), "%s/dl357_sss_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), static_cast<int>( ::getpid() ) );
 		{
 			std::ofstream ofs( path );
 			if( !ofs.is_open() ) return false;
@@ -284,7 +285,7 @@ int main( int argc, char** argv )
 {
     // Set options before the first cached GlobalOptions read or scene load.
     if(!std::getenv("RISE_OPTIONS_FILE")) {
-        std::snprintf(workerOptionsPath,sizeof(workerOptionsPath),"/tmp/dl454_options_%d.txt",int(::getpid()));
+        std::snprintf(workerOptionsPath,sizeof(workerOptionsPath),"%s/dl454_options_%d.txt", RISE::TestSupport::ScratchBaseDir().c_str(),int(::getpid()));
         std::ofstream options(workerOptionsPath);options<<"force_number_of_threads 1\n";options.close();
         if(!options) return 1;
         std::atexit([](){std::remove(workerOptionsPath);});

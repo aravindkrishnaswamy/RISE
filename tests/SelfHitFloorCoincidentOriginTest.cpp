@@ -118,6 +118,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Intersection/RayPrimitiveIntersections.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -212,9 +213,9 @@ static ImageStats RenderAndComputeStats( const std::string& sceneText, const cha
 {
 	ImageStats result{};
 
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/selfhit_floor_test_%s_%d.RISEscene", tag, static_cast<int>(::getpid()) );
+		"%s/selfhit_floor_test_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, static_cast<int>(::getpid()) );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return result;

@@ -77,6 +77,7 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/RandomWalkSSSMaterial.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -336,8 +337,8 @@ namespace
 
 	bool RenderChannelMeans( const std::string& scene, double out[3] )
 	{
-		char path[512];
-		std::snprintf( path, sizeof( path ), "/tmp/dl374_colour_%d.RISEscene", static_cast<int>( ::getpid() ) );
+		char path[1024];
+		std::snprintf( path, sizeof( path ), "%s/dl374_colour_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), static_cast<int>( ::getpid() ) );
 		{
 			std::ofstream ofs( path );
 			if( !ofs.is_open() ) return false;

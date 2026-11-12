@@ -90,6 +90,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "TestTempDir.h"
 
 #ifndef _WIN32
 #include <sys/stat.h>   // mkfifo for the S0 FIFO-hardening fixture
@@ -123,7 +124,7 @@ static std::string TempDirBase()
 {
 	const char* base = std::getenv( "TMPDIR" );
 	if( !base ) base = std::getenv( "TMP" );   // Windows spelling
-	std::string dir = base ? base : "/tmp";
+	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 	return dir;
 }
@@ -239,7 +240,7 @@ static std::string TempDir()
 {
 	const char* base = std::getenv( "TMPDIR" );
 	if( !base ) base = std::getenv( "TMP" );   // Windows spelling
-	std::string dir = base ? base : "/tmp";
+	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 	return dir;
 }

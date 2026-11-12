@@ -67,6 +67,7 @@
 #include "../src/Library/Rendering/Rasterizer.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Log/Log.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -164,9 +165,9 @@ public:
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/anim_progress_%s_%d.RISEscene", tag, static_cast<int>( RISE_GETPID() ) );
+		"%s/anim_progress_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, static_cast<int>( RISE_GETPID() ) );
 
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) {

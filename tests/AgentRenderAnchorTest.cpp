@@ -74,6 +74,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "TestTempDir.h"
 #ifdef _WIN32
 	#include <process.h>
 	#define getpid _getpid
@@ -116,7 +117,7 @@ static const char* const kScene =
 static std::string WriteTemp( const char* name, const std::string& text )
 {
 	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::binary );

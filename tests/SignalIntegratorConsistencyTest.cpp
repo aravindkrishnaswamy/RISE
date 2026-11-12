@@ -839,6 +839,7 @@
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1044,9 +1045,9 @@ static void TestNonfiniteCandidateRejected()
 //////////////////////////////////////////////////////////////////////
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag, int counter )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/signal_consistency_%s_%d_%d.RISEscene",
+		"%s/signal_consistency_%s_%d_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()), counter );
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) return std::string();
@@ -1109,7 +1110,7 @@ static std::string RasterizerChunkPT( unsigned int samples )
 	ss << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 	ss << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
 	   << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-	ss << "file_rasterizeroutput\n{\n\tpattern /tmp/signal_consistency_pt_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n";
+	ss << "file_rasterizeroutput\n{\n\tpattern signal_consistency_pt_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n";
 	return ss.str();
 }
 
@@ -1119,7 +1120,7 @@ static std::string RasterizerChunkBDPT( unsigned int samples )
 	ss << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 	ss << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples " << samples
 	   << "\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-	ss << "file_rasterizeroutput\n{\n\tpattern /tmp/signal_consistency_bdpt_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n";
+	ss << "file_rasterizeroutput\n{\n\tpattern signal_consistency_bdpt_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n";
 	return ss.str();
 }
 
@@ -1129,7 +1130,7 @@ static std::string RasterizerChunkVCM( unsigned int samples )
 	ss << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 	ss << "vcm_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples " << samples
 	   << "\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-	ss << "file_rasterizeroutput\n{\n\tpattern /tmp/signal_consistency_vcm_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n";
+	ss << "file_rasterizeroutput\n{\n\tpattern signal_consistency_vcm_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n";
 	return ss.str();
 }
 
@@ -1139,7 +1140,7 @@ static std::string RasterizerChunkMLT()
 	ss << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 	ss << "mlt_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tbootstrap_samples 4096\n"
 	      "\tchains 64\n\tmutations_per_pixel 16\n\tlarge_step_prob 0.3\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-	ss << "file_rasterizeroutput\n{\n\tpattern /tmp/signal_consistency_mlt_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n";
+	ss << "file_rasterizeroutput\n{\n\tpattern signal_consistency_mlt_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n";
 	return ss.str();
 }
 

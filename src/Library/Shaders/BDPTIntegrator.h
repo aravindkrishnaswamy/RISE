@@ -275,8 +275,10 @@ namespace RISE
 			/// t==1 strategy to pick the point on the camera's entrance
 			/// APERTURE that the light vertex connects to (debt 28).
 			/// It is consumed only by cameras with a finite aperture
-			/// (`thinlens_camera`); every other camera ignores it and
-			/// connects to `camera.GetLocation()`.  There is
+			/// (`thinlens_camera`); point-aperture cameras (`pinhole_camera`,
+			/// `fisheye_camera`) ignore it and connect to `camera.GetLocation()`,
+			/// while delta-direction cameras (`orthographic_camera`) skip the
+			/// `t == 1` light-to-camera splat strategy altogether.  There is
 			/// deliberately no default: a fixed value would silently
 			/// give a thin lens the right splat ENERGY with no depth of
 			/// field, i.e. a sharp light-traced layer over a defocused

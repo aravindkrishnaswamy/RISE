@@ -70,6 +70,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -202,9 +203,9 @@ static Halves HalfMeans( const CapturingRasterizerOutput& cap )
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
-	const char* tmpBase = std::getenv( "TMPDIR" );
-	if( !tmpBase || !*tmpBase ) tmpBase = "/tmp";
+	char path[1024];
+	const std::string scratchFallback = RISE::TestSupport::ScratchBaseDir();
+	const char* tmpBase = scratchFallback.c_str();
 	std::snprintf( path, sizeof(path), "%s/bdpt_zero_density_%s_%d.RISEscene",
 		tmpBase, tag, static_cast<int>( ::getpid() ) );
 	std::ofstream ofs( path );

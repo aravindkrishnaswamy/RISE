@@ -52,6 +52,7 @@
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/Interfaces/IFrameEncoder.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -98,8 +99,9 @@ namespace
 
 	std::string MakeTempPath()
 	{
+		const std::string scratchFallback = RISE::TestSupport::ScratchBaseDir() + "/";
 		const char* tmpdir = std::getenv( "TMPDIR" );
-		if ( !tmpdir ) tmpdir = "/tmp/";
+		if ( !tmpdir || !*tmpdir ) tmpdir = scratchFallback.c_str();
 		std::ostringstream os;
 		os << tmpdir;
 		if ( os.str().back() != '/' ) os << '/';

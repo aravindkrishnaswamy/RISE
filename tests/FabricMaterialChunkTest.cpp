@@ -150,6 +150,7 @@
 #include "../src/Library/Interfaces/ILogPriv.h"
 #include "../src/Library/Interfaces/ILogPrinter.h"
 #include <mutex>
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -184,7 +185,7 @@ static const double kSheenAlpha = 0.3;
 std::string WriteTempScene( const std::string& tag, const std::string& body )
 {
 	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? tmp : "/tmp/";
+	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	char pid[32];
 	std::snprintf( pid, sizeof(pid), "%d", static_cast<int>( ::getpid() ) );
@@ -211,7 +212,7 @@ bool ParseBodyCapturing( const std::string& tag, const std::string& body, IJobPr
                           std::string& capturedOutput )
 {
 	const char* tmpEnv = getenv( "TMPDIR" );
-	std::string dir = tmpEnv ? tmpEnv : "/tmp/";
+	std::string dir = tmpEnv ? std::string( tmpEnv ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	char pidbuf[32];
 	std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( ::getpid() ) );

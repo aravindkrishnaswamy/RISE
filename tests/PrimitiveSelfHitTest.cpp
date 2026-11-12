@@ -141,6 +141,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -286,9 +287,9 @@ static void TestNonfiniteCandidateRejected()
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/prim_selfhit_test_%s_%d.RISEscene",
+		"%s/prim_selfhit_test_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
@@ -308,9 +309,9 @@ static std::string WriteSceneToTempFile( const std::string& sceneText, const cha
 //! consulting the media-path search list.
 static std::string WritePlyQuadToTempFile()
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/prim_selfhit_test_quad_%d.ply",
+		"%s/prim_selfhit_test_quad_%d.ply", RISE::TestSupport::ScratchBaseDir().c_str(),
 		static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
@@ -396,7 +397,7 @@ static std::string RasterizerPTRgbNoEnv( unsigned int samples, unsigned int rrMi
 		"\trr_min_depth " << rrMinDepth << "\n"
 		"\toidn_denoise FALSE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/prim_selfhit_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern prim_selfhit_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
 	return ss.str();
 }
 
@@ -409,7 +410,7 @@ static std::string RasterizerBDPTRgbNoEnv( unsigned int samples, unsigned int ma
 		"\tmax_eye_depth " << maxEyeDepth << "\n\tmax_light_depth " << maxLightDepth << "\n"
 		"\toidn_denoise FALSE\n"
 		"}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/prim_selfhit_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern prim_selfhit_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
 	return ss.str();
 }
 

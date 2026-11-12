@@ -48,13 +48,19 @@ if ([string]::IsNullOrEmpty($env:TMPDIR) -and -not [string]::IsNullOrEmpty($env:
     # Ensure tests that read std::getenv("TMPDIR") resolve to Windows TEMP rather than "/tmp".
     $env:TMPDIR = $env:TEMP
 }
-# Ensure `\tmp` exists on the current drive root so legacy tests with literal
-# "/tmp/..." scratch paths can open temporary files on Windows.
+# Best-effort `\tmp` creation on the current drive root; tests resolve scratch
+# paths via `RISE::TestSupport::ScratchBaseDir()` (`TMPDIR` -> `TEMP` -> `TMP`
+# -> `temp_directory_path()`), so a read-only drive root on locked-down hosts
+# must never abort the runner under `$ErrorActionPreference = 'Stop'`.
 $driveRoot = [System.IO.Path]::GetPathRoot((Get-Location).Path)
 if (-not [string]::IsNullOrEmpty($driveRoot)) {
     $rootTmp = Join-Path $driveRoot 'tmp'
     if (-not (Test-Path -LiteralPath $rootTmp)) {
-        New-Item -ItemType Directory -Path $rootTmp -Force | Out-Null
+        try {
+            New-Item -ItemType Directory -Path $rootTmp -Force -ErrorAction Stop | Out-Null
+        } catch {
+            # Non-fatal: standalone tests use ScratchBaseDir() -> $env:TMPDIR / $env:TEMP.
+        }
     }
 }
 

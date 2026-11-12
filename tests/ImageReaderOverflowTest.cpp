@@ -53,6 +53,7 @@
 #include "../src/Library/RasterImages/HDRReader.h"
 #include "../src/Library/RasterImages/PNGReader.h"
 #include "../src/Library/RasterImages/TIFFReader.h"
+#include "TestTempDir.h"
 
 #ifndef NO_TIFF_SUPPORT
 	#include <tiffio.h>
@@ -86,7 +87,7 @@ static void AppendByte( std::vector<char>& v, unsigned char b )
 static std::string TmpDir()
 {
 	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? tmp : "/tmp/";
+	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	return dir;
 }

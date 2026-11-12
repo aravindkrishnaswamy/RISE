@@ -50,6 +50,7 @@
 #include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -354,7 +355,7 @@ static void TestFilmChunkAfterCamera()
 	// to the CWD (worktrees / fresh clones don't have a `rendered/`
 	// dir relative to CWD).  Matches the idiom in
 	// VCMStrategyBalanceTest / BDPTStrategyBalanceTest.
-	char tmpPath[ 512 ];
+	char tmpPath[1024];
 #ifdef _WIN32
 	const char* tmpDir = std::getenv( "TEMP" );
 	if( !tmpDir ) tmpDir = std::getenv( "TMP" );
@@ -364,7 +365,7 @@ static void TestFilmChunkAfterCamera()
 		tmpDir, static_cast<int>(::getpid()) );
 #else
 	std::snprintf( tmpPath, sizeof(tmpPath),
-		"/tmp/_film_after_camera_test_%d.RISEscene",
+		"%s/_film_after_camera_test_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		static_cast<int>(::getpid()) );
 #endif
 	{

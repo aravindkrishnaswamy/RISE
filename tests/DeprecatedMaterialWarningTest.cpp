@@ -61,6 +61,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include "TestTempDir.h"
 #ifdef _WIN32
 	#include <process.h>
 	#define getpid _getpid
@@ -260,7 +261,7 @@ int main()
 	{
 		// ...while the real load entry point still warns, once per type.
 		const char* tmpBase = std::getenv( "TMPDIR" );
-		std::string dir = tmpBase ? tmpBase : "/tmp";
+		std::string dir = tmpBase ? std::string( tmpBase ) : RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 		const std::string path = dir + "deprecated_material_warning_" + std::to_string( (long)::getpid() ) + ".RISEscene";
 		{ std::ofstream o( path.c_str(), std::ios::binary ); o << mixed; }

@@ -1054,7 +1054,11 @@ static void FreshProcessChild( const std::string& which )
 static std::FILE* OpenReadPipe( const char* command )
 {
 #if defined( _WIN32 )
-	return _popen( command, "r" );
+	// `_popen` invokes `cmd.exe /c <command>`, which strips leading and trailing
+	// quotes when the command string both starts with a quoted executable path and
+	// contains a second quoted argument unless wrapped in an outer pair of quotes.
+	const std::string wrapped = std::string( "\"" ) + command + "\"";
+	return _popen( wrapped.c_str(), "r" );
 #else
 	return popen( command, "r" );
 #endif

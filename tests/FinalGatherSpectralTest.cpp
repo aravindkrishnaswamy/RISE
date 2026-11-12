@@ -82,6 +82,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -251,10 +252,10 @@ static double RedFraction( const ImageStats& s )
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
 		"%s/fg_spectral_%s_%d.RISEscene",
-		(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp"),
+		RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

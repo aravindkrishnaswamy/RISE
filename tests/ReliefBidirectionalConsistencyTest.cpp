@@ -25,6 +25,7 @@
 // Explicit render seeding: library renders are NOT
 // wall-clock seeded, and this file compares raw pixel statistics
 // across three separate renders, so each must srand() explicitly.
+#include "TestTempDir.h"
 static unsigned int g_renderSeed = 2240001u;
 
 using namespace RISE;
@@ -87,9 +88,9 @@ public:
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/dl224_relief_%s_%d.RISEscene",
+		"%s/dl224_relief_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

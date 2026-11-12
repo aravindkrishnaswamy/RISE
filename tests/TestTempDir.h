@@ -20,9 +20,6 @@
 
 #ifdef _WIN32
 	#include <process.h>
-	#ifndef getpid
-		#define getpid _getpid
-	#endif
 #else
 	#include <unistd.h>
 	#include <sys/wait.h>
@@ -32,18 +29,54 @@ namespace RISE
 {
 namespace TestSupport
 {
-	inline std::string ScratchTestRoot( const char* suitePrefix )
+	inline long CurrentProcessId()
+	{
+#ifdef _WIN32
+		return static_cast<long>( _getpid() );
+#else
+		return static_cast<long>( getpid() );
+#endif
+	}
+	inline std::string ScratchBaseDir()
 	{
 		const char* base = std::getenv( "TMPDIR" );
-		if( !base ) base = std::getenv( "TMP" );
-		std::string dir = base ? base : "/tmp";
+		if( !base || !*base ) base = std::getenv( "TEMP" );
+		if( !base || !*base ) base = std::getenv( "TMP" );
+		std::string dir;
+		if( base && *base ) {
+			dir = base;
+		} else {
+			std::error_code ec;
+			const std::filesystem::path sysTmp = std::filesystem::temp_directory_path( ec );
+			if( !ec && !sysTmp.empty() ) {
+				dir = sysTmp.generic_string();
+			} else {
+				dir = ".";
+			}
+		}
 		// Forward slashes throughout so paths can be embedded directly inside
-		// JSON string literals without Windows backslash escape issues.
-		for( char& c : dir ) if( c == '\\' ) c = '/';
-		if( !dir.empty() && dir.back() != '/' ) dir += '/';
-		dir += suitePrefix;
-		dir += std::to_string( (long)getpid() );
+		// JSON string literals and .RISEscene chunks without backslash escape issues.
+		for( char& c : dir ) {
+			if( c == '\\' ) c = '/';
+		}
+		while( dir.size() > 1 && dir.back() == '/' ) {
+			if( dir.size() == 3 && dir[1] == ':' ) break;
+			dir.pop_back();
+		}
 		return dir;
+	}
+
+	inline std::string ScratchPath( const std::string& leaf )
+	{
+		std::string dir = ScratchBaseDir();
+		if( !dir.empty() && dir.back() != '/' ) dir += '/';
+		if( !leaf.empty() && leaf.front() == '/' ) return dir + leaf.substr( 1 );
+		return dir + leaf;
+	}
+
+	inline std::string ScratchTestRoot( const char* suitePrefix )
+	{
+		return ScratchPath( std::string( suitePrefix ) + std::to_string( CurrentProcessId() ) );
 	}
 
 	inline std::string ScratchRunDir( const char* suitePrefix, const char* leaf )

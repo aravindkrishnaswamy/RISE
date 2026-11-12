@@ -119,6 +119,7 @@
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Geometry/HairGeometry.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -143,9 +144,9 @@ static void Check( bool condition, const char* testName )
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/translucent_initial_containment_%s_%d.RISEscene",
+		"%s/translucent_initial_containment_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

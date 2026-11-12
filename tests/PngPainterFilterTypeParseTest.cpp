@@ -56,6 +56,7 @@
 #include "../src/Library/Parsers/ChunkDescriptor.h"
 #include "../src/Library/SceneEditorSuggestions/SceneGrammar.h"
 #include "../src/Library/Utilities/Color/Color.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -80,7 +81,7 @@ namespace
 	std::string TempDir()
 	{
 		const char* t = getenv( "TMPDIR" );
-		std::string dir = ( t && t[0] ) ? t : "/tmp/";
+		std::string dir = ( t && t[0] ) ? std::string( t ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 		if( dir.back() != '/' ) dir += '/';
 		return dir;
 	}

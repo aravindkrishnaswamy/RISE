@@ -62,6 +62,7 @@
 // painter's output equals a direct ExpressionProgram::Builder compile of
 // the identical body, param-for-param, def-for-def.
 #include "../src/Library/Painters/ExpressionEval.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -89,7 +90,7 @@ namespace {
 	std::string WriteTempScene( const std::string& tag, const std::string& body )
 	{
 		const char* tmp = getenv( "TMPDIR" );
-		std::string dir = tmp ? tmp : "/tmp/";
+		std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 		std::string path = dir + "rise_guilloche_parse_" + tag + ".RISEscene";
 		std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );

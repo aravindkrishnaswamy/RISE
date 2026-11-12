@@ -85,6 +85,7 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -100,7 +101,7 @@ namespace
 	std::string TempPath( const char* name )
 	{
 		const char* base = std::getenv( "TMPDIR" );
-		std::string dir = base ? base : "/tmp";
+		std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir.back() != '/' ) dir += '/';
 		return dir + name;
 	}

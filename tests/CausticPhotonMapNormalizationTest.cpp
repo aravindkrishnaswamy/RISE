@@ -62,6 +62,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -190,9 +191,9 @@ static void TestNonfiniteCandidateRejected()
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/caustic_pm_norm_%s_%d.RISEscene",
+		"%s/caustic_pm_norm_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
@@ -269,7 +270,7 @@ static const char* kRasterizerPhotonMap =
 	"caustic_pel_photonmap\n{\n\tnum 600000\n\tmax_recursion 10\n\tmin_importance 0.001\n"
 	"\tpower_scale 1.0\n\tbranch TRUE\n\treflect TRUE\n\trefract TRUE\n}\n\n"
 	"caustic_pel_gather\n{\n\tmax_photons 120\n}\n\n"
-	"file_rasterizeroutput\n{\n\tpattern /tmp/caustic_pm_norm_pm_unused\n"
+	"file_rasterizeroutput\n{\n\tpattern caustic_pm_norm_pm_unused\n"
 	"\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
 
 // BDPT (unbiased light-tracing-splat reference).
@@ -277,7 +278,7 @@ static const char* kRasterizerBDPT =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
 	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 10\n\tmax_light_depth 10\n\tsamples 320\n"
 	"\tpixel_filter box\n\toidn_denoise false\n}\n\n"
-	"file_rasterizeroutput\n{\n\tpattern /tmp/caustic_pm_norm_bdpt_unused\n"
+	"file_rasterizeroutput\n{\n\tpattern caustic_pm_norm_bdpt_unused\n"
 	"\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
 
 //////////////////////////////////////////////////////////////////////

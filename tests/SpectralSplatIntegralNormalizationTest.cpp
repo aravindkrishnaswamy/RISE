@@ -125,6 +125,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -182,8 +183,8 @@ public:
 
 static double RenderMean( const std::string& sceneText, const char* tag )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/spectral_splat_ynorm_%s_%d.RISEscene",
+	char path[1024];
+	std::snprintf( path, sizeof(path), "%s/spectral_splat_ynorm_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 	{
 		std::ofstream ofs( path );

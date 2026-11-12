@@ -111,6 +111,7 @@
 #include "../src/Library/Geometry/SDFGeometry.h"		// F3 guard -- builds hand-authored
 														// reference/spurious variants directly
 #include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"	// review round P2-3: pins the
+#include "TestTempDir.h"
 														// `joint` param's descriptor text --
 														// the read_schema/describe_chunk
 														// surface a model actually sees
@@ -136,7 +137,7 @@ namespace {
 std::string WriteTempScene( const std::string& tag, const std::string& body )
 {
 	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? tmp : "/tmp/";
+	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	char pid[32];
 	std::snprintf( pid, sizeof(pid), "%d", static_cast<int>( ::getpid() ) );
@@ -414,7 +415,7 @@ void TestDegenerateBoneAABB()
 	std::string capturedOutput;
 	{
 		const char* tmpEnv = getenv( "TMPDIR" );
-		std::string dir = tmpEnv ? tmpEnv : "/tmp/";
+		std::string dir = tmpEnv ? std::string( tmpEnv ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 		char pidbuf[32];
 		std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( ::getpid() ) );
@@ -1121,7 +1122,7 @@ void TestAspectInertOnRootWarns()
 	bool ok = false;
 	{
 		const char* tmpEnv = getenv( "TMPDIR" );
-		std::string dir = tmpEnv ? tmpEnv : "/tmp/";
+		std::string dir = tmpEnv ? std::string( tmpEnv ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 		char pidbuf[32];
 		std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( ::getpid() ) );
@@ -1161,7 +1162,7 @@ void TestAspectInertOnRootWarns()
 		if( RISE_CreateJobPriv( &job2 ) && job2 ) {
 			std::string cap2;
 			const char* tmpEnv = getenv( "TMPDIR" );
-			std::string dir = tmpEnv ? tmpEnv : "/tmp/";
+			std::string dir = tmpEnv ? std::string( tmpEnv ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 			if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 			char pidbuf[32];
 			std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( ::getpid() ) );

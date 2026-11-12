@@ -88,6 +88,7 @@
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Rendering/RayCaster.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -113,22 +114,11 @@ static void Check( bool condition, const std::string& testName )
 static unsigned int g_seedBase = 2000;
 static unsigned int g_renderIndex = 0;
 static unsigned int g_sceneIndex = 0;
-static char g_optPath[256];
+static char g_optPath[1024];
 
 static std::string TempDir()
 {
-	const char* envNames[3] = { "TMPDIR", "TEMP", "TMP" };
-	for( int i = 0; i < 3; ++i ) {
-		const char* d = std::getenv( envNames[i] );
-		if( d && d[0] != '\0' ) {
-			std::string s( d );
-			while( s.size() > 1 && ( s.back() == '/' || s.back() == '\\' ) ) {
-				s.pop_back();
-			}
-			return s;
-		}
-	}
-	return "/tmp";
+	return RISE::TestSupport::ScratchBaseDir();
 }
 
 static std::string TempPath( const char* tag )
@@ -1916,9 +1906,10 @@ static void PartA()
 			for( int step = 0; step < 20; ++step ) {
 				const int k = reverseOrder ? ( 20 - step ) : ( step + 1 );
 				const double y = ( k <= 4 ) ? ( 2.0 + 0.8 * k ) : ( 7.0 + 0.8 * ( k - 4 ) );
-				char g[16], o[16];
+				const char alpha = static_cast<char>( 'a' + step );
+				char g[20], o[20];
 				std::snprintf( g, sizeof(g), "g_q%d", k );
-				std::snprintf( o, sizeof(o), "q%d", k );
+				std::snprintf( o, sizeof(o), "%c_q%d", alpha, k );
 				t += HSheet( g, y, 6.0, true ) + Obj( o, g, "glass15" );
 			}
 			return t;
@@ -1935,35 +1926,37 @@ static void PartA()
 			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = IORStackSeeding::kGroupDetourRayBudget;
 			bool identicalSet = ( stFwd.Depth() == stRev.Depth() ) && ( stFwd.Depth() > 1 ) && ( stFwd.Depth() < 21 );
 			for( int k = 1; k <= 20 && identicalSet; ++k ) {
-				char o[16];
-				std::snprintf( o, sizeof(o), "q%d", k );
+				char oFwd[20], oRev[20];
+				std::snprintf( oFwd, sizeof(oFwd), "%c_q%d", static_cast<char>( 'a' + ( k - 1 ) ), k );
+				std::snprintf( oRev, sizeof(oRev), "%c_q%d", static_cast<char>( 'a' + ( 20 - k ) ), k );
 				bool inFwd = false, inRev = false;
 				for( std::size_t i = 1; i < stFwd.Depth(); ++i ) {
-					if( stFwd.ObjectAt( i ) == fwd.O( o ) ) inFwd = true;
+					if( stFwd.ObjectAt( i ) == fwd.O( oFwd ) ) inFwd = true;
 				}
 				for( std::size_t i = 1; i < stRev.Depth(); ++i ) {
-					if( stRev.ObjectAt( i ) == rev.O( o ) ) inRev = true;
+					if( stRev.ObjectAt( i ) == rev.O( oRev ) ) inRev = true;
 				}
 				if( inFwd != inRev ) identicalSet = false;
 			}
 			Check( identicalSet,
-				"A52a [DL-626]: HasFreeSpaceDetourToSheets confirms the exact same panes under tight ray budget regardless of declaration order" );
+				"A52a [DL-626]: HasFreeSpaceDetourToSheets confirms the exact same panes under tight ray budget regardless of declaration/TLAS order" );
 		}
 
-		// Same-material siblings: roof at y = 1.5 (distance 1.5) vs wall at x = 3.0 (distance 3.0)
+		// Same-material siblings: roof at y = 1.5 (distance 1.5) vs wall at x = 3.0 (distance 3.0),
+		// flipping BOTH scene chunk order and alphabetical GenericManager/TLAS name order.
 		const double wa[3] = { 3, -3, -3 }, wb[3] = { 3, 3, -3 }, wc[3] = { 3, 3, 3 }, wd[3] = { 3, -3, 3 };
 		const std::string wallQ = SheetQuad( "g_wall", wa, wb, wc, wd );
-		Loaded roofFirst( Header() + HSheet( "g_roof", 1.5, 3.0, true ) + Obj( "roof", "g_roof", "glass15" )
-			+ wallQ + Obj( "wall", "g_wall", "glass15" ) );
-		Loaded wallFirst( Header() + wallQ + Obj( "wall", "g_wall", "glass15" )
-			+ HSheet( "g_roof", 1.5, 3.0, true ) + Obj( "roof", "g_roof", "glass15" ) );
+		Loaded roofFirst( Header() + HSheet( "g_roof", 1.5, 3.0, true ) + Obj( "a_roof", "g_roof", "glass15" )
+			+ wallQ + Obj( "z_wall", "g_wall", "glass15" ) );
+		Loaded wallFirst( Header() + wallQ + Obj( "a_wall", "g_wall", "glass15" )
+			+ HSheet( "g_roof", 1.5, 3.0, true ) + Obj( "z_roof", "g_roof", "glass15" ) );
 		Check( roofFirst.ok && wallFirst.ok, "A52b [DL-626] sibling scenes load" );
 		if( roofFirst.ok && wallFirst.ok ) {
 			const IORStack s1 = roofFirst.Seed( Point3( 0, 0, 0 ) );
 			const IORStack s2 = wallFirst.Seed( Point3( 0, 0, 0 ) );
 			Check( s1.Depth() == 2 && s2.Depth() == 2 &&
-				s1.topObject() == roofFirst.O( "roof" ) && s2.topObject() == wallFirst.O( "roof" ),
-				"A52b [DL-626]: same-material sibling deduplication always keeps the geometrically nearer sibling regardless of declaration order" );
+				s1.topObject() == roofFirst.O( "a_roof" ) && s2.topObject() == wallFirst.O( "z_roof" ),
+				"A52b [DL-626]: same-material sibling deduplication always keeps the geometrically nearer sibling regardless of declaration/TLAS order" );
 		}
 	}
 
@@ -2358,18 +2351,22 @@ static void PartA()
 	}
 
 	// A60: Tilted (45-degree) coplanar open sheets of different extents & materials
-	// in `ConfirmSharedNormalRay` must detect sibling overlap (`planeOffsets[k] - hPos`
-	// rather than `heights[k] - hPos`) and decline in BOTH declaration orders; and
+	// in `ConfirmSharedNormalRay` must detect sibling overlap (`activeDists` / `aloneDist`
+	// rather than `heights[k] - hPos`) and decline in BOTH declaration/TLAS orders; and
 	// tilted same-material crossed sheets sharing an identical world AABB tie-break
 	// deterministically via transform / confirmation-hit geometry rather than pointer order.
 	{
 		auto makeTiltedCoplanar = [&]( bool smallFirst ) -> std::string {
 			// Plane y + z = 2 (unit normal (0, 1/sqrt(2), 1/sqrt(2)) pointing toward +y,+z;
 			// origin (0,0,0) sits on the back side at normal distance sqrt(2)).
+			// Swap alphabetical object names (`a_*` vs `z_*`) as well as chunk order so
+			// `GenericManager` / `ObjectManager` reverses TLAS primitive insertion order.
 			const double bL[3] = { -4,  5, -3 }, aL[3] = {  4,  5, -3 }, dL[3] = {  4, -1,  3 }, cL[3] = { -4, -1,  3 };
 			const double bS[3] = { -1,  2,  0 }, aS[3] = {  1,  2,  0 }, dS[3] = {  1,  0,  2 }, cS[3] = { -1,  0,  2 };
-			const std::string big   = SheetQuad( "g_tilt_big",   aL, bL, cL, dL ) + Obj( "tilt_big",   "g_tilt_big",   "glass15" );
-			const std::string small = SheetQuad( "g_tilt_small", aS, bS, cS, dS ) + Obj( "tilt_small", "g_tilt_small", "glass133" );
+			const char* bigName   = smallFirst ? "z_tilt_big"   : "a_tilt_big";
+			const char* smallName = smallFirst ? "a_tilt_small" : "z_tilt_small";
+			const std::string big   = SheetQuad( "g_tilt_big",   aL, bL, cL, dL ) + Obj( bigName,   "g_tilt_big",   "glass15" );
+			const std::string small = SheetQuad( "g_tilt_small", aS, bS, cS, dS ) + Obj( smallName, "g_tilt_small", "glass133" );
 			return Header() + ( smallFirst ? ( small + big ) : ( big + small ) );
 		};
 		Loaded sA( makeTiltedCoplanar( false ) );
@@ -2379,7 +2376,7 @@ static void PartA()
 			const IORStack stA = sA.Seed( Point3( 0, 0, 0 ) );
 			const IORStack stB = sB.Seed( Point3( 0, 0, 0 ) );
 			Check( stA.Depth() == 1 && stB.Depth() == 1,
-				"A60a [DL-626]: tilted 45-degree coplanar sheets of different sizes & materials decline in both orders" );
+				"A60a [DL-626]: tilted 45-degree coplanar sheets of different sizes & materials decline in both TLAS orders" );
 		}
 
 		auto makeIdenticalBoxCrossed = [&]( bool swapOrder ) -> std::string {
@@ -2388,8 +2385,10 @@ static void PartA()
 			// paneMinus on y - x = 0 (normal (-1,+1,0)/sqrt(2), enclosing (0,-1,0)).
 			const double aP[3] = { -2,  2, -2 }, bP[3] = { -2,  2,  2 }, cP[3] = {  2, -2,  2 }, dP[3] = {  2, -2, -2 };
 			const double aM[3] = {  2,  2,  2 }, bM[3] = {  2,  2, -2 }, cM[3] = { -2, -2, -2 }, dM[3] = { -2, -2,  2 };
-			const std::string plus  = SheetQuad( "g_xp", aP, bP, cP, dP ) + Obj( "xp", "g_xp", "glass15" );
-			const std::string minus = SheetQuad( "g_xm", aM, bM, cM, dM ) + Obj( "xm", "g_xm", "glass15" );
+			const char* xpName = swapOrder ? "z_xp" : "a_xp";
+			const char* xmName = swapOrder ? "a_xm" : "z_xm";
+			const std::string plus  = SheetQuad( "g_xp", aP, bP, cP, dP ) + Obj( xpName, "g_xp", "glass15" );
+			const std::string minus = SheetQuad( "g_xm", aM, bM, cM, dM ) + Obj( xmName, "g_xm", "glass15" );
 			return Header() + ( swapOrder ? ( minus + plus ) : ( plus + minus ) );
 		};
 		Loaded x1( makeIdenticalBoxCrossed( false ) );
@@ -2398,36 +2397,25 @@ static void PartA()
 		if( x1.ok && x2.ok ) {
 			const IORStack st1 = x1.Seed( Point3( 0, -1, 0 ) );
 			const IORStack st2 = x2.Seed( Point3( 0, -1, 0 ) );
-			const bool pickedXp1 = ( st1.Depth() == 2 && st1.topObject() == x1.O( "xp" ) );
-			const bool pickedXp2 = ( st2.Depth() == 2 && st2.topObject() == x2.O( "xp" ) );
+			const bool pickedXp1 = ( st1.Depth() == 2 && st1.topObject() == x1.O( "a_xp" ) );
+			const bool pickedXp2 = ( st2.Depth() == 2 && st2.topObject() == x2.O( "z_xp" ) );
 			Check( st1.Depth() == 2 && st2.Depth() == 2 && pickedXp1 == pickedXp2,
-				"A60b [DL-626]: identical-AABB crossed same-material panes pick the same geometric winner in both declaration orders" );
+				"A60b [DL-626]: identical-AABB crossed same-material panes pick the same geometric winner in both TLAS orders" );
 		}
 	}
 
 	// A61: Coplanar sibling confirmation across detour column/Segment-2 walks,
 	// per-sheet `OpenSheetNormalRayReaches` fallback, and slightly tilted
-	// (`Dot >= 1 - 1e-10`) group members:
-	//  - A61a (Witness A): seed at (0, 0, 0) blocked by opaque rock at y = 1.5
-	//    under two coplanar panes at y = 3.0 (`glass15` 6x6 + `glass133` 2x2)
-	//    must confirm BOTH panes via `HasFreeSpaceDetourToSheets` and decline
-	//    in both declaration orders (`Depth() == 1`).
-	//  - A61b (Witness B): two coplanar panes (`glass15` + `glass133`) routed
-	//    through the per-sheet `OpenSheetNormalRayReaches` fallback (after an
-	//    in-place `KeyframeFromParameters` corner edit invalidates `poseValid`
-	//    and moves the second pane onto y = 3.0) must still detect coplanar
-	//    overlap and decline in both declaration orders (`Depth() == 1`).
-	//  - A61c (Witness C): two panes in the same normal group (`theta = 1.2e-5`
-	//    rad, `Dot >= 1 - 1e-10`) that intersect along y = 3.0 at x = 20.0 must
-	//    use exact ray-hit distance (`aloneDist`) rather than `grp.origin` plane
-	//    offset (`20 * sin(1.2e-5) = 2.4e-4 > 2 * kSeedEps`) and decline in both
-	//    declaration orders (`Depth() == 1`).
+	// (`Dot >= 1 - 1e-10`) group members (flipping alphabetical object names so
+	// both `GenericManager` / TLAS primitive orders are genuinely exercised):
 	{
 		auto makeSubmergedCoplanar = [&]( bool smallFirst ) -> std::string {
-			const std::string big   = HSheet( "g_cbig",   3.0, 6.0, true ) + Obj( "cbig",   "g_cbig",   "glass15" );
-			const std::string small = HSheet( "g_csmall", 3.0, 2.0, true ) + Obj( "csmall", "g_csmall", "glass133" );
+			const char* bigName   = smallFirst ? "z_cbig"   : "a_cbig";
+			const char* smallName = smallFirst ? "a_csmall" : "z_csmall";
+			const std::string big   = HSheet( "g_cbig",   3.0, 6.0, true ) + Obj( bigName,   "g_cbig",   "glass15" );
+			const std::string small = HSheet( "g_csmall", 3.0, 2.0, true ) + Obj( smallName, "g_csmall", "glass133" );
 			const std::string rock  = "box_geometry\n{\n\tname g_crock\n\twidth 1.0\n\theight 0.4\n\tdepth 1.0\n}\n\n"
-				+ Obj( "crock", "g_crock", "matte", "0 1.5 0" );
+				+ Obj( "m_crock", "g_crock", "matte", "0 1.5 0" );
 			return Header() + rock + ( smallFirst ? ( small + big ) : ( big + small ) );
 		};
 		Loaded wA1( makeSubmergedCoplanar( false ) );
@@ -2437,30 +2425,20 @@ static void PartA()
 			const IORStack st1 = wA1.Seed( Point3( 0, 0, 0 ) );
 			const IORStack st2 = wA2.Seed( Point3( 0, 0, 0 ) );
 			Check( st1.Depth() == 1 && st2.Depth() == 1,
-				"A61a [DL-626]: detour column + Segment-2 walks detect coplanar different-material panes and decline in both orders" );
+				"A61a [DL-626]: detour column + Segment-2 walks detect coplanar different-material panes and decline in both TLAS orders" );
 		}
 
 		bool wBOk = true;
 		for( int order = 0; order < 2; ++order ) {
-			// Both panes start in `+y` normal group (`y = 3.0` and `y = 2.0`),
-			// enclosed inside a larger AABB? Note: editing `g_edit` corners in-place
-			// bumps `ShapeRevision()`, invalidating `poseValid` so `ConfirmOpenSheetsAt`
-			// falls through to per-sheet `OpenSheetHoldsPoint` -> `OpenSheetNormalRayReaches`.
-			// Keep `g_edit`'s world AABB unchanged across the edit by starting `g_edit`
-			// at `y = 3.0` and permuting its 4 corners cyclically (preserving `+y` normal
-			// and exact `[-2, 2] x [3, 3] x [-2, 2]` AABB while incrementing `ShapeRevision()`!).
-			const std::string fixed = HSheet( "g_fixed", 3.0, 6.0, true ) + Obj( "fixed", "g_fixed", "glass15" );
-			const std::string edit  = HSheet( "g_edit",  3.0, 2.0, true ) + Obj( "edit",  "g_edit",  "glass133" );
+			const char* fixedName = ( order == 0 ) ? "a_fixed" : "z_fixed";
+			const char* editName  = ( order == 0 ) ? "z_edit"  : "a_edit";
+			const std::string fixed = HSheet( "g_fixed", 3.0, 6.0, true ) + Obj( fixedName, "g_fixed", "glass15" );
+			const std::string edit  = HSheet( "g_edit",  3.0, 2.0, true ) + Obj( editName,  "g_edit",  "glass133" );
 			Loaded s( Header() + ( order == 0 ? ( fixed + edit ) : ( edit + fixed ) ) );
 			if( !s.ok ) { wBOk = false; continue; }
-			// Prime catalog so both panes are grouped together:
 			(void)s.Seed( Point3( 0, 0, 0 ) );
 			IKeyframable* geom = dynamic_cast<IKeyframable*>( s.job->GetGeometries()->GetItem( "g_edit" ) );
 			if( !geom ) { wBOk = false; continue; }
-			// Cyclic corner shift keeping exact normal +y and exact AABB [-2,2]x[3,3]x[-2,2]:
-			// HSheet(y=3, half=2, normalUp=true) has b=(-2,3,-2), a=(2,3,-2), d=(2,3,2), c=(-2,3,2)
-			// passed to SheetQuad(a,b,c,d): pta=(2,3,-2), ptb=(-2,3,-2), ptc=(-2,3,2), ptd=(2,3,2).
-			// Shift cyclically: pta=(-2,3,-2), ptb=(-2,3,2), ptc=(2,3,2), ptd=(2,3,-2).
 			const char* names[4] = { "pta", "ptb", "ptc", "ptd" };
 			const char* vals[4]  = { "-2 3 -2", "-2 3 2", "2 3 2", "2 3 -2" };
 			for( int c = 0; c < 4; ++c ) {
@@ -2472,18 +2450,16 @@ static void PartA()
 			if( st.Depth() != 1 ) wBOk = false;
 		}
 		Check( wBOk,
-			"A61b [DL-626]: per-sheet OpenSheetNormalRayReaches fallback detects coplanar different-material panes in both orders" );
+			"A61b [DL-626]: per-sheet OpenSheetNormalRayReaches fallback detects coplanar different-material panes in both TLAS orders" );
 
 		auto makeSlightlyTiltedGroupCoplanar = [&]( bool tiltFirst ) -> std::string {
-			// Flat pane at y = 3.0 spanning x in [16, 24], z in [-4, 4] (`glass15`),
-			// and slightly tilted pane (`theta = 1.2e-5` rad around z through (20, 3, 0),
-			// so `cos(theta) = 1 - 7.2e-11 >= 1 - 1e-10` -> SAME normal group, while at
-			// `grp.origin` near x = 0 its plane offset differs by `20 * sin(1.2e-5) = 2.4e-4 > 2 * kSeedEps`!).
 			const double fA[3] = { 24, 3, -4 }, fB[3] = { 16, 3, -4 }, fC[3] = { 16, 3, 4 }, fD[3] = { 24, 3, 4 };
 			const double dy = 4.0 * std::tan( 1.2e-5 );
 			const double tA[3] = { 24, 3.0 + dy, -4 }, tB[3] = { 16, 3.0 - dy, -4 }, tC[3] = { 16, 3.0 - dy, 4 }, tD[3] = { 24, 3.0 + dy, 4 };
-			const std::string flat = SheetQuad( "g_flat20", fA, fB, fC, fD ) + Obj( "flat20", "g_flat20", "glass15" );
-			const std::string tilt = SheetQuad( "g_tilt20", tA, tB, tC, tD ) + Obj( "tilt20", "g_tilt20", "glass133" );
+			const char* flatName = tiltFirst ? "z_flat20" : "a_flat20";
+			const char* tiltName = tiltFirst ? "a_tilt20" : "z_tilt20";
+			const std::string flat = SheetQuad( "g_flat20", fA, fB, fC, fD ) + Obj( flatName, "g_flat20", "glass15" );
+			const std::string tilt = SheetQuad( "g_tilt20", tA, tB, tC, tD ) + Obj( tiltName, "g_tilt20", "glass133" );
 			return Header() + ( tiltFirst ? ( tilt + flat ) : ( flat + tilt ) );
 		};
 		Loaded wC1( makeSlightlyTiltedGroupCoplanar( false ) );
@@ -2493,7 +2469,7 @@ static void PartA()
 			const IORStack st1 = wC1.Seed( Point3( 20.0, 0.0, 0.0 ) );
 			const IORStack st2 = wC2.Seed( Point3( 20.0, 0.0, 0.0 ) );
 			Check( st1.Depth() == 1 && st2.Depth() == 1,
-				"A61c [DL-626]: exact ray-hit distance detects coplanarity at x=20 for 1.2e-5 rad tilted group sibling in both orders" );
+				"A61c [DL-626]: exact ray-hit distance detects coplanarity at x=20 for 1.2e-5 rad tilted group sibling in both TLAS orders" );
 		}
 	}
 
@@ -2553,6 +2529,234 @@ static void PartA()
 			// stays well under 120.
 			Check( st.Depth() == 1 && rays <= 120,
 				"A62 [DL-626]: OpenSheetHoldsPoint + HasFreeSpaceDetourToSheet enforce shared per-step GroupDetourRayBudget across all auxNormals" );
+		}
+	}
+
+	// A63: Coplanar TLAS ties between open sheets and closed dielectric faces (`A63a`)
+	// and between opposite-facing zero-gap open sheets (`A63b`), flipping alphabetical
+	// object names so BOTH TLAS leaf orders are exercised:
+	{
+		// A63a: Closed dielectric `ice` (`glass133`, y in [0, 2.0]) with top face at y = 2.0
+		// flush with open sheet `pane1` (`glass15`, y = 2.0, +y) and second co-normal sheet
+		// `pane2` (`glass20`, y = 3.5, +y), plus single-sheet ungrouped twin (`pane1` only)
+		// and submerged opaque-detour twin (`rock` at y = -1.0 over seed at y = -2.0).
+		auto makeFlushIceGroup = [&]( bool iceFirst, bool withPane2, bool withRock ) -> std::string {
+			const char* iceName   = iceFirst ? "a_ice"   : "z_ice";
+			const char* pane1Name = iceFirst ? "m_pane1" : "a_pane1";
+			const char* pane2Name = iceFirst ? "z_pane2" : "m_pane2";
+			std::string s = Header()
+				+ "box_geometry\n{\n\tname g_fice\n\twidth 4.0\n\theight 2.0\n\tdepth 4.0\n}\n\n"
+				+ Obj( iceName, "g_fice", "glass133", "0 1.0 0" )
+				+ HSheet( "g_fpane1", 2.0, 6.0, true ) + Obj( pane1Name, "g_fpane1", "glass15" );
+			if( withPane2 ) {
+				s += HSheet( "g_fpane2", 3.5, 6.0, true ) + Obj( pane2Name, "g_fpane2", "glass20" );
+			}
+			if( withRock ) {
+				s += "box_geometry\n{\n\tname g_frock\n\twidth 1.0\n\theight 0.4\n\tdepth 1.0\n}\n\n"
+					+ Obj( "n_rock", "g_frock", "matte", "0 -1.0 0" );
+			}
+			return s;
+		};
+
+		Loaded fgA( makeFlushIceGroup( true, true, false ) );
+		Loaded fgB( makeFlushIceGroup( false, true, false ) );
+		Check( fgA.ok && fgB.ok, "A63a [DL-626] flush closed-dielectric + group sheets load in both TLAS orders" );
+		if( fgA.ok && fgB.ok ) {
+			// Seed outside `ice` at (0, -0.5, 0): crosses `ice` in [0, 2], flush `pane1` at y = 2, `pane2` at y = 3.5.
+			const IORStack outA = fgA.Seed( Point3( 0, -0.5, 0 ) );
+			const IORStack outB = fgB.Seed( Point3( 0, -0.5, 0 ) );
+			Check( outA.Depth() == 3 && outB.Depth() == 3 &&
+				outA.ObjectAt( 1 ) == fgA.O( "z_pane2" ) && outA.ObjectAt( 2 ) == fgA.O( "m_pane1" ) &&
+				outB.ObjectAt( 1 ) == fgB.O( "m_pane2" ) && outB.ObjectAt( 2 ) == fgB.O( "a_pane1" ),
+				"A63a [DL-626]: ConfirmSharedNormalRay confirms open sheet flush with closed dielectric face in both TLAS orders" );
+
+			// Seed inside `ice` at (0, 1.0, 0): `ice` encloses seed, and its exit at y = 2.0 ties with `pane1`.
+			// Both TLAS orders must order `[env, pane2, pane1, ice]` (`pane1` crossed `ice` -> outer to `ice`).
+			const IORStack inA = fgA.Seed( Point3( 0, 1.0, 0 ) );
+			const IORStack inB = fgB.Seed( Point3( 0, 1.0, 0 ) );
+			Check( inA.Depth() == 4 && inB.Depth() == 4 &&
+				inA.ObjectAt( 1 ) == fgA.O( "z_pane2" ) && inA.ObjectAt( 2 ) == fgA.O( "m_pane1" ) && inA.ObjectAt( 3 ) == fgA.O( "a_ice" ) &&
+				inB.ObjectAt( 1 ) == fgB.O( "m_pane2" ) && inB.ObjectAt( 2 ) == fgB.O( "a_pane1" ) && inB.ObjectAt( 3 ) == fgB.O( "z_ice" ),
+				"A63a [DL-626]: inside closed dielectric with flush top open sheet, nesting order [env, pane2, pane1, ice] is TLAS-invariant" );
+		}
+
+		Loaded fdA( makeFlushIceGroup( true, true, true ) );
+		Loaded fdB( makeFlushIceGroup( false, true, true ) );
+		if( fdA.ok && fdB.ok ) {
+			const IORStack detA = fdA.Seed( Point3( 0, -2.0, 0 ) );
+			const IORStack detB = fdB.Seed( Point3( 0, -2.0, 0 ) );
+			Check( detA.Depth() == 3 && detB.Depth() == 3 &&
+				detA.ObjectAt( 1 ) == fdA.O( "z_pane2" ) && detA.ObjectAt( 2 ) == fdA.O( "m_pane1" ) &&
+				detB.ObjectAt( 1 ) == fdB.O( "m_pane2" ) && detB.ObjectAt( 2 ) == fdB.O( "a_pane1" ),
+				"A63a [DL-626]: HasFreeSpaceDetourToSheets confirms open sheet flush with closed dielectric face in both TLAS orders" );
+		}
+
+		Loaded fsA( makeFlushIceGroup( true, false, false ) );
+		Loaded fsB( makeFlushIceGroup( false, false, false ) );
+		if( fsA.ok && fsB.ok ) {
+			const IORStack inSA = fsA.Seed( Point3( 0, 1.0, 0 ) );
+			const IORStack inSB = fsB.Seed( Point3( 0, 1.0, 0 ) );
+			Check( inSA.Depth() == 3 && inSB.Depth() == 3 &&
+				inSA.ObjectAt( 1 ) == fsA.O( "m_pane1" ) && inSA.ObjectAt( 2 ) == fsA.O( "a_ice" ) &&
+				inSB.ObjectAt( 1 ) == fsB.O( "a_pane1" ) && inSB.ObjectAt( 2 ) == fsB.O( "z_ice" ),
+				"A63a [DL-626]: ungrouped OpenSheetNormalRayReaches orders [env, pane1, ice] identically in both TLAS orders" );
+		}
+
+		// A63b: Zero-gap opposite-facing coplanar open sheets at y = 2.0 (`up` +y `glass15`,
+		// `down` -y `glass133`), tested both ungrouped and inside a multi-sheet group + detour.
+		auto makeOpposingZeroGap = [&]( bool upFirst, bool withUp2AndRock ) -> std::string {
+			const char* upName   = upFirst ? "a_up"   : "z_up";
+			const char* downName = upFirst ? "z_down" : "a_down";
+			std::string s = Header()
+				+ HSheet( "g_zup",   2.0, 5.0, true )  + Obj( upName,   "g_zup",   "glass15" )
+				+ HSheet( "g_zdown", 2.0, 5.0, false ) + Obj( downName, "g_zdown", "glass133" );
+			if( withUp2AndRock ) {
+				s += HSheet( "g_zup2", 4.0, 5.0, true ) + Obj( "m_up2", "g_zup2", "glass20" )
+					+ "box_geometry\n{\n\tname g_zrock\n\twidth 1.0\n\theight 0.4\n\tdepth 1.0\n}\n\n"
+					+ Obj( "n_zrock", "g_zrock", "matte", "0 1.0 0" );
+			}
+			return s;
+		};
+
+		Loaded ozA( makeOpposingZeroGap( true, false ) );
+		Loaded ozB( makeOpposingZeroGap( false, false ) );
+		Check( ozA.ok && ozB.ok, "A63b [DL-626] zero-gap opposite-facing sheets load in both TLAS orders" );
+		if( ozA.ok && ozB.ok ) {
+			const IORStack stA = ozA.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stB = ozB.Seed( Point3( 0, 0, 0 ) );
+			Check( stA.Depth() == 1 && stB.Depth() == 1,
+				"A63b [DL-626]: zero-gap opposite-facing coplanar sheets block each other in both TLAS orders" );
+
+			// Also verify ResolveOpenSheetCrossing across the zero-gap boundary at y = 2.0:
+			RayIntersection hitA( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			RayIntersection hitB( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			ozA.O( "a_up" )->IntersectRay( hitA, RISE_INFINITY, true, true, false );
+			ozB.O( "z_up" )->IntersectRay( hitB, RISE_INFINITY, true, true, false );
+			if( hitA.geometric.bHit && hitB.geometric.bHit ) {
+				IORStack wA( 1.0 ), wB( 1.0 );
+				wA.SetMediumProbeScene( &ozA.Scene() );
+				wB.SetMediumProbeScene( &ozB.Scene() );
+				wA.SetCurrentObject( ozA.O( "a_up" ) );
+				wB.SetCurrentObject( ozB.O( "z_up" ) );
+				const IORStackSeeding::OpenSheetCrossing cA =
+					IORStackSeeding::ResolveOpenSheetCrossing( hitA.geometric, 1.5, wA, ozA.O( "a_up" )->GetMaterial() );
+				const IORStackSeeding::OpenSheetCrossing cB =
+					IORStackSeeding::ResolveOpenSheetCrossing( hitB.geometric, 1.5, wB, ozB.O( "z_up" )->GetMaterial() );
+				Check( wA.Depth() == 1 && wB.Depth() == 1 && Close( cA.etaTo, 1.0 ) && Close( cB.etaTo, 1.0 ),
+					"A63b [DL-626]: ResolveOpenSheetCrossing across zero-gap opposing pair exits to air in both TLAS orders" );
+			}
+		}
+
+		Loaded ozdA( makeOpposingZeroGap( true, true ) );
+		Loaded ozdB( makeOpposingZeroGap( false, true ) );
+		if( ozdA.ok && ozdB.ok ) {
+			const IORStack stA = ozdA.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stB = ozdB.Seed( Point3( 0, 0, 0 ) );
+			// `up` at y = 2.0 is blocked by coplanar `down` (`kMembershipSheetFront`), which also blocks `m_up2` at y = 4.0!
+			Check( stA.Depth() == 1 && stB.Depth() == 1,
+				"A63b [DL-626]: group detour walk blocks on zero-gap opposite-facing coplanar sheet in both TLAS orders" );
+		}
+	}
+
+	// A64: Cost bounds on single-sheet multi-normal column walks (`A64a`, `R3-P1-1`)
+	// and 40 parallel 45-degree tilted non-overlapping panes (`A64b`, `R3-P1-2`):
+	{
+		// A64a: Annular spherical cap of radius R = 9.0 centered at (0, 0, 0) (`phi` in
+		// [12 deg, 45 deg], 24 azimuth wedges -> `auxNormals` populated near `kMaxAuxNormals = 32`,
+		// and every facet normal ray from (0, 0, 0) hits its facet squarely at `hitCos == 1.0`),
+		// blocked at y = 1.0 by a wide 40x40 opaque slab with 12 wide 40x40 closed `glass133`
+		// slabs stacked between y = 1.4 and y = 5.8.  With `GroupDetourRayBudget() = 10`,
+		// `columnWalkUsed` allows only 1 uncharged `vertProbe` column walk across all 33 normals.
+		std::ostringstream cap;
+		cap << "indexedmesh_geometry\n{\n\tname g_dome64\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+		const int NAz = 24;
+		const double R = 9.0;
+		const double phi0 = 12.0 * 3.14159265358979323846 / 180.0;
+		const double phi1 = 28.0 * 3.14159265358979323846 / 180.0;
+		const double phi2 = 45.0 * 3.14159265358979323846 / 180.0;
+		const double phis[3] = { phi0, phi1, phi2 };
+		for( int ring = 0; ring < 3; ++ring ) {
+			const double sp = std::sin( phis[ring] ), cp = std::cos( phis[ring] );
+			for( int k = 0; k < NAz; ++k ) {
+				const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / double( NAz );
+				cap << "\tvertex " << ( R * sp * std::cos( th ) ) << " " << ( R * cp ) << " " << ( R * sp * std::sin( th ) ) << "\n";
+			}
+		}
+		for( int k = 0; k < 3 * NAz; ++k ) cap << "\tuv 0 0\n";
+		for( int ring = 0; ring < 2; ++ring ) {
+			for( int k = 0; k < NAz; ++k ) {
+				const int kn = ( k + 1 ) % NAz;
+				const int i0 = ring * NAz + k,       i1 = ring * NAz + kn;
+				const int o0 = ( ring + 1 ) * NAz + k, o1 = ( ring + 1 ) * NAz + kn;
+				// Outward (+radial, +y) winding:
+				cap << "\ttriangle " << i0 << " " << i1 << " " << o1 << "\n";
+				cap << "\ttriangle " << i0 << " " << o1 << " " << o0 << "\n";
+			}
+		}
+		cap << "}\n\n";
+		std::string slabs =
+			"box_geometry\n{\n\tname g_wslab\n\twidth 40.0\n\theight 0.1\n\tdepth 40.0\n}\n\n"
+			+ Obj( "roof_opaque", "g_wslab", "matte", "0 1.0 0" );
+		for( int m = 0; m < 12; ++m ) {
+			char oname[24], posStr[48];
+			std::snprintf( oname, sizeof(oname), "gslab_%02d", m );
+			std::snprintf( posStr, sizeof(posStr), "0 %.2f 0", 1.4 + 0.4 * double( m ) );
+			slabs += Obj( oname, "g_wslab", "glass133", posStr );
+		}
+		Loaded sc64( Header() + cap.str() + Obj( "dome64", "g_dome64", "glass15" ) + slabs );
+		Check( sc64.ok, "A64a [DL-626] spherical-cap + 12 intermediate slabs detour budget scene loads" );
+		if( sc64.ok ) {
+			(void)sc64.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = 10;
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack st = sc64.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = IORStackSeeding::kGroupDetourRayBudget;
+			// Without `columnWalkUsed`, 33 normals x ~26-step `vertProbe` column walks
+			// spent >800 scene rays despite budget = 10; with 1 uncharged column walk +
+			// shared budget = 10, total scene rays (probe + 33 blocked hits + 1 column + <=10) <= 95.
+			Check( st.Depth() == 1 && rays <= 95,
+				"A64a [DL-626]: OpenSheetHoldsPoint charges vertProbe column walks after the first normal (<= 95 rays at budget 10)" );
+		}
+
+		// A64b: 40 parallel 45-degree tilted non-overlapping `glass15` panes spaced 0.25
+		// apart along normal (0, 1/sqrt(2), 1/sqrt(2)) above an opaque rock at (0, 0.6, 0.6)
+		// over seed (0, 0, 0).  Their 3D world AABBs overlap heavily, yet scalar distance
+		// pre-filtering + sorted group PlaneBands perform 0 coplanar object ray casts!
+		std::string tiltStack = Header()
+			+ "box_geometry\n{\n\tname g_trock\n\twidth 0.8\n\theight 0.3\n\tdepth 0.3\n}\n\n"
+			+ Obj( "trock", "g_trock", "matte", "0 0.6 0.6" );
+		const double invSqrt2 = 0.70710678118654752440;
+		for( int p = 0; p < 40; ++p ) {
+			const double d = 1.5 + 0.25 * double( p ); // normal distance from (0,0,0)
+			const double cy = d * invSqrt2, cz = d * invSqrt2;
+			const double hw = 3.0 * invSqrt2; // half-extent along (0, +1, -1)/sqrt(2) -> 3D AABB height/depth = 4.24 >> 0.25 spacing!
+			const double bQ[3] = { -4.0, cy + hw, cz - hw };
+			const double aQ[3] = {  4.0, cy + hw, cz - hw };
+			const double dQ[3] = {  4.0, cy - hw, cz + hw };
+			const double cQ[3] = { -4.0, cy - hw, cz + hw };
+			char gname[24], oname[24];
+			std::snprintf( gname, sizeof(gname), "g_tp%02d", p );
+			std::snprintf( oname, sizeof(oname), "tp%02d", p );
+			tiltStack += SheetQuad( gname, aQ, bQ, cQ, dQ ) + Obj( oname, gname, "glass15" );
+		}
+		Loaded ts40( tiltStack );
+		Check( ts40.ok, "A64b [DL-626] 40 parallel 45-degree tilted panes over rock load" );
+		if( ts40.ok ) {
+			(void)ts40.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+#ifdef RISE_HAS_COPLANAR_OBJECT_RAY_COUNTER
+			IORStackSeeding::Diagnostics::CoplanarObjectRayCounter() = 0;
+#endif
+			const IORStack st = ts40.Seed( Point3( 0, 0, 0 ) );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+#ifdef RISE_HAS_COPLANAR_OBJECT_RAY_COUNTER
+			const std::size_t coRays = IORStackSeeding::Diagnostics::CoplanarObjectRayCounter();
+#else
+			const std::size_t coRays = 0;
+#endif
+			Check( st.Depth() == 41 && coRays == 0 && rays <= 160,
+				"A64b [DL-626]: 40 parallel 45-degree tilted panes over rock seed all 40 with 0 coplanar object ray casts and <= 160 scene rays" );
 		}
 	}
 

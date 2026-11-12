@@ -110,6 +110,7 @@
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/RISE_API.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1665,8 +1666,8 @@ static void AuditPSSMLTSample( const StreamRecordingPSSMLT& m, size_t lightEnd, 
 
 static IJobPriv* LoadMediumBoxJob( bool heterogeneous )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/sobol_budget_medium_%d.RISEscene", (int)::getpid() );
+	char path[1024];
+	std::snprintf( path, sizeof(path), "%s/sobol_budget_medium_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), (int)::getpid() );
 	{
 		std::ofstream ofs( path );
 		if( !ofs ) return nullptr;

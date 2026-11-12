@@ -61,6 +61,7 @@
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -161,9 +162,9 @@ static const char* kScene =
 
 static IJobPriv* LoadScene( const char* tag )
 {
-    char path[512];
+    char path[1024];
     std::snprintf( path, sizeof(path),
-        "/tmp/modify_command_test_%s_%d.RISEscene", tag, (int)::getpid() );
+        "%s/modify_command_test_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, (int)::getpid() );
     std::ofstream ofs( path );
     if( !ofs.is_open() ) return nullptr;
     ofs << kScene;

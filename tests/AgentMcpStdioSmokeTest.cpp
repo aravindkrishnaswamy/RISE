@@ -36,6 +36,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Agent;
@@ -94,7 +95,7 @@ int main()
 	std::string scenePath;
 	{
 		const char* base = std::getenv( "TMPDIR" );
-		std::string dir = base ? base : "/tmp";
+		std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir.back() != '/' ) dir += '/';
 		scenePath = dir + "rise_agent_mcp_stdio_smoke.RISEscene";
 		std::ofstream f( scenePath.c_str(), std::ios::binary );

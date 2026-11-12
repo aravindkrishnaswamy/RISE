@@ -176,6 +176,7 @@
 #include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -326,9 +327,9 @@ static void TestNonfiniteCandidateRejected()
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/refractive_radiance_%s_%d.RISEscene",
+		"%s/refractive_radiance_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

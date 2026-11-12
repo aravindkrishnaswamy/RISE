@@ -64,6 +64,7 @@
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/IObjectPriv.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -96,7 +97,7 @@ static const char* const kScene =
 static std::string TempPath( const char* leaf )
 {
 	const char* t = std::getenv( "TMPDIR" );
-	std::string dir = ( t && *t ) ? t : "/tmp/";
+	std::string dir = ( t && *t ) ? std::string( t ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 	if( dir.empty() || dir[ dir.size() - 1 ] != '/' ) dir += '/';
 	return dir + leaf;
 }

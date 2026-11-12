@@ -40,6 +40,7 @@
 #include "../src/Library/Volume/Volume.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileReadBuffer.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -56,7 +57,7 @@ static void Check( bool cond, const char* name )
 static std::string TmpDir()
 {
 	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? tmp : "/tmp/";
+	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	return dir;
 }

@@ -36,6 +36,7 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -53,8 +54,7 @@ namespace
 
 	std::string TempPath( const char* n )
 	{
-		const char* b = std::getenv( "TMPDIR" );
-		std::string d = b ? b : "/tmp";
+		std::string d = RISE::TestSupport::ScratchBaseDir();
 		if( !d.empty() && d.back() != '/' ) d += '/';
 		return d + n;
 	}
@@ -78,7 +78,7 @@ namespace
 		"RISE ASCII SCENE 7\n"
 		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
 		"uniformcolor_painter\n{\nname pnt_col\ncolor 0.5 0.5 0.5\n}\n\n"
-		"hdr_painter\n{\nname pnt_env\nfile /tmp/x.hdr\n}\n\n"
+		"hdr_painter\n{\nname pnt_env\nfile probe_nonexistent.hdr\n}\n\n"
 		"lambertian_material\n{\nname mat\nreflectance pnt_col\n}\n\n"
 		"pathtracing_pel_rasterizer\n{\nsamples 8\npixel_filter box\noidn_denoise false\n"
 		"radiance_map pnt_env\nradiance_scale 2\n}\n\n"
@@ -120,7 +120,7 @@ namespace
 		CheckSpanText( ctrl, *pJob, Category::Rasterizer, "", "radiance_scale", "radiance_scale 2" );
 		CheckSpanText( ctrl, *pJob, Category::Rasterizer, "", "radiance_map", "radiance_map pnt_env" );
 		// Environment HDRI file lives on the bound painter (the widget names it).
-		CheckSpanText( ctrl, *pJob, Category::Painter, "pnt_env", "file", "file /tmp/x.hdr" );
+		CheckSpanText( ctrl, *pJob, Category::Painter, "pnt_env", "file", "file probe_nonexistent.hdr" );
 
 		// Whole-chunk (empty param): offset lands at the chunk keyword, length 0.
 		{

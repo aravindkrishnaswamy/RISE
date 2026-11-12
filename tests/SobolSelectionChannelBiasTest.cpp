@@ -99,6 +99,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -185,8 +186,8 @@ struct Means
 
 static std::string WriteToTempFile( const std::string& text, const char* suffix )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/sobol_chanbias_%s_%d", suffix,
+	char path[1024];
+	std::snprintf( path, sizeof(path), "%s/sobol_chanbias_%s_%d", RISE::TestSupport::ScratchBaseDir().c_str(), suffix,
 		static_cast<int>( ::getpid() ) );
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) return std::string();

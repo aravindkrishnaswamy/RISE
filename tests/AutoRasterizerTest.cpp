@@ -63,6 +63,7 @@
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/RasterizerDefaults.h"   // AutoIntegratorChoice
 #include "../src/Library/Rendering/AutoRasterizer.h"        // ResolvedIntegrator()
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -185,9 +186,9 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/auto_rasterizer_%s_%d.RISEscene", tag, static_cast<int>(::getpid()) );
+		"%s/auto_rasterizer_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) {
@@ -1216,7 +1217,7 @@ int main(int argc, char** argv)
 	{
 		char optPath[256];
 		std::snprintf( optPath, sizeof(optPath),
-			"/tmp/auto_probe_test_opts_%d.txt", static_cast<int>(::getpid()) );
+			"%s/auto_probe_test_opts_%d.txt", RISE::TestSupport::ScratchBaseDir().c_str(), static_cast<int>(::getpid()) );
 		std::ofstream ofs( optPath );
 		ofs << "force_number_of_threads 1\nrender_thread_reserve_count 0\n"
 		    << "auto_probe_activation_spp 1\n"

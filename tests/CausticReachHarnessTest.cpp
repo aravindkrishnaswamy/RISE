@@ -33,6 +33,7 @@
 #include "../src/Library/Interfaces/IScene.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Rendering/AutoRasterizer.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -238,8 +239,8 @@ int main( int argc, char* argv[] )
 			continue;
 		}
 
-		char tmpPath[256];
-		std::snprintf( tmpPath, sizeof(tmpPath), "/tmp/caustic_harness_%s.RISEscene", entry.name );
+		char tmpPath[1024];
+		std::snprintf( tmpPath, sizeof(tmpPath), "%s/caustic_harness_%s.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), entry.name );
 		{
 			std::ofstream ofs( tmpPath );
 			ofs << sceneText;

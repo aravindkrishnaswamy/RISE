@@ -48,6 +48,7 @@
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Job.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -191,8 +192,9 @@ namespace
 	// concatenation for the lifetime of this test instead.
 	std::string MakeTempPathWithoutExt()
 	{
+		const std::string scratchFallback = RISE::TestSupport::ScratchBaseDir() + "/";
 		const char* tmpdir = std::getenv( "TMPDIR" );
-		if ( !tmpdir ) tmpdir = "/tmp/";
+		if ( !tmpdir || !*tmpdir ) tmpdir = scratchFallback.c_str();
 		std::ostringstream os;
 		os << tmpdir;
 		if ( os.str().back() != '/' ) os << '/';

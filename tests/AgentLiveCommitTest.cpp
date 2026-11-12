@@ -65,6 +65,7 @@
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
+#include "TestTempDir.h"
 #ifdef _WIN32
 	#include <process.h>
 	#define getpid _getpid
@@ -6607,7 +6608,7 @@ static void TestUnnamedSingletonPatchAddressing()
 	std::string scenePath;
 	{
 		const char* base = std::getenv( "TMPDIR" );
-		std::string dir = base ? base : "/tmp";
+		std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 		scenePath = dir + std::to_string( (long)getpid() ) + "_rise_unnamed_singleton.RISEscene";
 		std::ofstream o( scenePath.c_str(), std::ios::binary );

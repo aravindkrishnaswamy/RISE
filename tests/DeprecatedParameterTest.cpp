@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Cst;
@@ -50,7 +51,7 @@ static const ParameterDescriptor* FindParam( const ChunkDescriptor& d, const std
 static std::string TempPath( const char* name )
 {
 	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	return dir + name;
 }

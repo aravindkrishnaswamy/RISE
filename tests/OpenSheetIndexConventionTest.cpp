@@ -63,6 +63,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -87,7 +88,7 @@ static void Check( bool condition, const std::string& testName )
 
 static unsigned int g_seedBase = 1000;
 static unsigned int g_renderIndex = 0;
-static char g_optPath[256];
+static char g_optPath[1024];
 
 class CapturingRasterizerOutput
 	: public virtual IRasterizerOutput
@@ -128,8 +129,8 @@ static double MeanLuminance( const CapturingRasterizerOutput& cap )
 //! independent randomized-QMC draws, libc rand() pinned likewise.
 static double Render( const std::string& sceneText )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/open_sheet_%d.RISEscene", static_cast<int>( ::getpid() ) );
+	char path[1024];
+	std::snprintf( path, sizeof(path), "%s/open_sheet_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), static_cast<int>( ::getpid() ) );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return -1.0;
@@ -372,7 +373,7 @@ int main( int argc, char** argv )
 	// One worker: a multithreaded render seeds workers from libc rand() in
 	// thread-start order and is not reproducible run to run.
 	if( !std::getenv( "RISE_OPTIONS_FILE" ) ) {
-		std::snprintf( g_optPath, sizeof(g_optPath), "/tmp/open_sheet_options_%d.txt", static_cast<int>( ::getpid() ) );
+		std::snprintf( g_optPath, sizeof(g_optPath), "%s/open_sheet_options_%d.txt", RISE::TestSupport::ScratchBaseDir().c_str(), static_cast<int>( ::getpid() ) );
 		std::atexit( []() { std::remove( g_optPath ); } );
 		std::ofstream opt( g_optPath );
 		opt << "force_number_of_threads 1\n";

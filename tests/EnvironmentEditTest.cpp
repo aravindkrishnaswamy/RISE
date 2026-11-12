@@ -44,6 +44,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -60,8 +61,7 @@ namespace
 
 	std::string TempPath( const char* name )
 	{
-		const char* base = std::getenv( "TMPDIR" );
-		std::string dir = base ? base : "/tmp";
+		std::string dir = RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir.back() != '/' ) dir += '/';
 		return dir + name;
 	}
@@ -92,7 +92,7 @@ namespace
 		return hay.find( needle ) != std::string::npos;
 	}
 
-	const std::string kHdriFile = "/tmp/rise_env_test_probe.hdr";   // need not exist (black-texture fallback)
+	const std::string kHdriFile = TempPath( "rise_env_test_probe.hdr" );   // need not exist (black-texture fallback)
 
 	// Scene whose active rasterizer BINDS an environment (hdr_painter + radiance_*).
 	std::string EnvBoundScene()
@@ -274,7 +274,7 @@ namespace
 		SceneEditController ctrl( *pJob, nullptr );
 		String nm;
 		const SceneEditController::AgentCommitResult r =
-			ctrl.AddEnvironment( String( "/tmp/rise_env_test_other.hdr" ), &nm );
+			ctrl.AddEnvironment( String( TempPath( "rise_env_test_other.hdr" ).c_str() ), &nm );
 		Check( !r.applied, "AddEnvironment refused (env already bound)" );
 		Check( !std::string( r.message.c_str() ).empty(), "refusal carries a message" );
 		// The original binding is untouched.
@@ -299,7 +299,7 @@ namespace
 
 		SceneEditController ctrl( *pJob, nullptr );
 
-		const std::string newFile = "/tmp/rise_env_test_probe2.hdr";
+		const std::string newFile = TempPath( "rise_env_test_probe2.hdr" );
 		Check( ctrl.SetEnvironmentFile( String( newFile.c_str() ) ), "SetEnvironmentFile applied" );
 
 		Env e;

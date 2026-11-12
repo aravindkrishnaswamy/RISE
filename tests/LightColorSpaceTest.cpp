@@ -65,6 +65,7 @@
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/RString.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -109,10 +110,10 @@ static std::string PelStr( const RISEPel& p )
 //----------------------------------------------------------------------
 static IJobPriv* LoadScene( const std::string& body, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	const char* tmp = std::getenv( "TMPDIR" );
 	std::snprintf( path, sizeof(path), "%s/light_colorspace_%s_%d.RISEscene",
-		( tmp && *tmp ) ? tmp : "/tmp", tag, (int)::getpid() );
+		( ( tmp && *tmp ) ? tmp : RISE::TestSupport::ScratchBaseDir().c_str() ), tag, (int)::getpid() );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return nullptr;

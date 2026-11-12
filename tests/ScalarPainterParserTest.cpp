@@ -35,6 +35,7 @@
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -111,9 +112,9 @@ static RayIntersectionGeometric MakeDummyRig()
 // prepends the version banner and writes the temp file.
 static IJobPriv* LoadScene( const char* body, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof( path ),
-		"/tmp/scalar_painter_test_%s_%d.RISEscene", tag, (int)::getpid() );
+		"%s/scalar_painter_test_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, (int)::getpid() );
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) return nullptr;
 	ofs << "RISE ASCII SCENE 7\n\n" << body;
@@ -236,9 +237,9 @@ static void TestPiecewiseLinearFile()
 {
 	std::cout << "TestPiecewiseLinearFile" << std::endl;
 	// Create a 2-column file alongside the scene.
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof( path ),
-		"/tmp/scalar_painter_test_pwl_%d.ior", (int)::getpid() );
+		"%s/scalar_painter_test_pwl_%d.ior", RISE::TestSupport::ScratchBaseDir().c_str(), (int)::getpid() );
 	std::ofstream f( path );
 	f << "380 1.10\n720 1.45\n";
 	f.close();
@@ -280,9 +281,9 @@ static void TestSpectralCurveInSingleScalarSlot()
 {
 	std::cout << "TestSpectralCurveInSingleScalarSlot" << std::endl;
 
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof( path ),
-		"/tmp/scalar_painter_test_single_%d.ior", (int)::getpid() );
+		"%s/scalar_painter_test_single_%d.ior", RISE::TestSupport::ScratchBaseDir().c_str(), (int)::getpid() );
 	std::ofstream f( path );
 	f << "380 1.10\n720 1.45\n";
 	f.close();
@@ -907,9 +908,9 @@ static void TestDielectricTauPreconversionWarning()
 	// 1. Spectral curve with values > 1.0 (raw sigma_a table) bound to tau.
 	{
 		pPrinter->Reset();
-		char path[512];
+		char path[1024];
 		std::snprintf( path, sizeof( path ),
-			"/tmp/scalar_painter_test_tau_sigma_%d.spectra", (int)::getpid() );
+			"%s/scalar_painter_test_tau_sigma_%d.spectra", RISE::TestSupport::ScratchBaseDir().c_str(), (int)::getpid() );
 		std::ofstream f( path );
 		f << "380 0.05\n500 2.50\n700 0.80\n";
 		f.close();
@@ -957,9 +958,9 @@ static void TestDielectricTauPreconversionWarning()
 	// 4. CONTROL: valid tau <= 1.0 (spectral file and inline) emits NO warning.
 	{
 		pPrinter->Reset();
-		char path[512];
+		char path[1024];
 		std::snprintf( path, sizeof( path ),
-			"/tmp/scalar_painter_test_tau_valid_%d.spectra", (int)::getpid() );
+			"%s/scalar_painter_test_tau_valid_%d.spectra", RISE::TestSupport::ScratchBaseDir().c_str(), (int)::getpid() );
 		std::ofstream f( path );
 		f << "380 0.05\n500 0.85\n700 0.95\n";
 		f.close();

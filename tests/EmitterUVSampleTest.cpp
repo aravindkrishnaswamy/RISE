@@ -100,6 +100,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 // Gate hygiene (docs/skills/variance-measurement.md, COMMON_RULES.md):
 // seed each render invocation explicitly rather than letting the
@@ -179,9 +180,9 @@ static double MeanLuminance( const CapturingRasterizerOutput& cap )
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/emitter_uv_sample_%s_%d.RISEscene",
+		"%s/emitter_uv_sample_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

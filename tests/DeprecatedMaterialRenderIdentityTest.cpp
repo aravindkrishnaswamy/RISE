@@ -53,6 +53,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -148,7 +149,7 @@ static std::string SceneText()
 static std::string TempPath( const std::string& name )
 {
 	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
+	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 	return dir + name;
 }
@@ -198,7 +199,7 @@ static bool RenderHash( unsigned long long& hash, double& mean )
 //! bit-identity proof for the frozen tier on these seven materials.
 static const unsigned long long kParentHash = 0xa4e972d01879f63cull;
 
-static char g_optPath[512] = { 0 };
+static char g_optPath[1024] = { 0 };
 
 int main()
 {

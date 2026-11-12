@@ -209,6 +209,7 @@
 #include "../src/Library/SceneEditor/GraphLayoutSidecar.h"   // doc-88 Phase 3 S14: direct sidecar read/write for PART 9's cross-checks
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 
@@ -2694,7 +2695,7 @@ int main()
             }
         }
         Check(expressionEdges == 8 && rowEdges == 2, "FOLLOWUP: every expression body/def and cp occurrence is checked");
-        Job* j = LoadFixture("/tmp/rise_reference_pipe_followup.RISEscene", scene);
+        Job* j = LoadFixture(RISE::TestSupport::ScratchPath( "rise_reference_pipe_followup.RISEscene" ).c_str(), scene);
         Check(j != nullptr, "FOLLOWUP: expression/tuple pipe scene derives");
         if (j) {
             {

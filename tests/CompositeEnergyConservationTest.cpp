@@ -49,6 +49,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "CompositeEnergyFixture.h"
+#include "TestTempDir.h"
 
 static const double kThetas[] = { 0.0, 30.0, 60.0, 80.0 };
 static const int kNumThetas = 4;
@@ -1248,8 +1249,8 @@ static double RegionMean( const CapturingRasterizerOutput& cap, unsigned x0, uns
 
 static bool Render( const std::string& sceneText, const char* tag, CapturingRasterizerOutput*& pCapOut, unsigned seed )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path), "%s/composite_energy_%s_%d.RISEscene", std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp", tag, (int)getpid() );
+	char path[1024];
+	std::snprintf( path, sizeof(path), "%s/composite_energy_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, (int)getpid() );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return false;
@@ -2185,8 +2186,8 @@ static void SectionD()
 		// never sets `bOpenSheet` (DL-220), so round 3's certificate-keyed
 		// unflip read it as closed: 0.800 against the plane's 0.63, omni 0,
 		// glass/glass 0.977 against 0.467.
-		char bzPath[512];
-		std::snprintf( bzPath, sizeof( bzPath ), "%s/composite_energy_sheet_%d.bezier", std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp", (int)getpid() );
+		char bzPath[1024];
+		std::snprintf( bzPath, sizeof( bzPath ), "%s/composite_energy_sheet_%d.bezier", RISE::TestSupport::ScratchBaseDir().c_str(), (int)getpid() );
 		{
 			std::ofstream bz( bzPath );
 			bz << "1\n";

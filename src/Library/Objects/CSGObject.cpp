@@ -3339,6 +3339,10 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 										riObjB.geometric.range - OpenSheetRecastStep( riObjB.geometric.range, subScale ) );
 									Ray entryProbeRay( ri.geometric.ray );
 									entryProbeRay.origin = ri.geometric.ray.PointAtLength( tEntryProbe );
+									if( entryProbeRay.hasDifferentials ) {
+										entryProbeRay.diffs.rxOrigin = entryProbeRay.diffs.rxOrigin + entryProbeRay.diffs.rxDir * tEntryProbe;
+										entryProbeRay.diffs.ryOrigin = entryProbeRay.diffs.ryOrigin + entryProbeRay.diffs.ryDir * tEntryProbe;
+									}
 									RayIntersection entryProbe( entryProbeRay, ri.geometric.rast );
 									entryProbe.geometric.PropagateCastInputs( ri.geometric );
 									const Scalar maxEntryProbe = ( riObjB.geometric.range - tEntryProbe ) +

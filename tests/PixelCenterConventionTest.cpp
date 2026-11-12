@@ -62,6 +62,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -124,7 +125,7 @@ static std::string Fmt( const char* f, ... )
 static std::vector<double> RenderMean( const std::string& scene, const char* tag, int n, unsigned saltBase,
 	unsigned& w, unsigned& h )
 {
-	const std::string path = Fmt( "/tmp/pixel_center_convention_%s_%d.RISEscene", tag, int( getpid() ) );
+	const std::string path = Fmt( "%s/pixel_center_convention_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag, int( getpid() ) );
 	{
 		std::ofstream ofs( path.c_str() );
 		ofs << scene;

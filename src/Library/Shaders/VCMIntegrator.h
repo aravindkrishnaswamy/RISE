@@ -262,8 +262,10 @@ namespace RISE
 			/// `cameraLensSample` is two canonical randoms used to pick
 			/// the point on the camera's entrance APERTURE the splat
 			/// connects to (debt 28).  Consumed only by a camera with a
-			/// finite aperture (`thinlens_camera`); every other camera
-			/// ignores it and connects to `camera.GetLocation()`.  No
+			/// finite aperture (`thinlens_camera`); point-aperture cameras
+			/// (`pinhole_camera`, `fisheye_camera`) ignore it and connect to
+			/// `camera.GetLocation()`, while delta-direction cameras
+			/// (`orthographic_camera`) skip `t == 1` splats altogether.  No
 			/// default on purpose -- a fixed value would give a thin
 			/// lens the right splat energy with no depth of field, a
 			/// sharp light-traced layer over a defocused eye-traced one.

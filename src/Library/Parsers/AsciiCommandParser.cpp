@@ -81,7 +81,23 @@ unsigned int AsciiCommandParser::TokenizeString( const char* szStr, String* toke
 			break;
 		}
 
-		mine = mine.substr( x, mine.size() );
+		if( cur_token >= max_tokens ) {
+			break;
+		}
+
+		mine = mine.substr( x );
+		if( mine[0] == '"' ) {
+			const std::string::size_type closeQuote = mine.find( '"', 1 );
+			if( closeQuote != std::string::npos ) {
+				tokens[cur_token++] = String( mine.substr( 1, closeQuote - 1 ).c_str() );
+				if( closeQuote + 1 >= mine.size() ) {
+					break;
+				}
+				mine = mine.substr( closeQuote + 1 );
+				continue;
+			}
+		}
+
 		x = mine.find_first_of( " \t\r" );
 
 		if( x == std::string::npos ) {
@@ -92,10 +108,6 @@ unsigned int AsciiCommandParser::TokenizeString( const char* szStr, String* toke
 		cur_token++;
 
 		if( x == mine.size() ) {
-			break;
-		}
-
-		if( cur_token > max_tokens ) {
 			break;
 		}
 

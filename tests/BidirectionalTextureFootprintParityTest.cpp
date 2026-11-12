@@ -114,6 +114,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 // Explicit render seeding (rise-render-seeding.md): renders are NOT
 // wall-clock seeded, and this file compares raw pixel statistics
@@ -180,9 +181,9 @@ public:
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/dl14_footprint_parity_%s_%d.RISEscene",
+		"%s/dl14_footprint_parity_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );

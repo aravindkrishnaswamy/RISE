@@ -57,6 +57,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Utilities/PSSMLTSampler.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -125,8 +126,8 @@ namespace
 
 	std::string WriteScene( const std::string& text, const std::string& tag )
 	{
-		char path[512];
-		std::snprintf( path, sizeof(path), "/tmp/dl458_anim_%s_%d.RISEscene",
+		char path[1024];
+		std::snprintf( path, sizeof(path), "%s/dl458_anim_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 			tag.c_str(), static_cast<int>( ::getpid() ) );
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return std::string();

@@ -63,6 +63,7 @@
 #include "../src/Library/Materials/GGXMaterial.h"
 #include "../src/Library/Materials/FabricMaterial.h"
 #include "../src/Library/Interfaces/IBSDF.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -81,7 +82,7 @@ namespace
 	std::string TempPath( const char* name )
 	{
 		const char* base = std::getenv( "TMPDIR" );
-		std::string dir = base ? base : "/tmp";
+		std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 		return dir + name;
 	}

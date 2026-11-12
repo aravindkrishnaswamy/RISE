@@ -70,6 +70,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -151,9 +152,9 @@ static RenderResult RenderOnce()
 {
 	RenderResult result{};
 
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path), "%s/sss_determinism_%d.RISEscene",
-		(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp"), static_cast<int>(::getpid()) );
+		RISE::TestSupport::ScratchBaseDir().c_str(), static_cast<int>(::getpid()) );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return result;

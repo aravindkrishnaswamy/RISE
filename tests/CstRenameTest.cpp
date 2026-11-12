@@ -22,6 +22,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Cst;
@@ -216,7 +217,8 @@ int main()
 		// path (Job::LoadAsciiSceneViaCst), not merely re-tokenise -- a rewrite that
 		// produced syntactically-plausible but semantically-broken text (e.g. clobbering
 		// neighbouring characters) would still parse as a String param and only fail here.
-		const char* path = "/tmp/dl164_renametest_roundtrip.RISEscene";
+		const std::string pathStr = RISE::TestSupport::ScratchPath( "dl164_renametest_roundtrip.RISEscene" );
+		const char* path = pathStr.c_str();
 		{ std::ofstream o( path ); o << out; }
 		Job* j = new Job();
 		const bool loaded = j->LoadAsciiSceneViaCst( path );

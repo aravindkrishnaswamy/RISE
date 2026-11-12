@@ -41,6 +41,7 @@
 #include "../src/Library/Modifiers/GlintModifier.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -69,7 +70,7 @@ namespace
 			dir = t;
 			if( dir.back() != '/' ) dir += '/';
 		} else {
-			dir = "/tmp/";
+			dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		}
 		std::string path = dir + "rise_glint_parse_" + tag + ".RISEscene";
 		std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );

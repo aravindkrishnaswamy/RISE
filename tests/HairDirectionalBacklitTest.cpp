@@ -103,6 +103,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -231,9 +232,9 @@ static void TestNonfiniteCandidateRejected()
 
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
-	char path[512];
+	char path[1024];
 	std::snprintf( path, sizeof(path),
-		"/tmp/hair_directional_backlit_test_%s_%d.RISEscene",
+		"%s/hair_directional_backlit_test_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(),
 		tag, static_cast<int>(::getpid()) );
 
 	std::ofstream ofs( path );
@@ -316,7 +317,7 @@ static std::string GroomBacklitByDirectionalLight(
 		<< "\n\tbase_detail 16\n\tseed 3\n}\n\n"
 		"standard_object\n{\n\tname groom_obj\n\tgeometry groom\n\tmaterial mat_hair\n\tposition 0 0 0\n}\n\n"
 		"pathtracing_pel_rasterizer\n{\n\tsamples " << samples << "\n\trr_min_depth 8\n\toidn_denoise FALSE\n}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_directional_backlit_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern hair_directional_backlit_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
 	return ss.str();
 }
 
@@ -343,7 +344,7 @@ static std::string LambertianControlBacklit(
 		"sphere_geometry\n{\n\tname ctrl_sphere\n\tradius 1.0\n}\n\n"
 		"standard_object\n{\n\tname ctrl_obj\n\tgeometry ctrl_sphere\n\tmaterial mat_lambert\n\tposition 0 0 0\n}\n\n"
 		"pathtracing_pel_rasterizer\n{\n\tsamples " << samples << "\n\trr_min_depth 8\n\toidn_denoise FALSE\n}\n\n"
-		"file_rasterizeroutput\n{\n\tpattern /tmp/hair_directional_backlit_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+		"file_rasterizeroutput\n{\n\tpattern hair_directional_backlit_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
 	return ss.str();
 }
 

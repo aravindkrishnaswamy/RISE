@@ -2117,6 +2117,7 @@
 		6DBFAA5309C4D2A20048A09D /* TransparencyShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TransparencyShaderOp.cpp; sourceTree = "<group>"; };
 		6DBFAA5409C4D2A20048A09D /* TransparencyShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TransparencyShaderOp.h; sourceTree = "<group>"; };
 		6DBFAA8109C4D2CD0048A09D /* commandconsole.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = commandconsole.cpp; path = ../../../src/RISE/commandconsole.cpp; sourceTree = SOURCE_ROOT; };
+		F2C0D3032F8E100100A1B2C3 /* CliOptions.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = CliOptions.h; path = ../../../src/RISE/CliOptions.h; sourceTree = SOURCE_ROOT; };
 		6DFD32ED0A0FBB1D00E99FBE /* CPU_Count.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CPU_Count.cpp; sourceTree = "<group>"; };
 		6DFD32EE0A0FBB1D00E99FBE /* CPU.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CPU.h; sourceTree = "<group>"; };
 		6DFD32F20A0FBBAA00E99FBE /* EXRReader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EXRReader.cpp; sourceTree = "<group>"; };
@@ -3209,6 +3210,7 @@
 		08FB7795FE84155DC02AAC07 /* Source */ = {
 			isa = PBXGroup;
 			children = (
+				F2C0D3032F8E100100A1B2C3 /* CliOptions.h */,
 				6DBFAA8109C4D2CD0048A09D /* commandconsole.cpp */,
 				F27F07E8069C428F0069C9E5 /* Library */,
 			);

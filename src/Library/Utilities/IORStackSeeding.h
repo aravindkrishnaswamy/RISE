@@ -241,6 +241,15 @@ namespace RISE
 				static thread_local std::size_t counter = 0;
 				return counter;
 			}
+
+			//! DL-626: counts object-only coplanar verification ray casts in
+			//! `ProbeCoplanarObjectAt`, for O(1) vs O(N^2) tilted-stack checks.
+			#define RISE_HAS_COPLANAR_OBJECT_RAY_COUNTER 1
+			inline std::size_t& CoplanarObjectRayCounter()
+			{
+				static thread_local std::size_t counter = 0;
+				return counter;
+			}
 		}
 
 		//! The most scene rays one detour certificate (group or single-sheet)
@@ -407,6 +416,8 @@ namespace RISE
 			Vector3 planeV;					//!< orthonormal tangent V = normal x planeU
 			Point3 p0;						//!< a representative point on the sheet
 			Scalar heightAbove;				//!< max over the sheet's bounds of dot(x - p0, normal)
+			Scalar planeTol;				//!< planarity half-thickness tolerance when `isPlanar`
+			Scalar maxNormalSin;			//!< max sin(angle(sampledNrm, normal)) when `isPlanar`
 			Scalar uMin, uMax;				//!< 2D bounds along planeU relative to p0
 			Scalar vMin, vMax;				//!< 2D bounds along planeV relative to p0
 			BoundingBox box;				//!< the sheet's world bounds
@@ -421,6 +432,8 @@ namespace RISE
 			  planeU( 1, 0, 0 ),
 			  planeV( 0, 1, 0 ),
 			  heightAbove( 0 ),
+			  planeTol( 0 ),
+			  maxNormalSin( 0 ),
 			  uMin( -RISE_INFINITY ),
 			  uMax( RISE_INFINITY ),
 			  vMin( -RISE_INFINITY ),
@@ -991,6 +1004,8 @@ namespace RISE
 
 			// Planarity and farthest-point auxiliary facet normal selection (DL-622 / DL-626).
 			const Scalar planeTol = Scalar( 1e-5 ) * std::max( Scalar( 1 ), diag );
+			out.planeTol = planeTol;
+			out.maxNormalSin = Scalar( 0 );
 			out.isPlanar = !sampledPts.empty();
 			out.auxNormals.clear();
 			for( std::size_t idx = 0; idx < sampledPts.size(); ++idx ) {
@@ -998,6 +1013,9 @@ namespace RISE
 				const Scalar cosN = Vector3Ops::Dot( sampledNrms[idx], bestNormal );
 				if( off > planeTol || cosN < Scalar( 0.9999 ) ) {
 					out.isPlanar = false;
+				} else {
+					const Scalar sinSq = std::max( Scalar( 0 ), Scalar( 1 ) - cosN * cosN );
+					out.maxNormalSin = std::max( out.maxNormalSin, std::sqrt( sinSq ) );
 				}
 			}
 			if( !out.isPlanar && !sampledNrms.empty() ) {
@@ -1039,6 +1057,13 @@ namespace RISE
 		//! group instead of N independent BVH ray walks.
 		struct OpenSheetNormalGroup
 		{
+			struct PlaneBand
+			{
+				Scalar nLo;
+				Scalar nHi;
+				Scalar nHiPrefix;
+				std::size_t sheetIdx;
+			};
 			Vector3 normal;
 			Vector3 planeU;
 			Vector3 planeV;
@@ -1046,6 +1071,7 @@ namespace RISE
 			std::vector<std::size_t> sheetIndices;
 			std::vector<Scalar> heights;
 			std::vector<Scalar> uMin, uMax, vMin, vMax;
+			std::vector<PlaneBand> sortedBands;
 			Scalar maxHeight;
 
 			OpenSheetNormalGroup() :
@@ -1085,11 +1111,21 @@ namespace RISE
 		//! (`PosedOpenSheet`).
 		struct OpenSheetCatalog
 		{
+			struct ClosedTrackableEntry
+			{
+				const IObject* pObj;
+				BoundingBox box;
+				Matrix4 xform;
+				unsigned long long shapeRev;
+			};
 			const IObjectManager* pObjects;
 			unsigned long long generation;
 			unsigned long long epoch;
 			unsigned int itemCount;
 			std::vector<OpenSheetCatalogEntry> sheets;
+			//! World-visible closed / non-open trackable objects (`MaterialMayBeTrackable`
+			//! and not in `sheets`), for O(1) AABB-culled coplanar tie checks in `TallyProbe`.
+			std::vector<ClosedTrackableEntry> closedTrackable;
 			//! Planar sheets grouped by shared unit normal (DL-622 Gap 5).
 			std::vector<OpenSheetNormalGroup> normalGroups;
 			//! Re-posed descriptions of listed sheets (motion blur), one per
@@ -1098,10 +1134,15 @@ namespace RISE
 			//! Every enumerated scene object, sorted (identity checks for
 			//! stack keys that must not be dereferenced unless they are one).
 			std::vector<const IObject*> objects;
+			//! Per-`ConfirmOpenSheetsAt` cached pose-validity mask for `normalGroups`
+			//! and fallback list for non-planar or mutated sheets (`confirmDepth > 0`).
+			std::vector<bool> confirmGroupPoseValid;
+			std::vector<OpenSheetCatalogEntry> confirmFallbackSheets;
 			//! Diagonal of the union of the world-visible objects' bounds: the
 			//! scene's length scale for self-hit tolerances.
 			Scalar sceneDiagonal;
 			int walkSteps;
+			int confirmDepth;
 			bool hasSheets;
 			bool hasTrackableMedia;
 
@@ -1112,6 +1153,7 @@ namespace RISE
 			  itemCount( 0 ),
 			  sceneDiagonal( 1 ),
 			  walkSteps( kMaxProbeSteps ),
+			  confirmDepth( 0 ),
 			  hasSheets( false ),
 			  hasTrackableMedia( false )
 			{}
@@ -1191,6 +1233,7 @@ namespace RISE
 			catalog.epoch = epoch;
 			catalog.itemCount = itemCount;
 			catalog.sheets.clear();
+			catalog.closedTrackable.clear();
 			catalog.normalGroups.clear();
 			catalog.posed.clear();
 			catalog.objects.clear();
@@ -1198,6 +1241,7 @@ namespace RISE
 			struct Collect : IEnumCallback<IObject>
 			{
 				std::vector<OpenSheetCatalogEntry>* out;
+				std::vector<OpenSheetCatalog::ClosedTrackableEntry>* closedOut;
 				std::vector<const IObject*>* objects;
 				BoundingBox bounds;
 				bool any;
@@ -1223,25 +1267,39 @@ namespace RISE
 						}
 					}
 					const IMaterial* pMat = object.GetMaterial();
-					if( MaterialMayBeTrackable( pMat ) ) {
+					const bool trackable = MaterialMayBeTrackable( pMat );
+					if( trackable ) {
 						anyTrackable = true;
 					}
-					if( !MaterialMayRefract( pMat ) ) {
-						return true;
+					if( MaterialMayRefract( pMat ) ) {
+						OpenSheetCatalogEntry entry;
+						if( DescribeOpenSheet( object, entry ) ) {
+							out->push_back( entry );
+							return true;
+						}
 					}
-					OpenSheetCatalogEntry entry;
-					if( DescribeOpenSheet( object, entry ) ) {
-						out->push_back( entry );
+					if( trackable ) {
+						OpenSheetCatalog::ClosedTrackableEntry ct;
+						ct.pObj = &object;
+						ct.box = b;
+						ct.xform = object.GetFinalTransformMatrix();
+						ct.shapeRev = object.ShapeRevision();
+						closedOut->push_back( ct );
 					}
 					return true;
 				}
 			} collect;
 			collect.out = &catalog.sheets;
+			collect.closedOut = &catalog.closedTrackable;
 			collect.objects = &catalog.objects;
 			collect.any = false;
 			collect.anyTrackable = false;
 			pObjects->EnumerateObjects( collect );
 			std::sort( catalog.objects.begin(), catalog.objects.end() );
+			std::sort( catalog.closedTrackable.begin(), catalog.closedTrackable.end(),
+				[]( const OpenSheetCatalog::ClosedTrackableEntry& a, const OpenSheetCatalog::ClosedTrackableEntry& b ) {
+					return SheetGeomKeyLess( a.pObj, b.pObj );
+				} );
 			std::sort( catalog.sheets.begin(), catalog.sheets.end(),
 				[]( const OpenSheetCatalogEntry& a, const OpenSheetCatalogEntry& b ) {
 					if( a.normal.x != b.normal.x ) return a.normal.x < b.normal.x;
@@ -1279,6 +1337,7 @@ namespace RISE
 					catalog.normalGroups.push_back( grp );
 				}
 				OpenSheetNormalGroup& grp = catalog.normalGroups[gIdx];
+				Scalar hMinS = RISE_INFINITY;
 				Scalar hMaxS = -RISE_INFINITY;
 				Scalar uMinS = RISE_INFINITY, uMaxS = -RISE_INFINITY;
 				Scalar vMinS = RISE_INFINITY, vMaxS = -RISE_INFINITY;
@@ -1288,7 +1347,9 @@ namespace RISE
 						( corner & 2 ) ? s.box.ur.y : s.box.ll.y,
 						( corner & 4 ) ? s.box.ur.z : s.box.ll.z );
 					const Vector3 rel = Vector3Ops::mkVector3( q, grp.origin );
-					hMaxS = std::max( hMaxS, Vector3Ops::Dot( rel, grp.normal ) );
+					const Scalar hCorner = Vector3Ops::Dot( rel, grp.normal );
+					hMinS = std::min( hMinS, hCorner );
+					hMaxS = std::max( hMaxS, hCorner );
 					const Scalar u = Vector3Ops::Dot( rel, grp.planeU );
 					const Scalar v = Vector3Ops::Dot( rel, grp.planeV );
 					uMinS = std::min( uMinS, u );
@@ -1300,6 +1361,17 @@ namespace RISE
 				const Scalar vPad = Scalar( 1e-6 ) * ( Scalar( 1 ) + std::fabs( vMinS ) + std::fabs( vMaxS ) );
 				if( std::isfinite( uPad ) ) { uMinS -= uPad; uMaxS += uPad; }
 				if( std::isfinite( vPad ) ) { vMinS -= vPad; vMaxS += vPad; }
+				const Scalar cosGrp = std::min( Scalar( 1 ), std::max( Scalar( -1 ), Vector3Ops::Dot( grp.normal, s.normal ) ) );
+				const Scalar sinGrp = std::sqrt( std::max( Scalar( 0 ), Scalar( 1 ) - cosGrp * cosGrp ) );
+				const Scalar diagS = Vector3Ops::Magnitude( s.box.GetExtents() );
+				const Scalar pOff = Vector3Ops::Dot( Vector3Ops::mkVector3( s.p0, grp.origin ), grp.normal );
+				const Scalar reach = s.planeTol + diagS * ( s.maxNormalSin + sinGrp );
+				OpenSheetNormalGroup::PlaneBand band;
+				band.nLo = std::isfinite( reach ) ? std::max( hMinS, pOff - reach ) : hMinS;
+				band.nHi = std::isfinite( reach ) ? std::min( hMaxS, pOff + reach ) : hMaxS;
+				band.nHiPrefix = band.nHi;
+				band.sheetIdx = idx;
+				grp.sortedBands.push_back( band );
 				grp.sheetIndices.push_back( idx );
 				grp.heights.push_back( hMaxS );
 				grp.uMin.push_back( uMinS );
@@ -1307,6 +1379,20 @@ namespace RISE
 				grp.vMin.push_back( vMinS );
 				grp.vMax.push_back( vMaxS );
 				grp.maxHeight = std::max( grp.maxHeight, hMaxS );
+			}
+			for( std::size_t g = 0; g < catalog.normalGroups.size(); ++g ) {
+				std::vector<OpenSheetNormalGroup::PlaneBand>& bands = catalog.normalGroups[g].sortedBands;
+				std::sort( bands.begin(), bands.end(),
+					[]( const OpenSheetNormalGroup::PlaneBand& a, const OpenSheetNormalGroup::PlaneBand& b ) {
+						if( a.nLo != b.nLo ) return a.nLo < b.nLo;
+						if( a.nHi != b.nHi ) return a.nHi < b.nHi;
+						return a.sheetIdx < b.sheetIdx;
+					} );
+				Scalar runMax = -RISE_INFINITY;
+				for( std::size_t b = 0; b < bands.size(); ++b ) {
+					runMax = std::max( runMax, bands[b].nHi );
+					bands[b].nHiPrefix = runMax;
+				}
 			}
 			std::sort( catalog.normalGroups.begin(), catalog.normalGroups.end(),
 				[]( const OpenSheetNormalGroup& a, const OpenSheetNormalGroup& b ) {
@@ -1465,6 +1551,13 @@ namespace RISE
 			}
 		};
 
+		inline bool PointNearBox( const Point3& p, const BoundingBox& sb, const Scalar pad )
+		{
+			return p.x >= sb.ll.x - pad && p.x <= sb.ur.x + pad &&
+				p.y >= sb.ll.y - pad && p.y <= sb.ur.y + pad &&
+				p.z >= sb.ll.z - pad && p.z <= sb.ur.z + pad;
+		}
+
 		/// Walks one probe ray from `pos` along `dir` and fills `out` with
 		/// the per-object exit/entry parity tally of the CLOSED trackable
 		/// objects it meets (certified open refractive sheets have no
@@ -1485,6 +1578,8 @@ namespace RISE
 			Diagnostics::ProbeTraceCounter()++;
 			std::size_t count = 0;
 			const Scalar kSeedEps = Scalar( 1e-4 );
+			const std::vector<OpenSheetCatalog::ClosedTrackableEntry>& closedTrackable =
+				EnsureOpenSheetCatalog( pObjects ).closedTrackable;
 			Ray probe( pos, dir );
 			// One step adds at most one entry: never walk more steps than
 			// the table holds, so no met object is ever silently dropped
@@ -1568,6 +1663,80 @@ namespace RISE
 							e->parity--;
 							if( e->firstEntryStep < 0 ) {
 								e->firstEntryStep = step;
+							}
+						}
+					}
+				}
+
+				// DL-626: if another closed trackable object shares a coplanar face at
+				// `ri.geometric.ptIntersection` (e.g. an open sheet or opaque wall wins
+				// the TLAS tie over a flush closed dielectric face, or two closed
+				// dielectrics share a flush face), `probe.Advance(kSeedEps)` would step
+				// past it.  Check `closedTrackable` entries whose AABB is within `2e-5`
+				// of the hit point over the disjoint window `[max(0, r - 1e-5), r + 1e-5]`
+				// (strictly inside `[probeOrigin, probeOrigin + r + kSeedEps)`).
+				if( !closedTrackable.empty() &&
+					!( closedTrackable.size() == 1 && closedTrackable[0].pObj == ri.pObject ) )
+				{
+					const Scalar kCoTol = Scalar( 1e-5 );
+					const Scalar startOff = std::max( Scalar( 0 ), ri.geometric.range - kCoTol );
+					const Point3 coOrigin = Point3Ops::mkPoint3( probe.origin, probe.Dir() * startOff );
+					const Scalar maxCoRange = ( ri.geometric.range - startOff ) + kCoTol;
+					for( std::size_t ci = 0; ci < closedTrackable.size(); ++ci ) {
+						const OpenSheetCatalog::ClosedTrackableEntry& ct = closedTrackable[ci];
+						if( !ct.pObj || ct.pObj == ri.pObject ) {
+							continue;
+						}
+						const BoundingBox ctBox =
+							( ct.pObj->ShapeRevision() == ct.shapeRev && SamePose( ct.pObj->GetFinalTransformMatrix(), ct.xform ) )
+							? ct.box : ct.pObj->getBoundingBox();
+						if( !PointNearBox( ri.geometric.ptIntersection, ctBox, Scalar( 2 ) * kCoTol ) ) {
+							continue;
+						}
+						RayIntersection ctRi( Ray( coOrigin, probe.Dir() ), nullRasterizerState );
+						ctRi.pObject = ct.pObj;
+						ctRi.pMaterial = ct.pObj->GetMaterial();
+						ct.pObj->IntersectRay( ctRi, maxCoRange, true, true, false );
+						if( !ctRi.geometric.bHit || ctRi.geometric.range > maxCoRange ||
+							( startOff > Scalar( 0 ) && ctRi.geometric.range <= NEARZERO ) ) {
+							continue;
+						}
+						if( !ctRi.pObject ) ctRi.pObject = ct.pObj;
+						if( !ctRi.pMaterial ) ctRi.pMaterial = ct.pObj->GetMaterial();
+						SpecularInfo ctInfo;
+						if( ClassifyMembershipHit( ctRi, probe.Dir(), nm, ctInfo ) != kMembershipTransparent ) {
+							continue;
+						}
+						if( pLanes ) {
+							pLanes->diverged = true;
+						}
+						ProbeEntry* ce = 0;
+						for( std::size_t d = 0; d < count; d++ ) {
+							if( out[d].pObj == ct.pObj ) {
+								ce = &out[d];
+								break;
+							}
+						}
+						if( !ce && count < capacity ) {
+							ce = &out[count++];
+							ce->pObj = ct.pObj;
+							ce->ior = ctInfo.ior;
+							ce->parity = 0;
+							ce->firstExitStep = -1;
+							ce->firstEntryStep = -1;
+							ce->repushParentIor = !ctInfo.canRefract;
+						}
+						if( ce ) {
+							if( ctRi.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
+								ce->parity++;
+								if( ce->firstExitStep < 0 ) {
+									ce->firstExitStep = step;
+								}
+							} else {
+								ce->parity--;
+								if( ce->firstEntryStep < 0 ) {
+									ce->firstEntryStep = step;
+								}
 							}
 						}
 					}
@@ -1681,12 +1850,34 @@ namespace RISE
 			return true;
 		}
 
-		inline bool PointNearSheetBounds( const Point3& p, const IObject* pSheet, const Scalar pad )
+		inline MembershipHit ProbeCoplanarObjectAt(
+			const IObject* pObj,
+			const Point3& origin,
+			const Vector3& normal,
+			const Scalar hitDist,
+			const Scalar nm,
+			RayIntersection& outRi,
+			SpecularInfo& outInfo
+			)
 		{
-			const BoundingBox sb = pSheet->getBoundingBox();
-			return p.x >= sb.ll.x - pad && p.x <= sb.ur.x + pad &&
-				p.y >= sb.ll.y - pad && p.y <= sb.ur.y + pad &&
-				p.z >= sb.ll.z - pad && p.z <= sb.ur.z + pad;
+			const Scalar kSeedEps = Scalar( 1e-4 );
+			const Scalar backOff = std::max( Scalar( 0 ), hitDist - Scalar( 2.5 ) * kSeedEps );
+			const Point3 coOrigin = Point3Ops::mkPoint3( origin, normal * backOff );
+			const Scalar maxRange = ( hitDist - backOff ) + Scalar( 2.5 ) * kSeedEps;
+			outRi = RayIntersection( Ray( coOrigin, normal ), nullRasterizerState );
+			outRi.pObject = pObj;
+			outRi.pMaterial = pObj->GetMaterial();
+			Diagnostics::CoplanarObjectRayCounter()++;
+			pObj->IntersectRay( outRi, maxRange, true, true, false );
+			if( !outRi.geometric.bHit || outRi.geometric.range > maxRange ) {
+				return kMembershipSkip;
+			}
+			if( backOff > Scalar( 0 ) && outRi.geometric.range <= NEARZERO ) {
+				return kMembershipSkip;
+			}
+			if( !outRi.pObject ) outRi.pObject = pObj;
+			if( !outRi.pMaterial ) outRi.pMaterial = pObj->GetMaterial();
+			return ClassifyMembershipHit( outRi, normal, nm, outInfo );
 		}
 
 		inline bool ProbeCoplanarSheetBackAt(
@@ -1699,23 +1890,157 @@ namespace RISE
 			SpecularInfo& outInfo
 			)
 		{
+			return ProbeCoplanarObjectAt( pSheet, origin, normal, hitDist, nm, outRi, outInfo ) == kMembershipSheetBack;
+		}
+
+		//! DL-626: checks whether any OTHER open sheet in the scene has a
+		//! coplanar `kMembershipSheetFront` or `kMembershipBlock` hit within
+		//! `+-2 * kSeedEps` of `origin + normal * hitDist`, making zero-gap
+		//! opposing/blocking sheet pairs independent of TLAS leaf order.
+		//! Pre-filters planar sheets by cached plane offset and cached world
+		//! AABB (`ce.box`) so non-coplanar tilted stacks pay zero ray casts
+		//! and zero `getBoundingBox()` calls.
+		inline MembershipHit ProbeCoplanarBlockingOpenSheetAt(
+			const IObjectManager* pObjects,
+			const Point3& origin,
+			const Vector3& normal,
+			const Scalar hitDist,
+			const Scalar nm,
+			const IObject* pIgnoreObj,
+			const IObject* pSeedObject,
+			const Scalar selfTol,
+			RayIntersection& outBlockRi
+			)
+		{
+			OpenSheetCatalog& cat = EnsureOpenSheetCatalog( pObjects );
+			const std::vector<OpenSheetCatalogEntry>& allSheets = cat.sheets;
+			if( allSheets.size() <= 1 ) {
+				return kMembershipSkip;
+			}
 			const Scalar kSeedEps = Scalar( 1e-4 );
-			const Scalar backOff = std::max( Scalar( 0 ), hitDist - Scalar( 2 ) * kSeedEps );
-			const Point3 coOrigin = Point3Ops::mkPoint3( origin, normal * backOff );
-			const Scalar maxRange = ( hitDist - backOff ) + Scalar( 2 ) * kSeedEps;
-			outRi = RayIntersection( Ray( coOrigin, normal ), nullRasterizerState );
-			outRi.pObject = pSheet;
-			outRi.pMaterial = pSheet->GetMaterial();
-			pSheet->IntersectRay( outRi, maxRange, true, true, false );
-			if( !outRi.geometric.bHit || outRi.geometric.range > maxRange ) {
-				return false;
+			const Scalar pad = Scalar( 2.5 ) * kSeedEps;
+			const Point3 hitPt = Point3Ops::mkPoint3( origin, normal * hitDist );
+			bool hasBlock = false;
+			auto testCandidate = [&]( const OpenSheetCatalogEntry& use ) -> MembershipHit {
+				if( !use.pObj || use.pObj == pIgnoreObj ) {
+					return kMembershipSkip;
+				}
+				if( use.isPlanar ) {
+					const Scalar diagUse = Vector3Ops::Magnitude( use.box.GetExtents() );
+					const Scalar slabTol = use.planeTol + diagUse * use.maxNormalSin + pad;
+					if( std::fabs( Vector3Ops::Dot( Vector3Ops::mkVector3( hitPt, use.p0 ), use.normal ) ) > slabTol ) {
+						return kMembershipSkip;
+					}
+				}
+				if( !PointNearBox( hitPt, use.box, pad ) ) {
+					return kMembershipSkip;
+				}
+				RayIntersection coRi( Ray( origin, normal ), nullRasterizerState );
+				SpecularInfo coInfo;
+				const MembershipHit coMem = ProbeCoplanarObjectAt( use.pObj, origin, normal, hitDist, nm, coRi, coInfo );
+				if( coMem == kMembershipSheetFront ) {
+					outBlockRi = coRi;
+					return kMembershipSheetFront;
+				}
+				if( coMem == kMembershipBlock ) {
+					if( !( pSeedObject && use.pObj == pSeedObject && hitDist < selfTol ) && !hasBlock ) {
+						outBlockRi = coRi;
+						hasBlock = true;
+					}
+				}
+				return kMembershipSkip;
+			};
+
+			if( cat.confirmDepth > 0 && cat.confirmGroupPoseValid.size() == cat.normalGroups.size() ) {
+				for( std::size_t g = 0; g < cat.normalGroups.size(); ++g ) {
+					if( !cat.confirmGroupPoseValid[g] ) {
+						continue;
+					}
+					const OpenSheetNormalGroup& grp = cat.normalGroups[g];
+					const std::vector<OpenSheetNormalGroup::PlaneBand>& bands = grp.sortedBands;
+					if( bands.empty() ) {
+						continue;
+					}
+					const Scalar hHit = Vector3Ops::Dot( Vector3Ops::mkVector3( hitPt, grp.origin ), grp.normal );
+					std::size_t lo = 0, hi = bands.size();
+					while( lo < hi ) {
+						const std::size_t mid = lo + ( hi - lo ) / 2;
+						if( bands[mid].nLo <= hHit + pad ) {
+							lo = mid + 1;
+						} else {
+							hi = mid;
+						}
+					}
+					for( std::size_t b = lo; b > 0; ) {
+						--b;
+						if( bands[b].nHiPrefix < hHit - pad ) {
+							break;
+						}
+						if( bands[b].nHi >= hHit - pad ) {
+							if( testCandidate( allSheets[bands[b].sheetIdx] ) == kMembershipSheetFront ) {
+								return kMembershipSheetFront;
+							}
+						}
+					}
+				}
+				for( std::size_t f = 0; f < cat.confirmFallbackSheets.size(); ++f ) {
+					if( testCandidate( cat.confirmFallbackSheets[f] ) == kMembershipSheetFront ) {
+						return kMembershipSheetFront;
+					}
+				}
+				return hasBlock ? kMembershipBlock : kMembershipSkip;
 			}
-			if( backOff > Scalar( 0 ) && outRi.geometric.range <= NEARZERO ) {
-				return false;
+
+			for( std::size_t i = 0; i < allSheets.size(); ++i ) {
+				const OpenSheetCatalogEntry& ce = allSheets[i];
+				if( !ce.pObj || ce.pObj == pIgnoreObj ) {
+					continue;
+				}
+				const OpenSheetCatalogEntry* pUse = &ce;
+				OpenSheetCatalogEntry posed;
+				if( ce.pObj->ShapeRevision() != ce.shapeRev ||
+					!SamePose( ce.pObj->GetFinalTransformMatrix(), ce.xform ) ) {
+					if( !PosedOpenSheet( ce, posed ) ) {
+						continue;
+					}
+					pUse = &posed;
+				}
+				if( testCandidate( *pUse ) == kMembershipSheetFront ) {
+					return kMembershipSheetFront;
+				}
 			}
-			if( !outRi.pObject ) outRi.pObject = pSheet;
-			if( !outRi.pMaterial ) outRi.pMaterial = pSheet->GetMaterial();
-			return ClassifyMembershipHit( outRi, normal, nm, outInfo ) == kMembershipSheetBack;
+			return hasBlock ? kMembershipBlock : kMembershipSkip;
+		}
+
+		//! DL-626: when @a pos is enclosed by closed dielectric(s) in
+		//! @a ordered (`orderedCount > 0`) and an open sheet wins a coplanar
+		//! TLAS tie against an enclosing closed dielectric's exit face at
+		//! `origin + normal * hitDist`, records that closed dielectric in
+		//! @a crossedVec so `closedInner` nesting order is TLAS-invariant.
+		inline void RecordCoplanarOrderedExitsAt(
+			ProbeEntry* const* ordered,
+			const std::size_t orderedCount,
+			const Point3& origin,
+			const Vector3& normal,
+			const Scalar hitDist,
+			const Scalar nm,
+			std::vector<const IObject*>* crossedVec
+			)
+		{
+			if( !ordered || orderedCount == 0 || !crossedVec ) {
+				return;
+			}
+			for( std::size_t m = 0; m < orderedCount; ++m ) {
+				const IObject* pClosed = ordered[m] ? ordered[m]->pObj : 0;
+				if( !pClosed || std::find( crossedVec->begin(), crossedVec->end(), pClosed ) != crossedVec->end() ) {
+					continue;
+				}
+				RayIntersection coRi( Ray( origin, normal ), nullRasterizerState );
+				SpecularInfo coInfo;
+				if( ProbeCoplanarObjectAt( pClosed, origin, normal, hitDist, nm, coRi, coInfo ) == kMembershipTransparent ) {
+					crossedVec->push_back( pClosed );
+				}
+			}
 		}
 
 		inline bool OpenSheetNormalRayReaches(
@@ -1734,7 +2059,12 @@ namespace RISE
 			const bool countProbeTrace = true,
 			int* pDetourRaysSpent = 0,
 			const int detourRayBudget = -1,
-			const bool chargeStepsToDetour = false
+			const bool chargeStepsToDetour = false,
+			const Scalar targetAloneDist = Scalar( -1 ),
+			const BoundingBox* pTargetBox = 0,
+			bool* pColumnWalkUsed = 0,
+			ProbeEntry* const* ordered = 0,
+			const std::size_t orderedCount = 0
 			);
 
 		//! DL-626 (4): when a seed on @a pSeedObject meets @a pSeedObject's own
@@ -1816,7 +2146,12 @@ namespace RISE
 			IORStack::EntryContext* outEntryCtx,
 			int& raysSpent,
 			const int rayBudget,
-			const bool obstacleIsSeedExit = false
+			const bool obstacleIsSeedExit = false,
+			const Scalar targetAloneDist = Scalar( -1 ),
+			const BoundingBox* pTargetBox = 0,
+			bool* pColumnWalkUsed = 0,
+			ProbeEntry* const* ordered = 0,
+			const std::size_t orderedCount = 0
 			)
 		{
 			if( !pObjects || !pSheet || !pObstacle || obstacleHit.geometric.range <= selfTol || raysSpent >= rayBudget ) {
@@ -1857,6 +2192,15 @@ namespace RISE
 			std::vector<const IObject*> vertCrossed = preCrossed;
 
 			BoundingBox obsBox = pObstacle->getBoundingBox();
+			const BoundingBox localTargetBox = pTargetBox ? *pTargetBox :
+				( ( expectedSheetCrossings == 1 && targetAloneDist >= Scalar( 0 ) ) ? BoundingBox() : pSheet->getBoundingBox() );
+			const BoundingBox& targetBox = pTargetBox ? *pTargetBox : localTargetBox;
+			const Scalar obsDist = Vector3Ops::Dot(
+				Vector3Ops::mkVector3( obstacleHit.geometric.ptIntersection, pos ), normal );
+			const Scalar targetColDist = ( expectedSheetCrossings == 1 && targetAloneDist >= Scalar( 0 ) )
+				? ( targetAloneDist - obsDist )
+				: Scalar( -1 );
+
 			struct OpaqueParity { const IObject* pObj; int parity; };
 			std::vector<OpaqueParity> opaqueObjs;
 			if( !obstacleHit.geometric.bProvablyNoInterior && !obstacleHit.geometric.bOpenSheet ) {
@@ -1865,6 +2209,10 @@ namespace RISE
 
 			const Scalar kSeedEps = Scalar( 1e-4 );
 			const int maxSteps = MaxSceneWalkSteps( pObjects );
+			const bool chargeColumnWalk = ( pColumnWalkUsed && *pColumnWalkUsed );
+			if( pColumnWalkUsed ) {
+				*pColumnWalkUsed = true;
+			}
 			Ray vertProbe( obstacleHit.geometric.ptIntersection, normal );
 			vertProbe.Advance( kSeedEps );
 			int vertSheetCrossings = 0;
@@ -1872,6 +2220,12 @@ namespace RISE
 			bool vertReachedSheet = false;
 			Scalar lastVertSheetDist = -RISE_INFINITY;
 			for( int step = 0; step < maxSteps; ++step ) {
+				if( chargeColumnWalk ) {
+					if( raysSpent >= rayBudget ) {
+						return false;
+					}
+					++raysSpent;
+				}
 				RayIntersection vri( vertProbe, nullRasterizerState );
 				Diagnostics::SceneRayCounter()++;
 				pObjects->IntersectRay( vri, true, true, false );
@@ -1881,6 +2235,27 @@ namespace RISE
 				SpecularInfo vInfo;
 				const MembershipHit vMem = ClassifyMembershipHit( vri, normal, nm, vInfo );
 				if( vMem != kMembershipSkip && vri.pObject == pSheet ) {
+					const Scalar vDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
+						normal );
+					if( vMem == kMembershipSheetBack ) {
+						RayIntersection coBlockRi( vertProbe, nullRasterizerState );
+						const MembershipHit coBlockMem = ProbeCoplanarBlockingOpenSheetAt(
+							pObjects, obstacleHit.geometric.ptIntersection, normal, vDist,
+							nm, pSheet, pSeedObject, Scalar( 0 ), coBlockRi );
+						if( coBlockMem == kMembershipSheetFront ) {
+							return false;
+						}
+						if( coBlockMem == kMembershipBlock ) {
+							if( pSeedObject && coBlockRi.pObject == pSeedObject ) {
+								return false;
+							}
+							obsBox.Include( coBlockRi.pObject->getBoundingBox() );
+						}
+						RecordCoplanarOrderedExitsAt(
+							ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+							normal, vDist, nm, &vertCrossed );
+					}
 					++vertSheetCrossings;
 					if( vertSheetCrossings == 1 && vMem != kMembershipSheetBack ) {
 						return false;
@@ -1892,9 +2267,7 @@ namespace RISE
 					} else {
 						return false;
 					}
-					lastVertSheetDist = Vector3Ops::Dot(
-						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
-						normal );
+					lastVertSheetDist = vDist;
 					if( vertSheetCrossings >= expectedSheetCrossings ) {
 						if( vertSheetParity > 0 ) {
 							vertReachedSheet = true;
@@ -1932,11 +2305,14 @@ namespace RISE
 				} else if( vMem == kMembershipSheetBack || vMem == kMembershipTransparent ) {
 					// Check if target `pSheet` is coplanar within `2 * kSeedEps`
 					// before `vertProbe.Advance(kSeedEps)` steps past its plane.
+					const Scalar vDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
+						normal );
+					const bool nearTarget = ( targetColDist >= Scalar( 0 ) )
+						? ( std::fabs( targetColDist - vDist ) <= Scalar( 2 ) * kSeedEps )
+						: PointNearBox( vri.geometric.ptIntersection, targetBox, Scalar( 2.5 ) * kSeedEps );
 					bool coHitTarget = false;
-					if( PointNearSheetBounds( vri.geometric.ptIntersection, pSheet, Scalar( 2.5 ) * kSeedEps ) ) {
-						const Scalar vDist = Vector3Ops::Dot(
-							Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
-							normal );
+					if( nearTarget ) {
 						RayIntersection coRi( vertProbe, nullRasterizerState );
 						SpecularInfo coInfo;
 						if( ProbeCoplanarSheetBackAt(
@@ -1945,11 +2321,27 @@ namespace RISE
 								Vector3Ops::mkVector3( coRi.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
 								normal );
 							if( coDist > lastVertSheetDist + Scalar( 0.5 ) * kSeedEps ) {
+								RayIntersection coBlockRi( vertProbe, nullRasterizerState );
+								const MembershipHit coBlockMem = ProbeCoplanarBlockingOpenSheetAt(
+									pObjects, obstacleHit.geometric.ptIntersection, normal, vDist,
+									nm, pSheet, pSeedObject, Scalar( 0 ), coBlockRi );
+								if( coBlockMem == kMembershipSheetFront ) {
+									return false;
+								}
+								if( coBlockMem == kMembershipBlock ) {
+									if( pSeedObject && coBlockRi.pObject == pSeedObject ) {
+										return false;
+									}
+									obsBox.Include( coBlockRi.pObject->getBoundingBox() );
+								}
 								coHitTarget = true;
 								if( vMem == kMembershipTransparent &&
 									std::find( vertCrossed.begin(), vertCrossed.end(), vri.pObject ) == vertCrossed.end() ) {
 									vertCrossed.push_back( vri.pObject );
 								}
+								RecordCoplanarOrderedExitsAt(
+									ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+									normal, vDist, nm, &vertCrossed );
 								++vertSheetCrossings;
 								++vertSheetParity;
 								lastVertSheetDist = coDist;
@@ -1968,6 +2360,9 @@ namespace RISE
 							if( std::find( vertPassed.begin(), vertPassed.end(), vri.pObject ) == vertPassed.end() ) {
 								vertPassed.push_back( vri.pObject );
 							}
+							RecordCoplanarOrderedExitsAt(
+								ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+								normal, vDist, nm, &vertCrossed );
 						} else if( std::find( vertCrossed.begin(), vertCrossed.end(), vri.pObject ) == vertCrossed.end() ) {
 							vertCrossed.push_back( vri.pObject );
 						}
@@ -2057,7 +2452,8 @@ namespace RISE
 					Point3Ops::mkPoint3( detourOrigin, U * waypoints[m].du ),
 					V * waypoints[m].dv );
 				int wExpectedCrossings = 1;
-				if( !CheckSheetAloneAlongRay( pSheet, wm, normal, sheetIsPlanar, 0, &wExpectedCrossings ) ) {
+				Scalar wAloneDist = Scalar( -1 );
+				if( !CheckSheetAloneAlongRay( pSheet, wm, normal, sheetIsPlanar, 0, &wExpectedCrossings, &wAloneDist ) ) {
 					continue;
 				}
 
@@ -2124,7 +2520,8 @@ namespace RISE
 						passedSheets ? &wPassed : 0,
 						crossedClosed ? &wCrossed : 0,
 						&wIor, 0, &wCtx, wExpectedCrossings, false, false,
-						&raysSpent, rayBudget, true ) ) {
+						&raysSpent, rayBudget, true,
+						wAloneDist, &targetBox, 0, ordered, orderedCount ) ) {
 					if( passedSheets ) {
 						std::vector<const IObject*> mergedPassed = segPassedSheets;
 						for( std::size_t k = 0; k < wPassed.size(); ++k ) {
@@ -2188,6 +2585,7 @@ namespace RISE
 			const Point3& pos,
 			const Vector3& normal,
 			const std::vector<const IObject*>& sheets,
+			const std::vector<Scalar>& sheetColDists,
 			const IObject* pObstacle,
 			const RayIntersection& obstacleHit,
 			const Scalar selfTol,
@@ -2196,7 +2594,9 @@ namespace RISE
 			const std::vector<const IObject*>& preCrossed,
 			const IObject* pSeedObject,
 			std::vector<DetourResult>& out,
-			const bool obstacleIsSeedExit = false
+			const bool obstacleIsSeedExit = false,
+			ProbeEntry* const* ordered = 0,
+			const std::size_t orderedCount = 0
 			)
 		{
 			const std::size_t n = sheets.size();
@@ -2269,56 +2669,95 @@ namespace RISE
 				SpecularInfo vInfo;
 				const MembershipHit vMem = ClassifyMembershipHit( vri, normal, nm, vInfo );
 				const std::size_t t = ( vMem != kMembershipSkip ) ? indexOf( vri.pObject ) : n;
-				if( vMem == kMembershipSheetBack ) {
-					bool parityClear = true;
-					for( std::size_t k = 0; k < opaqueObjs.size(); ++k ) {
-						if( opaqueObjs[k].parity != 0 ) parityClear = false;
+				if( vMem == kMembershipSheetBack || vMem == kMembershipTransparent ) {
+					if( vMem == kMembershipTransparent ) {
+						addUnique( vertCrossed, vri.pObject );
 					}
 					const Scalar colDist = Vector3Ops::Dot(
 						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
 						normal );
-					std::vector<const IObject*> planeHits;
-					planeHits.push_back( vri.pObject );
-					if( t < n && !resolved[t] ) {
-						resolved[t] = true;
-						open--;
-						if( parityClear ) {
-							snap[t].reached = true;
-							snap[t].columnDist = colDist;
-							snap[t].box = obsBox;
-							snap[t].passed = vertPassed;
-							snap[t].crossed = vertCrossed;
-						}
-					}
-					// Probe any remaining coplanar group sheets within `2 * kSeedEps`
-					// before `vertProbe.Advance(kSeedEps)` steps past their shared plane.
+					struct CoColHit { std::size_t idx; Scalar dist; };
+					std::vector<CoColHit> coHits;
 					for( std::size_t idx = 0; idx < n; ++idx ) {
-						if( resolved[idx] || sheets[idx] == vri.pObject ) {
+						if( resolved[idx] || sheets[idx] == vri.pObject || idx >= sheetColDists.size() ) {
 							continue;
 						}
-						if( !PointNearSheetBounds( vri.geometric.ptIntersection, sheets[idx], Scalar( 2.5 ) * kSeedEps ) ) {
+						if( std::fabs( sheetColDists[idx] - colDist ) > Scalar( 2 ) * kSeedEps ) {
 							continue;
 						}
 						RayIntersection coRi( vertProbe, nullRasterizerState );
 						SpecularInfo coInfo;
 						if( ProbeCoplanarSheetBackAt(
 								sheets[idx], obstacleHit.geometric.ptIntersection, normal, colDist, nm, coRi, coInfo ) ) {
+							const Scalar d = Vector3Ops::Dot(
+								Vector3Ops::mkVector3( coRi.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
+								normal );
+							coHits.push_back( { idx, d } );
+						}
+					}
+					if( vMem == kMembershipSheetBack || !coHits.empty() ) {
+						RayIntersection coBlockRi( vertProbe, nullRasterizerState );
+						const MembershipHit coBlockMem = ProbeCoplanarBlockingOpenSheetAt(
+							pObjects, obstacleHit.geometric.ptIntersection, normal, colDist,
+							nm, ( vMem == kMembershipSheetBack ? vri.pObject : 0 ),
+							pSeedObject, Scalar( 0 ), coBlockRi );
+						if( coBlockMem == kMembershipSheetFront ) {
+							break;
+						}
+						if( coBlockMem == kMembershipBlock ) {
+							const std::size_t bt = indexOf( coBlockRi.pObject );
+							if( bt < n && !resolved[bt] ) {
+								resolved[bt] = true;
+								open--;
+							}
+							if( pSeedObject && coBlockRi.pObject == pSeedObject ) {
+								break;
+							}
+							obsBox.Include( coBlockRi.pObject->getBoundingBox() );
+						}
+						if( vMem == kMembershipSheetBack ) {
+							RecordCoplanarOrderedExitsAt(
+								ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+								normal, colDist, nm, &vertCrossed );
+						}
+						bool parityClear = true;
+						for( std::size_t k = 0; k < opaqueObjs.size(); ++k ) {
+							if( opaqueObjs[k].parity != 0 ) parityClear = false;
+						}
+						std::vector<const IObject*> planeHits;
+						if( vMem == kMembershipSheetBack ) {
+							planeHits.push_back( vri.pObject );
+							if( t < n && !resolved[t] ) {
+								resolved[t] = true;
+								open--;
+								if( parityClear ) {
+									snap[t].reached = true;
+									snap[t].columnDist = colDist;
+									snap[t].box = obsBox;
+									snap[t].passed = vertPassed;
+									snap[t].crossed = vertCrossed;
+								}
+							}
+						}
+						for( std::size_t ch = 0; ch < coHits.size(); ++ch ) {
+							const std::size_t idx = coHits[ch].idx;
+							if( resolved[idx] ) {
+								continue;
+							}
 							resolved[idx] = true;
 							open--;
 							if( parityClear ) {
 								snap[idx].reached = true;
-								snap[idx].columnDist = Vector3Ops::Dot(
-									Vector3Ops::mkVector3( coRi.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
-									normal );
+								snap[idx].columnDist = coHits[ch].dist;
 								snap[idx].box = obsBox;
 								snap[idx].passed = vertPassed;
 								snap[idx].crossed = vertCrossed;
 							}
 							planeHits.push_back( sheets[idx] );
 						}
-					}
-					for( std::size_t ph = 0; ph < planeHits.size(); ++ph ) {
-						addUnique( vertPassed, planeHits[ph] );
+						for( std::size_t ph = 0; ph < planeHits.size(); ++ph ) {
+							addUnique( vertPassed, planeHits[ph] );
+						}
 					}
 				} else if( t < n && !resolved[t] && vMem != kMembershipBlock ) {
 					resolved[t] = true;
@@ -2362,10 +2801,8 @@ namespace RISE
 							break;
 						}
 					}
-			} else if( vMem == kMembershipSheetFront ) {
+				} else if( vMem == kMembershipSheetFront ) {
 					break;
-				} else if( vMem == kMembershipTransparent ) {
-					addUnique( vertCrossed, vri.pObject );
 				}
 				vertProbe = Ray( vri.geometric.ptIntersection, normal );
 				vertProbe.Advance( kSeedEps );
@@ -2564,22 +3001,14 @@ namespace RISE
 						SpecularInfo info;
 						const MembershipHit membership = ClassifyMembershipHit( ri, normal, nm, info );
 						const std::size_t t = ( membership != kMembershipSkip ) ? indexOf( ri.pObject ) : n;
-						if( membership == kMembershipSheetBack ) {
+						if( membership == kMembershipSheetBack || membership == kMembershipTransparent ) {
+							if( membership == kMembershipTransparent ) {
+								addUnique( wCrossed, ri.pObject );
+							}
 							const Scalar wDist = Vector3Ops::Dot(
 								Vector3Ops::mkVector3( ri.geometric.ptIntersection, wm ), normal );
-							std::vector<const IObject*> planeHits;
-							planeHits.push_back( ri.pObject );
-							if( t < n && candidate[t] ) {
-								candidate[t] = false;
-								DetourResult& r = out[t];
-								r.ok = true;
-								r.ior = info.ior;
-								r.ctx = IORStack::EntryContext::FromGeometric( ri.geometric, ri.pMaterial, false );
-								r.passed = snap[t].passed;
-								for( std::size_t k = 0; k < wPassed.size(); ++k ) addUnique( r.passed, wPassed[k] );
-								r.crossed = snap[t].crossed;
-								for( std::size_t k = 0; k < wCrossed.size(); ++k ) addUnique( r.crossed, wCrossed[k] );
-							}
+							struct CoSegHit { std::size_t idx; Scalar ior; IORStack::EntryContext ctx; };
+							std::vector<CoSegHit> coHits;
 							for( std::size_t c = 0; c < cluster.size(); ++c ) {
 								const std::size_t idx = cluster[c];
 								if( !candidate[idx] || sheets[idx] == ri.pObject ) {
@@ -2591,28 +3020,66 @@ namespace RISE
 								RayIntersection coRi( probe, nullRasterizerState );
 								SpecularInfo coInfo;
 								if( ProbeCoplanarSheetBackAt( sheets[idx], wm, normal, wDist, nm, coRi, coInfo ) ) {
+									coHits.push_back( {
+										idx,
+										coInfo.ior,
+										IORStack::EntryContext::FromGeometric( coRi.geometric, coRi.pMaterial, false )
+									} );
+								}
+							}
+							if( membership == kMembershipSheetBack || !coHits.empty() ) {
+								RayIntersection coBlockRi( probe, nullRasterizerState );
+								const MembershipHit coBlockMem = ProbeCoplanarBlockingOpenSheetAt(
+									pObjects, wm, normal, wDist, nm,
+									( membership == kMembershipSheetBack ? ri.pObject : 0 ),
+									0, Scalar( 0 ), coBlockRi );
+								if( coBlockMem == kMembershipSheetFront || coBlockMem == kMembershipBlock ) {
+									break;
+								}
+								if( membership == kMembershipSheetBack ) {
+									RecordCoplanarOrderedExitsAt(
+										ordered, orderedCount, wm, normal, wDist, nm, &wCrossed );
+								}
+								std::vector<const IObject*> planeHits;
+								if( membership == kMembershipSheetBack ) {
+									planeHits.push_back( ri.pObject );
+									if( t < n && candidate[t] ) {
+										candidate[t] = false;
+										DetourResult& r = out[t];
+										r.ok = true;
+										r.ior = info.ior;
+										r.ctx = IORStack::EntryContext::FromGeometric( ri.geometric, ri.pMaterial, false );
+										r.passed = snap[t].passed;
+										for( std::size_t k = 0; k < wPassed.size(); ++k ) addUnique( r.passed, wPassed[k] );
+										r.crossed = snap[t].crossed;
+										for( std::size_t k = 0; k < wCrossed.size(); ++k ) addUnique( r.crossed, wCrossed[k] );
+									}
+								}
+								for( std::size_t ch = 0; ch < coHits.size(); ++ch ) {
+									const std::size_t idx = coHits[ch].idx;
+									if( !candidate[idx] ) {
+										continue;
+									}
 									candidate[idx] = false;
 									DetourResult& r = out[idx];
 									r.ok = true;
-									r.ior = coInfo.ior;
-									r.ctx = IORStack::EntryContext::FromGeometric( coRi.geometric, coRi.pMaterial, false );
+									r.ior = coHits[ch].ior;
+									r.ctx = coHits[ch].ctx;
 									r.passed = snap[idx].passed;
 									for( std::size_t k = 0; k < wPassed.size(); ++k ) addUnique( r.passed, wPassed[k] );
 									r.crossed = snap[idx].crossed;
 									for( std::size_t k = 0; k < wCrossed.size(); ++k ) addUnique( r.crossed, wCrossed[k] );
 									planeHits.push_back( sheets[idx] );
 								}
-							}
-							for( std::size_t ph = 0; ph < planeHits.size(); ++ph ) {
-								addUnique( wPassed, planeHits[ph] );
+								for( std::size_t ph = 0; ph < planeHits.size(); ++ph ) {
+									addUnique( wPassed, planeHits[ph] );
+								}
 							}
 						} else if( t < n && candidate[t] ) {
 							candidate[t] = false;
 							break;
 						} else if( membership == kMembershipBlock || membership == kMembershipSheetFront ) {
 							break;
-						} else if( membership == kMembershipTransparent ) {
-							addUnique( wCrossed, ri.pObject );
 						}
 						bool more = false;
 						for( std::size_t c = 0; c < cluster.size(); ++c ) {
@@ -2658,7 +3125,12 @@ namespace RISE
 			const bool countProbeTrace,
 			int* pDetourRaysSpent,
 			const int detourRayBudget,
-			const bool chargeStepsToDetour
+			const bool chargeStepsToDetour,
+			const Scalar targetAloneDist,
+			const BoundingBox* pTargetBox,
+			bool* pColumnWalkUsed,
+			ProbeEntry* const* ordered,
+			const std::size_t orderedCount
 			)
 		{
 			if( countProbeTrace ) {
@@ -2669,6 +3141,9 @@ namespace RISE
 			const Scalar kSeedEps = Scalar( 1e-4 );
 			const Scalar posMax = std::max( { Scalar( 1 ), std::fabs( pos.x ), std::fabs( pos.y ), std::fabs( pos.z ) } );
 			const Scalar selfTol = std::min( Scalar( 1e-7 ) * posMax, Scalar( 1e-5 ) * SceneLengthScale( pObjects ) );
+			const BoundingBox localTargetBox = pTargetBox ? *pTargetBox :
+				( ( expectedSheetCrossings == 1 && targetAloneDist >= Scalar( 0 ) ) ? BoundingBox() : pSheet->getBoundingBox() );
+			const BoundingBox& targetBox = pTargetBox ? *pTargetBox : localTargetBox;
 			bool ownChecked = false;
 			bool selfHitSkipped = false;
 			int sheetCrossingsSeen = 0;
@@ -2676,6 +3151,20 @@ namespace RISE
 			Scalar lastSheetDist = -RISE_INFINITY;
 			const int maxSteps = MaxSceneWalkSteps( pObjects );
 			Ray probe( pos, normal );
+
+			auto runDetour = [&]( const RayIntersection& obsRi, const bool obsSeedExit ) -> bool {
+				int localDetourSpent = 0;
+				int& detourSpentRef = pDetourRaysSpent ? *pDetourRaysSpent : localDetourSpent;
+				const int effectiveBudget = ( pDetourRaysSpent && detourRayBudget >= 0 )
+					? detourRayBudget
+					: Diagnostics::GroupDetourRayBudget();
+				return HasFreeSpaceDetourToSheet(
+					pObjects, pos, normal, pSheet, expectedSheetCrossings,
+					obsRi.pObject, obsRi, selfTol, nm,
+					passedSheets, crossedClosed, sheetIor, pSeedObject, outEntryCtx,
+					detourSpentRef, effectiveBudget, obsSeedExit,
+					targetAloneDist, &targetBox, pColumnWalkUsed, ordered, orderedCount );
+			};
 
 			for( int step = 0; step < maxSteps; step++ )
 			{
@@ -2694,6 +3183,30 @@ namespace RISE
 				SpecularInfo info;
 				const MembershipHit membership = ClassifyMembershipHit( ri, probe.Dir(), nm, info );
 				if( membership != kMembershipSkip && ri.pObject == pSheet ) {
+					const Scalar hitDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( ri.geometric.ptIntersection, pos ), normal );
+					if( membership == kMembershipSheetBack ) {
+						RayIntersection coBlockRi( probe, nullRasterizerState );
+						const MembershipHit coBlockMem = ProbeCoplanarBlockingOpenSheetAt(
+							pObjects, pos, normal, hitDist, nm, pSheet, pSeedObject, selfTol, coBlockRi );
+						if( coBlockMem == kMembershipSheetFront ) {
+							return false;
+						}
+						if( coBlockMem == kMembershipBlock ) {
+							bool coSeedExit = false;
+							if( pSeedObject && coBlockRi.pObject == pSeedObject && !ownChecked &&
+								coBlockRi.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
+								coSeedExit = true;
+							}
+							ownChecked = true;
+							if( allowDetour && sheetCrossingsSeen == 0 ) {
+								return runDetour( coBlockRi, coSeedExit );
+							}
+							return false;
+						}
+						RecordCoplanarOrderedExitsAt(
+							ordered, orderedCount, pos, normal, hitDist, nm, crossedClosed );
+					}
 					++sheetCrossingsSeen;
 					if( sheetCrossingsSeen == 1 ) {
 						if( membership != kMembershipSheetBack ) {
@@ -2711,8 +3224,7 @@ namespace RISE
 					} else {
 						return false;
 					}
-					lastSheetDist = Vector3Ops::Dot(
-						Vector3Ops::mkVector3( ri.geometric.ptIntersection, pos ), normal );
+					lastSheetDist = hitDist;
 					if( sheetCrossingsSeen >= expectedSheetCrossings ) {
 						return sheetNetParity > 0;
 					}
@@ -2740,16 +3252,7 @@ namespace RISE
 					}
 					ownChecked = true;
 					if( allowDetour && sheetCrossingsSeen == 0 ) {
-						int localDetourSpent = 0;
-						int& detourSpentRef = pDetourRaysSpent ? *pDetourRaysSpent : localDetourSpent;
-						const int effectiveBudget = ( pDetourRaysSpent && detourRayBudget >= 0 )
-							? detourRayBudget
-							: Diagnostics::GroupDetourRayBudget();
-						return HasFreeSpaceDetourToSheet(
-							pObjects, pos, normal, pSheet, expectedSheetCrossings,
-							ri.pObject, ri, selfTol, nm,
-							passedSheets, crossedClosed, sheetIor, pSeedObject, outEntryCtx,
-							detourSpentRef, effectiveBudget, seedExitDetour );
+						return runDetour( ri, seedExitDetour );
 					}
 					return false;
 				} else if( membership == kMembershipSheetFront ) {
@@ -2758,21 +3261,48 @@ namespace RISE
 					// Check if target `pSheet` also has a coplanar back-face hit
 					// within `2 * kSeedEps` before `probe.Advance(kSeedEps)` steps
 					// past `pSheet`'s plane (TLAS leaf tie-breaking, Witness B).
+					const Scalar hitDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( ri.geometric.ptIntersection, pos ), normal );
+					const bool nearTarget = ( expectedSheetCrossings == 1 && targetAloneDist >= Scalar( 0 ) )
+						? ( std::fabs( targetAloneDist - hitDist ) <= Scalar( 2 ) * kSeedEps )
+						: PointNearBox( ri.geometric.ptIntersection, targetBox, Scalar( 2.5 ) * kSeedEps );
 					bool coHitTarget = false;
-					if( PointNearSheetBounds( ri.geometric.ptIntersection, pSheet, Scalar( 2.5 ) * kSeedEps ) ) {
-						const Scalar hitDist = Vector3Ops::Dot(
-							Vector3Ops::mkVector3( ri.geometric.ptIntersection, pos ), normal );
+					if( nearTarget ) {
 						RayIntersection coRi( probe, nullRasterizerState );
 						SpecularInfo coInfo;
 						if( ProbeCoplanarSheetBackAt( pSheet, pos, normal, hitDist, nm, coRi, coInfo ) ) {
 							const Scalar coDist = Vector3Ops::Dot(
 								Vector3Ops::mkVector3( coRi.geometric.ptIntersection, pos ), normal );
 							if( coDist > lastSheetDist + Scalar( 0.5 ) * kSeedEps ) {
+								RayIntersection coBlockRi( probe, nullRasterizerState );
+								const MembershipHit coBlockMem = ProbeCoplanarBlockingOpenSheetAt(
+									pObjects, pos, normal, hitDist, nm, pSheet, pSeedObject, selfTol, coBlockRi );
+								if( coBlockMem == kMembershipSheetFront ) {
+									return false;
+								}
+								if( coBlockMem == kMembershipBlock ) {
+									bool coSeedExit = false;
+									if( pSeedObject && coBlockRi.pObject == pSeedObject && !ownChecked &&
+										coBlockRi.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
+										coSeedExit = true;
+									}
+									ownChecked = true;
+									if( allowDetour && sheetCrossingsSeen == 0 ) {
+										if( membership == kMembershipTransparent && crossedClosed &&
+											std::find( crossedClosed->begin(), crossedClosed->end(), ri.pObject ) == crossedClosed->end() ) {
+											crossedClosed->push_back( ri.pObject );
+										}
+										return runDetour( coBlockRi, coSeedExit );
+									}
+									return false;
+								}
 								coHitTarget = true;
 								if( membership == kMembershipTransparent && crossedClosed &&
 									std::find( crossedClosed->begin(), crossedClosed->end(), ri.pObject ) == crossedClosed->end() ) {
 									crossedClosed->push_back( ri.pObject );
 								}
+								RecordCoplanarOrderedExitsAt(
+									ordered, orderedCount, pos, normal, hitDist, nm, crossedClosed );
 								++sheetCrossingsSeen;
 								if( sheetCrossingsSeen == 1 ) {
 									if( sheetIor ) *sheetIor = coInfo.ior;
@@ -2789,10 +3319,13 @@ namespace RISE
 						}
 					}
 					if( !coHitTarget ) {
-						if( membership == kMembershipSheetBack && passedSheets ) {
-							if( std::find( passedSheets->begin(), passedSheets->end(), ri.pObject ) == passedSheets->end() ) {
+						if( membership == kMembershipSheetBack ) {
+							if( passedSheets &&
+								std::find( passedSheets->begin(), passedSheets->end(), ri.pObject ) == passedSheets->end() ) {
 								passedSheets->push_back( ri.pObject );
 							}
+							RecordCoplanarOrderedExitsAt(
+								ordered, orderedCount, pos, normal, hitDist, nm, crossedClosed );
 						} else if( membership == kMembershipTransparent && crossedClosed ) {
 							if( std::find( crossedClosed->begin(), crossedClosed->end(), ri.pObject ) == crossedClosed->end() ) {
 								crossedClosed->push_back( ri.pObject );
@@ -2849,23 +3382,29 @@ namespace RISE
 			std::vector<const IObject*>* crossedClosed = 0,
 			Scalar* sheetIor = 0,
 			const IObject* pSeedObject = 0,
-			IORStack::EntryContext* outEntryCtx = 0
+			IORStack::EntryContext* outEntryCtx = 0,
+			ProbeEntry* const* ordered = 0,
+			const std::size_t orderedCount = 0
 			)
 		{
-			// Share a single per-sheet certificate detour ray budget across
-			// `sheet.normal` and all clustered auxiliary facet normals
-			// `sheet.auxNormals[0..31]` (`GroupDetourRayBudget()`).
+			// Share a single per-sheet certificate detour ray budget (and a
+			// single uncharged `vertProbe` column walk) across `sheet.normal`
+			// and all clustered auxiliary facet normals `sheet.auxNormals[0..31]`
+			// (`GroupDetourRayBudget()`).
 			int detourRaysSpent = 0;
+			bool columnWalkUsed = false;
 			const int detourRayBudget = Diagnostics::GroupDetourRayBudget();
 			const Vector3& n = sheet.normal;
 			if( Vector3Ops::Dot( Vector3Ops::mkVector3( pos, sheet.p0 ), n ) < sheet.heightAbove &&
 				RayMeetsSheetBounds( pos, n, sheet.box ) ) {
 				int expectedCrossings = 1;
-				if( CheckSheetAloneAlongRay( sheet.pObj, pos, n, sheet.isPlanar, 0, &expectedCrossings ) ) {
+				Scalar aloneDist = Scalar( -1 );
+				if( CheckSheetAloneAlongRay( sheet.pObj, pos, n, sheet.isPlanar, 0, &expectedCrossings, &aloneDist ) ) {
 					if( OpenSheetNormalRayReaches(
 							pObjects, pos, n, sheet.pObj, nm,
 							passedSheets, crossedClosed, sheetIor, pSeedObject, outEntryCtx,
-							expectedCrossings, true, true, &detourRaysSpent, detourRayBudget, false ) ) {
+							expectedCrossings, true, true, &detourRaysSpent, detourRayBudget, false,
+							aloneDist, &sheet.box, &columnWalkUsed, ordered, orderedCount ) ) {
 						return true;
 					}
 				} else if( sheet.isPlanar ) {
@@ -2887,14 +3426,17 @@ namespace RISE
 				}
 				Scalar hitCos = 0;
 				int expectedCrossings = 1;
-				if( !CheckSheetAloneAlongRay( sheet.pObj, pos, nj, false, &hitCos, &expectedCrossings ) ||
+				Scalar aloneDist = Scalar( -1 );
+				if( !CheckSheetAloneAlongRay( sheet.pObj, pos, nj, false, &hitCos, &expectedCrossings, &aloneDist ) ||
 					hitCos < kAuxNormalAlignCos ) {
 					continue;
 				}
+				const bool allowAuxDetour = ( !columnWalkUsed || detourRaysSpent < detourRayBudget );
 				if( OpenSheetNormalRayReaches(
 						pObjects, pos, nj, sheet.pObj, nm,
 						passedSheets, crossedClosed, sheetIor, pSeedObject, outEntryCtx,
-						expectedCrossings, true, true, &detourRaysSpent, detourRayBudget, false ) ) {
+						expectedCrossings, allowAuxDetour, true, &detourRaysSpent, detourRayBudget, false,
+						aloneDist, &sheet.box, &columnWalkUsed, ordered, orderedCount ) ) {
 					return true;
 				}
 			}
@@ -2950,10 +3492,11 @@ namespace RISE
 			if( activeObjects.size() == 1 ) {
 				ConfirmedSheet c;
 				c.pObj = activeObjects[0];
+				const Scalar d0 = activeDists.empty() ? Scalar( -1 ) : activeDists[0];
 				if( OpenSheetNormalRayReaches(
 						pObjects, pos, normal, c.pObj, nm,
 						&c.passed, &c.crossed, &c.ior, pSeedObject, &c.entryCtx,
-						1, true, true ) ) {
+						1, true, true, 0, -1, false, d0, 0, 0, ordered, orderedCount ) ) {
 					c.closedInner = 0;
 					for( std::size_t k = 0; k < c.crossed.size(); ++k ) {
 						for( std::size_t m = 0; m < orderedCount; ++m ) {
@@ -2983,6 +3526,46 @@ namespace RISE
 			std::vector<bool> done( activeObjects.size(), false );
 			std::size_t remaining = activeObjects.size();
 
+			auto runGroupDetour = [&]( const RayIntersection& obsRi, const bool obsSeedExit ) {
+				const Scalar obsDist = Vector3Ops::Dot(
+					Vector3Ops::mkVector3( obsRi.geometric.ptIntersection, pos ), normal );
+				std::vector<const IObject*> remainingObjs;
+				std::vector<Scalar> remainingColDists;
+				for( std::size_t idx = 0; idx < activeObjects.size(); ++idx ) {
+					if( !done[idx] ) {
+						remainingObjs.push_back( activeObjects[idx] );
+						remainingColDists.push_back(
+							idx < activeDists.size() ? ( activeDists[idx] - obsDist ) : Scalar( -1 ) );
+					}
+				}
+				std::vector<DetourResult> results;
+				HasFreeSpaceDetourToSheets(
+					pObjects, pos, normal, remainingObjs, remainingColDists,
+					obsRi.pObject, obsRi, selfTol, nm,
+					passedSoFar, crossedSoFar, pSeedObject, results, obsSeedExit,
+					ordered, orderedCount );
+				for( std::size_t r = 0; r < remainingObjs.size(); ++r ) {
+					if( !results[r].ok ) continue;
+					ConfirmedSheet c;
+					c.pObj = remainingObjs[r];
+					c.ior = results[r].ior;
+					c.passed = results[r].passed;
+					c.crossed = results[r].crossed;
+					c.entryCtx = results[r].ctx;
+					c.closedInner = 0;
+					for( std::size_t k = 0; k < c.crossed.size(); ++k ) {
+						for( std::size_t m = 0; m < orderedCount; ++m ) {
+							if( ordered[m]->pObj == c.crossed[k] ) {
+								c.closedInner++;
+								break;
+							}
+						}
+					}
+					c.keep = true;
+					confirmedOut.push_back( c );
+				}
+			};
+
 			for( int step = 0; step < maxSteps && remaining > 0; ++step ) {
 				RayIntersection ri( probe, nullRasterizerState );
 				Diagnostics::SceneRayCounter()++;
@@ -3011,73 +3594,19 @@ namespace RISE
 						}
 					}
 					ownChecked = true;
-					// One detour certificate for every remaining candidate
-					// (each answered exactly as its own certificate would be).
-					std::vector<const IObject*> remainingObjs;
-					for( std::size_t idx = 0; idx < activeObjects.size(); ++idx ) {
-						if( !done[idx] ) remainingObjs.push_back( activeObjects[idx] );
-					}
-					std::vector<DetourResult> results;
-					HasFreeSpaceDetourToSheets(
-						pObjects, pos, normal, remainingObjs,
-						ri.pObject, ri, selfTol, nm,
-						passedSoFar, crossedSoFar, pSeedObject, results, seedExitDetour );
-					for( std::size_t r = 0; r < remainingObjs.size(); ++r ) {
-						if( !results[r].ok ) continue;
-						ConfirmedSheet c;
-						c.pObj = remainingObjs[r];
-						c.ior = results[r].ior;
-						c.passed = results[r].passed;
-						c.crossed = results[r].crossed;
-						c.entryCtx = results[r].ctx;
-						c.closedInner = 0;
-						for( std::size_t k = 0; k < c.crossed.size(); ++k ) {
-							for( std::size_t m = 0; m < orderedCount; ++m ) {
-								if( ordered[m]->pObj == c.crossed[k] ) {
-									c.closedInner++;
-									break;
-								}
-							}
-						}
-						c.keep = true;
-						confirmedOut.push_back( c );
-					}
+					runGroupDetour( ri, seedExitDetour );
 					break;
 				} else if( membership == kMembershipSheetFront ) {
 					break;
-				} else if( membership == kMembershipSheetBack ) {
+				} else if( membership == kMembershipSheetBack || membership == kMembershipTransparent ) {
+					if( membership == kMembershipTransparent &&
+						std::find( crossedSoFar.begin(), crossedSoFar.end(), ri.pObject ) == crossedSoFar.end() ) {
+						crossedSoFar.push_back( ri.pObject );
+					}
 					const Scalar hitDist = Vector3Ops::Dot(
 						Vector3Ops::mkVector3( ri.geometric.ptIntersection, pos ), normal );
-					std::vector<const IObject*> planeHits;
-					planeHits.push_back( ri.pObject );
-					for( std::size_t idx = 0; idx < activeObjects.size(); ++idx ) {
-						if( !done[idx] && activeObjects[idx] == ri.pObject ) {
-							done[idx] = true;
-							--remaining;
-							ConfirmedSheet c;
-							c.pObj = ri.pObject;
-							c.ior = info.ior;
-							c.passed = passedSoFar;
-							c.crossed = crossedSoFar;
-							c.entryCtx = IORStack::EntryContext::FromGeometric( ri.geometric, ri.pMaterial, false );
-							c.closedInner = 0;
-							for( std::size_t k = 0; k < c.crossed.size(); ++k ) {
-								for( std::size_t m = 0; m < orderedCount; ++m ) {
-									if( ordered[m]->pObj == c.crossed[k] ) {
-										c.closedInner++;
-										break;
-									}
-								}
-							}
-							c.keep = true;
-							confirmedOut.push_back( c );
-							break;
-						}
-					}
-					// Probe any remaining coplanar group candidates within
-					// 2*kSeedEps before probe.Advance(kSeedEps) steps past
-					// their shared plane, keeping confirmation independent of
-					// TLAS leaf ordering.
+					struct CoGrpHit { std::size_t idx; Scalar ior; IORStack::EntryContext ctx; };
+					std::vector<CoGrpHit> coHits;
 					for( std::size_t idx = 0; idx < activeObjects.size(); ++idx ) {
 						if( done[idx] || activeObjects[idx] == ri.pObject || idx >= activeDists.size() ) {
 							continue;
@@ -3088,14 +3617,84 @@ namespace RISE
 						RayIntersection coRi( probe, nullRasterizerState );
 						SpecularInfo coInfo;
 						if( ProbeCoplanarSheetBackAt( activeObjects[idx], pos, normal, hitDist, nm, coRi, coInfo ) ) {
+							coHits.push_back( {
+								idx,
+								coInfo.ior,
+								IORStack::EntryContext::FromGeometric( coRi.geometric, coRi.pMaterial, false )
+							} );
+						}
+					}
+					if( membership == kMembershipSheetBack || !coHits.empty() ) {
+						RayIntersection coBlockRi( probe, nullRasterizerState );
+						const MembershipHit coBlockMem = ProbeCoplanarBlockingOpenSheetAt(
+							pObjects, pos, normal, hitDist, nm,
+							( membership == kMembershipSheetBack ? ri.pObject : 0 ),
+							pSeedObject, selfTol, coBlockRi );
+						if( coBlockMem == kMembershipSheetFront ) {
+							break;
+						}
+						if( coBlockMem == kMembershipBlock ) {
+							bool coSeedExit = false;
+							if( pSeedObject && coBlockRi.pObject == pSeedObject && !ownChecked &&
+								coBlockRi.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
+								coSeedExit = true;
+							}
+							ownChecked = true;
+							for( std::size_t idx = 0; idx < activeObjects.size(); ++idx ) {
+								if( !done[idx] && activeObjects[idx] == coBlockRi.pObject ) {
+									done[idx] = true;
+									--remaining;
+									break;
+								}
+							}
+							runGroupDetour( coBlockRi, coSeedExit );
+							break;
+						}
+						if( membership == kMembershipSheetBack ) {
+							RecordCoplanarOrderedExitsAt(
+								ordered, orderedCount, pos, normal, hitDist, nm, &crossedSoFar );
+						}
+						std::vector<const IObject*> planeHits;
+						if( membership == kMembershipSheetBack ) {
+							planeHits.push_back( ri.pObject );
+							for( std::size_t idx = 0; idx < activeObjects.size(); ++idx ) {
+								if( !done[idx] && activeObjects[idx] == ri.pObject ) {
+									done[idx] = true;
+									--remaining;
+									ConfirmedSheet c;
+									c.pObj = ri.pObject;
+									c.ior = info.ior;
+									c.passed = passedSoFar;
+									c.crossed = crossedSoFar;
+									c.entryCtx = IORStack::EntryContext::FromGeometric( ri.geometric, ri.pMaterial, false );
+									c.closedInner = 0;
+									for( std::size_t k = 0; k < c.crossed.size(); ++k ) {
+										for( std::size_t m = 0; m < orderedCount; ++m ) {
+											if( ordered[m]->pObj == c.crossed[k] ) {
+												c.closedInner++;
+												break;
+											}
+										}
+									}
+									c.keep = true;
+									confirmedOut.push_back( c );
+									break;
+								}
+							}
+						}
+						for( std::size_t ch = 0; ch < coHits.size(); ++ch ) {
+							const std::size_t idx = coHits[ch].idx;
+							if( done[idx] ) {
+								continue;
+							}
 							done[idx] = true;
 							--remaining;
 							ConfirmedSheet c;
 							c.pObj = activeObjects[idx];
-							c.ior = coInfo.ior;
+							c.ior = coHits[ch].ior;
 							c.passed = passedSoFar;
 							c.crossed = crossedSoFar;
-							c.entryCtx = IORStack::EntryContext::FromGeometric( coRi.geometric, coRi.pMaterial, false );
+							c.entryCtx = coHits[ch].ctx;
 							c.closedInner = 0;
 							for( std::size_t k = 0; k < c.crossed.size(); ++k ) {
 								for( std::size_t m = 0; m < orderedCount; ++m ) {
@@ -3109,16 +3708,12 @@ namespace RISE
 							confirmedOut.push_back( c );
 							planeHits.push_back( activeObjects[idx] );
 						}
-					}
-					for( std::size_t ph = 0; ph < planeHits.size(); ++ph ) {
-						passedSoFar.push_back( planeHits[ph] );
-					}
-					if( remaining == 0 ) {
-						break;
-					}
-				} else if( membership == kMembershipTransparent ) {
-					if( std::find( crossedSoFar.begin(), crossedSoFar.end(), ri.pObject ) == crossedSoFar.end() ) {
-						crossedSoFar.push_back( ri.pObject );
+						for( std::size_t ph = 0; ph < planeHits.size(); ++ph ) {
+							passedSoFar.push_back( planeHits[ph] );
+						}
+						if( remaining == 0 ) {
+							break;
+						}
 					}
 				}
 				probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
@@ -3164,7 +3759,57 @@ namespace RISE
 			// without an 8-sheet cap).
 			const std::vector<OpenSheetCatalogEntry>* pSheets = &sceneSheets;
 			if( pSheets && !pSheets->empty() && !declineSheets ) {
-				const std::vector<OpenSheetNormalGroup>& groups = ThreadOpenSheetCatalog().normalGroups;
+				OpenSheetCatalog& cat = EnsureOpenSheetCatalog( pObjects );
+				struct ConfirmPoseScope
+				{
+					OpenSheetCatalog* pCat;
+					ConfirmPoseScope() : pCat( 0 ) {}
+					~ConfirmPoseScope()
+					{
+						if( pCat ) {
+							--pCat->confirmDepth;
+						}
+					}
+				} confirmScope;
+				const bool useCatGroups = ( pSheets == &cat.sheets );
+				if( useCatGroups ) {
+					if( cat.confirmDepth == 0 ) {
+						cat.confirmGroupPoseValid.assign( cat.normalGroups.size(), true );
+						cat.confirmFallbackSheets.clear();
+						for( std::size_t g = 0; g < cat.normalGroups.size(); ++g ) {
+							const OpenSheetNormalGroup& grp = cat.normalGroups[g];
+							bool validGrp = true;
+							for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
+								const OpenSheetCatalogEntry& ce = cat.sheets[grp.sheetIndices[k]];
+								if( ce.pObj->ShapeRevision() != ce.shapeRev ||
+									!SamePose( ce.pObj->GetFinalTransformMatrix(), ce.xform ) ) {
+									validGrp = false;
+									break;
+								}
+							}
+							cat.confirmGroupPoseValid[g] = validGrp;
+							if( !validGrp ) {
+								for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
+									OpenSheetCatalogEntry posed;
+									if( PosedOpenSheet( cat.sheets[grp.sheetIndices[k]], posed ) ) {
+										cat.confirmFallbackSheets.push_back( posed );
+									}
+								}
+							}
+						}
+						for( std::size_t idx = 0; idx < cat.sheets.size(); ++idx ) {
+							if( !cat.sheets[idx].isPlanar ) {
+								OpenSheetCatalogEntry posed;
+								if( PosedOpenSheet( cat.sheets[idx], posed ) ) {
+									cat.confirmFallbackSheets.push_back( posed );
+								}
+							}
+						}
+					}
+					++cat.confirmDepth;
+					confirmScope.pCat = &cat;
+				}
+				const std::vector<OpenSheetNormalGroup>& groups = cat.normalGroups;
 				std::vector<bool> handledByGroup( pSheets->size(), false );
 
 				for( std::size_t gIdx = 0; gIdx < groups.size(); ++gIdx ) {
@@ -3174,12 +3819,16 @@ namespace RISE
 					}
 					// Verify no member sheet was re-posed or shape-edited since catalog build (`A20`, `A51`).
 					bool poseValid = true;
-					for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
-						const OpenSheetCatalogEntry& ce = ( *pSheets )[grp.sheetIndices[k]];
-						if( ce.pObj->ShapeRevision() != ce.shapeRev ||
-							!SamePose( ce.pObj->GetFinalTransformMatrix(), ce.xform ) ) {
-							poseValid = false;
-							break;
+					if( useCatGroups && cat.confirmGroupPoseValid.size() == groups.size() ) {
+						poseValid = cat.confirmGroupPoseValid[gIdx];
+					} else {
+						for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
+							const OpenSheetCatalogEntry& ce = ( *pSheets )[grp.sheetIndices[k]];
+							if( ce.pObj->ShapeRevision() != ce.shapeRev ||
+								!SamePose( ce.pObj->GetFinalTransformMatrix(), ce.xform ) ) {
+								poseValid = false;
+								break;
+							}
 						}
 					}
 					if( !poseValid ) {
@@ -3229,7 +3878,8 @@ namespace RISE
 					c.pObj = sheet.pObj;
 					if( !OpenSheetHoldsPoint(
 							sheet, pObjects, pos, nm,
-							&c.passed, &c.crossed, &c.ior, pSeedObject, &c.entryCtx ) ) {
+							&c.passed, &c.crossed, &c.ior, pSeedObject, &c.entryCtx,
+							ordered, orderedCount ) ) {
 						continue;
 					}
 					c.closedInner = 0;
@@ -3341,7 +3991,8 @@ namespace RISE
 			//     ray casts.
 			//  2. When the scene has closed trackable media but no certified
 			//     open sheets (`!cat.hasSheets`), run the initial +z probe into
-			//     a single 32-entry stack table (~1 KB instead of 12.8 KB + 4
+			//     a single 32-entry stack table (~1 KB touched on free-space
+			//     early return, 6.25 KB POD stack slots when enclosed, zero heap
 			//     vectors) and return immediately when no closed candidate has
 			//     positive exit parity (every free-space camera / light ray).
 			//     Note: scenes WITH open sheets that pass `seedOpenSheets == false`
@@ -3406,7 +4057,9 @@ namespace RISE
 						continue;
 					}
 					std::size_t j = orderedCount;
-					while( j > 0 && ordered[j - 1]->firstExitStep < containing[i].firstExitStep ) {
+					while( j > 0 && ( ordered[j - 1]->firstExitStep < containing[i].firstExitStep ||
+						( ordered[j - 1]->firstExitStep == containing[i].firstExitStep &&
+						  SheetGeomKeyLess( containing[i].pObj, ordered[j - 1]->pObj ) ) ) ) {
 						ordered[j] = ordered[j - 1];
 						--j;
 					}
@@ -3499,8 +4152,9 @@ namespace RISE
 					continue;
 				}
 				std::size_t j = orderedCount;
-				while( j > 0 && ordered[j-1]->firstExitStep <
-					containing[i].firstExitStep )
+				while( j > 0 && ( ordered[j-1]->firstExitStep < containing[i].firstExitStep ||
+					( ordered[j-1]->firstExitStep == containing[i].firstExitStep &&
+					  SheetGeomKeyLess( containing[i].pObj, ordered[j-1]->pObj ) ) ) )
 				{
 					ordered[j] = ordered[j-1];
 					j--;

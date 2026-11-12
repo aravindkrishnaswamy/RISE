@@ -123,6 +123,7 @@
 #include "../src/Library/Utilities/ExpressionMemo.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Animation/KeyframableHelper.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1165,7 +1166,7 @@ public:
 		if( !CreateDirectoryA( dir, NULL ) ) return;
 		m_dir = dir;
 #else
-		std::string tmpl = "/tmp/rise_expr_memo_XXXXXX";
+		std::string tmpl = RISE::TestSupport::ScratchPath( "rise_expr_memo_XXXXXX" );
 		std::vector<char> buf( tmpl.begin(), tmpl.end() );
 		buf.push_back( '\0' );
 		if( !mkdtemp( &buf[0] ) ) return;
