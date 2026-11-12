@@ -333,6 +333,12 @@ kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
   beta[0][0]*beta[2][2]-beta[0][2]*beta[0][2]+
   beta[1][1]*beta[2][2]-beta[1][2]*beta[1][2];
  float nuEddy=alphaSquared==0.0f?0.0f:p.cv*sqrt(max(0.0f,raw)/alphaSquared);
+#ifdef RISE_VREMAN_ZONE_K
+ // r271 candidate opt-in (RISE_FIRE_VREMAN_ZONE=<below|above>:<k>:<scale>): momentum eddy viscosity
+ // scaled in cell layers z < k (below) or z >= k (above) only. Unset = production. The r271 default
+ // candidate uses below:<layer at 1.0 m>:0.2857 (C_v 0.02 under 1 m) with the limited momentum carrier.
+ if((RISE_VREMAN_ZONE_BELOW!=0)==(z<RISE_VREMAN_ZONE_K))nuEddy*=RISE_VREMAN_ZONE_SCALE;
+#endif
  float mu=cellDensity[gid]*(molecularNu[gid]+nuEddy);eddy[gid]=nuEddy;muOut[gid]=mu;
  for(uint c=0u;c<3u;++c)for(uint d=0u;d<3u;++d)
   stress[(3u*c+d)*cells+gid]=c==d?mu*(2.0f*gradient[c][c]-(2.0f/3.0f)*divergence):0.0f;
@@ -472,8 +478,19 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					error="production frozen-force precise arithmetic unavailable";return;}
 				if( [options respondsToSelector:@selector(setMathMode:)] ) options.mathMode=MTLMathModeSafe;
 				options.mathFloatingPointFunctions=MTLMathFloatingPointFunctionsPrecise;
+				std::string librarySource=ForceSource();
+				if( const char* zone=std::getenv("RISE_FIRE_VREMAN_ZONE") ) {
+					const char* compact=std::getenv("RISE_FIRE_COMPACT_VISCOUS_STENCIL");
+					char side[8]={};unsigned int layer=0u;float scale=-1.0f;
+					if( compact&&std::string(compact)=="1"&&std::sscanf(zone,"%7[a-z]:%u:%f",side,&layer,&scale)==3&&
+						(std::string(side)=="below"||std::string(side)=="above")&&layer>0u&&
+						std::isfinite(scale)&&scale>=0.0f&&scale<=4.0f ) {char prefix[160];
+						std::snprintf(prefix,sizeof(prefix),"#define RISE_VREMAN_ZONE_K %uu\n#define RISE_VREMAN_ZONE_BELOW %d\n"
+							"#define RISE_VREMAN_ZONE_SCALE ((float)%.9g)\n",layer,std::string(side)=="below"?1:0,
+							static_cast<double>(scale));
+						librarySource=prefix+librarySource;}}
 				NSError* libraryError=nil;id<MTLLibrary> library=[device newLibraryWithSource:
-					[NSString stringWithUTF8String:ForceSource()] options:options error:&libraryError];
+					[NSString stringWithUTF8String:librarySource.c_str()] options:options error:&libraryError];
 				if( !library ) {error=MetalError("production frozen-force library failed",libraryError);return;}
 				auto pipeline=[&](const char* name) -> id<MTLComputePipelineState> {
 					id<MTLFunction> function=[library newFunctionWithName:[NSString stringWithUTF8String:name]];
