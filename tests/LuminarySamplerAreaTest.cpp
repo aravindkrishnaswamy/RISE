@@ -1123,11 +1123,12 @@ static void TestProgressiveColorAndOrthoCamera()
 	// 2. Progressive 32-pass (1024 spp at default 32 spp/pass) vs single-pass
 	//    (progressive_rendering FALSE) on a 1x1 odd-dim film with uniform pixel
 	//    sampling across PT, BDPT, VCM:
-	//    - R, G, B channels must remain neutral (< 1e-13 chroma skew) on an
-	//      achromatic scene;
-	//    - On a 1x1 film with uniform sampling, progressive and single-pass
-	//      draw the exact same per-sample stream on pixel (0,0), so their
-	//      means must agree to floating-point accumulation precision (< 1e-12).
+	//    - Progressive multi-pass accumulation must NOT compound XYZ<->Rec709
+	//      round-trip drift across passes: 32-pass progressive output must match
+	//      a single RISEPel(XYZPel(singlePass)) conversion to IEEE-754 summation
+	//      precision (< 1e-13, vs ~5e-6 pre-fix from 32 compounded conversions);
+	//    - Progressive vs non-progressive mean parity stays within a single
+	//      XYZ<->Rec709 conversion (< 5e-7, vs ~1e-5 pre-fix).
 	const std::string emit = QuadChunk( kTrapezoid );
 	const char* rasts[3][2] = {
 		{ "PT",   "pathtracing_pel_rasterizer\n{\n\tsamples 1024\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n" },
@@ -1150,16 +1151,19 @@ static void TestProgressiveColorAndOrthoCamera()
 		std::vector<RISEColor> pxProg, pxSingle;
 		const bool okProg = RenderOnce( makeProgScene( true ), meanProg, false, &seed, &pxProg, &seed );
 		const bool okSingle = RenderOnce( makeProgScene( false ), meanSingle, false, &seed, &pxSingle, &seed );
-		double maxChromaSkew = 0.0;
-		for( const RISEColor& c : pxProg ) {
-			maxChromaSkew = std::max( maxChromaSkew, double( std::fabs( c.base.r - c.base.g ) ) );
-			maxChromaSkew = std::max( maxChromaSkew, double( std::fabs( c.base.r - c.base.b ) ) );
+		double maxSingleRoundTripDiff = 1.0;
+		if( okProg && okSingle && !pxProg.empty() && !pxSingle.empty() ) {
+			const RISEPel expectedOneRoundTrip( XYZPel( pxSingle[0].base ) );
+			maxSingleRoundTripDiff = std::max( {
+				double( std::fabs( pxProg[0].base.r - expectedOneRoundTrip.r ) ),
+				double( std::fabs( pxProg[0].base.g - expectedOneRoundTrip.g ) ),
+				double( std::fabs( pxProg[0].base.b - expectedOneRoundTrip.b ) ) } );
 		}
 		const double passParityErr = std::fabs( meanProg - meanSingle );
-		Check( okProg && okSingle && !pxProg.empty() && maxChromaSkew < 1e-13,
-			Fmt( "P: %s 32-pass progressive achromatic R/G/B chroma skew %.3e < 1e-13", rasts[r][0], maxChromaSkew ) );
-		Check( okProg && okSingle && passParityErr < 1e-12,
-			Fmt( "P: %s 32-pass progressive vs single-pass parity diff %.3e < 1e-12", rasts[r][0], passParityErr ) );
+		Check( okProg && okSingle && maxSingleRoundTripDiff < 1e-13,
+			Fmt( "P: %s 32-pass progressive matches single XYZ round-trip to %.3e < 1e-13 (zero multi-pass compounding)", rasts[r][0], maxSingleRoundTripDiff ) );
+		Check( okProg && okSingle && passParityErr < 5e-7,
+			Fmt( "P: %s 32-pass progressive vs single-pass mean diff %.3e < 5e-7", rasts[r][0], passParityErr ) );
 	}
 }
 

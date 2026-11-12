@@ -216,6 +216,7 @@ void VCMPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
+		colAccrued = px.LoadPelPassInit();
 		weightsAccrued = px.weightSum;
 		alphasAccrued = px.alphaSum;
 		wMean = px.wMean;
@@ -487,11 +488,9 @@ void VCMPelRasterizer::IntegratePixel(
 	}
 
 	// Write back persistent state for progressive rendering.
-	XYZPel totalXYZ( 0, 0, 0 );
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		px.colorSum = px.colorSum + XYZPel( colAccrued );
-		totalXYZ = px.colorSum;
+		px.StorePelPassDelta( colAccrued );
 		px.weightSum = weightsAccrued;
 		px.alphaSum = alphasAccrued;
 		px.wMean = wMean;
@@ -520,13 +519,8 @@ void VCMPelRasterizer::IntegratePixel(
 		const Scalar t = Scalar( globalSampleIndex ) / Scalar( targetSamples );
 		cret = RISEColor( RISEPel( t, t, t ), 1.0 );
 	} else if( alphasAccrued > 0 ) {
-		if( pProgFilm ) {
-			const XYZPel avgXYZ = totalXYZ * ( Scalar( 1 ) / alphasAccrued );
-			cret = RISEColor( RISEPel( avgXYZ ), alphasAccrued / weightsAccrued );
-		} else {
-			colAccrued = colAccrued * ( Scalar( 1 ) / alphasAccrued );
-			cret = RISEColor( colAccrued, alphasAccrued / weightsAccrued );
-		}
+		colAccrued = colAccrued * ( Scalar( 1 ) / alphasAccrued );
+		cret = RISEColor( colAccrued, alphasAccrued / weightsAccrued );
 	} else {
 		cret = RISEColor( 0, 0, 0, 0 );
 	}

@@ -590,6 +590,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
+			colAccrued = px.colorSum;
 			weights = px.weightSum;
 			alphas = px.alphaSum;
 			wMean = px.wMean;
@@ -732,11 +733,9 @@ void PixelBasedPelRasterizer::IntegratePixel(
 		}
 
 		// Write back persistent state for progressive rendering
-		XYZPel totalXYZ( 0, 0, 0 );
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
-			px.colorSum = px.colorSum + XYZPel( colAccrued );
-			totalXYZ = px.colorSum;
+			px.colorSum = colAccrued;
 			px.weightSum = weights;
 			px.alphaSum = alphas;
 			px.wMean = wMean;
@@ -755,13 +754,8 @@ void PixelBasedPelRasterizer::IntegratePixel(
 			cret = RISEColor( RISEPel(t, t, t), 1.0 );
 		} else {
 			// Divide out by the number of samples
-			if( pProgFilm ) {
-				const XYZPel avgXYZ = totalXYZ * (alphas>0?(1.0/alphas):0);
-				cret = RISEColor( RISEPel( avgXYZ ), alphas/weights );
-			} else {
-				colAccrued = colAccrued * (alphas>0?(1.0/alphas):0);
-				cret = RISEColor(colAccrued, alphas/weights);
-			}
+			colAccrued = colAccrued * (alphas>0?(1.0/alphas):0);
+			cret = RISEColor(colAccrued, alphas/weights);
 		}
 	}
 	else

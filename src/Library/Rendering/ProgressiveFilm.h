@@ -69,6 +69,9 @@ namespace RISE
 			  sampleIndex( 0 ),
 			  converged( false )
 			{}
+
+			RISEPel LoadPelPassInit() const;
+			void StorePelPassDelta( RISEPel passDelta );
 		};
 
 		class ProgressiveFilm

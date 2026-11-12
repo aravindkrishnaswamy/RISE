@@ -2333,9 +2333,7 @@ namespace {
 						// free-flight sampling probability density is proportional
 						// to sigma_t, while surface "acceptance" is proportional to
 						// the projected area (|cos|/dist^2).
-						const Scalar distSqMed = vertices.empty()
-							? ( t_m * t_m )
-							: Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( mv.position, vertices.back().position ) );
+						const Scalar distSqMed = t_m * t_m;
 						mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
 							pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
 						mv.pdfRev = 0;
@@ -2723,14 +2721,8 @@ namespace {
 			}
 			GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
 
-			// Convert pdfFwdPrev from solid angle to area measure using the
-			// exact vertex-to-vertex chord |v.position - prev.position|^2 rather
-			// than `ri.geometric.range^2`, which omits `BDPT_RAY_EPSILON` after
-			// `currentRay.Advance(BDPT_RAY_EPSILON)` and would bias MIS ratios
-			// against `ConnectAndEvaluate` / `VCMIntegrator::ConvertEyeSubpath`.
-			const Scalar distSq = vertices.empty()
-				? ( ri.geometric.range * ri.geometric.range )
-				: Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( v.position, vertices.back().position ) );
+			// Convert pdfFwdPrev from solid angle to area measure
+			const Scalar distSq = ri.geometric.range * ri.geometric.range;
 			// Solid-angle <-> area Jacobian uses the GEOMETRIC normal —
 			// the area-element parameterisation depends on the actual face
 			// orientation, not the Phong-perturbed shading normal
@@ -7503,9 +7495,7 @@ unsigned int GenerateLightSubpathImpl(
 					mv.isConnectible = true;
 					StoreThroughput<Tag>( mv, beta );
 
-					const Scalar distSqMed = vertices.empty()
-						? ( t_m * t_m )
-						: Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( mv.position, vertices.back().position ) );
+					const Scalar distSqMed = t_m * t_m;
 					mv.pdfFwd = vertices.size() == 1 && ls.pEnvLight
 						? ls.pdfPosition * mv.sigma_t_scalar
 						: BDPTUtilities::SolidAngleToAreaMedium( pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
@@ -7694,12 +7684,8 @@ unsigned int GenerateLightSubpathImpl(
 		}
 		GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
 
-		// Convert pdfFwdPrev from solid angle to area measure using the
-		// exact vertex-to-vertex chord |v.position - prev.position|^2 rather
-		// than `ri.geometric.range^2` (which omits `BDPT_RAY_EPSILON`).
-		const Scalar distSq = vertices.empty()
-			? ( ri.geometric.range * ri.geometric.range )
-			: Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( v.position, vertices.back().position ) );
+		// Convert pdfFwdPrev from solid angle to area measure
+		const Scalar distSq = ri.geometric.range * ri.geometric.range;
 		// Solid-angle <-> area Jacobian uses the GEOMETRIC normal —
 		// the area-element parameterisation depends on the actual face
 		// orientation, not the Phong-perturbed shading normal

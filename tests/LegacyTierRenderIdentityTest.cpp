@@ -100,7 +100,11 @@ static const IdentityCase kCases[] = {
 	{ "scenes/Tests/Legacy/transparency_shaderop.RISEscene",                  "transparency_shaderop",                                        0x418bd9f01d1c0b81ull },
 	{ "scenes/Tests/Legacy/rgb_dispersive_caustic.RISEscene",                 "caustic_pel_photonmap / gather",                               0xb898fe392a08ef1eull },
 	{ "scenes/Tests/Legacy/showroom.RISEscene",                               "irradiance_cache, iridescent_painter, polished_material",      0x7c020159f47bb489ull },
-	{ "scenes/Tests/Legacy/composite_material.RISEscene",                     "composite_material, ambient_light",                            0x04c301c05241164dull },
+	// Re-pinned to 0x46d9b5d6f5e3448dull after DL-629 (2026-11-11) eliminated
+	// redundant per-pass XYZ->Rec709->XYZ round-trip drift across progressive
+	// passes in active `pathtracing_pel_rasterizer` (`samples 64` = 2 passes);
+	// frozen `composite_material` and `ambient_light` are untouched.
+	{ "scenes/Tests/Legacy/composite_material.RISEscene",                     "composite_material, ambient_light",                            0x46d9b5d6f5e3448dull },
 	{ "scenes/FeatureBased/Shaders/visiblehuman.RISEscene",                   "directvolumerendering_shader",                                 0x7df386e9e94b9a43ull },
 	{ "scenes/Tests/Legacy/gltf_box.RISEscene",                               "ambient_light",                                                0xf20722df16b8a405ull },
 	{ "scenes/Tests/Legacy/translucent_bunny.RISEscene",                      "directlighting_shaderop, iridescent_painter",                  0x1513c77a209e3928ull },

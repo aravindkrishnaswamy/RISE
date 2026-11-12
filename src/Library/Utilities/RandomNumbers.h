@@ -93,7 +93,7 @@ namespace RISE
 		{
 		};
 	#else
-		RandomNumberGenerator( ){};
+		RandomNumberGenerator( unsigned int = 0 ){};
 	#endif
 
 		virtual ~RandomNumberGenerator( )

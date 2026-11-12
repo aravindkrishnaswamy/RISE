@@ -45,6 +45,26 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace RISE
+{
+	namespace Implementation
+	{
+		RISEPel ProgressivePixel::LoadPelPassInit() const
+		{
+			return ( sampleIndex == 0 ) ? RISEPel( colorSum ) : RISEPel( 0, 0, 0 );
+		}
+
+		void ProgressivePixel::StorePelPassDelta( const RISEPel passDelta )
+		{
+			if( sampleIndex == 0 ) {
+				colorSum = passDelta;
+			} else {
+				colorSum = colorSum + XYZPel( passDelta );
+			}
+		}
+	}
+}
+
 PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
 	IRayCaster* pCaster_,
 	RISE::Implementation::FrameStore* frameStore
