@@ -1396,6 +1396,31 @@ Owner-approved check of whether the remaining first-metre gap is a resolution li
 - **The cost is grid noise.** The grid-scale share of w′ stays at 0.30–0.44 at every height, 2–3.5× FDS's from 1 m up. Entrainment overshoots by 8–16% below 2 m and falls to 0.72 at 2.5–3 m.
 - **Next, running:** `res_t6_lc_cv04` (C_v 0.04, to see whether the base survives with less noise) and the reacting 4 s A/B `r271_compact_stencil/ab_lc_cv02_compact` (carrier, compact, C_v 0.02, tier 8), which is the real test: in §28 C_v 0.02 alone left the reacting base unchanged on the compact stencil.
 
+## 34. Reacting A/B: carrier + C_v 0.02 fixes the flame and first metre, and breaks the far plume (2026-11-12)
+
+`r271_compact_stencil/ab_lc_cv02_compact`: limited carrier, compact stencil, momentum C_v 0.02 (`RISE_R271_CV`; scalar C_v unchanged), floor on, 4 s from r270 step 9223 (driver `ab_build_lc`, exit 0). Same 64 frames as §32. Evidence: `s34_runs.txt`.
+
+| | McCaffrey | FDS | carrier, C_v 0.07 (§32) | carrier, C_v 0.02 |
+|---|---|---|---|---|
+| 90% / 99% heat-release height (m) | — | 0.43 / 0.77 | 0.61 / 1.01 | 0.43 / 0.73 |
+| centre excess T at 0.29 m (K) | 873 | 926 | 1106 | 1072 |
+| 0.50 m | 551 | 631 | 865 | 774 |
+| 0.75 m | 367 | 355 | 577 | 444 |
+| 0.99 m | 247 | 228 | 341 | 282 |
+| 1.51 m | 122 | 114 | 153 | 159 |
+| 2.00 m | 76 | 72 | 95 | 109 |
+| 3.01 m | 39 | 39 | 45 | 62 |
+| centre w at 0.99 / 2.00 / 3.01 m (m/s) | 3.60 / 2.85 / 2.48 | 3.47 / 2.68 / 2.33 | 3.57 / 2.72 / 2.28 | 3.44 / 3.06 / 2.94 |
+| mass flux at 0.50 / 0.99 / 3.01 m (kg/s) | — | 0.184 / 0.314 / 1.176 | 0.136 / 0.229 / 0.983 | 0.149 / 0.254 / 0.856 |
+| total heat release in 2–3.5 Hz (% of mean) | — | 6.3 | 3.4 | 4.1 |
+| grid-scale w′ share at 0.99 / 2.00 m | — | — | 0.116 / 0.072 | 0.310 / 0.283 |
+
+- **The flame height is FDS's** (0.43 / 0.73 m against 0.43 / 0.77), for the first time on the compact stencil. With the carrier, C_v 0.02 does revive the reacting base, which it did not without it (§28: 0.58 / 0.98 m).
+- **The first metre improves:** excess T at 0.75 / 0.99 m is 21% / 14% above McCaffrey (§32: 57% / 38%). At 0.29–0.50 m it is still 23–40% above.
+- **The far plume gets worse:** excess T at 2 / 3 m is 43% / 59% above McCaffrey (§32: 25% / 15%), centre w is 7–19% high, and the 3 m mass flux falls to 0.856 kg/s. This is r270 default's far-field signature, and it comes with r270-like grid noise (share 0.28–0.31 at every height).
+- **Reading:** the low C_v is needed where the flame is, and the production C_v where the plume only has to stay clean (§18's two problems). §28 found a zoned C_v insufficient, but that was without the carrier and with the zone boundary at 0.31 m.
+- **Running:** `ab_lc_zone33`: carrier, compact, `RISE_FIRE_VREMAN_ZONE=below:33:0.2857` (momentum C_v 0.02 below 1.0 m, 0.07 above).
+
 ## Next (owner decisions)
 
 1. **Plan agreed 2026-11-10 (owner):** stop the open-ended floor-mechanism hunt (§30 closes it) and judge a candidate package against physical targets.
