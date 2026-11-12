@@ -1354,7 +1354,7 @@ Centre excess T (K):
 - **Near field: still short.** At 0.5–0.75 m the excess T is 57% above McCaffrey, the mass flux at 0.5–1 m is 73–74% of FDS's (below r270 default's 80–83%, which is helped by its grid noise), and the 90% height is 0.61 m against FDS's 0.43.
 - **Verdict:** the limited carrier is a clean, physically motivated fix worth adopting on the compact stencil, but it is not sufficient: the first metre still under-entrains. This is the same near-source quietness as §30–§31.
 
-## 33. Resolution check of the candidate: the gap does not close from D*/6 to D*/8 (2026-11-11, tier 10 running)
+## 33. Resolution check of the candidate: the gap does not close from D*/6 to D*/10 (2026-11-11/12)
 
 Owner-approved check of whether the remaining first-metre gap is a resolution limit. RISE's capstone supports D*/6, D*/8 and D*/10 natively, so the check uses those tiers on the full production domain instead of a hand-trimmed half-cell domain: no domain change, and only the inert heat source needed generalising.
 
@@ -1380,6 +1380,24 @@ Owner-approved check of whether the remaining first-metre gap is a resolution li
 - **Reading:** the remaining deficit is a property of the scheme at a fixed number of cells across the plume (2.4 and 3.1 cells per plume radius here), not something a modestly finer grid buys back. Tier 10 (4 cells) will confirm or qualify this.
 - **Practical gain:** tier 6 reproduces the tier-8 RISE/FDS ratios in 3.4 h for 10 s, so it is the test bed for the next arms.
 - **Follow-up arms launched at tier 6** (carrier, compact, 10 s): `res_t6_lc_cv02` (momentum C_v 0.02) then `res_t6_lc_cv04` (0.04). §31 showed C_v 0.02 alone revives the base but with 2–3× FDS's grid-scale share aloft, while the carrier alone gives a clean spectrum and a quiet base. The arms test whether the two combine: an FDS-like base without the noise.
+
+**Tier 10 (2026-11-12; `res_t10_lc`, exit 98, 22.4 h sharing the GPU; FDS `tier10`).** Same window.
+
+| | D*/6 | D*/8 | D*/10 |
+|---|---|---|---|
+| RISE / FDS mass flux at 1 / 2 / 3 m | 0.71 / 0.69 / 0.67 | 0.66 / 0.64 / 0.69 | 0.71 / 0.64 / 0.68 |
+| RISE / FDS entrainment rate, 0.5–2 m | 0.68–0.69 | 0.62–0.64 | 0.55–0.62 |
+| RISE / FDS base rms w/w_c at 0.3 / 0.5 m | 0.30 / 0.28 | 0.29 / 0.28 | 0.14 / 0.19 |
+| FDS 3 m mass flux (kg/s) | 0.856 | 0.894 | 0.768 |
+| FDS centre excess T at 1 m (K) | 301 | 328 | 537 |
+| FDS base rms w/w_c at 0.3 m | 0.091 | 0.078 | 0.040 |
+| RISE 3 m mass flux (kg/s) | 0.572 | 0.621 | 0.526 |
+| RISE centre excess T at 1 m (K) | 494 | 588 | 677 |
+| RISE base rms w/w_c at 0.3 m | 0.027 | 0.022 | 0.006 |
+
+- **The gap is the same at all three tiers:** RISE carries 64–71% of FDS's mass flux from 1 m up. Resolution does not close it.
+- **FDS is not converged either.** At D*/10 its base is half as unsteady, its plume transitions later (537 K at 1 m against 301–328) and its 3 m mass flux falls 14%. RISE moves the same way. In both codes the inert plume's transition is seeded at the grid scale, so a finer grid delays it over these tiers.
+- **Consequence:** the inert FDS plume is a like-for-like reference at a given tier, not a converged truth. The reacting flame against McCaffrey stays the physical judge.
 
 **Carrier + momentum C_v 0.02 at tier 6** (`res_t6_lc_cv02`, exit 98, window 5–10 s; evidence appended to `s33_runs.txt`).
 
@@ -1447,7 +1465,22 @@ Owner-approved check of whether the remaining first-metre gap is a resolution li
 
 **Inert tier 6, carrier + C_v 0.04** (`res_t6_lc_cv04`): halfway on every measure. RISE/FDS mass flux 0.84–0.90, centre excess T 1.10–1.24, base rms w/w_c 0.58, grid-scale share 1.5–1.9× FDS's from 1 m. No better trade than the zone.
 
-**Running:** inert tier 6 with the zone (`res_t6_lc_zone25`, `below:25:0.2857`, 10 s) for a like-for-like FDS comparison with a longer average; RISE tier 10.
+**Inert tier 6 with the zone** (`res_t6_lc_zone25`: carrier, compact, `below:25:0.2857`, i.e. C_v 0.02 below 1.0 m; exit 98; window 5–10 s).
+
+| RISE / FDS at tier 6 | carrier, C_v 0.07 | carrier, C_v 0.02 | carrier, zoned |
+|---|---|---|---|
+| mass flux at 0.5 / 1.0 / 2.0 / 3.0 m | 0.73 / 0.71 / 0.69 / 0.67 | 1.04 / 1.08 / 1.09 / 0.98 | 0.98 / 1.00 / 0.96 / 0.96 |
+| entrainment rate, 0.3–3.0 m | 0.63–0.69 | 0.72–1.16 | 0.92–1.07 |
+| centre excess T at 0.5 / 1.0 / 2.0 / 3.0 m | 1.37 / 1.64 / 1.61 / 1.64 | 0.96 / 0.94 / 0.96 / 1.13 | 0.99 / 0.95 / 1.05 / 1.03 |
+| centre w at 1.0 / 2.0 / 3.0 m | 1.24 / 1.22 / 1.23 | 0.87 / 0.88 / 1.02 | 0.90 / 0.95 / 0.96 |
+| centre rms w/w_c at 0.3 / 0.5 / 1.0 m | 0.30 / 0.28 / 0.71 | 1.14 / 0.97 / 1.09 | 1.09 / 0.91 / 1.03 |
+| grid-scale w′ share at 0.5 / 1.0 / 1.5 / 2.0 / 3.0 m (FDS 0.23 / 0.19 / 0.16 / 0.13 / 0.08) | 0.34 / 0.22 / 0.19 / 0.15 / 0.11 | 0.39 / 0.38 / 0.36 / 0.34 / 0.30 | 0.43 / 0.36 / 0.19 / 0.13 / 0.08 |
+
+- **The zoned inert plume is FDS's plume at this tier:** mass flux within 5% and centre excess T within 5% at every height but 2.5 m (12%), entrainment rate within 8%, base fluctuation within 9%, and FDS's grid-scale share from 2 m up.
+- **Left over:** twice FDS's grid-scale share below 1 m, and centre w 10–12% low at 1–1.5 m.
+- So the reacting flame's remaining gap (mass flux 76–80% of FDS's) is not in the cold-flow dynamics the inert pair tests. It is either the short 4 s window or combustion coupling.
+
+**Running:** `ab_lc_zone33_10s`: the zoned reacting arm for 10 s (driver `ab_build_lc10`; `ab_driver.cpp`'s window cap raised from 4 to 10 s, `run_ab.sh` takes `RISE_R271_AB_WINDOW`), to get statistics beyond one 4 s window.
 
 ## Next (owner decisions)
 

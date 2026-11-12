@@ -4,6 +4,7 @@
 # $3 = compact viscous stencil 0/1 (default 1), $4 = FDS mixing time 0/1 (default 0).
 # Env RISE_R271_CV / RISE_FIRE_SCALAR_VREMAN_CV (momentum / scalar Vreman C_v) pass through; they need a build with the
 # RISE_R271_CV hook (build_ab.py since §28).
+# Env RISE_R271_AB_WINDOW (s, default 4) sets the run length.
 # Keep $3 equal across arms that test $4: the mixing-time nu_t follows the stencil.
 # Baseline is r270's own frames (switch off is value-identical; see resume_check_off and §14).
 set -u
@@ -16,7 +17,7 @@ cd /Volumes/SSD/Working/RISE
 [ "$FDSMIX" = 1 ] && export RISE_FIRE_FDS_MIXING_TIME=1
 echo "{\"state\":\"running\",\"started\":\"$(date -u +%FT%TZ)\",\"out\":\"$OUT\",\"compact\":$COMPACT,\"cv\":\"${RISE_R271_CV:-}\",\"scalar_cv\":\"${RISE_FIRE_SCALAR_VREMAN_CV:-}\",\"fds_mixing\":$FDSMIX}" > $B/${ARM}_status.json
 RISE_FIRE_FLOOR_EMISSIVITY=1 /usr/bin/caffeinate -i \
-  $B/$BUILD/ab_driver "$CK" "$OUT" 4 > $B/$ARM.log 2>&1
+  $B/$BUILD/ab_driver "$CK" "$OUT" ${RISE_R271_AB_WINDOW:-4} > $B/$ARM.log 2>&1
 rc=$?
 echo "{\"state\":\"$([ $rc = 0 ] && echo complete_stopped_for_review || echo stopped_error)\",\"exit\":$rc,\"finished\":\"$(date -u +%FT%TZ)\",\"out\":\"$OUT\"}" > $B/${ARM}_status.json
 exit $rc

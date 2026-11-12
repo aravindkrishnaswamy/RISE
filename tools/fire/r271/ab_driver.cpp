@@ -6,7 +6,7 @@
 int main(int argc,char** argv){
  if(argc!=4)return 1;
  const std::filesystem::path checkpoint=argv[1],out=argv[2];const double window=std::stod(argv[3]);
- if(!(window>0.&&window<=4.))return 1;
+ if(!(window>0.&&window<=10.))return 1;
  if(std::filesystem::exists(out))return 91;
  std::filesystem::create_directories(out/"frames");
  std::string error;MethaneRunCheckpoint start;

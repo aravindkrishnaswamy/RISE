@@ -109,3 +109,66 @@ RISE against itself across tiers (mass flux, theta_c, rms w/w_c at each height i
   D*/6cv04: z=2.02  0.448   116 0.264
   D*/6cv04: z=2.51  0.589    84 0.258
   D*/6cv04: z=3.00  0.728    64 0.234
+
+## inert tier 6, carrier + zone below:25:0.2857 (res_t6_lc_zone25, exit 98), res_compare.py WINDOW=5-10; tier label 6zone
+Non-reacting plume resolution check, window 5-10 s. Columns: theta_c (K), w_c (m/s), b_w (m), mass flux (kg/s),
+centre rms w/w_c, grid-scale share of w'
+
+D*/6zone: dx=0.0408 m, 52x52
+  z=0.31 FDS     793  3.78  0.099  0.076  0.091  0.271
+  z=0.31 RISE    813  3.77  0.100  0.075  0.099  0.441
+  z=0.51 FDS     614  4.39  0.108  0.117  0.140  0.228
+  z=0.51 RISE    609  4.31  0.110  0.115  0.127  0.429
+  z=0.75 FDS     434  4.58  0.121  0.169  0.208  0.197
+  z=0.75 RISE    424  4.26  0.127  0.170  0.190  0.393
+  z=1.00 FDS     301  4.41  0.137  0.227  0.246  0.185
+  z=1.00 RISE    287  3.96  0.146  0.227  0.254  0.360
+  z=1.53 FDS     162  3.91  0.174  0.358  0.266  0.162
+  z=1.53 RISE    159  3.43  0.185  0.348  0.241  0.188
+  z=2.02 FDS     105  3.43  0.213  0.497  0.253  0.129
+  z=2.02 RISE    111  3.26  0.216  0.476  0.238  0.126
+  z=2.51 FDS      71  3.02  0.257  0.659  0.277  0.106
+  z=2.51 RISE     79  3.09  0.250  0.627  0.248  0.095
+  z=3.00 FDS      53  2.82  0.300  0.856  0.275  0.083
+  z=3.00 RISE     54  2.70  0.301  0.820  0.278  0.077
+
+RISE/FDS ratios per tier (theta_c, w_c, mass flux, rms w/w_c) by height index
+  D*/6zone
+    z=0.31   1.02   1.00   0.98   1.09
+    z=0.51   0.99   0.98   0.98   0.91
+    z=0.75   0.98   0.93   1.01   0.91
+    z=1.00   0.95   0.90   1.00   1.03
+    z=1.53   0.98   0.88   0.97   0.91
+    z=2.02   1.05   0.95   0.96   0.94
+    z=2.51   1.12   1.02   0.95   0.90
+    z=3.00   1.03   0.96   0.96   1.01
+
+Entrainment rate dm/dz (kg/s/m) between heights: FDS, RISE, ratio
+  D*/6zone
+    0.31-0.51   0.200   0.195   0.98
+    0.51-0.75   0.213   0.227   1.07
+    0.75-1.00   0.235   0.232   0.99
+    1.00-1.53   0.248   0.229   0.92
+    1.53-2.02   0.282   0.260   0.92
+    2.02-2.51   0.331   0.310   0.93
+    2.51-3.00   0.404   0.394   0.98
+
+FDS against itself across tiers (mass flux, theta_c, rms w/w_c at each height index)
+  D*/6zone: z=0.31  0.076   793 0.091
+  D*/6zone: z=0.51  0.117   614 0.140
+  D*/6zone: z=0.75  0.169   434 0.208
+  D*/6zone: z=1.00  0.227   301 0.246
+  D*/6zone: z=1.53  0.358   162 0.266
+  D*/6zone: z=2.02  0.497   105 0.253
+  D*/6zone: z=2.51  0.659    71 0.277
+  D*/6zone: z=3.00  0.856    53 0.275
+
+RISE against itself across tiers (mass flux, theta_c, rms w/w_c at each height index)
+  D*/6zone: z=0.31  0.075   813 0.099
+  D*/6zone: z=0.51  0.115   609 0.127
+  D*/6zone: z=0.75  0.170   424 0.190
+  D*/6zone: z=1.00  0.227   287 0.254
+  D*/6zone: z=1.53  0.348   159 0.241
+  D*/6zone: z=2.02  0.476   111 0.238
+  D*/6zone: z=2.51  0.627    79 0.248
+  D*/6zone: z=3.00  0.820    54 0.278
