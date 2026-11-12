@@ -501,7 +501,7 @@ re-describe a sheet whose transform or bounds changed, and a real edit
 between passes is picked up by `PrepareForRendering`'s epoch bump.  A
 clipped plane is always provably open, so its patch certificate never
 changes.  A38 pins that `RegenerateData` leaves the epoch unchanged (red at
-`8ab4124e7`).  **2026-11-11 (`DL-626`, `9ccd85f66`):** the remaining residual
+`8ab4124e7`).  **2026-11-12 (`DL-626`, `9ccd85f66`):** the remaining residual
 for in-place shape edits that preserve BOTH the transform AND the world bounds
 (e.g. permuting/flipping corners within the same AABB) is now closed via
 `IGeometry::ShapeRevision()` / `IObject::ShapeRevision()` (`A51`, see §5.8).
@@ -631,7 +631,7 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
 
 **`DL-626` (open-sheet seeding & walk membership residuals):**
 
-1. **AABB-preserving shape mutations (`A51`, `A57`):** Added monotonic
+1. **AABB-preserving shape mutations (`A51`, `A61b`):** Added monotonic
    `IGeometry::ShapeRevision()` (`Geometry::BumpShapeRevision()` across all
    shape-mutable geometries — including `ClippedPlane`, `BezierPatch`,
    `BilinearPatch`, `TriangleMesh*`, `Sphere`, `CircularDisk`, `HairGeometry`,
@@ -641,35 +641,39 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    transform and world AABB so corner/vertex/radius edits that leave both the
    transform and world AABB unchanged still re-describe the sheet without
    flushing `OpenSheetCatalogEpoch`.
-2. **Declaration-order invariance & non-axis co-normal offsets (`A52a`, `A52b`, `A56`, `A59`, `A60a`, `A60b`):**
+2. **Declaration-order invariance, coplanar sibling confirmation & detour ray budgets (`A52a`, `A52b`, `A56`, `A60a`, `A60b`, `A61a`–`A61c`, `A62`):**
    `SheetGeomKeyLess` orders `OpenSheetsOf`, `OpenSheetNormalGroup` members,
-   `HasFreeSpaceDetourToSheets` column reach (`Snapshot::columnDist` bounding
-   closed blockers to the target sheet's column segment), and same-material
-   sibling deduplication by pure geometric keys (world AABB, normal, and
-   `GetFinalTransformMatrix()` tie-breaking when two tilted panes share
-   identical AABB and normal; exact shared-geometry identity uses
-   `!SheetGeomKeyLess(a,b) && !SheetGeomKeyLess(b,a)` rather than hash
-   equality), while `ConfirmOpenSheetsAt` breaks equal-distance confirmation
-   ties via `ConfirmedSheetHitLess` and uses per-sheet
-   `OpenSheetNormalGroup::planeOffsets` (`Dot(s.p0 - grp.origin, grp.normal)`)
-   for `activeDists` and `ConfirmSharedNormalRay` (`coRi.geometric.range > 4 * kSeedEps`).
-   Same-material panes separated by an intervening opaque curtain are kept
-   distinct via `columnBlockerCounts` / `Snapshot::columnDist` (`A56`).
-3. **Multi-fold curved/pleated sheet crossings (`A53`, `A58`):** When a ray
+   `HasFreeSpaceDetourToSheets` column reach (`Snapshot::columnDist`, `SameBox`,
+   and `opaqueObjs` parity tracking), and same-material sibling deduplication by
+   pure geometric keys (world AABB, normal, and `GetFinalTransformMatrix()`
+   tie-breaking when two tilted panes share identical AABB and normal; exact
+   shared-geometry identity uses `!SheetGeomKeyLess(a,b) && !SheetGeomKeyLess(b,a)`
+   rather than hash equality), while `ConfirmOpenSheetsAt` breaks equal-distance
+   confirmation ties via its inline `hitHeight` / `entryCtx` / `SheetGeomKeyLess`
+   comparator (`A56`), passes exact ray-hit distances `aloneDist` from
+   `CheckSheetAloneAlongRay` into `ConfirmSharedNormalRay` (`activeDists`,
+   `A61c`), confirms coplanar siblings within `2 * kSeedEps` via
+   `ProbeCoplanarSheetBackAt` (`PointNearSheetBounds`) across
+   `ConfirmSharedNormalRay`, `HasFreeSpaceDetourToSheets` (column + Segment-2
+   walks, `A61a`), `HasFreeSpaceDetourToSheet` (column walk), and
+   `OpenSheetNormalRayReaches` (`A61b`), and enforces a shared per-step
+   `GroupDetourRayBudget()` counter across `sheet.normal` + `auxNormals` in
+   `OpenSheetHoldsPoint` (`A62`).
+3. **Multi-fold curved/pleated sheet crossings (`A53`, `A57a`–`A57c`):** When a ray
    crosses an inner fold's back face on a non-planar certified open sheet while
    an overhanging outer fold of that same sheet still encloses
    `PointPastBackFaceCrossing(ri, d)`, `ResolveOpenSheetCrossing` runs
    `CrossingMedia::ConfirmAt(..., pExclude = 0)` and retains/pushes `pSelf`
    (`FindRetainedSelf` requiring matching `GetMaterial()` before substituting a
-   deduplicated sibling sheet `A58`) so pushed and unpushed walks agree with
+   deduplicated sibling sheet `A57c`) so pushed and unpushed walks agree with
    `SeedFromPoint`.
 4. **Luminaire seed self-exit vs enclosing room ceiling (`A55`):**
-   `DetourOriginForSeedExit` advances detour Segment 1 just past
-   `pSeedObject`'s own exit face (resetting `columnHits`) when that exit
-   precedes any external obstacle, while `OpenSheetNormalRayReaches` exempts
-   only near-origin self-hits on `pSeedObject` (preventing a ceiling-slab
-   luminaire sealing a dry room from tunneling into an overlying pond while
-   preserving open-pavilion detours).
+   `DetourOriginForSeedExit` steps backward along `-normal` past `pSeedObject`'s
+   entry face to advance detour Segment 1 just past `pSeedObject`'s own exit
+   face when that exit precedes any external obstacle, while
+   `OpenSheetNormalRayReaches` exempts only near-origin self-hits on
+   `pSeedObject` (preventing a ceiling-slab luminaire sealing a dry room from
+   tunneling into an overlying pond while preserving open-pavilion detours).
 5. **Curved multi-facet skirt coverage (`A54`) & off-prism parity:**
    `DescribeOpenSheet` samples 64 Halton surface points (plus a $5 \times 5$
    lateral probe grid on CSG sheets) and selects up to `kMaxAuxNormals = 32`
@@ -677,25 +681,25 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    normal prisms of a planar sheet, point-based `SeedFromPoint` ==
    `ResolveUnpushedExit` parity (§5.2, `B5`: PT/BDPT `0.9969 +/- 0.0103` vs
    walk-history `0.7905`) remains the deliberate reciprocal convention.
-   `OpenSheetHalfSpaceSeedingTest`: **219 passed, 0 failed** (`204/0` Part A +
+   `OpenSheetHalfSpaceSeedingTest`: **226 passed, 0 failed** (`211/0` Part A +
    `15/0` Part B; `red_prove.sh` RED -> GREEN on `[DL-626-SUMMARY]`).
 
 **`DL-631` (hot-path overhead on scenes without open sheets):**
 
-- Replaced `MyIORStack`'s heap-backed `std::vector<IORDATA>` base and
-  `MyIORStack::ObjectList` (`std::vector<EntryContext>`) in
-  `src/Library/Utilities/IORStack.h` with inline 4-entry SBO (`m_inline[4]`,
-  spilling to heap only above depth 4, plus self-assignment safety on
-  `IORStack::operator=`; copy-on-write `ContextList` stays out-of-line and is
-  allocated only for open-sheet pushes), added 8-entry inline SBO (`inlineRecs[8]`)
-  in `LaneSeed` (`SeedLanesFromPoint`), and used `static const IORStack kQueryStack(1.0)`
-  in `ClassifyMembershipHit` / `MaterialMayRefract` (`sample` `malloc` frames
-  **584 -> 205 (-65 %)**, `free` **198 -> 71 (-64 %)**).
+- Replaced `MyIORStack`'s heap-backed `std::vector<IORDATA>` base in
+  `src/Library/Utilities/IORStack.h` with inline 4-entry `IORDATA m_inline[4]`
+  SBO (spilling to heap only above depth 4, plus self-assignment safety on
+  `IORStack::operator=`; copy-on-write `MyIORStack::ContextList` stays
+  out-of-line and is allocated only for open-sheet pushes), added 8-entry inline
+  SBO (`inlineRecs[8]`) in `LaneSeed` (`SeedLanesFromPoint`), and used
+  `static const IORStack kQueryStack(1.0)` in `ClassifyMembershipHit` /
+  `MaterialMayRefract` (`sample` `malloc` frames **584 -> 205 (-65 %)**, `free`
+  **198 -> 71 (-64 %)**).
 - Added `!cat.hasTrackableMedia` 0-ray immediate return on all-opaque scenes
-  (`A7`) and a `!cat.hasSheets` fast path in `SeedFromPointImpl` using a single
-  32-entry stack buffer (`ProbeEntry[32]`) with immediate return when
-  `TallyProbe` finds `rawCount == 0`, plus lane-0 stack copy when
-  `pLanes->nm[0] == nm`.
+  (`A59`) and a `!cat.hasSheets` fast path in `SeedFromPointImpl` (honoring
+  `cat.walkSteps` `A58`) using a single 32-entry stack buffer (`ProbeEntry[32]`)
+  with immediate return when the forward `TallyProbe` finds `!anyCandidate`,
+  plus lane-0 stack copy when `pLanes->nm[0] == nm`.
 - Seeded all 4 HWSS lanes once in `PathTracingIntegrator::IntegrateRayHWSS`
   (`SeedLanesFromPoint`), forwarded `preseededOriginLanes_` into
   `IntegrateFromHitHWSS` Fallbacks 1 & 2 (`HWSSLaneSeeds` frames **74 -> 0**),

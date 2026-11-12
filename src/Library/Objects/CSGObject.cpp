@@ -3344,7 +3344,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 									const Scalar maxEntryProbe = ( riObjB.geometric.range - tEntryProbe ) +
 										Scalar( 4 ) * OpenSheetRecastStep( riObjB.geometric.range, subScale );
 									pObjectB->IntersectRay( entryProbe, maxEntryProbe, true, true, false );
-									if( entryProbe.geometric.bHit ) {
+									if( entryProbe.geometric.bHit && entryProbe.geometric.range <= maxEntryProbe ) {
 										AdoptCsgSurfacePayload( ri.geometric, entryProbe.geometric );
 										AdoptCsgSurfaceBindings( ri, entryProbe );
 									}
@@ -4139,7 +4139,7 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 				const Scalar aExit = EntryCoord( riObjA );
 				if( riObjB.geometric.bHit && !( certBits & kSingleLobeB ) ) {
 					SkipDegenerateMultiLobeB(
-						pObjectB, orig, dHowFar2, subScale,
+						pObjectB, orig, RISE_INFINITY, subScale,
 						std::min( aExit, dHowFar2 ), fallbackBackoff, 0, nullRasterizerState,
 						factsB, advanceBudget, riObjB );
 				}
@@ -4187,7 +4187,7 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 						const Scalar aEntry = EntryCoord( riObjA );
 						const Scalar tolBA = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange2 );
 						if( ExitCoord( riObjB ) <= aEntry + tolBA ) {
-							if( AdvanceOperandPast( pObjectB, orig, dHowFar2, subScale,
+							if( AdvanceOperandPast( pObjectB, orig, RISE_INFINITY, subScale,
 									aEntry + tolBA, 0, nullRasterizerState,
 									factsB, advanceBudget, riObjB ) ) {
 								dropUnconfirmed = true;
@@ -4200,7 +4200,7 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 							const Scalar tolIn = coincTol( aEntry, riObjA.hasBoundaryRange, riObjB.hasBoundaryRange );
 							if( ExitCoord( riObjB ) <= bEn + tolBB && bEn <= aEntry + tolIn ) {
 								if( SkipDegenerateMultiLobeB(
-										pObjectB, orig, dHowFar2, subScale,
+										pObjectB, orig, RISE_INFINITY, subScale,
 										aEntry + tolIn + tolBB, fallbackBackoff, 0, nullRasterizerState,
 										factsB, advanceBudget, riObjB ) ) {
 									dropUnconfirmed = true;

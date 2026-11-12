@@ -80,20 +80,46 @@ namespace RISE
 			const char* a = argv[ai];
 			if( !a ) return FlagMatch::NotMatched;
 
+			auto parsePositiveIntStr = [&]( const char* name, const char* raw, int& out ) -> FlagMatch {
+				if( !raw || raw[0] == '\0' ) {
+					err << "ERROR: " << name << " requires a positive integer; got empty string.\n";
+					return FlagMatch::MatchedError;
+				}
+				errno = 0;
+				char* endp = nullptr;
+				const long v = std::strtol( raw, &endp, 10 );
+				if( errno == ERANGE || endp == raw || *endp != '\0' || v <= 0 || v > INT_MAX ) {
+					err << "ERROR: " << name << " requires a positive integer; got `" << raw << "`.\n";
+					return FlagMatch::MatchedError;
+				}
+				out = static_cast<int>( v );
+				return FlagMatch::MatchedOk;
+			};
+
 			auto consumePositiveInt = [&]( const char* name, int& out ) -> FlagMatch {
 				if( ai + 1 >= argc ) {
 					err << "ERROR: " << name << " requires a positive integer; got end-of-args.\n";
 					return FlagMatch::MatchedError;
 				}
-				errno = 0;
-				char* endp = nullptr;
-				const long v = std::strtol( argv[ai + 1], &endp, 10 );
-				if( errno == ERANGE || endp == argv[ai + 1] || *endp != '\0' || v <= 0 || v > INT_MAX ) {
-					err << "ERROR: " << name << " requires a positive integer; got `" << argv[ai + 1] << "`.\n";
+				const FlagMatch res = parsePositiveIntStr( name, argv[ai + 1], out );
+				if( res == FlagMatch::MatchedOk ) {
+					++ai;
+				}
+				return res;
+			};
+
+			auto parsePositiveDoubleStr = [&]( const char* name, const char* raw, double& out ) -> FlagMatch {
+				if( !raw || raw[0] == '\0' ) {
+					err << "ERROR: " << name << " requires a positive float; got empty string.\n";
 					return FlagMatch::MatchedError;
 				}
-				out = static_cast<int>( v );
-				++ai;
+				char* endp = nullptr;
+				const double v = std::strtod( raw, &endp );
+				if( endp == raw || *endp != '\0' || !RISE::IsFiniteDouble( v ) || v <= 0.0 ) {
+					err << "ERROR: " << name << " requires a positive float; got `" << raw << "`.\n";
+					return FlagMatch::MatchedError;
+				}
+				out = v;
 				return FlagMatch::MatchedOk;
 			};
 
@@ -102,25 +128,30 @@ namespace RISE
 					err << "ERROR: " << name << " requires a positive float; got end-of-args.\n";
 					return FlagMatch::MatchedError;
 				}
-				char* endp = nullptr;
-				const double v = std::strtod( argv[ai + 1], &endp );
-				if( endp == argv[ai + 1] || *endp != '\0' || !RISE::IsFiniteDouble( v ) || v <= 0.0 ) {
-					err << "ERROR: " << name << " requires a positive float; got `" << argv[ai + 1] << "`.\n";
-					return FlagMatch::MatchedError;
+				const FlagMatch res = parsePositiveDoubleStr( name, argv[ai + 1], out );
+				if( res == FlagMatch::MatchedOk ) {
+					++ai;
 				}
-				out = v;
-				++ai;
-				return FlagMatch::MatchedOk;
+				return res;
 			};
 
 			if( std::strcmp( a, "--width" ) == 0 ) {
 				return consumePositiveInt( "--width", dst.filmWidth );
 			}
+			if( std::strncmp( a, "--width=", 8 ) == 0 ) {
+				return parsePositiveIntStr( "--width", a + 8, dst.filmWidth );
+			}
 			if( std::strcmp( a, "--height" ) == 0 ) {
 				return consumePositiveInt( "--height", dst.filmHeight );
 			}
+			if( std::strncmp( a, "--height=", 9 ) == 0 ) {
+				return parsePositiveIntStr( "--height", a + 9, dst.filmHeight );
+			}
 			if( std::strcmp( a, "--pixel-ar" ) == 0 ) {
 				return consumePositiveDouble( "--pixel-ar", dst.filmPixelAR );
+			}
+			if( std::strncmp( a, "--pixel-ar=", 11 ) == 0 ) {
+				return parsePositiveDoubleStr( "--pixel-ar", a + 11, dst.filmPixelAR );
 			}
 			if( std::strcmp( a, "--denoise" ) == 0 ) {
 				if( dst.denoiseMode == 0 ) {

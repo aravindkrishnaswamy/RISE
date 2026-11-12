@@ -108,8 +108,12 @@ namespace RISE
 
 				rc = tiles[idx];
 
-				// Progress callback needs serialization since it may update UI
-				if( pProgressFunc && idx > 0 ) {
+				// Progress callback needs serialization since it may update UI.
+				// In multi-pass / multi-frame weighted mode (`progressTotal > 0`
+				// and `progressBase > 0`), fire on `idx == 0` as well so 1-tile
+				// (`numTiles == 1`) progressive renders still report between-pass
+				// progress and honor `Progress()`-based cancellation.
+				if( pProgressFunc && ( idx > 0 || ( progressTotal > 0 && progressBase > 0 ) ) ) {
 					progressMut.lock();
 					if( cancelled.load( std::memory_order_relaxed ) ) {
 						progressMut.unlock();

@@ -2405,6 +2405,157 @@ static void PartA()
 		}
 	}
 
+	// A61: Coplanar sibling confirmation across detour column/Segment-2 walks,
+	// per-sheet `OpenSheetNormalRayReaches` fallback, and slightly tilted
+	// (`Dot >= 1 - 1e-10`) group members:
+	//  - A61a (Witness A): seed at (0, 0, 0) blocked by opaque rock at y = 1.5
+	//    under two coplanar panes at y = 3.0 (`glass15` 6x6 + `glass133` 2x2)
+	//    must confirm BOTH panes via `HasFreeSpaceDetourToSheets` and decline
+	//    in both declaration orders (`Depth() == 1`).
+	//  - A61b (Witness B): two coplanar panes (`glass15` + `glass133`) routed
+	//    through the per-sheet `OpenSheetNormalRayReaches` fallback (after an
+	//    in-place `KeyframeFromParameters` corner edit invalidates `poseValid`
+	//    and moves the second pane onto y = 3.0) must still detect coplanar
+	//    overlap and decline in both declaration orders (`Depth() == 1`).
+	//  - A61c (Witness C): two panes in the same normal group (`theta = 1.2e-5`
+	//    rad, `Dot >= 1 - 1e-10`) that intersect along y = 3.0 at x = 20.0 must
+	//    use exact ray-hit distance (`aloneDist`) rather than `grp.origin` plane
+	//    offset (`20 * sin(1.2e-5) = 2.4e-4 > 2 * kSeedEps`) and decline in both
+	//    declaration orders (`Depth() == 1`).
+	{
+		auto makeSubmergedCoplanar = [&]( bool smallFirst ) -> std::string {
+			const std::string big   = HSheet( "g_cbig",   3.0, 6.0, true ) + Obj( "cbig",   "g_cbig",   "glass15" );
+			const std::string small = HSheet( "g_csmall", 3.0, 2.0, true ) + Obj( "csmall", "g_csmall", "glass133" );
+			const std::string rock  = "box_geometry\n{\n\tname g_crock\n\twidth 1.0\n\theight 0.4\n\tdepth 1.0\n}\n\n"
+				+ Obj( "crock", "g_crock", "matte", "0 1.5 0" );
+			return Header() + rock + ( smallFirst ? ( small + big ) : ( big + small ) );
+		};
+		Loaded wA1( makeSubmergedCoplanar( false ) );
+		Loaded wA2( makeSubmergedCoplanar( true ) );
+		Check( wA1.ok && wA2.ok, "A61a [DL-626] submerged coplanar panes load in both orders" );
+		if( wA1.ok && wA2.ok ) {
+			const IORStack st1 = wA1.Seed( Point3( 0, 0, 0 ) );
+			const IORStack st2 = wA2.Seed( Point3( 0, 0, 0 ) );
+			Check( st1.Depth() == 1 && st2.Depth() == 1,
+				"A61a [DL-626]: detour column + Segment-2 walks detect coplanar different-material panes and decline in both orders" );
+		}
+
+		bool wBOk = true;
+		for( int order = 0; order < 2; ++order ) {
+			// Both panes start in `+y` normal group (`y = 3.0` and `y = 2.0`),
+			// enclosed inside a larger AABB? Note: editing `g_edit` corners in-place
+			// bumps `ShapeRevision()`, invalidating `poseValid` so `ConfirmOpenSheetsAt`
+			// falls through to per-sheet `OpenSheetHoldsPoint` -> `OpenSheetNormalRayReaches`.
+			// Keep `g_edit`'s world AABB unchanged across the edit by starting `g_edit`
+			// at `y = 3.0` and permuting its 4 corners cyclically (preserving `+y` normal
+			// and exact `[-2, 2] x [3, 3] x [-2, 2]` AABB while incrementing `ShapeRevision()`!).
+			const std::string fixed = HSheet( "g_fixed", 3.0, 6.0, true ) + Obj( "fixed", "g_fixed", "glass15" );
+			const std::string edit  = HSheet( "g_edit",  3.0, 2.0, true ) + Obj( "edit",  "g_edit",  "glass133" );
+			Loaded s( Header() + ( order == 0 ? ( fixed + edit ) : ( edit + fixed ) ) );
+			if( !s.ok ) { wBOk = false; continue; }
+			// Prime catalog so both panes are grouped together:
+			(void)s.Seed( Point3( 0, 0, 0 ) );
+			IKeyframable* geom = dynamic_cast<IKeyframable*>( s.job->GetGeometries()->GetItem( "g_edit" ) );
+			if( !geom ) { wBOk = false; continue; }
+			// Cyclic corner shift keeping exact normal +y and exact AABB [-2,2]x[3,3]x[-2,2]:
+			// HSheet(y=3, half=2, normalUp=true) has b=(-2,3,-2), a=(2,3,-2), d=(2,3,2), c=(-2,3,2)
+			// passed to SheetQuad(a,b,c,d): pta=(2,3,-2), ptb=(-2,3,-2), ptc=(-2,3,2), ptd=(2,3,2).
+			// Shift cyclically: pta=(-2,3,-2), ptb=(-2,3,2), ptc=(2,3,2), ptd=(2,3,-2).
+			const char* names[4] = { "pta", "ptb", "ptc", "ptd" };
+			const char* vals[4]  = { "-2 3 -2", "-2 3 2", "2 3 2", "2 3 -2" };
+			for( int c = 0; c < 4; ++c ) {
+				IKeyframeParameter* kp = geom->KeyframeFromParameters( names[c], vals[c] );
+				if( kp ) { geom->SetIntermediateValue( *kp ); kp->release(); }
+			}
+			geom->RegenerateData();
+			const IORStack st = s.Seed( Point3( 0, 0, 0 ) );
+			if( st.Depth() != 1 ) wBOk = false;
+		}
+		Check( wBOk,
+			"A61b [DL-626]: per-sheet OpenSheetNormalRayReaches fallback detects coplanar different-material panes in both orders" );
+
+		auto makeSlightlyTiltedGroupCoplanar = [&]( bool tiltFirst ) -> std::string {
+			// Flat pane at y = 3.0 spanning x in [16, 24], z in [-4, 4] (`glass15`),
+			// and slightly tilted pane (`theta = 1.2e-5` rad around z through (20, 3, 0),
+			// so `cos(theta) = 1 - 7.2e-11 >= 1 - 1e-10` -> SAME normal group, while at
+			// `grp.origin` near x = 0 its plane offset differs by `20 * sin(1.2e-5) = 2.4e-4 > 2 * kSeedEps`!).
+			const double fA[3] = { 24, 3, -4 }, fB[3] = { 16, 3, -4 }, fC[3] = { 16, 3, 4 }, fD[3] = { 24, 3, 4 };
+			const double dy = 4.0 * std::tan( 1.2e-5 );
+			const double tA[3] = { 24, 3.0 + dy, -4 }, tB[3] = { 16, 3.0 - dy, -4 }, tC[3] = { 16, 3.0 - dy, 4 }, tD[3] = { 24, 3.0 + dy, 4 };
+			const std::string flat = SheetQuad( "g_flat20", fA, fB, fC, fD ) + Obj( "flat20", "g_flat20", "glass15" );
+			const std::string tilt = SheetQuad( "g_tilt20", tA, tB, tC, tD ) + Obj( "tilt20", "g_tilt20", "glass133" );
+			return Header() + ( tiltFirst ? ( tilt + flat ) : ( flat + tilt ) );
+		};
+		Loaded wC1( makeSlightlyTiltedGroupCoplanar( false ) );
+		Loaded wC2( makeSlightlyTiltedGroupCoplanar( true ) );
+		Check( wC1.ok && wC2.ok, "A61c [DL-626] slightly tilted group-coplanar panes at x=20 load in both orders" );
+		if( wC1.ok && wC2.ok ) {
+			const IORStack st1 = wC1.Seed( Point3( 20.0, 0.0, 0.0 ) );
+			const IORStack st2 = wC2.Seed( Point3( 20.0, 0.0, 0.0 ) );
+			Check( st1.Depth() == 1 && st2.Depth() == 1,
+				"A61c [DL-626]: exact ray-hit distance detects coplanarity at x=20 for 1.2e-5 rad tilted group sibling in both orders" );
+		}
+	}
+
+	// A62: Single-sheet detour ray budget (`GroupDetourRayBudget()`) is shared
+	// across `sheet.normal` + all `auxNormals` in `OpenSheetHoldsPoint` and
+	// enforced per ray step across Segment 1 and Segment 2 in `HasFreeSpaceDetourToSheet`.
+	{
+		// Build the 19-panel non-planar collar (so `auxNormals` has >= 19 distinct
+		// facet normals) enclosed inside a sealed opaque box so every normal ray hits
+		// an opaque wall and attempts `HasFreeSpaceDetourToSheet`.
+		const int N = 19;
+		const double rIn = 2.5, rOut = 4.5, yBot = 0.5, yTop = 2.5;
+		std::ostringstream ms;
+		ms << "indexedmesh_geometry\n{\n\tname g_bcollar\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+		for( int k = 0; k < N; ++k ) {
+			const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / double( N );
+			const double c = std::cos( th ), s = std::sin( th );
+			ms << "\tvertex " << ( rIn * c ) << " " << yBot << " " << ( rIn * s ) << "\n";
+			ms << "\tvertex " << ( rIn * c ) << " " << yTop << " " << ( rIn * s ) << "\n";
+			ms << "\tvertex " << ( rOut * c ) << " " << yBot << " " << ( rOut * s ) << "\n";
+		}
+		for( int k = 0; k < 3 * N; ++k ) ms << "\tuv 0 0\n";
+		for( int k = 0; k < N; ++k ) {
+			const int kn = ( k + 1 ) % N;
+			const int b0 = 3 * k, t0 = 3 * k + 1, f0 = 3 * k + 2;
+			const int b1 = 3 * kn, t1 = 3 * kn + 1, f1 = 3 * kn + 2;
+			ms << "\ttriangle " << b0 << " " << t0 << " " << t1 << "\n";
+			ms << "\ttriangle " << b0 << " " << t1 << " " << b1 << "\n";
+			ms << "\ttriangle " << b0 << " " << b1 << " " << f1 << "\n";
+			ms << "\ttriangle " << b0 << " " << f1 << " " << f0 << "\n";
+		}
+		ms << "}\n\n";
+		// Sealed opaque inner box around the seed point `(0, 1.5, 0)`:
+		const std::string sealedBox =
+			"box_geometry\n{\n\tname g_sbh\n\twidth 2.0\n\theight 0.2\n\tdepth 2.0\n}\n\n"
+			"box_geometry\n{\n\tname g_sbx\n\twidth 0.2\n\theight 2.0\n\tdepth 2.0\n}\n\n"
+			"box_geometry\n{\n\tname g_sbz\n\twidth 2.0\n\theight 2.0\n\tdepth 0.2\n}\n\n"
+			+ Obj( "sb_top", "g_sbh", "matte", "0 2.4 0" )
+			+ Obj( "sb_bot", "g_sbh", "matte", "0 0.6 0" )
+			+ Obj( "sb_px",  "g_sbx", "matte", "0.9 1.5 0" )
+			+ Obj( "sb_mx",  "g_sbx", "matte", "-0.9 1.5 0" )
+			+ Obj( "sb_pz",  "g_sbz", "matte", "0 1.5 0.9" )
+			+ Obj( "sb_mz",  "g_sbz", "matte", "0 1.5 -0.9" );
+		Loaded sb( Header() + ms.str() + Obj( "bcollar", "g_bcollar", "glass15" ) + sealedBox );
+		Check( sb.ok, "A62 [DL-626] sealed-box multi-facet detour budget scene loads" );
+		if( sb.ok ) {
+			// Prime catalog first.
+			(void)sb.Seed( Point3( 0, 1.5, 0 ) );
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = 12;
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack st = sb.Seed( Point3( 0, 1.5, 0 ) );
+			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
+			IORStackSeeding::Diagnostics::GroupDetourRayBudget() = IORStackSeeding::kGroupDetourRayBudget;
+			// Without shared per-sheet + per-step budget enforcement across auxNormals,
+			// 20 normals x 8 waypoints x multi-step Segment 1/2 spent >300 rays; with
+			// shared budget = 12, total scene rays (probe + normal + column + <=12 detour)
+			// stays well under 120.
+			Check( st.Depth() == 1 && rays <= 120,
+				"A62 [DL-626]: OpenSheetHoldsPoint + HasFreeSpaceDetourToSheet enforce shared per-step GroupDetourRayBudget across all auxNormals" );
+		}
+	}
+
 	const int dl626NewFails = failCount - dl626FailBefore;
 	std::cout << "[DL-626-SUMMARY] " << ( dl626NewFails == 0 ? "PASS" : "FAIL" )
 		<< " (new_failures=" << dl626NewFails << ")" << std::endl;

@@ -547,10 +547,15 @@ public:
 		const unsigned int iy0 = rcRegion ? ( y0 + 5 ) : y0;
 		const unsigned int ix1 = ( rcRegion && x1 > 5 ) ? ( x1 - 5 ) : x0;
 		const unsigned int iy1 = ( rcRegion && y1 > 5 ) ? ( y1 - 5 ) : y0;
+		bool allFinite = true;
 		for( unsigned int y = y0; y < y1; ++y ) {
 			for( unsigned int x = x0; x < x1; ++x ) {
 				const RISEColor c = img.GetPEL( x, y );
 				const double v = ( c.base.r + c.base.g + c.base.b ) * c.a / 3.0;
+				if( !std::isfinite( c.base.r ) || !std::isfinite( c.base.g ) || !std::isfinite( c.base.b ) ||
+				    !std::isfinite( c.a ) || !std::isfinite( v ) ) {
+					allFinite = false;
+				}
 				sumAll += v;
 				++cntAll;
 				if( !rcRegion || ( x >= ix0 && x < ix1 && y >= iy0 && y < iy1 ) ) {
@@ -560,8 +565,9 @@ public:
 			}
 		}
 		if( cntAll > 0 ) {
-			const double mAll = sumAll / double( cntAll );
-			const double mInt = ( cntInt > 0 ) ? ( sumInt / double( cntInt ) ) : mAll;
+			const double nanVal = std::numeric_limits<double>::quiet_NaN();
+			const double mAll = allFinite ? ( sumAll / double( cntAll ) ) : nanVal;
+			const double mInt = allFinite ? ( ( cntInt > 0 ) ? ( sumInt / double( cntInt ) ) : mAll ) : nanVal;
 			std::lock_guard<std::mutex> lk( intermediateMutex );
 			intermediateCaptures.push_back( IntermCapture{
 				rcRegion == nullptr,
@@ -1329,11 +1335,14 @@ static void TestProgressiveColorAndOrthoCamera()
 			const bool fullTile = ( cap.fullFrame || isPostBlock );
 			const double sampleMean = fullTile ? cap.meanAll : cap.meanInterior;
 			const double refMean = regionRefMean( cap, !fullTile );
-			const double ratio = ( refMean > 0.0 ) ? ( sampleMean / refMean ) : 0.0;
-			minLateRatio = std::min( minLateRatio, ratio );
-			maxLateRatio = std::max( maxLateRatio, ratio );
-			if( ratio < 0.90 || ratio > 1.10 ) {
+			const double ratio = ( std::isfinite( sampleMean ) && std::isfinite( refMean ) && refMean > 0.0 )
+				? ( sampleMean / refMean )
+				: std::numeric_limits<double>::quiet_NaN();
+			if( !std::isfinite( ratio ) || ratio < 0.90 || ratio > 1.10 ) {
 				allLateTilesFullBrightness = false;
+			} else {
+				minLateRatio = std::min( minLateRatio, ratio );
+				maxLateRatio = std::max( maxLateRatio, ratio );
 			}
 		}
 		Check( okLiveFull && allLateTilesFullBrightness,
@@ -1345,21 +1354,27 @@ static void TestProgressiveColorAndOrthoCamera()
 	}
 
 	// 4. Perspective (`pinhole_camera`) + `spot_light` -> `perfectreflector_material`
-	//    mirror -> `lambertian_material` wall non-adaptive progressive BDPT across
-	//    Pel, Spectral (NM), and Spectral HWSS: `s=0/1/2` are identically zero on
-	//    this caustic (`spot_light` has zero area and points away from the wall;
-	//    `perfectreflector_material` has delta BSDF), so 100% of image radiance
-	//    comes from `(s = 3, t = 1)` light-to-camera splats in `pSplatFilm`.
+	//    mirror -> `lambertian_material` wall non-adaptive progressive BDPT and VCM
+	//    (VC-only) across Pel, Spectral (NM), and Spectral HWSS: `s=0/1/2` are
+	//    identically zero on this caustic (`spot_light` has zero area and points away
+	//    from the wall; `perfectreflector_material` has delta BSDF), so 100% of image
+	//    radiance comes from `(s = 3, t = 1)` light-to-camera splats in `pSplatFilm`.
 	//    Cancelling after pass 1/4 must normalize `pSplatFilm` by completed samples
-	//    (4 SPP) rather than full-render target SPP (16 SPP, which darkened by 4x).
+	//    (4 SPP) rather than full-render target SPP (16 SPP, which darkened by 4x),
+	//    both single-threaded (`threads = 1`) and multi-threaded (`threads = 2` on a
+	//    1-tile 32x32 image, exercising `RasterizeBlockDispatcher` weighted `idx == 0`
+	//    between-pass progress/cancellation).
 	{
 		struct PerspCase { const char* label; const char* rast; };
-		const PerspCase perspCases[3] = {
+		const PerspCase perspCases[6] = {
 			{ "bdpt_pel", "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tadaptive_max_samples 0\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" },
 			{ "bdpt_spectral_nm", "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tadaptive_max_samples 0\n\thwss FALSE\n\tnmbegin 500\n\tnmend 600\n\tnum_wavelengths 16\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" },
-			{ "bdpt_spectral_hwss", "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tadaptive_max_samples 0\n\thwss TRUE\n\tnmbegin 500\n\tnmend 600\n\tnum_wavelengths 16\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" }
+			{ "bdpt_spectral_hwss", "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tadaptive_max_samples 0\n\thwss TRUE\n\tnmbegin 500\n\tnmend 600\n\tnum_wavelengths 16\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" },
+			{ "vcm_pel", "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tmerge_radius 0.0\n\tvc_enabled TRUE\n\tvm_enabled FALSE\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" },
+			{ "vcm_spectral_nm", "vcm_spectral_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tmerge_radius 0.0\n\tvc_enabled TRUE\n\tvm_enabled FALSE\n\thwss FALSE\n\tnmbegin 500\n\tnmend 600\n\tnum_wavelengths 16\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" },
+			{ "vcm_spectral_hwss", "vcm_spectral_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 16\n\tprogressive_samples_per_pass 4\n\tprogressive_rendering TRUE\n\tmerge_radius 0.0\n\tvc_enabled TRUE\n\tvm_enabled FALSE\n\thwss TRUE\n\tnmbegin 500\n\tnmend 600\n\tnum_wavelengths 16\n\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n" }
 		};
-		for( int pc = 0; pc < 3; ++pc ) {
+		for( int pc = 0; pc < 6; ++pc ) {
 			std::ostringstream sc;
 			sc << "RISE ASCII SCENE 7\n"
 			   << "film\n{\n\twidth 32\n\theight 32\n\tpixelAR 1.0\n}\n\n"
@@ -1375,7 +1390,7 @@ static void TestProgressiveColorAndOrthoCamera()
 			   << "standard_object\n{\n\tname mirror\n\tgeometry g_mirror\n\tmaterial m_mirror\n}\n\n"
 			   << "spot_light\n{\n\tname key\n\tpower 40.0\n\tinner 20.0\n\touter 30.0\n\tposition 0 0 2.5\n\ttarget 0 0 3.5\n\tcolor 1.0 1.0 1.0\n}\n";
 			const std::string scText = sc.str();
-			auto runPersp = [&]( double cancelFrac, double& outMean, bool& outCancelled ) -> bool {
+			auto runPersp = [&]( int threadOverride, double cancelFrac, double& outMean, bool& outCancelled ) -> bool {
 				const std::string pth = TempPath( "prog_persp_bdpt", "RISEscene" );
 				{ std::ofstream ofs( pth ); ofs << scText; }
 				bool okRun = false;
@@ -1386,7 +1401,7 @@ static void TestProgressiveColorAndOrthoCamera()
 					GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
 					pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 					if( Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() ) ) {
-						pRas->ForTest_SetThreadCountOverride( 1 );
+						pRas->ForTest_SetThreadCountOverride( threadOverride );
 					}
 					CancellingProgressCallback cb;
 					cb.cancelFraction = cancelFrac;
@@ -1416,15 +1431,29 @@ static void TestProgressiveColorAndOrthoCamera()
 			};
 			double meanFull16 = 0.0, meanCancelPass1 = 0.0;
 			bool dummyC = false, didC = false;
-			const bool ok16 = runPersp( 2.0, meanFull16, dummyC );
+			const bool ok16 = runPersp( 1, 2.0, meanFull16, dummyC );
 			// Cancel at 0.25 (cleanly after pass 1 of 4 completes = 4 of 16 SPP): without
 			// unconditional AddAdaptiveSamples, t==1 splats divide by 16 instead of 4,
 			// dropping total output luminance to ~0.625x of full brightness!
-			const bool okC1 = runPersp( 0.25, meanCancelPass1, didC );
+			const bool okC1 = runPersp( 1, 0.25, meanCancelPass1, didC );
 			const double ratioP1 = ( meanFull16 > 0.0 ) ? ( meanCancelPass1 / meanFull16 ) : 0.0;
 			Check( ok16 && okC1 && didC && ratioP1 > 0.88 && ratioP1 < 1.12,
-				Fmt( "P.4: %s pinhole+omni progressive cancel after pass 1/4 retains full t==1 splat luminance (ratio %.3f in [0.88, 1.12])",
+				Fmt( "P.4: %s pinhole+spot progressive cancel after pass 1/4 retains full t==1 splat luminance (ratio %.3f in [0.88, 1.12])",
 					perspCases[pc].label, ratioP1 ) );
+
+			// Also verify multi-threaded (`threads = 2`) 1-tile (`32x32` <= 32px Morton tile)
+			// progressive cancellation on `bdpt_pel` and `vcm_pel`: `RasterizeBlockDispatcher`
+			// must report weighted progress on `idx == 0` when `progressBase > 0` so 1-tile
+			// multi-threaded progressive renders still cancel cleanly between passes.
+			if( pc == 0 || pc == 3 ) {
+				double meanCancelMP = 0.0;
+				bool didCMP = false;
+				const bool okCMP = runPersp( 2, 0.25, meanCancelMP, didCMP );
+				const double ratioMP = ( meanFull16 > 0.0 ) ? ( meanCancelMP / meanFull16 ) : 0.0;
+				Check( ok16 && okCMP && didCMP && ratioMP > 0.85 && ratioMP < 1.15,
+					Fmt( "P.4-MP: %s threads=2 1-tile (32x32) progressive cancel after pass 1/4 cancels cleanly and retains luminance (ratio %.3f in [0.85, 1.15])",
+						perspCases[pc].label, ratioMP ) );
+			}
 		}
 	}
 }

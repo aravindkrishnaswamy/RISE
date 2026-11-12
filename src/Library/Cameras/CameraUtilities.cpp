@@ -542,13 +542,12 @@ namespace {
 		// OrthographicCamera::GenerateRay does:
 		//   x = (w/2 - px) / w * vpScale.x
 		//   y = (py - h/2) / h * vpScale.y
-		//   ray origin = frame.GetOrigin() + Vector3(-x, y, 0)
+		//   ray origin = frame.GetOrigin() + basis.u() * x + basis.v() * y
 		//   ray dir = Normalize(Transform(mxTrans, (0,0,1)))
 		//
-		// Note: the offset (-x, y, 0) is in WORLD coordinates.
-		//
-		// To invert: project worldPoint onto the image plane along the
-		// optical axis, then solve for pixel coordinates.
+		// To invert: project (worldPoint - camPos) onto the camera's
+		// orthonormal image-plane basis (basis.u(), basis.v()), then solve
+		// for pixel coordinates (px, py).
 
 		const Point3 camPos = cam.GetLocation();
 		const Matrix4 mx = cam.GetMatrix();

@@ -879,48 +879,34 @@ int main()
 		// (3) DL-632: build/cmake/rise-tests/CMakeLists.txt compiles every
 		// tests/*.cpp on Windows/MSVC.  Verify no POSIX-only header
 		// (<unistd.h>, <sys/wait.h>, <sys/resource.h>, <dlfcn.h>, <pthread.h>)
-		// is active when _WIN32 is defined.
+		// or unshimmed POSIX function/math macro is active when _WIN32 is defined.
 		{
-			auto evalWin32Cond = []( const std::string& expr ) -> bool {
-				auto findWinToken = []( const std::string& s, const char* tok, bool& outNegated ) -> bool {
-					const std::size_t tokLen = std::strlen( tok );
-					std::size_t pos = 0;
-					while( ( pos = s.find( tok, pos ) ) != std::string::npos ) {
-						const bool leftBoundary = ( pos == 0 ) ||
-							( !std::isalnum( static_cast<unsigned char>( s[pos - 1] ) ) && s[pos - 1] != '_' );
-						const bool rightBoundary = ( pos + tokLen >= s.size() ) ||
-							( !std::isalnum( static_cast<unsigned char>( s[pos + tokLen] ) ) && s[pos + tokLen] != '_' );
-						if( leftBoundary && rightBoundary ) {
-							std::size_t k = pos;
-							while( k > 0 && ( s[k-1] == ' ' || s[k-1] == '\t' || s[k-1] == '(' ) ) --k;
-							if( k >= 7 && s.compare( k - 7, 7, "defined" ) == 0 ) {
-								k -= 7;
-								while( k > 0 && ( s[k-1] == ' ' || s[k-1] == '\t' || s[k-1] == '(' ) ) --k;
-							}
-							outNegated = ( k > 0 && s[k-1] == '!' );
-							return true;
-						}
-						pos += tokLen;
-					}
-					return false;
-				};
-				bool neg = false;
-				if( findWinToken( expr, "_WIN32", neg ) ) return !neg;
-				if( findWinToken( expr, "WIN32", neg ) )  return !neg;
-				if( findWinToken( expr, "_MSC_VER", neg ) ) return !neg;
-				if( expr.find( "__APPLE__" ) != std::string::npos ||
-				    expr.find( "__linux__" ) != std::string::npos ||
-				    expr.find( "__unix__" ) != std::string::npos )
-					return false;
-				return true; // unknown guard (e.g. RISE_ENABLE_OPENPGL) stays active on MSVC too
+			enum class TriVal { False, True, Unknown };
+			auto triNot = []( TriVal v ) -> TriVal {
+				if( v == TriVal::True ) return TriVal::False;
+				if( v == TriVal::False ) return TriVal::True;
+				return TriVal::Unknown;
 			};
-			struct Frame { bool parentActive; bool taken; bool active; };
+			auto triAnd = []( TriVal a, TriVal b ) -> TriVal {
+				if( a == TriVal::False || b == TriVal::False ) return TriVal::False;
+				if( a == TriVal::True && b == TriVal::True ) return TriVal::True;
+				return TriVal::Unknown;
+			};
+			auto triOr = []( TriVal a, TriVal b ) -> TriVal {
+				if( a == TriVal::True || b == TriVal::True ) return TriVal::True;
+				if( a == TriVal::False && b == TriVal::False ) return TriVal::False;
+				return TriVal::Unknown;
+			};
+			struct Frame { bool parentActive; bool definitelyTaken; bool active; };
 			std::vector<Frame> stack;
 			const std::string stripped = StripCommentsPreservingLayout( src );
 			const std::string codeNoStrings = stripLiteralsPreservingLayout( stripped );
-			// Inspect local `#include "..."` headers in `tests/` for shims (`#define getpid`, `_USE_MATH_DEFINES`).
-			bool headerDefinesGetpid = false;
+			static const char* const kPosixFuncs[] = {
+				"getpid", "setenv", "unsetenv", "popen", "pclose"
+			};
+			// Inspect local `#include "..."` headers in `tests/` for shims (`#define getpid`, `_USE_MATH_DEFINES`, etc.).
 			bool headerDefinesUseMath = false;
+			std::vector<std::string> headerShimmedFuncs;
 			{
 				std::istringstream incStream( stripped );
 				std::string incLine;
@@ -937,14 +923,22 @@ int main()
 						const fs::path hdrPath = f.parent_path() / incLine.substr( q1 + 1, q2 - q1 - 1 );
 						if( fs::exists( hdrPath ) && fs::is_regular_file( hdrPath ) ) {
 							const std::string hdrStripped = StripCommentsPreservingLayout( SlurpFile( hdrPath ) );
-							if( hasDefineToken( hdrStripped, "getpid" ) ) headerDefinesGetpid = true;
+							for( const char* pf : kPosixFuncs ) {
+								if( hasDefineToken( hdrStripped, pf ) ) headerShimmedFuncs.push_back( pf );
+							}
 							if( hasDefineToken( hdrStripped, "_USE_MATH_DEFINES" ) ) headerDefinesUseMath = true;
 						}
 					}
 				}
 			}
-			bool activeDefinesGetpid = headerDefinesGetpid;
 			bool activeDefinesUseMath = headerDefinesUseMath;
+			std::vector<std::string> activeShimmedFuncs = headerShimmedFuncs;
+			auto isFuncShimmed = [&]( const char* fn ) -> bool {
+				for( const std::string& s : activeShimmedFuncs ) {
+					if( s == fn ) return true;
+				}
+				return false;
+			};
 			std::vector<std::string> activeDefinedMacros;
 			auto isMacroDefined = [&]( const char* m ) -> bool {
 				for( const std::string& d : activeDefinedMacros ) {
@@ -956,6 +950,165 @@ int main()
 				"M_PI", "M_PI_2", "M_PI_4", "M_1_PI", "M_2_PI", "M_2_SQRTPI",
 				"M_SQRT2", "M_SQRT1_2", "M_E", "M_LOG2E", "M_LOG10E", "M_LN2", "M_LN10"
 			};
+			auto evalMacroDefined = [&]( const std::string& id ) -> TriVal {
+				if( id == "_WIN32" || id == "WIN32" || id == "_MSC_VER" || id == "_WIN64" ) return TriVal::True;
+				if( id == "__APPLE__" || id == "__MACH__" || id == "__linux__" || id == "__gnu_linux__" ||
+				    id == "__unix__" || id == "__unix" || id == "__FreeBSD__" || id == "__ANDROID__" ||
+				    id == "__GNUC__" || id == "__clang__" )
+					return TriVal::False;
+				if( id == "_USE_MATH_DEFINES" ) return activeDefinesUseMath ? TriVal::True : TriVal::False;
+				for( const char* pf : kPosixFuncs ) {
+					if( id == pf ) return isFuncShimmed( pf ) ? TriVal::True : TriVal::False;
+				}
+				for( const char* mm : kPosixMathMacros ) {
+					if( id == mm ) return ( activeDefinesUseMath || isMacroDefined( mm ) ) ? TriVal::True : TriVal::False;
+				}
+				if( isMacroDefined( id.c_str() ) ) return TriVal::True;
+				return TriVal::Unknown;
+			};
+			// Recursive-descent evaluator for `#if` / `#elif` expressions under `_WIN32` / MSVC.
+			auto evalWin32Cond = [&]( const std::string& expr ) -> TriVal {
+				std::size_t pos = 0;
+				auto skipWs = [&]() {
+					while( pos < expr.size() && std::isspace( static_cast<unsigned char>( expr[pos] ) ) ) ++pos;
+				};
+				auto readIdent = [&]() -> std::string {
+					skipWs();
+					const std::size_t start = pos;
+					while( pos < expr.size() &&
+						( std::isalnum( static_cast<unsigned char>( expr[pos] ) ) || expr[pos] == '_' ) ) ++pos;
+					return expr.substr( start, pos - start );
+				};
+				std::function<TriVal()> parseOr;
+				std::function<TriVal()> parseAnd;
+				std::function<TriVal()> parseUnary;
+				parseUnary = [&]() -> TriVal {
+					skipWs();
+					if( pos >= expr.size() ) return TriVal::Unknown;
+					if( expr[pos] == '!' && ( pos + 1 >= expr.size() || expr[pos + 1] != '=' ) ) {
+						++pos;
+						return triNot( parseUnary() );
+					}
+					if( expr[pos] == '(' ) {
+						++pos;
+						const TriVal inner = parseOr();
+						skipWs();
+						if( pos < expr.size() && expr[pos] == ')' ) ++pos;
+						return inner;
+					}
+					if( std::isdigit( static_cast<unsigned char>( expr[pos] ) ) ) {
+						unsigned long long num = 0;
+						while( pos < expr.size() && std::isalnum( static_cast<unsigned char>( expr[pos] ) ) ) {
+							if( std::isdigit( static_cast<unsigned char>( expr[pos] ) ) ) {
+								num = num * 10ull + static_cast<unsigned long long>( expr[pos] - '0' );
+							}
+							++pos;
+						}
+						skipWs();
+						if( pos + 1 < expr.size() && ( expr.compare( pos, 2, "==" ) == 0 || expr.compare( pos, 2, "!=" ) == 0 ||
+							expr.compare( pos, 2, ">=" ) == 0 || expr.compare( pos, 2, "<=" ) == 0 ) ) {
+							pos += 2;
+							(void)parseUnary();
+							return TriVal::Unknown;
+						}
+						if( pos < expr.size() && ( expr[pos] == '<' || expr[pos] == '>' ) ) {
+							++pos;
+							(void)parseUnary();
+							return TriVal::Unknown;
+						}
+						return num != 0 ? TriVal::True : TriVal::False;
+					}
+					const std::string id = readIdent();
+					if( id.empty() ) {
+						++pos;
+						return TriVal::Unknown;
+					}
+					if( id == "defined" ) {
+						skipWs();
+						bool paren = false;
+						if( pos < expr.size() && expr[pos] == '(' ) { paren = true; ++pos; }
+						const std::string target = readIdent();
+						if( paren ) {
+							skipWs();
+							if( pos < expr.size() && expr[pos] == ')' ) ++pos;
+						}
+						return target.empty() ? TriVal::Unknown : evalMacroDefined( target );
+					}
+					const TriVal base = evalMacroDefined( id );
+					skipWs();
+					if( pos + 1 < expr.size() && ( expr.compare( pos, 2, "==" ) == 0 || expr.compare( pos, 2, "!=" ) == 0 ||
+						expr.compare( pos, 2, ">=" ) == 0 || expr.compare( pos, 2, "<=" ) == 0 ) ) {
+						const std::string op = expr.substr( pos, 2 );
+						pos += 2;
+						skipWs();
+						if( pos < expr.size() && std::isdigit( static_cast<unsigned char>( expr[pos] ) ) ) {
+							unsigned long long rhs = 0;
+							while( pos < expr.size() && std::isdigit( static_cast<unsigned char>( expr[pos] ) ) ) {
+								rhs = rhs * 10ull + static_cast<unsigned long long>( expr[pos] - '0' );
+								++pos;
+							}
+							if( base == TriVal::False ) {
+								// Undefined macro evaluates to 0 in `#if` expressions.
+								if( op == "==" ) return rhs == 0 ? TriVal::True : TriVal::False;
+								if( op == "!=" ) return rhs != 0 ? TriVal::True : TriVal::False;
+								if( op == ">=" ) return 0ull >= rhs ? TriVal::True : TriVal::False;
+								if( op == "<=" ) return 0ull <= rhs ? TriVal::True : TriVal::False;
+							}
+						} else {
+							(void)parseUnary();
+						}
+						return TriVal::Unknown;
+					}
+					if( pos < expr.size() && ( expr[pos] == '<' || expr[pos] == '>' ) ) {
+						const char op = expr[pos++];
+						skipWs();
+						if( pos < expr.size() && std::isdigit( static_cast<unsigned char>( expr[pos] ) ) ) {
+							unsigned long long rhs = 0;
+							while( pos < expr.size() && std::isdigit( static_cast<unsigned char>( expr[pos] ) ) ) {
+								rhs = rhs * 10ull + static_cast<unsigned long long>( expr[pos] - '0' );
+								++pos;
+							}
+							if( base == TriVal::False ) {
+								if( op == '>' ) return 0ull > rhs ? TriVal::True : TriVal::False;
+								if( op == '<' ) return 0ull < rhs ? TriVal::True : TriVal::False;
+							}
+						} else {
+							(void)parseUnary();
+						}
+						return TriVal::Unknown;
+					}
+					return base;
+				};
+				parseAnd = [&]() -> TriVal {
+					TriVal lhs = parseUnary();
+					for( ;; ) {
+						skipWs();
+						if( pos + 1 < expr.size() && expr[pos] == '&' && expr[pos + 1] == '&' ) {
+							pos += 2;
+							const TriVal rhs = parseUnary();
+							lhs = triAnd( lhs, rhs );
+						} else {
+							break;
+						}
+					}
+					return lhs;
+				};
+				parseOr = [&]() -> TriVal {
+					TriVal lhs = parseAnd();
+					for( ;; ) {
+						skipWs();
+						if( pos + 1 < expr.size() && expr[pos] == '|' && expr[pos + 1] == '|' ) {
+							pos += 2;
+							const TriVal rhs = parseAnd();
+							lhs = triOr( lhs, rhs );
+						} else {
+							break;
+						}
+					}
+					return lhs;
+				};
+				return parseOr();
+			};
 			std::istringstream lsRaw( stripped );
 			std::istringstream lsNoStr( codeNoStrings );
 			std::string line, lineNoStr;
@@ -964,24 +1117,27 @@ int main()
 				++lineNo;
 				const bool curActive = stack.empty() ? true : stack.back().active;
 				if( curActive ) {
-					if( !activeDefinesGetpid ) {
-						std::size_t gp = 0;
-						while( ( gp = lineNoStr.find( "getpid(", gp ) ) != std::string::npos ) {
-							const bool isWordStart = ( gp == 0 ) ||
-								( !std::isalnum( static_cast<unsigned char>( lineNoStr[gp - 1] ) ) && lineNoStr[gp - 1] != '_' );
-							if( isWordStart ) {
-								unguardedPosixIncludes.push_back(
-									f.filename().string() + ":" + std::to_string( lineNo ) + " unshimmed getpid()" );
-								break;
+					std::size_t pHash = 0;
+					while( pHash < lineNoStr.size() && ( lineNoStr[pHash] == ' ' || lineNoStr[pHash] == '\t' ) ) ++pHash;
+					const bool isPreprocLine = ( pHash < lineNoStr.size() && lineNoStr[pHash] == '#' );
+					if( !isPreprocLine ) {
+						for( const char* pf : kPosixFuncs ) {
+							if( isFuncShimmed( pf ) ) continue;
+							const std::string needle = std::string( pf ) + "(";
+							std::size_t gp = 0;
+							while( ( gp = lineNoStr.find( needle, gp ) ) != std::string::npos ) {
+								const bool isWordStart = ( gp == 0 ) ||
+									( !std::isalnum( static_cast<unsigned char>( lineNoStr[gp - 1] ) ) &&
+									  lineNoStr[gp - 1] != '_' && lineNoStr[gp - 1] != '.' && lineNoStr[gp - 1] != '>' );
+								if( isWordStart ) {
+									unguardedPosixIncludes.push_back(
+										f.filename().string() + ":" + std::to_string( lineNo ) + " unshimmed " + pf + "()" );
+									break;
+								}
+								gp += needle.size();
 							}
-							gp += 7;
 						}
-					}
-					if( !activeDefinesUseMath ) {
-						std::size_t pHash = 0;
-						while( pHash < lineNoStr.size() && ( lineNoStr[pHash] == ' ' || lineNoStr[pHash] == '\t' ) ) ++pHash;
-						const bool isPreprocLine = ( pHash < lineNoStr.size() && lineNoStr[pHash] == '#' );
-						if( !isPreprocLine ) {
+						if( !activeDefinesUseMath ) {
 							for( const char* mm : kPosixMathMacros ) {
 								if( isMacroDefined( mm ) ) continue;
 								const std::size_t mLen = std::strlen( mm );
@@ -1011,51 +1167,53 @@ int main()
 				while( kwEnd < line.size() && std::isalpha( static_cast<unsigned char>( line[kwEnd] ) ) ) ++kwEnd;
 				const std::string kw = line.substr( i, kwEnd - i );
 				const std::string rest = line.substr( kwEnd );
+				auto extractIdent = []( const std::string& s ) -> std::string {
+					std::size_t mStart = 0;
+					while( mStart < s.size() && ( s[mStart] == ' ' || s[mStart] == '\t' ) ) ++mStart;
+					std::size_t mEnd = mStart;
+					while( mEnd < s.size() &&
+						( std::isalnum( static_cast<unsigned char>( s[mEnd] ) ) || s[mEnd] == '_' ) ) ++mEnd;
+					return s.substr( mStart, mEnd - mStart );
+				};
 				if( kw == "define" && curActive ) {
-					std::size_t mStart = 0;
-					while( mStart < rest.size() && ( rest[mStart] == ' ' || rest[mStart] == '\t' ) ) ++mStart;
-					std::size_t mEnd = mStart;
-					while( mEnd < rest.size() &&
-						( std::isalnum( static_cast<unsigned char>( rest[mEnd] ) ) || rest[mEnd] == '_' ) ) ++mEnd;
-					const std::string mName = rest.substr( mStart, mEnd - mStart );
-					if( mName == "getpid" ) activeDefinesGetpid = true;
-					else if( mName == "_USE_MATH_DEFINES" ) activeDefinesUseMath = true;
-					else if( !mName.empty() ) activeDefinedMacros.push_back( mName );
-				} else if( kw == "ifdef" ) {
-					std::size_t mStart = 0;
-					while( mStart < rest.size() && ( rest[mStart] == ' ' || rest[mStart] == '\t' ) ) ++mStart;
-					std::size_t mEnd = mStart;
-					while( mEnd < rest.size() &&
-						( std::isalnum( static_cast<unsigned char>( rest[mEnd] ) ) || rest[mEnd] == '_' ) ) ++mEnd;
-					const std::string mName = rest.substr( mStart, mEnd - mStart );
-					bool isPosixMath = false;
-					for( const char* mm : kPosixMathMacros ) {
-						if( mName == mm ) { isPosixMath = true; break; }
+					const std::string mName = extractIdent( rest );
+					if( mName == "_USE_MATH_DEFINES" ) {
+						activeDefinesUseMath = true;
+					} else {
+						bool matchedFunc = false;
+						for( const char* pf : kPosixFuncs ) {
+							if( mName == pf ) { activeShimmedFuncs.push_back( mName ); matchedFunc = true; break; }
+						}
+						if( !matchedFunc && !mName.empty() ) {
+							activeDefinedMacros.push_back( mName );
+						}
 					}
-					const bool c = isPosixMath ? isMacroDefined( mName.c_str() ) :
-						( rest.find( "_WIN32" ) != std::string::npos ||
-						  rest.find( "WIN32" ) != std::string::npos ||
-						  rest.find( "_MSC_VER" ) != std::string::npos ||
-						  ( rest.find( "__APPLE__" ) == std::string::npos &&
-						    rest.find( "__linux__" ) == std::string::npos &&
-						    rest.find( "__unix__" ) == std::string::npos ) );
-					stack.push_back( { curActive, c, curActive && c } );
+				} else if( kw == "ifdef" ) {
+					const TriVal v = evalMacroDefined( extractIdent( rest ) );
+					const bool mayRun = ( v != TriVal::False );
+					stack.push_back( { curActive, v == TriVal::True, curActive && mayRun } );
 				} else if( kw == "ifndef" ) {
-					const bool c = !( rest.find( "_WIN32" ) != std::string::npos ||
-					                  rest.find( "WIN32" ) != std::string::npos ||
-					                  rest.find( "_MSC_VER" ) != std::string::npos );
-					stack.push_back( { curActive, c, curActive && c } );
+					const TriVal v = triNot( evalMacroDefined( extractIdent( rest ) ) );
+					const bool mayRun = ( v != TriVal::False );
+					stack.push_back( { curActive, v == TriVal::True, curActive && mayRun } );
 				} else if( kw == "if" ) {
-					const bool c = evalWin32Cond( rest );
-					stack.push_back( { curActive, c, curActive && c } );
+					const TriVal v = evalWin32Cond( rest );
+					const bool mayRun = ( v != TriVal::False );
+					stack.push_back( { curActive, v == TriVal::True, curActive && mayRun } );
 				} else if( kw == "elif" && !stack.empty() ) {
 					Frame& top = stack.back();
-					if( !top.parentActive || top.taken ) top.active = false;
-					else { const bool c = evalWin32Cond( rest ); top.taken = c; top.active = c; }
+					if( !top.parentActive || top.definitelyTaken ) {
+						top.active = false;
+					} else {
+						const TriVal v = evalWin32Cond( rest );
+						const bool mayRun = ( v != TriVal::False );
+						if( v == TriVal::True ) top.definitelyTaken = true;
+						top.active = mayRun;
+					}
 				} else if( kw == "else" && !stack.empty() ) {
 					Frame& top = stack.back();
-					top.active = top.parentActive && !top.taken;
-					top.taken = true;
+					top.active = top.parentActive && !top.definitelyTaken;
+					top.definitelyTaken = true;
 				} else if( kw == "endif" && !stack.empty() ) {
 					stack.pop_back();
 				} else if( kw == "include" && curActive ) {

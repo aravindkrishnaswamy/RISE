@@ -112,7 +112,7 @@ Pixel-based rasterizers inherit from `PixelBasedRasterizerHelper` (common block 
 - `BidirectionalRasterizerBase` (extends `PixelBasedRasterizerHelper`) — shared bidirectional subpath/light-pass base; calls integrators directly (NOT ShaderOp dispatch):
   - `BDPTRasterizerBase` → `BDPTPelRasterizer` / `BDPTSpectralRasterizer` — bidirectional path tracing (`BDPTIntegrator`)
   - `VCMRasterizerBase` → `VCMPelRasterizer` / `VCMSpectralRasterizer` — vertex connection and merging (`VCMIntegrator` + `BDPTIntegrator`)
-- `AutoRasterizer` / `AutoSpectralRasterizer` — automatic scene-analysis selector dispatching to PT, BDPT, or VCM (Pel and spectral)
+- `AutoRasterizer` (`auto_rasterizer` / `auto_spectral_rasterizer` via `mSpectral`) — automatic scene-analysis selector dispatching to PT, BDPT, or VCM (Pel and spectral)
 - `MLTRasterizer` / `MLTSpectralRasterizer` — PSSMLT Markov-chain transport over `BDPTIntegrator` (**FROZEN**)
 
 **Interactive preview rasterizer**:

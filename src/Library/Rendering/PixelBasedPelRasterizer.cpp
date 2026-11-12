@@ -590,7 +590,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
-			colAccrued = px.colorSum;
+			colAccrued = px.LoadPelPassInit();
 			weights = px.weightSum;
 			alphas = px.alphaSum;
 			wMean = px.wMean;
@@ -735,7 +735,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 		// Write back persistent state for progressive rendering
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
-			px.colorSum = colAccrued;
+			colAccrued = px.StorePelPassDelta( colAccrued );
 			px.weightSum = weights;
 			px.alphaSum = alphas;
 			px.wMean = wMean;

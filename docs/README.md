@@ -86,8 +86,8 @@ The scene-load source of truth is outside this directory:
 [../src/Library/Cst/Cst.cpp](../src/Library/Cst/Cst.cpp) owns lossless
 parse/derive and
 [../src/Library/Parsers/ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)
-owns registered chunks and descriptors. The retired
-`AsciiSceneParser.cpp` streaming front-end no longer exists.
+owns registered chunks and descriptors (`ChunkDescriptor.h`). The legacy
+streaming scene parser front-end was retired in the July 2026 CST cutover.
 
 ## Editor, GUI, and Agent Surface
 

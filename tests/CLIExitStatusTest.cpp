@@ -38,7 +38,17 @@ int main() {
     Write(scene,tiny); Write(broken,"RISE ASCII SCENE 7\nnot_a_chunk\n{\n}\n");
     int pass=0,fail=0,serial=0;
     auto check=[&](bool ok,const char* label) { std::cout<<(ok?"PASS ":"FAIL ")<<label<<"\n";ok?++pass:++fail; };
+#ifdef _WIN32
+    fs::path bin=fs::absolute("bin/RISE-CLI.exe");
+    if(!fs::is_regular_file(bin)) bin=fs::absolute("dbin/RISE-CLI.exe");
+    if(!fs::is_regular_file(bin)) {
+        fs::remove_all(dir);
+        std::cout<<"SKIP: RISE-CLI.exe not built (CMake standalone test build); skipping CLIExitStatusTest\n";
+        return 0;
+    }
+#else
     const fs::path bin=fs::absolute("bin/rise");
+#endif
     check(fs::is_regular_file(bin),"actual CLI exists");
     if(fail) return 1;
     auto run=[&](const fs::path& arg,const std::string& input) {
@@ -46,10 +56,12 @@ int main() {
         Write(in,input);
         const std::string cmd=Quote(bin.string())+(arg.empty()?"":" "+Quote(arg.string()))+
             " < "+Quote(in.string())+" > "+Quote(out.string())+" 2>&1";
-        const int status=std::system(cmd.c_str());
 #ifdef _WIN32
+        const std::string sysCmd="\""+cmd+"\"";
+        const int status=std::system(sysCmd.c_str());
         return status;
 #else
+        const int status=std::system(cmd.c_str());
         return status!=-1 && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 #endif
     };

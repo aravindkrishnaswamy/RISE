@@ -156,8 +156,13 @@ static void TestFlagParsing()
 	{
 		Cli::PostLoadCliOverrides ov;
 		std::string err;
-		const bool ok = RunParse( { "--no-denoise", "--camera=cam_blue" }, ov, err );
-		Check( ok && ov.denoiseMode == 0 && ov.hasCamera && ov.cameraName == "cam_blue",
+		const bool ok = RunParse(
+			{ "--width=320", "--height=200", "--pixel-ar=1.5", "--no-denoise", "--camera=cam_blue" },
+			ov, err );
+		Check( ok && err.empty(), "=-joined film and camera flags parse cleanly" );
+		Check( ov.filmWidth == 320 && ov.filmHeight == 200 && std::fabs( ov.filmPixelAR - 1.5 ) < 1e-12,
+			"=-joined --width=, --height=, --pixel-ar= values parsed" );
+		Check( ov.denoiseMode == 0 && ov.hasCamera && ov.cameraName == "cam_blue",
 			"--no-denoise and --camera=cam_blue parse cleanly" );
 	}
 	{
@@ -180,6 +185,12 @@ static void TestFlagParsing()
 		{ "--camera" },
 		{ "--camera", "--width" },
 		{ "--camera=" },
+		{ "--width=" },
+		{ "--width=0" },
+		{ "--width=abc" },
+		{ "--height=" },
+		{ "--pixel-ar=" },
+		{ "--pixel-ar=0" },
 		{ "--width", "0" },
 		{ "--width", "-8" },
 		{ "--width", "3000000000" },
@@ -335,6 +346,38 @@ static void TestDenoiseOverrides()
 			Check( pJob->Rasterize(), "PT render succeeded after --no-denoise" );
 			Check( out->sawRaw && !out->sawPreDenoised && !out->sawDenoised,
 				"--no-denoise suppressed OutputPreDenoisedImage/OutputDenoisedImage while dispatching OutputImage" );
+			safe_release( out );
+			safe_release( pJob );
+		}
+		std::remove( path.c_str() );
+	}
+
+	// Case A2 (unconditional, even without RISE_ENABLE_OIDN): AutoRasterizer and
+	// auto_spectral_rasterizer authored with `oidn_denoise TRUE` accept `--no-denoise`
+	// both pre-resolve and post-resolve and suppress denoised output callbacks.
+	for( const char* autoChunk : {
+		"auto_rasterizer\n{\n\tsamples 1\n\toidn_denoise TRUE\n}",
+		"auto_spectral_rasterizer\n{\n\tsamples 1\n\toidn_denoise TRUE\n}"
+	} ) {
+		const std::string path = TempScenePath( "auto_state" );
+		{
+			std::ofstream ofs( path );
+			ofs << MultiCamScene( autoChunk );
+		}
+		IJobPriv* pJob = nullptr;
+		if( RISE_CreateJobPriv( &pJob ) && pJob ) {
+			Check( pJob->LoadAsciiSceneAuto( path.c_str() ), "loaded AutoRasterizer scene with oidn_denoise TRUE" );
+			DenoiseTrackingOutput* out = new DenoiseTrackingOutput();
+			pJob->GetRasterizer()->AddRasterizerOutput( out );
+			Cli::PostLoadCliOverrides ovOff;
+			ovOff.denoiseMode = 0;
+			std::ostringstream err;
+			Check( Cli::ApplyPostLoadCliOverrides( pJob, ovOff, err ), "pre-resolve --no-denoise applied on AutoRasterizer" );
+			Check( pJob->GetRasterizer()->GetDenoisingOverride() == 0, "pre-resolve AutoRasterizer GetDenoisingOverride() == 0" );
+			Check( pJob->Rasterize(), "AutoRasterizer rendered with --no-denoise" );
+			Check( pJob->GetRasterizer()->GetDenoisingOverride() == 0, "post-resolve AutoRasterizer GetDenoisingOverride() == 0" );
+			Check( out->sawRaw && !out->sawPreDenoised && !out->sawDenoised,
+				"AutoRasterizer --no-denoise suppressed denoised output callbacks" );
 			safe_release( out );
 			safe_release( pJob );
 		}

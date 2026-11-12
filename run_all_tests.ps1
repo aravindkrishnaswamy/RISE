@@ -37,7 +37,13 @@ $ErrorActionPreference = 'Stop'
 
 $origRiseTestExtended = $env:RISE_TEST_EXTENDED
 $origTmpDir = $env:TMPDIR
+$origRiseMediaPath = $env:RISE_MEDIA_PATH
 try {
+# Clear any caller-inherited RISE_MEDIA_PATH (mirroring run_all_tests.sh) so
+# tests running from repo root resolve relative `scenes/...` and `models/...`
+# paths cleanly even if the user shell set RISE_MEDIA_PATH without a trailing
+# separator or pointing at another checkout.
+Remove-Item Env:RISE_MEDIA_PATH -ErrorAction SilentlyContinue
 if ([string]::IsNullOrEmpty($env:TMPDIR) -and -not [string]::IsNullOrEmpty($env:TEMP)) {
     # Ensure tests that read std::getenv("TMPDIR") resolve to Windows TEMP rather than "/tmp".
     $env:TMPDIR = $env:TEMP
@@ -386,4 +392,5 @@ exit 0
 } finally {
     $env:RISE_TEST_EXTENDED = $origRiseTestExtended
     $env:TMPDIR = $origTmpDir
+    $env:RISE_MEDIA_PATH = $origRiseMediaPath
 }

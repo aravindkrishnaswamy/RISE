@@ -835,7 +835,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   `IRasterizer::SetDenoisingOverride` (`Rasterizer.h`, `AutoRasterizer` for
   both `auto_rasterizer` and `auto_spectral_rasterizer` via `mSpectral`, and
   post-resolve `PixelBasedRasterizerHelper` checks), gated by
-  `tests/CliOverridesTest.cpp` (`57/0`).
+  `tests/CliOverridesTest.cpp` (`77/0`).
 - **Owner:** Aravind
 - **PR:** Tier 0.3.3 (`df6877d86`..`HEAD`)
 - **Why:** Allows batch sweeps and benchmarks to force OIDN post-process
@@ -954,7 +954,7 @@ from a reviewer, or has its priority moved. Most recent first.
   `auto_rasterizer` and `auto_spectral_rasterizer` via `mSpectral`) into the
   resolved rasterizer and honoring mid-render/post-resolve checks in
   `PixelBasedRasterizerHelper.cpp`.
-- Gated in `fast` CI by `tests/CliOverridesTest.cpp` (**57/0**).
+- Gated in `fast` CI by `tests/CliOverridesTest.cpp` (**77/0**).
 
 ### 2026-04-29 — MLT animation rendering with per-frame OIDN denoise
 - Closes the "MLT animation gap" called out in the prior animation-
@@ -1166,8 +1166,8 @@ from a reviewer, or has its priority moved. Most recent first.
     an interactive UI needs denoise progress feedback.
   - **P2-1** CLI override flag — editing the scene file is
     acceptable friction; the parser surface is already enough.
-    *(Reopened and shipped 2026-11-11 in `df6877d86` / `0f39278cb`; see
-    `2026-11-11 — OIDN-P2-1 shipped` above.)*
+    *(Reopened and shipped 2026-11-12 in `df6877d86` / `0f39278cb`; see
+    `2026-11-12 — OIDN-P2-1 shipped` above.)*
   - **P2-2** aux-buffer EXR dump — no concrete debugging request.
   - **P2-3** inputScale knob — OIDN's auto-exposure handles
     observed scenes; niche.
@@ -1540,4 +1540,4 @@ from a reviewer, or has its priority moved. Most recent first.
 - **2026-04-29 — `OIDN-P0-4` (error callback + `OIDN_VERBOSE` pass-through):** Registered `OidnErrorCallback` after device resolution and polled post-setup / post-execute errors into RISE's `GlobalLog()`.
 - **2026-04-29 / 2026-06-02 — `OIDN-P1-1` (inline AOV accumulation + `oidn_prefilter`):** Shipped `oidn_prefilter` (`fast` / `accurate`) and 3-filter auxiliary prefiltering alongside inline AOV accumulation across Pel PT (v1, 2026-04-29), BDPT + VCM Pel/Spectral (v2, 2026-04-29), and Spectral PT + `pixelintegratingspectral` (2026-06-02), later extended with channel-planned `AOVBuffers::Plan` (albedo/normal guides + depth).
 - **2026-04-29 / 2026-10-03 — `OIDN-P1-2` (CPU `newSharedBuffer` zero-copy + `DL-440` ownership fix):** Replaced host `memcpy` staging on CPU devices with shared buffers for beauty/output and `fast` aux inputs; `DL-440` (2026-10-03) switched `accurate` aux prefilter buffers to reusable owned storage with per-call input copies so const caller guides are never mutated in place.
-- **2026-11-12 — `OIDN-P2-1` (`--denoise` / `--no-denoise` CLI flags):** Added mutually exclusive `--denoise` and `--no-denoise` headless CLI overrides (`CliOptions.h`, `commandconsole.cpp`, `IRasterizer::SetDenoisingOverride`, `AutoRasterizer` for both `auto_rasterizer` and `auto_spectral_rasterizer`), gated by `tests/CliOverridesTest.cpp` (**57/0**).
+- **2026-11-12 — `OIDN-P2-1` (`--denoise` / `--no-denoise` CLI flags):** Added mutually exclusive `--denoise` and `--no-denoise` headless CLI overrides (`CliOptions.h`, `commandconsole.cpp`, `IRasterizer::SetDenoisingOverride`, `AutoRasterizer` for both `auto_rasterizer` and `auto_spectral_rasterizer`), gated by `tests/CliOverridesTest.cpp` (**77/0**).

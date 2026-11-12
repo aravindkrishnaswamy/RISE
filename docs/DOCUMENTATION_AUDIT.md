@@ -37,22 +37,22 @@ alongside **523 standalone C++ test suites** (now **525** post-Tier-0), **176 sc
      [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) to reflect shipped Hair BSDF +
      medulla + Phase 4 LOD, Stage C D65 Jakob-Hanika LUT (`100 %` convergence),
      `sms_extended` Phases 1–4, VCM volume merging (`DL-469`), scalar material
-     `alpha_coverage` (`DL-214`), `AgXScalar` placeholder scope, and Legacy
+     `alpha_coverage` (`DL-214`), `DisplayTransform::AgX` scalar placeholder scope, and Legacy
      Phase 2 scene migrations.
 3. **GUI, editor, importers & agentic-redesign docs:**
    - Updated [GUI_ROADMAP.md](GUI_ROADMAP.md) and `docs/gui/*.md` for shipped
      Material Editor Slices 4–6 (`MaterialPreview` 3D shaderball, pipe-coloured
      sockets/adapters, Kelvin/Sellmeier, measured metals, thin-film strip),
      `ObjectGraphCanvas`, exact-byte CST undo, and Windows Qt `NamedViewsPanel` /
-     Credential Manager parity gaps.
+     Credential Manager parity gaps (both subsequently shipped on 2026-11-12 in Tier 0).
    - Added accurate status headers across `docs/agentic-redesign/00..91`,
      subsystem `README.md`s (`src/Library`, `Parsers`, `Blender`, `android`,
      `tests`, `scenes`, `evals`), and `docs/skills/*.md`.
 4. **Debt Ledger & link hygiene:**
    - Repaired misplaced/headerless table blocks in
      [DEBT_LEDGER.md](DEBT_LEDGER.md) and reconciled exact row counts (**357**
-     numeric `DL-*` rows: **332 closed**, **18 parked**, **7 active open**:
-     `DL-626..DL-632`), plus shipped status banners on `BATCH8..12_*.md`.
+     numeric `DL-*` rows at `6946c4c82`: **332 closed**, **18 parked**, **7 active open**:
+     `DL-626..DL-632`; all 7 subsequently closed on 2026-11-12 in Tier 0 -> **339 closed**, **18 parked**, **0 active open**), plus shipped status banners on `BATCH8..12_*.md`.
    - Fixed all residual broken repository-relative Markdown links across all
      tracked `.md` files (unbackticked `[Rd Ft](lc)` / `[...](float)` /
      `[...](d)` / `[...](ray,)` code expressions, untracked `var_test` link in
