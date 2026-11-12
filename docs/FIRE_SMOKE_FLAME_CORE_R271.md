@@ -1421,6 +1421,34 @@ Owner-approved check of whether the remaining first-metre gap is a resolution li
 - **Reading:** the low C_v is needed where the flame is, and the production C_v where the plume only has to stay clean (§18's two problems). §28 found a zoned C_v insufficient, but that was without the carrier and with the zone boundary at 0.31 m.
 - **Running:** `ab_lc_zone33`: carrier, compact, `RISE_FIRE_VREMAN_ZONE=below:33:0.2857` (momentum C_v 0.02 below 1.0 m, 0.07 above).
 
+## 35. Zoned C_v with the carrier: FDS's flame height and a clean upper plume (2026-11-12)
+
+`r271_compact_stencil/ab_lc_zone33`: limited carrier, compact stencil, `RISE_FIRE_VREMAN_ZONE=below:33:0.2857` (momentum C_v 0.02 below 1.0 m, production 0.07 above; scalar C_v unchanged), floor on, 4 s from r270 step 9223 (exit 0). Evidence: `s35_runs.txt`.
+
+| | McCaffrey | FDS | carrier, C_v 0.07 (§32) | carrier, C_v 0.02 (§34) | carrier, zoned |
+|---|---|---|---|---|---|
+| 90% / 99% heat-release height (m) | — | 0.43 / 0.77 | 0.61 / 1.01 | 0.43 / 0.73 | 0.43 / 0.73 |
+| centre excess T at 0.29 m (K) | 873 | 926 | 1106 | 1072 | 1045 |
+| 0.50 m | 551 | 631 | 865 | 774 | 749 |
+| 0.75 m | 367 | 355 | 577 | 444 | 449 |
+| 0.99 m | 247 | 228 | 341 | 282 | 291 |
+| 1.51 m | 122 | 114 | 153 | 159 | 161 |
+| 2.00 m | 76 | 72 | 95 | 109 | 104 |
+| 3.01 m | 39 | 39 | 45 | 62 | 47 |
+| centre w at 0.99 / 2.00 / 3.01 m (m/s) | 3.60 / 2.85 / 2.48 | 3.47 / 2.68 / 2.33 | 3.57 / 2.72 / 2.28 | 3.44 / 3.06 / 2.94 | 3.50 / 3.08 / 2.44 |
+| mass flux at 0.50 / 0.99 / 3.01 m (kg/s) | — | 0.184 / 0.314 / 1.176 | 0.136 / 0.229 / 0.983 | 0.149 / 0.254 / 0.856 | 0.148 / 0.244 / 0.897 |
+| grid-scale w′ share at 0.99 / 1.51 / 2.00 m | — | — | 0.116 / 0.091 / 0.072 | 0.310 / 0.295 / 0.283 | 0.299 / 0.133 / 0.098 |
+
+- **The flame is kept** (90% / 99% at 0.43 / 0.73 m) and the first metre matches §34: 0.75 / 0.99 m are 22% / 18% above McCaffrey.
+- **The upper plume is clean again:** the grid-scale share falls to 0.13 / 0.10 at 1.5 / 2 m within half a metre of the zone boundary, and the 3 m excess T returns to 47 K (20% above McCaffrey).
+- **1.5–2 m stays 32–37% hot** and the mass flux is 76–80% of FDS's at every height. Window spread matters here: r270's two 4 s windows differ by 12% at 2 m, so the 2 m difference between this arm and §32's (104 against 95 K) is not resolved.
+- **Best package so far against physical targets:** flame height right, 18–22% hot at 0.75–1 m, 20–37% hot above, 20–36% hot at 0.3–0.5 m (FDS itself is 6–15% above McCaffrey there).
+- **Caveat:** a zoned SGS constant is calibration, not a model, and it puts a 3.5× step in ν_t at 1.0 m. No artefact shows in the means at 0.99 / 1.51 m.
+
+**Inert tier 6, carrier + C_v 0.04** (`res_t6_lc_cv04`): halfway on every measure. RISE/FDS mass flux 0.84–0.90, centre excess T 1.10–1.24, base rms w/w_c 0.58, grid-scale share 1.5–1.9× FDS's from 1 m. No better trade than the zone.
+
+**Running:** inert tier 6 with the zone (`res_t6_lc_zone25`, `below:25:0.2857`, 10 s) for a like-for-like FDS comparison with a longer average; RISE tier 10.
+
 ## Next (owner decisions)
 
 1. **Plan agreed 2026-11-10 (owner):** stop the open-ended floor-mechanism hunt (§30 closes it) and judge a candidate package against physical targets.
