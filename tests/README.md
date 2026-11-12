@@ -11,8 +11,8 @@ Scene-based validation taxonomy now lives in [../scenes/README.md](../scenes/REA
 ```sh
 make -C build/make/rise tests                     # Build all test binaries against bin/librise.a
 make -C build/make/rise build-test/Math3DTest     # Build a single test executable
-./run_all_tests.sh                                # Default fast tier
-./run_all_tests.sh --tier all                     # Fast + extended render/convergence tests
+./run_all_tests.sh                                # Default: all tiers (fast + extended)
+./run_all_tests.sh --tier fast                    # Fast tier only
 ./run_all_tests.sh --tier extended                # Extended tier only (sets RISE_TEST_EXTENDED=1)
 ./run_all_tests.sh --filter '*Noise3D*' --timeout 60
 ```
@@ -26,13 +26,13 @@ Environment overrides honored by `run_all_tests.sh`:
 
 #### Red-proof helper (`tools/red_prove.sh`)
 
-To produce auditable RED → GREEN regression evidence against a pre-fix commit without leaving the working tree dirty:
+To produce auditable RED → GREEN regression evidence without leaving the working tree dirty:
 
 ```sh
-./tools/red_prove.sh <TestName> <base-ref> [--args "..."] -- <paths-to-revert...>
+./tools/red_prove.sh [--args "<test-args>"] <TestBinaryName> <assertion-marker-substring> <src-file> [<src-file> ...]
 ```
 
-`red_prove.sh` temporarily checks out `<paths-to-revert...>` from `<base-ref>`, rebuilds `build-test/<TestName>`, captures the failing (RED) run with any optional `--args "..."`, restores the working tree, rebuilds, and verifies marker-tied GREEN output on the fixed tree.
+`red_prove.sh` `git stash`es only the listed `<src-file>...` paths (keep the test file out of the stash list), rebuilds `build-test/<TestBinaryName>`, runs the test (with any optional `--args "<test-args>"`) and asserts `<assertion-marker-substring>` FAILS (RED), then pops the stash, rebuilds, and asserts `<assertion-marker-substring>` PASSES (GREEN).
 
 ### Windows
 
@@ -42,9 +42,9 @@ cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64
 
 # Prereq: build the Library + CLI from build/VS2022/RISE.sln in both Debug
 # and Release once so bin/RISE.lib and dbin/RISE.lib exist.
-.\run_all_tests.ps1                              # Release (fast tier)
+.\run_all_tests.ps1                              # Release, default Tier=all (fast + extended)
 .\run_all_tests.ps1 -Config Debug                # Debug
-.\run_all_tests.ps1 -Tier all                    # Fast + extended tiers (fast|extended|all)
+.\run_all_tests.ps1 -Tier fast                   # Fast tier only (fast|extended|all)
 .\run_all_tests.ps1 -Filter Math3DTest,*Noise3D* # Subset by wildcard
 .\run_all_tests.ps1 -TimeoutSeconds 60           # Kill any test exceeding 60s
 ```

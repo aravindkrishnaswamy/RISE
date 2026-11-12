@@ -124,7 +124,7 @@ owns registered chunks and descriptors. The retired
 - [gui/LLM_AGENT_RUNTIME.md](gui/LLM_AGENT_RUNTIME.md),
   [gui/MCP_TOOL_SURFACE.md](gui/MCP_TOOL_SURFACE.md), and
   [gui/AI_SECURITY_MODEL.md](gui/AI_SECURITY_MODEL.md): in-app LLM runtime,
-  38-tool MCP/RPC surface, and security hardening backlog
+  43-tool MCP/RPC surface, and security hardening backlog
 - [AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) and
   [PERCEPTION_ATLAS_AB_RESULTS.md](PERCEPTION_ATLAS_AB_RESULTS.md): multi-view
   perception atlas and A/B evaluation record

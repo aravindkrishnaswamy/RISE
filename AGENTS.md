@@ -85,11 +85,11 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 - Linux/macOS build: `make -C build/make/rise -j8 all`
 - Linux/macOS single test build: `make -C build/make/rise build-test/<TestName>`
 - Linux/macOS all tests build: `make -C build/make/rise -j8 tests`
-- Linux/macOS tests run: `./run_all_tests.sh` (`--tier fast|extended|all`, `--filter "<glob>"`, `--timeout <sec>`)
-- Worktree-isolated red-proof check: `tools/red_prove.sh <base-ref> <TestName> -- <paths...>`
+- Linux/macOS tests run: `./run_all_tests.sh` (`--tier all|fast|extended` [default `all`], `--filter "<glob>"`, `--timeout <sec>`)
+- Stash-based red-proof check: `tools/red_prove.sh [--args "<test-args>"] <TestName> <marker> <src-file>...`
 - Windows tests configure: `cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64`
 - Windows tests build: `cmake --build build/cmake/rise-tests/_out --config Release --target rise_all_tests --parallel`
-- Windows tests run: `.\run_all_tests.ps1` (`-Tier fast|extended|all`, `-Filter "<glob>"`, `-TimeoutSec <sec>`)
+- Windows tests run: `.\run_all_tests.ps1` (`-Tier all|fast|extended` [default `all`], `-Filter "<glob>"`, `-TimeoutSeconds <sec>`)
 - Windows tests run (Debug): `.\run_all_tests.ps1 -Config Debug`
 - Batch scene render: `./run_scenes.sh`
 - Agent / MCP / eval CLI entry points: `./bin/rise --mcp` (or `--agent-stdio`), `./bin/rise --agent-http[=PORT]`, `./bin/rise --agent-eval --scenario <dir>`

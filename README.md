@@ -70,11 +70,11 @@ current references, active plans, and historical design records.
 ```sh
 make -C build/make/rise -j8 all
 make -C build/make/rise -j8 tests
-./run_all_tests.sh                                  # default: fast tier
-./run_all_tests.sh --tier all                       # fast + extended tiers
+./run_all_tests.sh                                  # default: all tiers (fast + extended)
+./run_all_tests.sh --tier fast                      # fast tier only
 ./run_all_tests.sh --filter "*GGX*" --timeout 180   # targeted subset
 make -C build/make/rise build-test/SourceHygieneTest && ./bin/tests/SourceHygieneTest
-tools/red_prove.sh <base-ref> <TestName> -- src/Library/...  # worktree-isolated red-proof
+tools/red_prove.sh [--args "<test-args>"] <TestBinaryName> <marker> <src-file>...  # stash-based red-proof
 
 export RISE_MEDIA_PATH="$(pwd)/"
 # ~1 s: path-traced (direct light only) shapes -> rendered/shapes.png + shapes_denoised.png
@@ -83,8 +83,9 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ./run_scenes.sh
 ```
 
-Headless CLI flags include resolution overrides (`--width N`, `--height N`,
-`--pixel-ar X`) and agent/MCP/eval modes (`--mcp` / `--agent-stdio`,
+Headless CLI flags include resolution, denoise, and camera overrides (`--width N`,
+`--height N`, `--pixel-ar X`, `--denoise` / `--no-denoise`, `--camera <name>`) and
+agent/MCP/eval modes (`--mcp` / `--agent-stdio`,
 `--agent-http[=PORT]`, `--agent-autonomy=observe-only|edit-and-preview|full`,
 `--agent-eval --scenario <path>`).
 

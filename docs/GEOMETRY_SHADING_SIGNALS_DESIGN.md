@@ -1884,10 +1884,11 @@ undo step, no staged-proposal form under External authority.
 3. is bound by at least one `standard_object` (following `source` links, bounded
    at 256 hops) whose geometry chunk is **not** curv-barren — the barren set is
    stated as a negative (`CurvBarrenGeometryKind_`) so a future geometry kind
-   defaults to "assume it curves": `bezierpatch` / `bilinearpatch` (still
-   conservatively blocked by `CurvBarrenGeometryKind_`, even after DL-20 wired
-   intersection derivatives), `infiniteplane` / `clippedplane` / `circulardisk` /
-   `box` / `cartesian_disk` (genuinely planar, 0 is the true answer); and
+   defaults to "assume it curves": `infiniteplane` / `clippedplane` /
+   `circulardisk` / `box` / `cartesian_disk` (genuinely planar, 0 is the true
+   answer; `bezierpatch` and `bilinearpatch` were removed from
+   `CurvBarrenGeometryKind_` in Tier 0 `df6877d86` now that DL-20 analytic
+   Weingarten curvature is wired, gated by `tests/AgentAddWearTest.cpp`); and
 4. does not already bind an expression reading `curv` / `curvR` / `occlusion` /
    `thickness` — a second pass would stack two wear layers, and this clause is
    what makes the note **self-disarm** as work lands.

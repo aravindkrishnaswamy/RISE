@@ -10,8 +10,8 @@ audit lives in [ROADMAP.md](ROADMAP.md).
 
 Between the 2026-07-24 audit (`1514297d`) and `6946c4c82` (3,738 commits),
 first-party documentation grew from 142 files to **311+ tracked Markdown files**
-alongside **523 standalone C++ test suites**, **176 scene chunk keywords**,
-**38 agent/MCP tools**, and **13 runtime agent skills**.
+alongside **523 standalone C++ test suites** (now **525** post-Tier-0), **176 scene chunk keywords**,
+**43 agent/MCP tools**, **9 runtime agent skills** (`skills/agent/`), and **12 contributor workflow skills** (`docs/skills/`).
 
 ### Major accuracy corrections applied
 
