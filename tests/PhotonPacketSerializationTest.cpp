@@ -45,6 +45,19 @@ template<class Base>bool Load(Job& job,const char* path){
  else if constexpr(std::is_same<Base,GlobalSpectralPhotonMap>::value)return job.LoadGlobalSpectralPhotonmap(path);
  else return job.LoadCausticSpectralPhotonmap(path);
 }
+void TestSaveFailure()
+{
+ auto* job = new Job();
+ auto* map = new GlobalPelPhotonMap(1, nullptr);
+ job->GetScene()->SetGlobalPelMap(map);
+ map->release();
+ const auto directory = std::filesystem::temp_directory_path().string();
+ Check(!job->SaveGlobalPelPhotonmap(directory.c_str()), "Job photon save reports an unavailable output file");
+#ifdef __linux__
+ Check(!job->SaveGlobalPelPhotonmap("/dev/full"), "Job photon save reports a delayed disk write failure");
+#endif
+ job->release();
+}
 template<class Base>void Run(const char* name){
  std::printf("FAMILY %s\n",name);Probe<Base> source(3);const Vector3 wi(.3,.4,std::sqrt(.75));
  if constexpr(Spectral<Base>())Check(source.ConfigureWavelengthSampling(400,700,160),"source configured");
@@ -104,4 +117,4 @@ template<class Base>void Run(const char* name){
  std::filesystem::remove(path);valid->release();job->release();installed->release();legacy->release();buffer->release();
 }
 }
-int main(){Run<GlobalPelPhotonMap>("globalPel");Run<CausticPelPhotonMap>("causticPel");Run<GlobalSpectralPhotonMap>("globalNM");Run<CausticSpectralPhotonMap>("causticNM");std::printf("PhotonPacketSerializationTest checks=%u failures=%u\n",checks,failures);return failures?1:0;}
+int main(){Run<GlobalPelPhotonMap>("globalPel");Run<CausticPelPhotonMap>("causticPel");Run<GlobalSpectralPhotonMap>("globalNM");Run<CausticSpectralPhotonMap>("causticNM");TestSaveFailure();std::printf("PhotonPacketSerializationTest checks=%u failures=%u\n",checks,failures);return failures?1:0;}

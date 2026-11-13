@@ -364,17 +364,22 @@ static void TestBufferWriteFailures()
 	char storage[] = { 'a', 'b', 'c', 'd' };
 	auto* borrowed = new MemoryBuffer( storage, 2, false );
 	borrowed->seek( IBuffer::START, 1 );
+	Check( !borrowed->seek( IBuffer::START, -1 ) && !borrowed->seek( IBuffer::END, -1 ) &&
+		borrowed->getCurPos() == 1 && borrowed->seek( IBuffer::CUR, -1 ) &&
+		borrowed->getCurPos() == 0 && borrowed->seek( IBuffer::CUR, 1 ),
+		"H: invalid signed seeks preserve the cursor and backward relative seeks work" );
 	Check( !borrowed->setBytes( "XY", 2 ) && borrowed->getCurPos() == 1 &&
 		std::memcmp( storage, "abcd", sizeof(storage) ) == 0,
 		"H: rejected borrowed write preserves cursor and both canary bytes" );
-	Check( !borrowed->ResizeForMore( std::numeric_limits<unsigned int>::max() ),
-		"H: capacity request rejects cursor-plus-length overflow" );
 	borrowed->release();
 
 	auto* owned = new MemoryBuffer( 2u );
 	Check( owned->setBytes( "XY", 2 ) && owned->setBytes( owned->Pointer(), 2 ) &&
 		owned->getCurPos() == 4 && std::memcmp( owned->Pointer(), "XYXY", 4 ) == 0,
 		"H: growing self-copy reads from the original storage" );
+	Check( !owned->ResizeForMore( std::numeric_limits<unsigned int>::max() ) &&
+		owned->Size() == 4 && owned->getCurPos() == 4,
+		"H: capacity request rejects cursor-plus-length overflow" );
 	owned->release();
 
 	auto* invalid = new DiskFileWriteBuffer( nullptr );

@@ -16,6 +16,7 @@
 #include "pch.h"
 #include "MemoryBuffer.h"
 #include <memory.h>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <stdio.h>
@@ -227,32 +228,24 @@ bool MemoryBuffer::EndOfBuffer( ) const
 
 bool MemoryBuffer::seek( const eSeek type, const int amount )
 {
-	switch( type )
-	{
+	std::int64_t position = amount;
+	switch( type ) {
 	case START:
-		if( amount >= int(nSize) ) {
-			return false;
-		}
-		nCursor = amount;	
 		break;
-
 	case CUR:
-		{
-			unsigned int newpos = nCursor + amount;
-			if( newpos >= nSize ) {
-				return false;
-			}
-			nCursor = newpos;
-		}
+		position += nCursor;
 		break;
 	case END:
-		if( amount >= int(nSize) ) {
-			return false;
-		}
-		nCursor = nSize-amount-1;
+		if( amount < 0 ) return false;
+		position = static_cast<std::int64_t>( nSize ) - 1 - amount;
 		break;
+	default:
+		return false;
 	}
-
+	if( position < 0 || position >= nSize ) {
+		return false;
+	}
+	nCursor = static_cast<unsigned int>( position );
 	return true;
 }
 
@@ -274,7 +267,7 @@ bool MemoryBuffer::DumpToFile( const char * szFileName )
 
 bool MemoryBuffer::DumpToFileToCursor( const char * szFileName )
 {
-	if( szFileName && pBuffer ) {
+	if( szFileName && pBuffer && nCursor <= nSize ) {
 		FILE* f = fopen( GlobalMediaPathLocator().Find(szFileName).c_str(), "wb" );
 
 		if( f ) {
@@ -538,7 +531,7 @@ int MemoryBuffer::getLine( char* pDest, unsigned int max )
 // buffer does not own its memory, in which case the caller must pre-size it.
 bool MemoryBuffer::setChar( const char ch )
 {
-	if( nCursor+sizeof(char) > nSize && !Resize( nCursor+sizeof(char) ) ) {
+	if( nCursor > nSize || (sizeof(char) > nSize - nCursor && !ResizeForMore( sizeof(char) )) ) {
 		return false;
 	}
 	pBuffer[nCursor++] = ch;
@@ -547,7 +540,7 @@ bool MemoryBuffer::setChar( const char ch )
 
 bool MemoryBuffer::setUChar( const unsigned char ch )
 {
-	if( nCursor+sizeof(unsigned char) > nSize && !Resize( nCursor+sizeof(unsigned char) ) ) {
+	if( nCursor > nSize || (sizeof(unsigned char) > nSize - nCursor && !ResizeForMore( sizeof(unsigned char) )) ) {
 		return false;
 	}
 	pBuffer[nCursor++] = ch;
@@ -556,7 +549,7 @@ bool MemoryBuffer::setUChar( const unsigned char ch )
 
 bool MemoryBuffer::setWord( const short sh )
 {
-	if( nCursor+sizeof(short) > nSize && !Resize( nCursor+sizeof(short) ) ) {
+	if( nCursor > nSize || (sizeof(short) > nSize - nCursor && !ResizeForMore( sizeof(short) )) ) {
 		return false;
 	}
 
@@ -574,7 +567,7 @@ bool MemoryBuffer::setWord( const short sh )
 
 bool MemoryBuffer::setUWord( const unsigned short sh )
 {
-	if( nCursor+sizeof(unsigned short) > nSize && !Resize( nCursor+sizeof(unsigned short) ) ) {
+	if( nCursor > nSize || (sizeof(unsigned short) > nSize - nCursor && !ResizeForMore( sizeof(unsigned short) )) ) {
 		return false;
 	}
 #ifdef RISE_BIG_ENDIAN
@@ -591,7 +584,7 @@ bool MemoryBuffer::setUWord( const unsigned short sh )
 
 bool MemoryBuffer::setInt( const int n )
 {
-	if( nCursor+sizeof(int) > nSize && !Resize( nCursor+sizeof(int) ) ) {
+	if( nCursor > nSize || (sizeof(int) > nSize - nCursor && !ResizeForMore( sizeof(int) )) ) {
 		return false;
 	}
 
@@ -609,7 +602,7 @@ bool MemoryBuffer::setInt( const int n )
 
 bool MemoryBuffer::setUInt( const unsigned int n )
 {
-	if( nCursor+sizeof(unsigned int) > nSize && !Resize( nCursor+sizeof(unsigned int) ) ) {
+	if( nCursor > nSize || (sizeof(unsigned int) > nSize - nCursor && !ResizeForMore( sizeof(unsigned int) )) ) {
 		return false;
 	}
 
@@ -627,7 +620,7 @@ bool MemoryBuffer::setUInt( const unsigned int n )
 
 bool MemoryBuffer::setFloat( const float f )
 {
-	if( nCursor+sizeof(float) > nSize && !Resize( nCursor+sizeof(float) ) ) {
+	if( nCursor > nSize || (sizeof(float) > nSize - nCursor && !ResizeForMore( sizeof(float) )) ) {
 		return false;
 	}
 
@@ -644,7 +637,7 @@ bool MemoryBuffer::setFloat( const float f )
 
 bool MemoryBuffer::setDouble( const double d )
 {
-	if( nCursor+sizeof(double) > nSize && !Resize( nCursor+sizeof(double) ) ) {
+	if( nCursor > nSize || (sizeof(double) > nSize - nCursor && !ResizeForMore( sizeof(double) )) ) {
 		return false;
 	}
 
