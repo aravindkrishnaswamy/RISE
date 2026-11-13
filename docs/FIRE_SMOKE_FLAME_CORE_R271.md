@@ -1531,6 +1531,35 @@ The 10 s zoned reacting arm is §36.
 - **The unzoned carrier arm is the mirror image:** from 0.75 m up its fluctuation and turbulent heat flux are FDS's (0.84–1.11) and it gains 86% of FDS's mass flux from 1 to 3 m, but it is too quiet at 0.3–0.5 m (0.71–0.74), which is what makes its flame tall.
 - So the 0.02 zone is needed only near the base, and it costs mixing quality wherever it is on. **Test launched:** the zone top lowered to 0.5 m (`ab_lc_zone16`) and 0.77 m (`ab_lc_zone25`), 4 s each, run concurrently.
 
+## 37. Lower zone top: 0.5 m keeps most of the flame fix and restores the upper plume (2026-11-13)
+
+`r271_compact_stencil/ab_lc_zone16` and `ab_lc_zone25`: the §35 arm with the C_v 0.02 zone ending at 0.49 m (`below:16:0.2857`) and 0.77 m (`below:25:0.2857`); 4 s each from r270 step 9223, run concurrently (exit 0 both). Evidence: `s37_runs.txt`.
+
+| 4 s windows | McCaffrey | FDS | no zone (§32) | zone to 0.5 m | zone to 0.77 m | zone to 1.0 m (§35) |
+|---|---|---|---|---|---|---|
+| 90% / 99% heat-release height (m) | — | 0.43 / 0.77 | 0.61 / 1.01 | 0.46 / 0.80 | 0.46 / 0.73 | 0.43 / 0.73 |
+| centre excess T at 0.29 m (K) | 873 | 926 | 1106 | 1051 | 1055 | 1045 |
+| 0.50 m | 551 | 631 | 865 | 764 | 775 | 749 |
+| 0.75 m | 367 | 355 | 577 | 467 | 464 | 449 |
+| 0.99 m | 247 | 228 | 341 | 311 | 300 | 291 |
+| 1.51 m | 122 | 114 | 153 | 156 | 160 | 161 |
+| 2.00 m | 76 | 72 | 95 | 89 | 97 | 104 |
+| 3.01 m | 39 | 39 | 45 | 48 | 49 | 47 |
+| centre w at 0.99 / 2.00 / 3.01 m (m/s) | 3.60 / 2.85 / 2.48 | 3.47 / 2.68 / 2.33 | 3.57 / 2.72 / 2.28 | 3.61 / 2.73 / 2.42 | 3.59 / 2.88 / 2.47 | 3.50 / 3.08 / 2.44 |
+| plume mass flux, RISE / FDS, at 0.29 / 0.99 / 2.00 / 3.01 m | — | — | 0.74 / 0.74 / 0.77 / 0.84 | 0.84 / 0.85 / 0.81 / 0.87 | 0.84 / 0.86 / 0.75 / 0.81 | 0.90 / 0.89 / 0.72 / 0.76 |
+| velocity width b_w, RISE / FDS, at 0.99 / 2.00 / 3.01 m | — | — | 0.89 / 0.89 / 0.93 | 0.93 / 0.90 / 0.92 | 0.93 / 0.85 / 0.88 | 0.95 / 0.81 / 0.87 |
+| centre rms w / w_c, RISE / FDS, at 0.29 / 0.99 / 1.51 / 2.00 m | — | — | 0.71 / 1.10 / 0.97 / 0.92 | 0.91 / 0.88 / 0.95 / 0.98 | 0.87 / 0.83 / 0.82 / 0.94 | 1.00 / 0.85 / 0.72 / 0.80 |
+| turbulent / mean heat flux, RISE / FDS, at 0.50 / 0.99 / 1.51 m | — | — | 0.62 / 0.94 / 1.00 | 0.69 / 0.74 / 0.85 | 0.58 / 0.57 / 0.70 | 0.63 / 0.48 / 0.59 |
+| grid-scale share of w′, RISE / FDS, at 0.75 / 0.99 / 1.51 m | — | — | 0.94 / 0.98 / 1.08 | 1.22 / 1.12 / 1.11 | 2.20 / 1.52 / 1.35 | 2.40 / 2.55 / 1.58 |
+
+- **Zone to 0.5 m is the better trade.** The plume carries 81–87% of FDS's mass flux at every height (zone to 1 m: 72–76% from 2 m), the fluctuation dip above the boundary is gone (0.95–0.98 at 1.5–2 m), and the grid-scale share is within 22% of FDS's from 0.75 m.
+- **Cost:** the flame is one cell taller (90% / 99% at 0.46 / 0.80 m; FDS 0.43 / 0.77 m) and 0.75–1 m is 26–27% above McCaffrey instead of 18–22%. From 2 m it is 17–23% above McCaffrey instead of 20–37%.
+- **Zone to 0.77 m** sits between the two on nearly every measure; no reason to prefer it.
+- **What is left is set below 0.3 m:** the plume already carries 84% of FDS's mass flux at 0.29 m and holds that ratio to 3 m (it gains 87% of FDS's mass flux from 1 to 3 m). The centre stays 14–37% hotter than FDS throughout.
+- These are single 4 s windows; §36's 2 s blocks spread by 9–20% in centre excess T, so differences of that size between arms are not resolved.
+
+**Running:** `ab_lc_zone16_cv01` (C_v 0.01 below 0.5 m, `below:16:0.1429`) and `ab_lc_zone10` (C_v 0.02 below 0.3 m, `below:10:0.2857`), 4 s each, to see whether the base deficit responds to a lower constant and how low the zone top can go.
+
 ## Next (owner decisions)
 
 1. **Plan agreed 2026-11-10 (owner):** stop the open-ended floor-mechanism hunt (§30 closes it) and judge a candidate package against physical targets.
@@ -1539,6 +1568,7 @@ The 10 s zoned reacting arm is §36.
    - Done (§32): reacting 4 s A/B. Far field within 15–27% of McCaffrey; first metre still 40–57% too hot and the flame 0.61 m against 0.43.
    - **Adopted 2026-11-11 (owner):** the limited momentum carrier with the compact viscous stencil is the default candidate. The carrier is committed as an opt-in (`RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1` with `RISE_FIRE_COMPACT_VISCOUS_STENCIL=1`); the production default is unchanged until the candidate is promoted.
    - **Adopted 2026-11-12 (owner):** the zoned momentum C_v (0.02 below 1.0 m, 0.07 above; §35) joins the candidate. Candidate = compact stencil + limited carrier + `RISE_FIRE_VREMAN_ZONE=below:<1.0 m layer>:0.2857` (layer 33 at tier 8, 25 at tier 6). The zone switch is committed as an opt-in; the production default is unchanged. Open: the zone is set in cell layers, so the 1.0 m height has to be translated per tier until it is expressed in metres.
+   - **For owner decision (§37, 2026-11-13):** move the zone top from 1.0 m to 0.5 m (layer 16 at tier 8). It restores the upper plume (81–87% of FDS's mass flux at every height) at the cost of a one-cell taller flame and a 0.75–1 m centreline 26–27% above McCaffrey instead of 18–22%. Not yet confirmed over 10 s.
    - **Approved 2026-11-11 (owner):** the resolution check of both codes for the remaining near-field gap. Running as §33 on the native tiers 6 / 8 / 10.
    - In reserve: a reduced-domain resolution check of both codes, if the package falls short.
    - The limited momentum carrier (§29) stays the one identified numerics contributor: 2–3× base unsteadiness with an FDS-like spectrum aloft. Superbee on top adds only 6–9% at k7–k16.
