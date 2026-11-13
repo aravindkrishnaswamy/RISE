@@ -57,7 +57,7 @@ MemoryBuffer::MemoryBuffer( const unsigned int size ) :
 }
 
 MemoryBuffer::MemoryBuffer( char * pMemory, const unsigned int size, bool bTakeOwnership ) :
-  nSize( size ),
+  nSize( pMemory ? size : 0 ),
   pBuffer( pMemory ),
   nCursor( 0 ),
   bIOwnMemory( bTakeOwnership )
@@ -74,7 +74,7 @@ MemoryBuffer::MemoryBuffer( const MemoryBuffer& mb ) :
 		pBuffer = new char[ nSize ];
 		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 
-		memcpy( pBuffer, mb.pBuffer, nSize );
+		if( nSize ) memcpy( pBuffer, mb.pBuffer, nSize );
 	} else {
 		pBuffer = mb.pBuffer;
 	}
@@ -82,18 +82,21 @@ MemoryBuffer::MemoryBuffer( const MemoryBuffer& mb ) :
 }
 
 MemoryBuffer::MemoryBuffer( IMemoryBuffer& mb ) :
-  nSize( mb.Size() ),
+  nSize( 0 ),
   pBuffer( 0 ),
   nCursor( mb.getCurPos() ),
   bIOwnMemory( mb.DoOwnMemory() )
 {
+	char* const source = mb.Pointer();
+	nSize = source ? mb.Size() : 0;
+	nCursor = std::min( nCursor, nSize );
 	if( bIOwnMemory ) {
 		pBuffer = new char[ nSize ];
 		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 
-		memcpy( pBuffer, mb.Pointer(), nSize );
+		if( nSize ) memcpy( pBuffer, source, nSize );
 	} else {
-		pBuffer = mb.Pointer();
+		pBuffer = source;
 	}
 
 }
@@ -109,29 +112,34 @@ MemoryBuffer::MemoryBuffer( const char * szFileName ) :
 		String s = GlobalMediaPathLocator().Find( szFileName );
 
 		struct stat file_stats = {0};
-		if( stat( s.c_str(), &file_stats ) != 0 ) {
+		if( stat( s.c_str(), &file_stats ) != 0 || file_stats.st_size < 0 ||
+			static_cast<uintmax_t>(file_stats.st_size) > std::numeric_limits<unsigned int>::max() ) {
 			// Cannot size the file — leave the buffer empty (nSize/pBuffer
 			// stay 0 from the init list) rather than proceeding with a
 			// bogus size.
 			GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Failed to stat file: %s", szFileName );
 			return;
 		}
-		nSize = static_cast<unsigned int>(file_stats.st_size);
-		pBuffer = new char[ nSize ];
-		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
-
-		FILE* f = fopen( s.c_str(), "rb" );
+		std::unique_ptr<FILE, decltype(&fclose)> f( fopen( s.c_str(), "rb" ), fclose );
 		if( f ) {
+			const auto size = static_cast<unsigned int>(file_stats.st_size);
+			std::unique_ptr<char[]> storage( new char[size] );
 			// Read byte-granular and CHECK the count: a short read (file
 			// truncated, or the size changed after stat) must not leave the
 			// tail uninitialised.
-			const size_t bytesRead = fread( pBuffer, 1, nSize, f );
-			fclose( f );
+			const size_t bytesRead = fread( storage.get(), 1, size, f.get() );
+			if( ferror( f.get() ) ) {
+				GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Failed to read file: %s", szFileName );
+				return;
+			}
+			pBuffer = storage.release();
+			nSize = size;
+			GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 			if( bytesRead < nSize ) {
 				memset( pBuffer + bytesRead, 0, nSize - bytesRead );
 				GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Short read on \'%s\': got %u of %u bytes (tail zeroed)", szFileName, static_cast<unsigned>(bytesRead), nSize );
 			} else {
-				GlobalLog()->PrintEx( eLog_Info, "MemoryBuffer:: Read file \'%s\' of size %d bytes", szFileName, nSize );
+				GlobalLog()->PrintEx( eLog_Info, "MemoryBuffer:: Read file \'%s\' of size %u bytes", szFileName, nSize );
 			}
 		} else {
 			GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Failed to open file: %s", szFileName );
@@ -153,7 +161,7 @@ MemoryBuffer::~MemoryBuffer( )
 
 void MemoryBuffer::Clear( )
 {
-	memset( pBuffer, 0, nSize );
+	if( nSize ) memset( pBuffer, 0, nSize );
 }
 
 bool MemoryBuffer::Resize( unsigned int new_size, bool bForce )
@@ -193,7 +201,7 @@ bool MemoryBuffer::ResizeForMore( unsigned int more_bytes )
 
 unsigned int MemoryBuffer::HowFarToEnd( ) const
 {
-	return (nSize-nCursor-1);
+	return nCursor < nSize ? nSize-nCursor-1 : 0;
 }
 
 unsigned int MemoryBuffer::Size( ) const
@@ -213,12 +221,12 @@ const char * MemoryBuffer::Pointer( ) const
 
 char * MemoryBuffer::PointerAtCursor( )
 {
-	return &pBuffer[nCursor];
+	return pBuffer && nCursor <= nSize ? pBuffer+nCursor : nullptr;
 }
 
 const char * MemoryBuffer::PointerAtCursor( ) const
 {
-	return &pBuffer[nCursor];
+	return pBuffer && nCursor <= nSize ? pBuffer+nCursor : nullptr;
 }
 
 bool MemoryBuffer::EndOfBuffer( ) const
@@ -478,6 +486,9 @@ bool MemoryBuffer::getBytes( void* pDest, unsigned int amount )
 {
 	if( !pDest ) {
 		return false;
+	}
+	if( amount == 0 ) {
+		return true;
 	}
 
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a malformed / truncated

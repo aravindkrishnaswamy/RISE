@@ -42,6 +42,7 @@
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileReadBuffer.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
+#include "../src/Library/RISE_API.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -361,6 +362,13 @@ static void TestVolumeOverflowDims()
 
 static void TestBufferWriteFailures()
 {
+	IMemoryBuffer* invalidMemory = nullptr;
+	Check( !RISE_API_CreateCompatibleMemoryBuffer( &invalidMemory, nullptr, 2, false ) && !invalidMemory,
+		"H: wrapping a null pointer with positive capacity is refused" );
+	auto* empty = new MemoryBuffer( nullptr, 2, false );
+	Check( empty->Size() == 0 && empty->EndOfBuffer() && !empty->PointerAtCursor() && !empty->setChar( 'X' ),
+		"H: direct null borrowed storage behaves as an empty buffer" );
+	empty->release();
 	char storage[] = { 'a', 'b', 'c', 'd' };
 	auto* borrowed = new MemoryBuffer( storage, 2, false );
 	borrowed->seek( IBuffer::START, 1 );
@@ -371,6 +379,9 @@ static void TestBufferWriteFailures()
 	Check( !borrowed->setBytes( "XY", 2 ) && borrowed->getCurPos() == 1 &&
 		std::memcmp( storage, "abcd", sizeof(storage) ) == 0,
 		"H: rejected borrowed write preserves cursor and both canary bytes" );
+	Check( !borrowed->setDouble( 1 ) && borrowed->getCurPos() == 1 &&
+		std::memcmp( storage, "abcd", sizeof(storage) ) == 0,
+		"H: rejected borrowed scalar write preserves cursor and storage" );
 	borrowed->release();
 
 	auto* owned = new MemoryBuffer( 2u );

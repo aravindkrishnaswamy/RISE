@@ -7641,6 +7641,10 @@ namespace RISE
 		if( !ppi ) {
 			return false;
 		}
+		if( !pMemory && size != 0 ) {
+			*ppi = nullptr;
+			return false;
+		}
 
 		(*ppi) = new MemoryBuffer( pMemory, size, bTakeOwnership );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "memory buffer" );
