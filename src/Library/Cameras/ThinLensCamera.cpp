@@ -13,6 +13,9 @@
 
 #include "pch.h"
 #include "ThinLensCamera.h"
+#include <string_view>
+#include <limits>
+#include "../Utilities/FiniteMath.h"
 #include "CameraUtilities.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "CameraTransforms.h"
@@ -628,29 +631,33 @@ IKeyframeParameter* ThinLensCamera::KeyframeFromParameters( const String& name, 
 	IKeyframeParameter* p = CameraCommon::KeyframeFromParameters( name, value );
 
 	if( !p ) {
+		Scalar parsed;
+		if( !ParseStrictScalar( value, parsed ) ) return nullptr;
+		const std::string_view field( name.c_str() );
 		// Check the name and see if its something we recognize
-		if( name == "sensor_size" ) {
-			p = new Parameter<Scalar>( value.toDouble(), SENSOR_ID );
-		} else if( name == "focal_length" ) {
-			p = new Parameter<Scalar>( value.toDouble(), FOCAL_ID );
-		} else if( name == "fstop" ) {
-			p = new Parameter<Scalar>( value.toDouble(), FSTOP_ID );
-		} else if( name == "focus_distance" ) {
-			p = new Parameter<Scalar>( value.toDouble(), FOCUS_ID );
-		} else if( name == "aperture_blades" ) {
-			p = new Parameter<Scalar>( value.toDouble(), APERTURE_BLADES_ID );
-		} else if( name == "aperture_rotation" ) {
-			p = new Parameter<Scalar>( value.toDouble(), APERTURE_ROTATION_ID );
-		} else if( name == "anamorphic_squeeze" ) {
-			p = new Parameter<Scalar>( value.toDouble(), ANAMORPHIC_ID );
-		} else if( name == "tilt_x" ) {
-			p = new Parameter<Scalar>( value.toDouble(), TILT_X_ID );
-		} else if( name == "tilt_y" ) {
-			p = new Parameter<Scalar>( value.toDouble(), TILT_Y_ID );
-		} else if( name == "shift_x" ) {
-			p = new Parameter<Scalar>( value.toDouble(), SHIFT_X_ID );
-		} else if( name == "shift_y" ) {
-			p = new Parameter<Scalar>( value.toDouble(), SHIFT_Y_ID );
+		if( field == "sensor_size" ) {
+			p = new Parameter<Scalar>( parsed, SENSOR_ID );
+		} else if( field == "focal_length" ) {
+			p = new Parameter<Scalar>( parsed, FOCAL_ID );
+		} else if( field == "fstop" ) {
+			p = new Parameter<Scalar>( parsed, FSTOP_ID );
+		} else if( field == "focus_distance" ) {
+			p = new Parameter<Scalar>( parsed, FOCUS_ID );
+		} else if( field == "aperture_blades" ) {
+			if( parsed < 0 || parsed > std::numeric_limits<unsigned int>::max() ) return nullptr;
+			p = new Parameter<Scalar>( parsed, APERTURE_BLADES_ID );
+		} else if( field == "aperture_rotation" ) {
+			p = new Parameter<Scalar>( parsed, APERTURE_ROTATION_ID );
+		} else if( field == "anamorphic_squeeze" ) {
+			p = new Parameter<Scalar>( parsed, ANAMORPHIC_ID );
+		} else if( field == "tilt_x" ) {
+			p = new Parameter<Scalar>( parsed, TILT_X_ID );
+		} else if( field == "tilt_y" ) {
+			p = new Parameter<Scalar>( parsed, TILT_Y_ID );
+		} else if( field == "shift_x" ) {
+			p = new Parameter<Scalar>( parsed, SHIFT_X_ID );
+		} else if( field == "shift_y" ) {
+			p = new Parameter<Scalar>( parsed, SHIFT_Y_ID );
 		} else {
 			return 0;
 		}
@@ -684,7 +691,11 @@ void ThinLensCamera::SetIntermediateValue( const IKeyframeParameter& val )
 		// at apply time.  Continuous interpolation between integer
 		// blade counts produces non-physical bokeh shapes, so callers
 		// should keyframe blade count with STEP interpolation.
-		apertureBlades = static_cast<unsigned int>( *(Scalar*)val.getValue() );
+		{
+			const Scalar blades = *static_cast<const Scalar*>( val.getValue() );
+			if( IsFiniteDouble(blades) && blades >= 0 && blades <= std::numeric_limits<unsigned int>::max() )
+				apertureBlades = static_cast<unsigned int>(blades);
+		}
 		break;
 	case APERTURE_ROTATION_ID:
 		// Keyframed values are typed in the same unit as the parser

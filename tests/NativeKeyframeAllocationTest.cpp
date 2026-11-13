@@ -6,6 +6,8 @@
 #include <cstring>
 #include <vector>
 #include <functional>
+#include <limits>
+#include "../src/Library/Cameras/ThinLensCamera.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Cameras/CameraCommon.h"
 #include "../src/Library/Lights/PointLight.h"
@@ -77,6 +79,10 @@ public:
     }
 };
 int main() {
+    double triple[3]={10,20,30};
+    double pair[2]={10,20};
+    if(ParseStrictVec3("1 invalid 3",triple) || triple[0]!=10 || triple[1]!=20 || triple[2]!=30) ++failures;
+    if(ParseStrictVec2("1 invalid",pair) || pair[0]!=10 || pair[1]!=20) ++failures;
     const Point3 location(0,0,4),lookAt(0,0,0);
     const Vector3 up(0,1,0),orientation(0,0,0);
     const Vector2 target(0,0);
@@ -89,6 +95,57 @@ int main() {
         if(kind==3) ok=RISE_API_CreateOrthographicCamera(&camera,location,lookAt,up,32,32,Vector2(2,2),1,1,0,0,orientation,target);
         auto* common=dynamic_cast<CameraCommon*>(camera);
         if(!ok || !common) { ++failures;safe_release(camera);continue; }
+        std::vector<const char*> scalarFields = { "theta", "elevation", "phi", "azimuth", "exposure", "width", "height" };
+        if(kind==0) scalarFields.push_back("fov");
+        if(kind==1) scalarFields.insert(scalarFields.end(), { "sensor_size", "focal_length", "fstop", "focus_distance",
+            "aperture_blades", "aperture_rotation", "anamorphic_squeeze", "tilt_x", "tilt_y", "shift_x", "shift_y" });
+        if(kind==2) scalarFields.push_back("scale");
+        for(const char* field : scalarFields) {
+            for(const char* text : { "", "garbage", "nan", "inf", "1e1000", "1junk", "1 2" }) {
+                auto* parameter=camera->KeyframeFromParameters(field,text);
+                if(parameter) {
+                    std::printf("FAIL: %s accepts invalid %s value '%s'\n",labels[kind],field,text);
+                    ++failures;parameter->release();
+                }
+            }
+        }
+        for(const char* field : { "location", "lookat", "up", "orientation", "target_orientation" }) {
+            for(const char* text : { "nan 0 0", "0 inf 0", "0 0 1e1000", "1", "1 2 3 4" }) {
+                auto* parameter=camera->KeyframeFromParameters(field,text);
+                if(parameter) { ++failures;parameter->release(); }
+            }
+        }
+        for(const char* field : { "width", "height" }) {
+            auto* probe=camera->KeyframeFromParameters(field,"32");
+            if(!probe) { ++failures;continue; }
+            for(const char* text : { "0", "-1", "4294967296" }) {
+                auto* invalid=camera->KeyframeFromParameters(field,text);
+                if(invalid) { ++failures;invalid->release(); }
+            }
+            for(Scalar dimension : { Scalar(0), Scalar(-1), Scalar(4294967296.0), std::numeric_limits<Scalar>::quiet_NaN() }) { // HYGIENE-OK: exercise rejection of non-finite interpolated camera state.
+                Parameter<Scalar> interpolated(dimension,probe->getID());
+                camera->SetIntermediateValue(interpolated);
+                if(common->GetWidth()!=32 || common->GetHeight()!=32) ++failures;
+            }
+            probe->release();
+        }
+        if(auto* lens=dynamic_cast<ThinLensCamera*>(camera)) {
+            const auto oldBlades=lens->GetApertureBlades();
+            auto* probe=camera->KeyframeFromParameters("aperture_blades","6");
+            if(!probe) ++failures;
+            else {
+                for(const char* text : { "-1", "4294967296" }) {
+                    auto* invalid=camera->KeyframeFromParameters("aperture_blades",text);
+                    if(invalid) { ++failures;invalid->release(); }
+                }
+                for(Scalar blades : { Scalar(-1), Scalar(4294967296.0), std::numeric_limits<Scalar>::quiet_NaN() }) { // HYGIENE-OK: exercise rejection of non-finite interpolated camera state.
+                    Parameter<Scalar> interpolated(blades,probe->getID());
+                    camera->SetIntermediateValue(interpolated);
+                    if(lens->GetApertureBlades()!=oldBlades) ++failures;
+                }
+                probe->release();
+            }
+        }
         char label[64];std::snprintf(label,sizeof(label),"%s location",labels[kind]);
         Measure<Point3>(label,*camera,"location","1.125 2.25 3.5","9.625 8.75 6.5",[&]{return common->GetRestLocation();});
         std::snprintf(label,sizeof(label),"%s orientation",labels[kind]);

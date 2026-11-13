@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  KeyframableStrictParse.cpp - implementation of ParseStrictScalar
-//    and ParseStrictVec3 declared in KeyframableHelper.h.
+//    and strict vector parsers declared in KeyframableHelper.h.
 //
 //  Split out of KeyframableHelper.cpp on 2026-05-24 to fix
 //  Windows LNK2005 on the Library project.  KeyframableHelper.cpp
@@ -32,7 +32,9 @@
 #include "KeyframableHelper.h"
 #include "../Utilities/FiniteMath.h"
 
-#include <cctype>
+#include <algorithm>
+#include <array>
+#include <string>
 
 namespace RISE
 {
@@ -72,9 +74,8 @@ namespace RISE
 		// Also requires the entire input to parse — trailing non-
 		// whitespace (e.g. "1abc", "1 2") is rejected since a scalar
 		// field should be one number, not a prefix of a number.
-		bool ParseStrictScalar( const String& s, Scalar& out )
+		static bool ParseScalarText( const char* c, Scalar& out )
 		{
-			const char* c = s.c_str();
 
 			// Layer 1: textual reject.  Skip leading whitespace and
 			// optional sign, then match `nan`/`inf` case-insensitive.
@@ -113,36 +114,38 @@ namespace RISE
 			return true;
 		}
 
-		// Strict 3-vector parse: tokenises on whitespace, requires
-		// exactly three components, each of which goes through
-		// ParseStrictScalar.  Closes the parallel hole on vec3 fields
-		// (color, direction, target, position, orientation, scale)
-		// that previously accepted "nan nan nan" via `sscanf("%lf
-		// %lf %lf")`.
-		bool ParseStrictVec3( const String& s, double out[3] )
+		bool ParseStrictScalar( const String& s, Scalar& out )
 		{
+			return ParseScalarText( s.c_str(), out );
+		}
+
+		template<size_t N>
+		static bool ParseStrictVector( const String& s, double* out )
+		{
+			std::array<double, N> components;
 			const char* c = s.c_str();
-			for( int i = 0; i < 3; i++ ) {
+			for( double& component : components ) {
 				while( IsWhitespace( *c ) ) ++c;
 				if( *c == '\0' ) return false;
-
-				const char* tokStart = c;
+				const char* start = c;
 				while( *c != '\0' && !IsWhitespace( *c ) ) ++c;
-
-				// RISE's String type lacks a (ptr, len) constructor;
-				// route through std::string which has one, then pass
-				// the null-terminated c_str into ParseStrictScalar.
-				const std::string token( tokStart, static_cast<size_t>( c - tokStart ) );
-				Scalar v;
-				if( !ParseStrictScalar( String( token.c_str() ), v ) ) {
-					return false;
-				}
-				out[i] = static_cast<double>( v );
+				const std::string token( start, static_cast<size_t>( c - start ) );
+				if( !ParseScalarText( token.c_str(), component ) ) return false;
 			}
-			// Anything after the third token must be whitespace only.
 			while( IsWhitespace( *c ) ) ++c;
 			if( *c != '\0' ) return false;
+			std::copy( components.begin(), components.end(), out );
 			return true;
+		}
+
+		bool ParseStrictVec2( const String& s, double out[2] )
+		{
+			return ParseStrictVector<2>( s, out );
+		}
+
+		bool ParseStrictVec3( const String& s, double out[3] )
+		{
+			return ParseStrictVector<3>( s, out );
 		}
 	}
 }
