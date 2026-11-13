@@ -23,7 +23,11 @@ using namespace RISE::Implementation;
 
 DiskFileWriteBuffer::DiskFileWriteBuffer( const char * file_name ) 
 {
-	strncpy( szFileName, file_name, 1024 );
+	szFileName[0] = '\0';
+	if( !file_name || strlen( file_name ) >= sizeof(szFileName) ) {
+		return;
+	}
+	strcpy( szFileName, file_name );
 	hFile = fopen( szFileName, "wb" );
 
 	if( hFile == 0 ) {
@@ -34,21 +38,18 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char * file_name )
 DiskFileWriteBuffer::~DiskFileWriteBuffer( )
 {
 	if( hFile ) {
-		fclose( hFile );
-		hFile = 0;
+		Finish();
 	}
 }
 
 bool DiskFileWriteBuffer::setChar( const char ch )
 {
-	fwrite( &ch, 1, 1, hFile );
-	return true;
+	return setBytes( &ch, sizeof(ch) );
 }
 
 bool DiskFileWriteBuffer::setUChar( const unsigned char ch )
 {
-	fwrite( &ch, 1, 1, hFile );
-	return true;
+	return setBytes( &ch, sizeof(ch) );
 }
 
 bool DiskFileWriteBuffer::setWord( const short sh )
@@ -56,12 +57,10 @@ bool DiskFileWriteBuffer::setWord( const short sh )
 #ifdef RISE_BIG_ENDIAN
 	unsigned char low = sh & 0xFF;
 	unsigned char high = (sh >> 8) & 0xFF;
-	setUChar( low );
-	setUChar( high );
+	return setUChar( low ) && setUChar( high );
 #else
-	fwrite( &sh, sizeof( short ), 1, hFile );
+	return setBytes( &sh, sizeof(sh) );
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setUWord( const unsigned short sh )
@@ -69,12 +68,10 @@ bool DiskFileWriteBuffer::setUWord( const unsigned short sh )
 #ifdef RISE_BIG_ENDIAN
 	unsigned char low = sh & 0xFF;
 	unsigned char high = (sh >> 8) & 0xFF;
-	setUChar( low );
-	setUChar( high );
+	return setUChar( low ) && setUChar( high );
 #else
-	fwrite( &sh, sizeof( unsigned short ), 1, hFile );
+	return setBytes( &sh, sizeof(sh) );
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setInt( const int n )
@@ -82,12 +79,10 @@ bool DiskFileWriteBuffer::setInt( const int n )
 #ifdef RISE_BIG_ENDIAN
 	unsigned short low = n & 0xFFFF;
 	unsigned short high = (n >> 16) & 0xFFF;
-	setUWord( low );
-	setUWord( high );
+	return setUWord( low ) && setUWord( high );
 #else
-	fwrite( &n, sizeof( int ), 1, hFile );
+	return setBytes( &n, sizeof(n) );
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setUInt( const unsigned int n )
@@ -95,12 +90,10 @@ bool DiskFileWriteBuffer::setUInt( const unsigned int n )
 #ifdef RISE_BIG_ENDIAN
 	unsigned short low = n & 0xFFFF;
 	unsigned short high = (n >> 16) & 0xFFF;
-	setUWord( low );
-	setUWord( high );
+	return setUWord( low ) && setUWord( high );
 #else
-	fwrite( &n, sizeof( unsigned int ), 1, hFile );
+	return setBytes( &n, sizeof(n) );
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setFloat( const float f )
@@ -108,11 +101,10 @@ bool DiskFileWriteBuffer::setFloat( const float f )
 #ifdef RISE_BIG_ENDIAN
 	unsigned int n;
 	memcpy( &n, &f, sizeof( float ) );
-	setUInt( n );
+	return setUInt( n );
 #else
-	fwrite( &f, sizeof( float ), 1, hFile );
+	return setBytes( &f, sizeof(f) );
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setDouble( const double d )
@@ -124,23 +116,15 @@ bool DiskFileWriteBuffer::setDouble( const double d )
 	char* ptrd = (char*)&d;
 	memcpy( &first, ptrd, 4 );
 	memcpy( &last, &ptrd[4], 4 );
-	setUInt( last );
-	setUInt( first );
+	return setUInt( last ) && setUInt( first );
 #else
-	fwrite( &d, sizeof( double ), 1, hFile );
+	return setBytes( &d, sizeof(d) );
 #endif
-	return true;
 }
 
 bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
 {
-	if( !pSource || !hFile ) {
-//		GlobalLog()->PrintSourceError( "DiskFileWriteBuffer::setBytes:: source is NULL", __FILE__, __LINE__ );
-		return false;
-	}
-
-	fwrite( pSource, amount, 1, hFile );
-	return true;
+	return pSource && hFile && !ferror( hFile ) && fwrite( pSource, 1, amount, hFile ) == amount;
 }
 
 void DiskFileWriteBuffer::Clear( )
@@ -164,4 +148,19 @@ bool DiskFileWriteBuffer::ResizeForMore( unsigned int )
 bool DiskFileWriteBuffer::ReadyToWrite() const
 {
 	return (hFile!=0);
+}
+
+bool DiskFileWriteBuffer::Finish()
+{
+	if( !hFile ) {
+		return false;
+	}
+	const bool written = !ferror( hFile );
+	const bool closed = fclose( hFile ) == 0;
+	hFile = nullptr;
+	if( !written || !closed ) {
+		GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Failed to write `%s`", szFileName );
+		return false;
+	}
+	return true;
 }

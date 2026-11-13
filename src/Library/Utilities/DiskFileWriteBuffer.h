@@ -58,6 +58,8 @@ namespace RISE
 			bool ResizeForMore( unsigned int more_bytes );
 
 			bool ReadyToWrite() const;
+			// Close the output and report buffered write errors.
+			bool Finish();
 
 
 		protected:

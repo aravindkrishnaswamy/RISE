@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include <chrono>
+#include <memory>
 #include "PhotonMapping/GlobalPelPhotonMap.h"
 #include "PhotonMapping/GlobalSpectralPhotonMap.h"
 #include "PhotonMapping/CausticSpectralPhotonMap.h"
@@ -31,6 +32,7 @@
 #include "Materials/FabricPresets.h"	// AddFabricMaterial: the `fabric` enum's preset table
 #include "Materials/WeavePresets.h"	// AddWeaveMaterial: the `weave` draft enum + the Phase-2 `fabric` preset table
 #include "Utilities/Color/ColorUtils.h"
+#include "Utilities/DiskFileWriteBuffer.h"
 #include <cstring>
 #include <cstdint>
 #define _USE_MATH_DEFINES
@@ -11314,6 +11316,20 @@ bool Job::SetIrradianceCacheParameters(
 	return true;
 }
 
+namespace
+{
+	bool SavePhotonMap( const ISerializable& map, const char* filename )
+	{
+		const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
+		std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer( new DiskFileWriteBuffer( filename ), release );
+		if( !buffer->ReadyToWrite() ) {
+			return false;
+		}
+		map.Serialize( *buffer );
+		return buffer->Finish();
+	}
+}
+
 //! Saves the caustic pel photon map to disk
 bool Job::SaveCausticPelPhotonmap(
 	const char* file_name							///< [in] Name of the file to save it to
@@ -11323,8 +11339,6 @@ bool Job::SaveCausticPelPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IPhotonMap* pMap = pScene->GetCausticPelMapMutable();
 
@@ -11333,10 +11347,7 @@ bool Job::SaveCausticPelPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the global pel photon map to disk
@@ -11348,8 +11359,6 @@ bool Job::SaveGlobalPelPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IPhotonMap* pMap = pScene->GetGlobalPelMapMutable();
 
@@ -11358,10 +11367,7 @@ bool Job::SaveGlobalPelPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the translucent pel photon map to disk
@@ -11373,8 +11379,6 @@ bool Job::SaveTranslucentPelPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IPhotonMap* pMap = pScene->GetTranslucentPelMapMutable();
 
@@ -11383,10 +11387,7 @@ bool Job::SaveTranslucentPelPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the caustic spectral photon map to disk
@@ -11398,8 +11399,6 @@ bool Job::SaveCausticSpectralPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	const ISpectralPhotonMap* pMap = pScene->GetCausticSpectralMap();
 
@@ -11408,10 +11407,7 @@ bool Job::SaveCausticSpectralPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the global spectral photon map to disk
@@ -11423,8 +11419,6 @@ bool Job::SaveGlobalSpectralPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	const ISpectralPhotonMap* pMap = pScene->GetGlobalSpectralMap();
 
@@ -11433,10 +11427,7 @@ bool Job::SaveGlobalSpectralPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Loads the shadow photon map to disk
@@ -11448,8 +11439,6 @@ bool Job::SaveShadowPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IShadowPhotonMap* pMap = pScene->GetShadowMapMutable();
 
@@ -11458,10 +11447,7 @@ bool Job::SaveShadowPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 

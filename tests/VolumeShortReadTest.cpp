@@ -35,11 +35,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <limits>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"   // Scalar (double)
 #include "../src/Library/Volume/Volume.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileReadBuffer.h"
+#include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -357,6 +359,44 @@ static void TestVolumeOverflowDims()
 	v3->release();
 }
 
+static void TestBufferWriteFailures()
+{
+	char storage[] = { 'a', 'b', 'c', 'd' };
+	auto* borrowed = new MemoryBuffer( storage, 2, false );
+	borrowed->seek( IBuffer::START, 1 );
+	Check( !borrowed->setBytes( "XY", 2 ) && borrowed->getCurPos() == 1 &&
+		std::memcmp( storage, "abcd", sizeof(storage) ) == 0,
+		"H: rejected borrowed write preserves cursor and both canary bytes" );
+	Check( !borrowed->ResizeForMore( std::numeric_limits<unsigned int>::max() ),
+		"H: capacity request rejects cursor-plus-length overflow" );
+	borrowed->release();
+
+	auto* owned = new MemoryBuffer( 2u );
+	Check( owned->setBytes( "XY", 2 ) && owned->setBytes( owned->Pointer(), 2 ) &&
+		owned->getCurPos() == 4 && std::memcmp( owned->Pointer(), "XYXY", 4 ) == 0,
+		"H: growing self-copy reads from the original storage" );
+	owned->release();
+
+	auto* invalid = new DiskFileWriteBuffer( nullptr );
+	Check( !invalid->ReadyToWrite() && !invalid->setChar( 'x' ) && !invalid->setDouble( 1 ) &&
+		!invalid->setBytes( "XY", 2 ) && !invalid->Finish(),
+		"H: disk writes and close report an unavailable file" );
+	invalid->release();
+
+	const auto path = RISE::TestSupport::ScratchPath(
+		"rise_buffer_finish_" + std::to_string( RISE::TestSupport::CurrentProcessId() ) );
+	auto* file = new DiskFileWriteBuffer( path.c_str() );
+	Check( file->setBytes( "XY", 2 ) && file->Finish() && !file->ReadyToWrite(),
+		"H: finishing a successful write closes the handle" );
+	file->release();
+	std::ifstream readback( path, std::ios::binary );
+	char actual[2];
+	Check( readback.read( actual, sizeof(actual) ) && std::memcmp( actual, "XY", sizeof(actual) ) == 0,
+		"H: finished file contains both bytes" );
+	readback.close();
+	std::remove( path.c_str() );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeShortReadTest — missing/truncated binary reads zero, never uninitialised"
@@ -369,6 +409,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestDiskFileReadBufferGetBytesOverread();
 	TestDiskFileReadBufferMissingFile();
 	TestVolumeOverflowDims();
+	TestBufferWriteFailures();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

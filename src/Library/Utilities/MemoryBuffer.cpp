@@ -16,6 +16,8 @@
 #include "pch.h"
 #include "MemoryBuffer.h"
 #include <memory.h>
+#include <limits>
+#include <memory>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -182,6 +184,9 @@ bool MemoryBuffer::Resize( unsigned int new_size, bool bForce )
 
 bool MemoryBuffer::ResizeForMore( unsigned int more_bytes )
 {
+	if( more_bytes > std::numeric_limits<unsigned int>::max() - nCursor ) {
+		return false;
+	}
 	return Resize( more_bytes+nCursor );
 }
 
@@ -256,9 +261,9 @@ bool MemoryBuffer::DumpToFile( const char * szFileName )
 	if( szFileName && pBuffer ) {
 		FILE* f = fopen( GlobalMediaPathLocator().Find(szFileName).c_str(), "wb" );
 		if( f ) {
-			fwrite( pBuffer, nSize, 1, f );
-			fclose( f );
-			return true;
+			const bool written = fwrite( pBuffer, 1, nSize, f ) == nSize;
+			const bool closed = fclose( f ) == 0;
+			return written && closed;
 		} else {
 			GlobalLog()->PrintEasyError( "MemoryBuffer::DumpToFile:: Failed to open file for writing" );
 		}
@@ -273,9 +278,9 @@ bool MemoryBuffer::DumpToFileToCursor( const char * szFileName )
 		FILE* f = fopen( GlobalMediaPathLocator().Find(szFileName).c_str(), "wb" );
 
 		if( f ) {
-			fwrite( pBuffer, nCursor, 1, f );
-			fclose( f );
-			return true;
+			const bool written = fwrite( pBuffer, 1, nCursor, f ) == nCursor;
+			const bool closed = fclose( f ) == 0;
+			return written && closed;
 		} else {
 			GlobalLog()->PrintEasyError( "MemoryBuffer::DumpToFileToCursor:: Failed to open file for writing" );
 		}
@@ -666,12 +671,35 @@ bool MemoryBuffer::setBytes( const void* pSource, unsigned int amount )
 		return false;
 	}
 
-	if( nCursor+amount > nSize ) {
-		GlobalLog()->PrintEx( eLog_Info, "MemoryBuffer::setBytes:: resizing buffer, old size (%d), new size (%d)", nSize, nCursor+amount );
-		Resize( nCursor+amount );
+	if( nCursor > nSize || amount > std::numeric_limits<unsigned int>::max() - nCursor ) {
+		return false;
+	}
+	if( amount == 0 ) {
+		return true;
 	}
 
-	memcpy( &pBuffer[nCursor], pSource, amount );
+	if( amount > nSize - nCursor ) {
+		if( !bIOwnMemory ) {
+			return false;
+		}
+		// The source may point into this buffer. Copy into the new
+		// allocation while the original storage is still alive.
+		const unsigned int newSize = nCursor + amount;
+		std::unique_ptr<char[]> replacement( new char[newSize] );
+		if( pBuffer ) {
+			memcpy( replacement.get(), pBuffer, nSize );
+		}
+		memcpy( replacement.get() + nCursor, pSource, amount );
+		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
+		delete [] pBuffer;
+		pBuffer = replacement.release();
+		nSize = newSize;
+		nCursor = newSize;
+		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+		return true;
+	}
+
+	memmove( pBuffer + nCursor, pSource, amount );
 	nCursor += amount;
 	return true;
 }
