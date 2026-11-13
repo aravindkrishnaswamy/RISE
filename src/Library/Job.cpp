@@ -12165,10 +12165,11 @@ bool Job::SetObjectUVToSpherical(
 		return false;
 	}
 
-	IUVGenerator* pUV = 0;
-	RISE_API_CreateSphericalUVGenerator( &pUV, radius );
-
-	return pObj->SetUVGenerator( *pUV );
+	IUVGenerator* pUV = nullptr;
+	if( !RISE_API_CreateSphericalUVGenerator( &pUV, radius ) ) return false;
+	const auto release = []( IUVGenerator* generator ) { generator->release(); };
+	const std::unique_ptr<IUVGenerator, decltype(release)> owned( pUV, release );
+	return pObj->SetUVGenerator( *owned );
 }
 
 //! Sets the UV generator for an object
@@ -12186,10 +12187,11 @@ bool Job::SetObjectUVToBox(
 		return false;
 	}
 
-	IUVGenerator* pUV = 0;
-	RISE_API_CreateBoxUVGenerator( &pUV, width, height, depth );
-
-	return pObj->SetUVGenerator( *pUV );
+	IUVGenerator* pUV = nullptr;
+	if( !RISE_API_CreateBoxUVGenerator( &pUV, width, height, depth ) ) return false;
+	const auto release = []( IUVGenerator* generator ) { generator->release(); };
+	const std::unique_ptr<IUVGenerator, decltype(release)> owned( pUV, release );
+	return pObj->SetUVGenerator( *owned );
 }
 
 //! Sets the UV generator for an object
@@ -12207,10 +12209,11 @@ bool Job::SetObjectUVToCylindrical(
 		return false;
 	}
 
-	IUVGenerator* pUV = 0;
-	RISE_API_CreateCylindricalUVGenerator( &pUV, radius, axis, size );
-
-	return pObj->SetUVGenerator( *pUV );
+	IUVGenerator* pUV = nullptr;
+	if( !RISE_API_CreateCylindricalUVGenerator( &pUV, radius, axis, size ) ) return false;
+	const auto release = []( IUVGenerator* generator ) { generator->release(); };
+	const std::unique_ptr<IUVGenerator, decltype(release)> owned( pUV, release );
+	return pObj->SetUVGenerator( *owned );
 }
 
 //! Sets the object's surface intersection threshold
