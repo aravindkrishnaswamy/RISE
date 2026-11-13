@@ -102,12 +102,16 @@ int main()
 		} first, second;
 		auto* firstUser = new Item();
 		auto* secondUser = new Item();
+		firstUser->addref();
 		manager->RequestItemUse( "", first, *firstUser );
 		manager->RequestItemUse( "", second, *secondUser );
-		Check( manager->NoLongerUsingItem( *item, first ) && manager->RemoveItem( "" ) &&
-			first.calls == 0 && second.calls == 1 && firstUser->refcount() == 1 &&
+		const bool unsubscribed = manager->NoLongerUsingItem( *item, first );
+		const bool removed = manager->RemoveItem( "" );
+		Check( unsubscribed && removed && first.calls == 0 && second.calls == 1 && firstUser->refcount() == 2 &&
 			secondUser->refcount() == 1, "removing one subscriber leaves the next callback and its owner intact" );
+		if( firstUser->refcount() > 1 ) firstUser->release();
 		firstUser->release();
+		if( secondUser->refcount() > 1 ) secondUser->release();
 		secondUser->release();
 		manager->release();
 		item->release();
