@@ -3,6 +3,8 @@
 #include <cassert>
 #include <cmath>
 #include "../src/Library/Utilities/Primes.h"
+#include "../src/Library/Sampling/HaltonPoints.h"
+#include <cmath>
 
 // Helper to check if a number is prime
 bool IsPrime(unsigned int number) {
@@ -97,9 +99,46 @@ void TestLargeSequence() {
     std::cout << "TestLargeSequence passed!" << std::endl;
 }
 
+static bool TestHaltonSequences()
+{
+    struct Sample {
+        unsigned int dimension, index;
+        double expected;
+    };
+    const Sample known[] = {
+        { 0, 1, 0x1p+3 },
+        { 1, 1, 0x1.5555555555555p-2 },
+        { 2, 5, 0x1.eb851eb851ebap-4 },
+        { 7, 19, 0x1.f33c46ea04412p-6 },
+        { 64, 2345, 0x1.9d387df3362d4p-2 },
+        { 255, 4095, 0x1.30a8e69a153f9p-2 },
+    };
+    RISE::MultiHalton first, second;
+    for (const auto& sample : known) {
+        if (std::abs(first.halton(sample.dimension, sample.index) - sample.expected) > 1e-15) {
+            std::cerr << "Halton baseline mismatch at dimension " << sample.dimension
+                      << ", index " << sample.index << '\n';
+            return false;
+        }
+    }
+    for (unsigned int dimension = 0; dimension < RISE::QMC_NUM_PRIMES; ++dimension) {
+        first.Reset();
+        const double start = first.next_halton(dimension);
+        const double next = first.next_halton(dimension);
+        if (start != first.mod1(first.halton(dimension, 0)) ||
+            next != first.mod1(first.halton(dimension, 1)) ||
+            start != second.next_halton(dimension) ||
+            next != second.next_halton(dimension)) {
+            std::cerr << "Halton sampler state mismatch at dimension " << dimension << '\n';
+            return false;
+        }
+    }
+    return true;
+}
+
 int main() {
     TestGeneratePrimesBasic();
     TestEdgeCases();
     TestLargeSequence();
-    return 0;
+    return TestHaltonSequences() ? 0 : 1;
 }
