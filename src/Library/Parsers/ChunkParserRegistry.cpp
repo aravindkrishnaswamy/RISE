@@ -830,12 +830,20 @@ namespace RISE
 					}
 
 					switch( found->kind ) {
+					case ValueKind::UInt: {
+						unsigned int parsed;
+						if( !ParseStateBag::ReadUnsigned( value, parsed ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser: parameter `%s` in `%s` is outside the unsigned integer range",
+								found->name.c_str(), desc.keyword.c_str() );
+							return false;
+						}
+						[[fallthrough]];
+					}
 					case ValueKind::Double:
 					case ValueKind::DoubleVec2:
 					case ValueKind::DoubleVec3:
 					case ValueKind::DoubleVec4:
 					case ValueKind::DoubleMat4:
-					case ValueKind::UInt:
 						if( !AllTokensAreFiniteNumbers( value ) ) {
 							GlobalLog()->PrintEx( eLog_Error,
 								"ChunkParser:: parameter `%s` in `%s` expects finite numeric value(s); got `%s` (nan/inf and non-numeric tokens are rejected)",
@@ -2313,6 +2321,7 @@ namespace RISE
 					// truncation so backwards behaviour is identical.
 					double exponent    = 12.0;
 					if( bag.Has( "exponent" ) ) exponent = static_cast<double>( bag.GetUInt( "exponent" ) );
+					if( bag.HadHardError() ) return false;
 
 					return pJob.AddMandelbrotFractalPainter( name.c_str(), colora.c_str(), colorb.c_str(), xstart, xend, ystart, yend, exponent );
 				}
@@ -2836,7 +2845,7 @@ namespace RISE
 						else if( t == "box" )      type = 1;
 						else if( t == "torus" )    type = 2;
 						else if( t == "cylinder" ) type = 3;
-						else if( !ParseStateBag::ReadUnsigned( t, type ) ) return false;
+						else if( !ParseStateBag::ReadUnsigned( t.c_str(), type ) ) return false;
 					}
 
 					return pJob.AddSDF3DPainter( name.c_str(), type, param1, param2, param3, shell_thickness, noise_amplitude, noise_frequency, colora.c_str(), colorb.c_str(), scale, shift );
@@ -2985,7 +2994,7 @@ namespace RISE
 						if(      m == "euclidean" ) metric = 0;
 						else if( m == "manhattan" ) metric = 1;
 						else if( m == "chebyshev" ) metric = 2;
-						else if( !ParseStateBag::ReadUnsigned( m, metric ) ) return false;
+						else if( !ParseStateBag::ReadUnsigned( m.c_str(), metric ) ) return false;
 					}
 					unsigned int output = 0;	// 0=F1, 1=F2, 2=F2-F1
 					if( bag.Has( "output" ) ) {
@@ -2993,7 +3002,7 @@ namespace RISE
 						if(      o == "f1" )    output = 0;
 						else if( o == "f2" )    output = 1;
 						else if( o == "f2-f1" ) output = 2;
-						else if( !ParseStateBag::ReadUnsigned( o, output ) ) return false;
+						else if( !ParseStateBag::ReadUnsigned( o.c_str(), output ) ) return false;
 					}
 
 					return pJob.AddWorley3DPainter( name.c_str(), jitter, metric, output, colora.c_str(), colorb.c_str(), scale, shift );
@@ -13064,6 +13073,7 @@ namespace RISE
 					std::string pattern   = bag.GetString( "pattern",  "none" );
 					bool        multiple  = bag.GetBool(   "multiple", false );
 					int         bpp       = bag.GetInt(    "bpp",      8 );
+					if( bag.HadHardError() ) return false;
 
 					char type = 0;
 					if( bag.Has("type") ) {

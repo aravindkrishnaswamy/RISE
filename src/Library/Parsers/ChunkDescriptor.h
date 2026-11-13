@@ -389,7 +389,7 @@ namespace RISE
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return def;
 			unsigned int value;
-			if( ReadUnsigned( it->second, value ) ) return value;
+			if( ReadUnsigned( it->second.c_str(), value ) ) return value;
 			ReportScalarError( key, it->second );
 			return def;
 		}
@@ -424,9 +424,8 @@ namespace RISE
 			return start != end && IsFiniteDouble( value );
 		}
 
-		static bool ReadUnsigned( const std::string& raw, unsigned int& value )
+		static bool ReadUnsigned( const char* start, unsigned int& value )
 		{
-			const char* start = raw.c_str();
 			while( std::isspace( static_cast<unsigned char>(*start) ) ) ++start;
 			const bool negative = *start == '-';
 			if( negative || *start == '+' ) ++start;

@@ -100,6 +100,18 @@ int main()
 {
 	std::printf( "ParseStateBagArityTest -- DL-32 root-cause fix: GetVec3/GetVec4/GetMat4 hard-error on wrong arity\n" );
 
+	{
+		struct FilmJob final : Job {
+			unsigned int calls = 0;
+			bool SetFilm( unsigned int, unsigned int, double ) override { ++calls; return true; }
+		};
+		auto* job = new FilmJob();
+		std::vector<std::string> diagnostics;
+		Check( DeriveCst( HDR + "film\n{\nwidth 4294967296\nheight 240\n}\n", *job, &diagnostics ) == 0 &&
+			!diagnostics.empty() && job->calls == 0, "overflowing unsigned field fails before the film is applied" );
+		job->release();
+	}
+
 	//----------------------------------------------------------------------
 	// [A] short `position` (2 of 3 tokens) on standard_object.
 	//----------------------------------------------------------------------
