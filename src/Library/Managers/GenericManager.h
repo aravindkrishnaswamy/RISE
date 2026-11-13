@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <algorithm>
+#include <cstring>
 
 namespace RISE
 {
@@ -96,11 +97,16 @@ namespace RISE
 		bool operator()( std::string_view left, std::string_view right ) const
 		{
 			const auto common = std::min( left.size(), right.size() );
-			for( size_t i = 0; i < common; ++i ) {
+			size_t i = 0;
+			// Skip equal blocks, then apply char ordering at the first mismatch.
+			for( ; common - i >= 16; i += 16 ) {
+				if( std::memcmp( left.data() + i, right.data() + i, 16 ) != 0 ) break;
+			}
+			for( ; i < common; ++i ) {
 				if( left[i] != right[i] ) return left[i] < right[i];
 			}
 			if( left.size() == right.size() ) return false;
-			return left.size() < right.size() ? char(0) < right[common] : left[common] < char(0);
+			return left.size() < right.size() ? right[common] >= char(0) : left[common] < char(0);
 		}
 	};
 
@@ -111,23 +117,8 @@ namespace RISE
 
 		struct ITEMREFERENCES
 		{
-			IDeletedCallback<T>&	pFunc;
-			IReference&				pCaller;
-
-			ITEMREFERENCES( IDeletedCallback<T>& a, IReference& c ) :
-			pFunc( a ), pCaller( c )
-			{}
-
-			ITEMREFERENCES( const ITEMREFERENCES& item ) :
-			pFunc( item.pFunc ), pCaller( item.pCaller )
-			{}
-
-			ITEMREFERENCES& operator=( const ITEMREFERENCES& item )
-			{
-				pFunc = item.pFunc;
-				pCaller = item.pCaller;
-				return *this;
-			}
+			IDeletedCallback<T>* pFunc;
+			IReference* pCaller;
 		};
 
 		typedef std::vector<ITEMREFERENCES>				ReferencesListType;
@@ -192,13 +183,9 @@ namespace RISE
 				return false;
 			}
 			const auto serial = m_serials.find( elem->first );
-
-			typename ReferencesListType::iterator	m, n;
-			for( m=elem->second.second.begin(), n=elem->second.second.end(); m!=n; m++ ) {
-				ITEMREFERENCES&	itemcb = *m;
-				itemcb.pFunc( *(elem->second.first) );
-				itemcb.pCaller.release();
-			}
+			auto item = items.extract( elem );
+			if( serial != m_serials.end() ) m_serials.erase( serial );
+			NotifyDeleted( item.mapped() );
 
 			// Release the manager's own ref on the item.  AddItem
 			// addref'd; without this matching release the item leaks
@@ -207,9 +194,7 @@ namespace RISE
 			// removed at runtime; the other managers are essentially
 			// load-once / shutdown-once in practice and Shutdown's
 			// safe_release covers them on teardown.
-			safe_release( elem->second.first );
-			items.erase( elem );
-			if( serial != m_serials.end() ) m_serials.erase( serial );   // P1: drop identity serial (a re-add gets a fresh one)
+			safe_release( item.mapped().first );
 			return true;
 		}
 
@@ -253,8 +238,7 @@ namespace RISE
 				return 0;
 			}
 
-			ITEMREFERENCES		itemcb( pFunc, pCaller );
-			elem->second.second.push_back( itemcb );
+			elem->second.second.push_back( { &pFunc, &pCaller } );
 			pCaller.addref();
 			return elem->second.first;
 		}
@@ -270,10 +254,11 @@ namespace RISE
 					for( m=i->second.second.begin(), n=i->second.second.end(); m!=n; m++ )
 					{
 						ITEMREFERENCES&	itemcb = *m;
-						if( itemcb.pFunc == pFunc ) {
+						if( *itemcb.pFunc == pFunc ) {
 							// We found it, now blow this entry away.
-							itemcb.pCaller.release();
+							auto* caller = itemcb.pCaller;
 							i->second.second.erase( m );
+							caller->release();
 							return true;
 						}
 					}
@@ -290,22 +275,12 @@ namespace RISE
 		//
 		void		Shutdown( )
 		{
-			typename ItemListType::iterator		i, e;
-			for( i=items.begin(), e=items.end(); i!=e; i++ )
-			{
-				typename ReferencesListType::iterator	m, n;
-				for( m=i->second.second.begin(), n=i->second.second.end(); m!=n; m++ ) {
-					ITEMREFERENCES&	itemcb = (*m);
-					itemcb.pFunc( *i->second.first );
-					itemcb.pCaller.release();
-				}
-
-				i->second.second.clear();
-				safe_release( i->second.first );
+			while( !items.empty() ) {
+				auto item = items.extract( items.begin() );
+				m_serials.erase( item.key() );
+				NotifyDeleted( item.mapped() );
+				safe_release( item.mapped().first );
 			}
-
-			items.clear();
-			m_serials.clear();   // P1
 		}
 
 		unsigned int	getItemCount( ) const{ return static_cast<unsigned int>(items.size()); }
@@ -323,6 +298,15 @@ namespace RISE
 			typename ItemListType::const_iterator		i, e;
 			for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 				pFunc( i->second.first );
+			}
+		}
+
+	private:
+		static void NotifyDeleted( const ItemType& item )
+		{
+			for( const auto& callback : item.second ) {
+				(*callback.pFunc)( *item.first );
+				callback.pCaller->release();
 			}
 		}
 	};

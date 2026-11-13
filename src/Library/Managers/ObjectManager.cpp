@@ -2457,8 +2457,8 @@ bool ObjectManager::ComposeWorldTransforms() const
 	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
 	for( i=items.begin(), e=items.end(); i!=e; ++i ) {
 		IObjectPriv* obj = i->second.first;
-		const String name( i->first.c_str() );
-		nameOf[obj] = name;
+		String& name = nameOf[obj];
+		name.assign( i->first.c_str(), i->first.c_str() + i->first.size() + 1 );
 		const std::map<String,String>::const_iterator link = parentByName.find( name );
 		if( link == parentByName.end() ) {
 			roots.push_back( obj );

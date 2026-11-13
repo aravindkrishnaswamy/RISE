@@ -95,6 +95,20 @@ int main()
 		Check( serial != 0 && manager->RemoveItem( "ab" ) && manager->GetItemSerial( "ab" ) == 0 &&
 			manager->AddItem( item, "ab" ) && manager->GetItemSerial( "ab" ) > serial,
 			"removing and restoring a name changes its registration serial" );
+		struct Callback final : IDeletedCallback<Item> {
+			int calls = 0;
+			bool operator()( const Item& ) override { ++calls; return true; }
+			bool operator==( const IDeletedCallback<Item>& other ) override { return this == &other; }
+		} first, second;
+		auto* firstUser = new Item();
+		auto* secondUser = new Item();
+		manager->RequestItemUse( "", first, *firstUser );
+		manager->RequestItemUse( "", second, *secondUser );
+		Check( manager->NoLongerUsingItem( *item, first ) && manager->RemoveItem( "" ) &&
+			first.calls == 0 && second.calls == 1 && firstUser->refcount() == 1 &&
+			secondUser->refcount() == 1, "removing one subscriber leaves the next callback and its owner intact" );
+		firstUser->release();
+		secondUser->release();
 		manager->release();
 		item->release();
 	}
