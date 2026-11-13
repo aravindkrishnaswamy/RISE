@@ -16,7 +16,7 @@
 
 #include "../Interfaces/IBuffer.h"
 #include "Reference.h"
-#include <stdio.h>
+#include <cstdio>
 #include <string>
 #include <memory>
 
