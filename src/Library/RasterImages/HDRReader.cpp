@@ -57,6 +57,10 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 	char buf[1024] = {0};
 	unsigned int numRead = 0;
 	while( (numRead = pReadBuffer.getLine( buf, 1024 )) ) {
+		if( numRead == sizeof(buf) && buf[numRead-1] != '\n' ) {
+			GlobalLog()->Print( eLog_Error, "HDRReader: Header line too long" );
+			return false;
+		}
 		// Check to see if this line contains the format string
 		if( strncmp( buf, "FORMAT", 6 ) == 0 ) {
 			break;
@@ -76,6 +80,10 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 
 	// Now look for the -Y or +Y
 	while( (numRead = pReadBuffer.getLine( buf, 1024 )) ) {
+		if( numRead == sizeof(buf) && buf[numRead-1] != '\n' ) {
+			GlobalLog()->Print( eLog_Error, "HDRReader: Header line too long" );
+			return false;
+		}
 		// Check to see if this line contains the format string
 		if( strncmp( buf, "-Y", 2 ) == 0 ||
 			strncmp( buf, "+Y", 2 ) == 0 ) {
@@ -83,7 +91,7 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 		}
 	}
 
-	if( numRead == 0 || (numRead == sizeof(buf) && buf[numRead-1] != '\n') ) {
+	if( numRead == 0 ) {
 		GlobalLog()->Print( eLog_Error, "HDRReader: Something went wrong looking for image dimensions" );
 		return false;
 	}
@@ -160,6 +168,11 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 		// This is Radiance's new RLE scheme
 		// Header of 0x2, 0x2 is RLE encoding
 		if( col[0] == 2 && col[1] == 2 && col[2] >= 0 ) {
+			const auto scanlineWidth = (static_cast<unsigned int>( col[2] ) << 8) |
+				static_cast<unsigned char>( col[3] );
+			if( scanlineWidth != width ) {
+				return RejectMalformed();
+			}
 
 			// Each component is run length encoded seperately
 			// This will naturally lead to better compression
@@ -237,7 +250,7 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 					// A count of zero would underflow the `x += num-1`
 					// accounting below (x is unsigned) and repeats nothing;
 					// treat it as malformed.
-					if( num == 0 ) {
+					if( num == 0 || x == 0 ) {
 						return RejectMalformed();
 					}
 

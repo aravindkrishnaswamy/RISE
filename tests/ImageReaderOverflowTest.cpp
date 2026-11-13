@@ -270,6 +270,9 @@ static void TestHDRNewRLE()
 	Check( ok && px0.a == 1.0, "B: decoded pixel alpha == 1.0" );
 	Check( ok && px0.base.r > 0.0 && px0.base.r < px0.base.g && px0.base.g < px0.base.b,
 		"B: pixel channels decode in R<G<B order (no transposition)" );
+	auto wrongWidth = good;
+	wrongWidth[MakeHDRHeader( "-Y 1 +X 4\n" ).size()+3] = 5;
+	Check( !RunHDR( wrongWidth, w, h ), "B: HDR rejects an RLE scanline with the wrong encoded width" );
 	good.pop_back();
 	Check( !RunHDR( good, w, h ), "B: HDR rejects a missing final RLE literal" );
 }
@@ -309,6 +312,13 @@ static void TestHDROldRLE()
 	std::vector<char> badrun = MakeHDRHeader( "-Y 1 +X 4\n" );
 	AppendByte( badrun, 1 ); AppendByte( badrun, 1 ); AppendByte( badrun, 1 ); AppendByte( badrun, 5 );
 	Check( !RunHDR( badrun, w, h ), "C: old-RLE run at pixel 0 (back-ref underflow) returns false" );
+
+	std::vector<char> secondRowRun = MakeHDRHeader( "-Y 2 +X 1\n" );
+	AppendByte( secondRowRun, 10 ); AppendByte( secondRowRun, 20 );
+	AppendByte( secondRowRun, 30 ); AppendByte( secondRowRun, 130 );
+	AppendByte( secondRowRun, 1 ); AppendByte( secondRowRun, 1 );
+	AppendByte( secondRowRun, 1 ); AppendByte( secondRowRun, 1 );
+	Check( !RunHDR( secondRowRun, w, h ), "C: old-RLE run cannot reference the previous scanline" );
 }
 
 //======================================================================
