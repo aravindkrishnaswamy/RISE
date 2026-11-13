@@ -250,6 +250,9 @@ int main()
 		Case( "valid RAW2 triangle", scenePath.c_str(), raw2Scene );
 		Check( WriteTmp( rawPath.c_str(), raw2Vertices + "t 0 1\n" ), "write incomplete RAW2 fixture" );
 		RefuseCase( "incomplete RAW2 face", scenePath.c_str(), raw2Scene );
+		Check( WriteTmp( rawPath.c_str(), raw2Vertices + "t 0 1 2\nt 0 2 1\n" ),
+			"write RAW2 fixture with an extra face" );
+		RefuseCase( "RAW2 face count understates the records", scenePath.c_str(), raw2Scene );
 		Check( WriteTmp( rawPath.c_str(), "" ), "write empty RAW2 fixture" );
 		RefuseCase( "missing RAW2 header", scenePath.c_str(), raw2Scene );
 		std::remove( rawPath.c_str() );
