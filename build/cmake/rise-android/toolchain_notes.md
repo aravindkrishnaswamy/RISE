@@ -50,7 +50,7 @@ source needs correction.
 `../../make/rise/Filelist`. If upstream ever adds or removes a `.cpp` file
 there, this copy must be updated manually. Do NOT switch to `file(GLOB)` —
 doing so would silently pick up Windows-only files (`ThreadsWin32.cpp`,
-`LoadLibraryWin32.cpp`, `Win32Console.cpp`, `Win32WindowRasterizerOutput.cpp`),
+`Win32Console.cpp`, `Win32WindowRasterizerOutput.cpp`),
 the C++/CLI `ManagedJob.cpp`, and the DRISE socket stack, none of which
 belong in the NDK build.
 

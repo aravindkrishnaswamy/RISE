@@ -8,7 +8,7 @@
 #
 # Transcribed verbatim from build/make/rise/Filelist (SRCLIB assembly).
 # Do NOT replace with file(GLOB) — globbing would pick up Windows-only files
-# (ThreadsWin32.cpp, LoadLibraryWin32.cpp, Win32Console.cpp,
+# (ThreadsWin32.cpp, Win32Console.cpp,
 # Win32WindowRasterizerOutput.cpp), ManagedJob.cpp (C++/CLI), and the DRISE
 # socket stack, none of which are in SRCLIB and none of which compile under
 # the Android NDK.
@@ -42,7 +42,6 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/DiskFileReadBuffer.cpp"
     "${RISE_LIB}/Utilities/DiskFileWriteBuffer.cpp"
     "${RISE_LIB}/Utilities/RenderParallelScope.cpp"
-    "${RISE_LIB}/Utilities/DynamicProperties.cpp"
     "${RISE_LIB}/Utilities/GeometricUtilities.cpp"
     "${RISE_LIB}/Utilities/MediaPathLocator.cpp"
     "${RISE_LIB}/Utilities/MemoryBuffer.cpp"
