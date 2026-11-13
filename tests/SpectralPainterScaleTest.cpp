@@ -163,6 +163,22 @@ static void TestPacketEndpoints()
 	} else {
 		Check( false, "fractional-grid spectral density is constructible" );
 	}
+
+	SpectralPacket visibleBoundary( 380, 754, 33 );
+	visibleBoundary.SetAtIndex( 30, 1 );
+	SpectralPacket positiveSingleBin( 400, 700, 1 );
+	positiveSingleBin.SetAtIndex( 0, 1 );
+	const auto checkDensity = [&]( const SpectralPacket& packet, Scalar wavelength, const char* label ) {
+		const bool created = RISE_API_CreatePDF_SpectralPacket( &pdf, packet );
+		Scalar lookupWeight = 0;
+		Scalar directWeight = 0;
+		Check( created && pdf && pdf->warp( 0.5, lookupWeight, true ) == wavelength &&
+			pdf->warp( 0.5, directWeight, false ) == wavelength && lookupWeight > 0 &&
+			lookupWeight == directWeight, label );
+		safe_release( pdf );
+	};
+	checkDensity( visibleBoundary, 720, "spectral density includes the 720 nm boundary bin" );
+	checkDensity( positiveSingleBin, 400, "positive one-bin spectral density samples its authored wavelength" );
 }
 
 static void TestSpectralFileCounts()
@@ -198,6 +214,8 @@ static void TestSpectralFileCounts()
 		Check( !loadWithWavelengths( "400\n" ), "spectral painter rejects unequal file sample counts" );
 		Check( !loadWithWavelengths( "400\nnan\n" ), "spectral painter rejects a nonfinite wavelength" );
 		Check( !loadWithWavelengths( "400\n500 junk\n" ), "spectral painter rejects an incomplete file record" );
+		const std::string splitRecord = "400" + std::string( 8188, ' ' ) + "500\n";
+		Check( !loadWithWavelengths( splitRecord.c_str() ), "spectral painter treats a long physical row as one record" );
 	}
 	std::remove( scene.c_str() );
 	std::remove( wavelengths.c_str() );

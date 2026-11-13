@@ -32,6 +32,7 @@
 #include <set>
 #include <stack>
 #include <string>
+#include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <cctype>
@@ -1335,13 +1336,16 @@ namespace RISE
 					for( const char* field : { "file", "nmfile", "ampfile" } ) {
 						if( !bag.Has( field ) ) continue;
 						const std::string filename = bag.GetString( field );
-						std::vector<std::string> rows;
-						if( !ReadDataFileLines( filename.c_str(), rows ) ) {
+						std::ifstream input( GlobalMediaPathLocator().Find( filename.c_str() ).c_str() );
+						if( !input ) {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
 							return false;
 						}
-						for( const std::string& row : rows ) {
-							const std::string_view kind( field );
+						const std::string_view kind( field );
+						std::string row;
+						while( std::getline( input, row ) ) {
+							const auto first = row.find_first_not_of( " \t\r\f\v" );
+							if( first == std::string::npos || row[first] == '#' ) continue;
 							double sample = 0;
 							const bool valid = kind == "file" ? appendPair( row ) : readSamples( row, &sample, 1 );
 							if( !valid ) {
@@ -1352,6 +1356,7 @@ namespace RISE
 								(kind == "nmfile" ? wavelengths : amplitudes).push_back( sample );
 							}
 						}
+						if( input.bad() ) return false;
 					}
 
 					if( amplitudes.empty() || wavelengths.empty() ) {

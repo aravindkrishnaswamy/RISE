@@ -47,9 +47,9 @@ ProbabilityDensityFunction::ProbabilityDensityFunction( const SpectralPacket& fu
 {
 	// Build from the robust spectral packet
 	Scalar	accrued=0;
-	Scalar wavelength = func.minLambda();
-	for( unsigned int bin=0; bin<func.NumBins() && wavelength<func.maxLambda(); ++bin )
+	for( unsigned int bin=0; bin<func.NumBins(); ++bin )
 	{
+		const Scalar wavelength = func.minLambda() + Scalar(bin) * func.deltaLambda();
 		// We are only interested in the visible spectrum
 		if( wavelength>= 380 && wavelength<= 720 )
 		{
@@ -59,14 +59,10 @@ ProbabilityDensityFunction::ProbabilityDensityFunction( const SpectralPacket& fu
 			accrued += prob.second;
 			values.push_back( prob );
 		}
-		const Scalar next = wavelength + func.deltaLambda();
-		if( !(next > wavelength) ) {
-			break;
-		}
-		wavelength = next;
 	}
 
-	if( func.minLambda() == 400.0 && func.maxLambda() == 700.0 && func.deltaLambda() == 300.0 ) {
+	if( func.minLambda() == 400.0 && func.maxLambda() == 700.0 && func.NumBins() == 1 &&
+		func.ValueAtIndex( 0 ) == 0 ) {
 		// Dummy spectral packet...
 		// Don't really need a LUT, so build a dummy one
 		for( int i=0; i<1024; i++ ) {

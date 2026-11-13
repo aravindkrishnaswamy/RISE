@@ -17,6 +17,7 @@
 
 #include <memory.h>
 #include <memory>
+#include "../FiniteMath.h"
 #include "../../Interfaces/ILog.h"
 #include "../../Interfaces/IFunction1D.h"
 
@@ -143,7 +144,8 @@ namespace RISE
 		{
 			std::unique_ptr<Scalar[]> samples( new Scalar[num_freq] );
 			for( unsigned int i=0; i<num_freq; i++ ) {
-				samples[i] = pFunc->Evaluate( lambda_begin + (i*delta) );
+				const Scalar wavelength = lambda_begin + (i*delta);
+				samples[i] = IsFiniteDouble( wavelength ) ? pFunc->Evaluate( wavelength ) : 0;
 			}
 			OVnumfreq = num_freq ? 1.0 / Scalar(num_freq) : 0;
 			GlobalLog()->PrintNew( samples.get(), __FILE__, __LINE__, "amplitudes" );
