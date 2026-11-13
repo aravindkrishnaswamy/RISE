@@ -20,7 +20,6 @@
 #include "../../Utilities/HankelTransform.h"
 #include "../../Utilities/GeometricUtilities.h"
 #include "../../Utilities/BSSRDFSampling.h"		// ExteriorIOR (DL-291)
-#include "../../Utilities/stl_utils.h"
 #include "../../Sampling/HaltonPoints.h"
 #include "../../RISE_API.h"
 #include "../../Interfaces/ILog.h"

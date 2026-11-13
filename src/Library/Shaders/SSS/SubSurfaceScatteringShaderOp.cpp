@@ -18,7 +18,6 @@
 #include "../../Utilities/GeometricUtilities.h"
 #include "../../Utilities/BSSRDFSampling.h"		// ExteriorIOR (DL-291)
 #include "../../Interfaces/IGeometry.h"		// CanBeAreaLight(): SSS needs real surface sampling
-#include "../../Utilities/stl_utils.h"
 #include "../../Sampling/HaltonPoints.h"
 #include "../../Utilities/Color/RGBSpectra.h"	// RGBUnboundedSpectrum (RGB->spectral uplift for PerformOperationNM)
 #include <memory>

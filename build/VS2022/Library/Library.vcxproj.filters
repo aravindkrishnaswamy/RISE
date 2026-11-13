@@ -1377,9 +1377,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\SimpleInterpolators.h">
       <Filter>Utilities</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\stl_utils.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Transformable.h">
       <Filter>Utilities</Filter>
     </ClInclude>

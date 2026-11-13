@@ -19,7 +19,6 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Interfaces/ILog.h"
-#include "../Utilities/stl_utils.h"
 #include "../Utilities/SurfaceCurvature.h"
 #include <algorithm>
 #include <atomic>
@@ -274,7 +273,7 @@ void BezierPatchGeometry::Prepare()
 {
 	// Prepare for rendering
 	// Optimize the patch container
-	stl_utils::container_optimize< BezierPatchList >( patches );
+	patches.shrink_to_fit();
 	m_areaGeneration.fetch_add( 1, std::memory_order_acq_rel );	// DL-459: rebuilt lazily on first surface sample
 	InvalidateCertificate();	// DL-616: recomputed lazily on first query
 

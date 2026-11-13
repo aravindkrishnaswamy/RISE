@@ -1101,7 +1101,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\RTime.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RuntimeContext.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\SimpleInterpolators.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\stl_utils.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Threads\Threads.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Transformable.h" />
     <ClInclude Include="..\..\..\src\Library\Version.h" />

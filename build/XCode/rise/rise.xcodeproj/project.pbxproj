@@ -826,7 +826,6 @@
 		F24B74472F52A632008304C4 /* RTime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3C069C42900069C9E5 /* RTime.cpp */; };
 		F24B74482F52A632008304C4 /* RTime.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3D069C42900069C9E5 /* RTime.h */; };
 		F24B74492F52A632008304C4 /* SimpleInterpolators.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3E069C42900069C9E5 /* SimpleInterpolators.h */; };
-		F24B744B2F52A632008304C4 /* stl_utils.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A40069C42900069C9E5 /* stl_utils.h */; };
 		F24B744C2F52A632008304C4 /* Threads.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A42069C42900069C9E5 /* Threads.h */; };
 		F24B744D2F52A632008304C4 /* ThreadsPTHREADs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A43069C42900069C9E5 /* ThreadsPTHREADs.cpp */; };
 		F24B744E2F52A632008304C4 /* Transformable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A45069C42900069C9E5 /* Transformable.cpp */; };
@@ -1504,7 +1503,6 @@
 		F27F0C95069C42910069C9E5 /* RTime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3C069C42900069C9E5 /* RTime.cpp */; };
 		F27F0C96069C42910069C9E5 /* RTime.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A3D069C42900069C9E5 /* RTime.h */; };
 		F27F0C97069C42910069C9E5 /* SimpleInterpolators.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A3E069C42900069C9E5 /* SimpleInterpolators.h */; };
-		F27F0C99069C42910069C9E5 /* stl_utils.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A40069C42900069C9E5 /* stl_utils.h */; };
 		F27F0C9A069C42910069C9E5 /* Threads.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A42069C42900069C9E5 /* Threads.h */; };
 		F27F0C9B069C42910069C9E5 /* ThreadsPTHREADs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A43069C42900069C9E5 /* ThreadsPTHREADs.cpp */; };
 		F27F0C9D069C42910069C9E5 /* Transformable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A45069C42900069C9E5 /* Transformable.cpp */; };
@@ -2802,7 +2800,6 @@
 		F27F0A3C069C42900069C9E5 /* RTime.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RTime.cpp; sourceTree = "<group>"; };
 		F27F0A3D069C42900069C9E5 /* RTime.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RTime.h; sourceTree = "<group>"; };
 		F27F0A3E069C42900069C9E5 /* SimpleInterpolators.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimpleInterpolators.h; sourceTree = "<group>"; };
-		F27F0A40069C42900069C9E5 /* stl_utils.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = stl_utils.h; sourceTree = "<group>"; };
 		F27F0A42069C42900069C9E5 /* Threads.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Threads.h; sourceTree = "<group>"; };
 		F27F0A43069C42900069C9E5 /* ThreadsPTHREADs.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ThreadsPTHREADs.cpp; sourceTree = "<group>"; };
 		F27F0A45069C42900069C9E5 /* Transformable.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Transformable.cpp; sourceTree = "<group>"; };
@@ -4347,7 +4344,6 @@
 				F27F0A3C069C42900069C9E5 /* RTime.cpp */,
 				F27F0A3D069C42900069C9E5 /* RTime.h */,
 				F27F0A3E069C42900069C9E5 /* SimpleInterpolators.h */,
-				F27F0A40069C42900069C9E5 /* stl_utils.h */,
 				F27F0A41069C42900069C9E5 /* Threads */,
 				F27F0A45069C42900069C9E5 /* Transformable.cpp */,
 				F27F0A46069C42900069C9E5 /* Transformable.h */,
@@ -5199,7 +5195,6 @@
 				F27F0C94069C42910069C9E5 /* RString.h in Headers */,
 				F27F0C96069C42910069C9E5 /* RTime.h in Headers */,
 				F27F0C97069C42910069C9E5 /* SimpleInterpolators.h in Headers */,
-				F27F0C99069C42910069C9E5 /* stl_utils.h in Headers */,
 				F27F0C9A069C42910069C9E5 /* Threads.h in Headers */,
 				F27F0C9E069C42910069C9E5 /* Transformable.h in Headers */,
 				F27F0C9F069C42910069C9E5 /* Version.h in Headers */,
@@ -6682,7 +6677,6 @@
 				F24B74472F52A632008304C4 /* RTime.cpp in Sources */,
 				F24B74482F52A632008304C4 /* RTime.h in Sources */,
 				F24B74492F52A632008304C4 /* SimpleInterpolators.h in Sources */,
-				F24B744B2F52A632008304C4 /* stl_utils.h in Sources */,
 				F24B744C2F52A632008304C4 /* Threads.h in Sources */,
 				F24B744D2F52A632008304C4 /* ThreadsPTHREADs.cpp in Sources */,
 				F24B744E2F52A632008304C4 /* Transformable.cpp in Sources */,
