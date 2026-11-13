@@ -15,6 +15,7 @@
 #include "PNGReader.h"
 #include "../Interfaces/ILog.h"
 #include <limits>
+#include <new>
 
 #ifndef NO_PNG_SUPPORT
 	#include <png.h>
@@ -160,7 +161,12 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 	}
 	const size_t nBytes = image_stride * height;
 
-	pBuffer = new unsigned char[nBytes];
+	pBuffer = new (std::nothrow) unsigned char[nBytes];
+	if( !pBuffer ) {
+		png_destroy_read_struct( &png_ptr, &info_ptr, nullptr );
+		GlobalLog()->PrintEasyError( "PNGReader: Could not allocate pixel buffer" );
+		return false;
+	}
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 	memset( pBuffer, 0, nBytes );          // full allocation (was width*height*nPngChannels — undersized for 16-bit depth)
 
