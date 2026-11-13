@@ -303,7 +303,7 @@ index e1b0690c3..86a030f13 100644
  	//! owner and the production manifold owner use the same rejection budget.
  	constexpr unsigned int FireStepRejectionRetryCap=20u;
 diff --git a/src/Library/Utilities/FireProductionForceMac.mm b/src/Library/Utilities/FireProductionForceMac.mm
-index 31d99c7b8..4603db060 100644
+index 31d99c7b8..dc62ee95d 100644
 --- a/src/Library/Utilities/FireProductionForceMac.mm
 +++ b/src/Library/Utilities/FireProductionForceMac.mm
 @@ -316,12 +316,24 @@ inline void compact_gradient(device const float* cellVelocity,device const float
@@ -337,7 +337,7 @@ index 31d99c7b8..4603db060 100644
   uint cells=p.nx*p.ny*p.nz;if(gid>=cells)return;uint x=gid%p.nx,r=gid/p.nx,y=r%p.ny,z=r/p.ny;
   float gradient[3][3];float divergence;compact_gradient(cellVelocity,faceVelocity,p,x,y,z,gradient,divergence);
   float alphaSquared=0.0f,beta[3][3]={{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f}};
-@@ -333,6 +345,7 @@ kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
+@@ -333,16 +345,37 @@ kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
    beta[0][0]*beta[2][2]-beta[0][2]*beta[0][2]+
    beta[1][1]*beta[2][2]-beta[1][2]*beta[1][2];
   float nuEddy=alphaSquared==0.0f?0.0f:p.cv*sqrt(max(0.0f,raw)/alphaSquared);
@@ -345,7 +345,16 @@ index 31d99c7b8..4603db060 100644
  #ifdef RISE_VREMAN_ZONE_K
   // r271 candidate opt-in (RISE_FIRE_VREMAN_ZONE=<below|above>:<k>:<scale>): momentum eddy viscosity
   // scaled in cell layers z < k (below) or z >= k (above) only. Unset = production. The r271 default
-@@ -343,6 +356,20 @@ kernel void build_stress_compact(device const float* cellVelocity [[buffer(0)]],
+  // candidate uses below:<layer at 1.0 m>:0.2857 (C_v 0.02 under 1 m) with the limited momentum carrier.
+  if((RISE_VREMAN_ZONE_BELOW!=0)==(z<RISE_VREMAN_ZONE_K))nuEddy*=RISE_VREMAN_ZONE_SCALE;
++#endif
++#ifdef RISE_VREMAN_RAMP_K0
++ // r271 diagnostic opt-in (RISE_FIRE_VREMAN_ZONE=ramp:<k0>:<k1>:<scale>): momentum eddy viscosity scaled by
++ // <scale> in cell layers below k0, rising linearly to 1 at layer k1. Unset = production.
++ nuEddy*=mix(RISE_VREMAN_RAMP_SCALE,1.0f,clamp((float(z)+0.5f-float(RISE_VREMAN_RAMP_K0))/
++  float(RISE_VREMAN_RAMP_K1-RISE_VREMAN_RAMP_K0),0.0f,1.0f));
+ #endif
+  float mu=cellDensity[gid]*(molecularNu[gid]+nuEddy);eddy[gid]=nuEddy;muOut[gid]=mu;
   for(uint c=0u;c<3u;++c)for(uint d=0u;d<3u;++d)
    stress[(3u*c+d)*cells+gid]=c==d?mu*(2.0f*gradient[c][c]-(2.0f/3.0f)*divergence):0.0f;
  }
@@ -366,7 +375,7 @@ index 31d99c7b8..4603db060 100644
  kernel void build_stress_fixed_mu_compact(device const float* cellVelocity [[buffer(0)]],
   device const float* mu [[buffer(1)]],device float* stress [[buffer(2)]],
   constant Params& p [[buffer(3)]],device const float* faceVelocity [[buffer(4)]],
-@@ -398,6 +425,18 @@ kernel void build_face_force_compact(device const float* faceDensity [[buffer(0)
+@@ -398,6 +431,18 @@ kernel void build_face_force_compact(device const float* faceDensity [[buffer(0)
    for(uint d=0u;d<3u;++d)if(d!=component)
     value+=(compact_edge_shear(faceVelocity,mu,p,component,d,xyz,leftXYZ,xyz[d]+1u)-
      compact_edge_shear(faceVelocity,mu,p,component,d,xyz,leftXYZ,xyz[d]))/p.dx;
@@ -385,7 +394,7 @@ index 31d99c7b8..4603db060 100644
   }
   viscous[gid]=value;
   if(periodic&&normal==0u){uint highXYZ[3]={x,y,z};highXYZ[component]=n;
-@@ -424,7 +463,12 @@ kernel void build_lambda(device const float* maxima [[buffer(0)]],device float*
+@@ -424,7 +469,12 @@ kernel void build_lambda(device const float* maxima [[buffer(0)]],device float*
   constant Params& p [[buffer(2)]]){
   float invDx=nextafter(1.0f/p.dx,INFINITY);float invDx2=outward_multiply(invDx,invDx);
   float value=outward_multiply(maxima[0],maxima[1]);value=outward_multiply(value,invDx2);
@@ -399,7 +408,7 @@ index 31d99c7b8..4603db060 100644
  }
  kernel void update_viscous_momentum(device float* momentum [[buffer(0)]],
   device const float* rate [[buffer(1)]],constant Params& p [[buffer(2)]],
-@@ -479,6 +523,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device
+@@ -479,6 +529,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device
  				if( [options respondsToSelector:@selector(setMathMode:)] ) options.mathMode=MTLMathModeSafe;
  				options.mathFloatingPointFunctions=MTLMathFloatingPointFunctionsPrecise;
  				std::string librarySource=ForceSource();
@@ -410,7 +419,21 @@ index 31d99c7b8..4603db060 100644
  				if( const char* zone=std::getenv("RISE_FIRE_VREMAN_ZONE") ) {
  					const char* compact=std::getenv("RISE_FIRE_COMPACT_VISCOUS_STENCIL");
  					char side[8]={};unsigned int layer=0u;float scale=-1.0f;
-@@ -513,7 +561,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device
+@@ -488,6 +542,13 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device
+ 						std::snprintf(prefix,sizeof(prefix),"#define RISE_VREMAN_ZONE_K %uu\n#define RISE_VREMAN_ZONE_BELOW %d\n"
+ 							"#define RISE_VREMAN_ZONE_SCALE ((float)%.9g)\n",layer,std::string(side)=="below"?1:0,
+ 							static_cast<double>(scale));
++						librarySource=prefix+librarySource;}
++					unsigned int k0=0u,k1=0u;float rampScale=-1.0f;
++					if( compact&&std::string(compact)=="1"&&std::sscanf(zone,"ramp:%u:%u:%f",&k0,&k1,&rampScale)==3&&
++						k1>k0&&std::isfinite(rampScale)&&rampScale>=0.0f&&rampScale<=4.0f ) {char prefix[160];
++						std::snprintf(prefix,sizeof(prefix),"#define RISE_VREMAN_RAMP_K0 %d\n#define RISE_VREMAN_RAMP_K1 %d\n"
++							"#define RISE_VREMAN_RAMP_SCALE ((float)%.9g)\n",static_cast<int>(k0),static_cast<int>(k1),
++							static_cast<double>(rampScale));
+ 						librarySource=prefix+librarySource;}}
+ 				NSError* libraryError=nil;id<MTLLibrary> library=[device newLibraryWithSource:
+ 					[NSString stringWithUTF8String:librarySource.c_str()] options:options error:&libraryError];
+@@ -513,7 +574,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device
  				const char* compactOption=std::getenv("RISE_FIRE_COMPACT_VISCOUS_STENCIL");
  				compactViscousStencil=compactOption&&std::string(compactOption)=="1";
  				if( compactViscousStencil ) {
@@ -420,7 +443,7 @@ index 31d99c7b8..4603db060 100644
  					fixedStress=pipeline("build_stress_fixed_mu_compact");
  				}
  			}
-@@ -1869,6 +1918,22 @@ bool AdvanceFireProductionForceProjectionMetal(
+@@ -1869,6 +1931,22 @@ bool AdvanceFireProductionForceProjectionMetal(
  		return AdvanceFireProductionFrozenForceMetalImpl(forceRequest,false,&divergenceTargetPerS,
  			&result,0,unpublishedForce,unpublishedDiagnostics,error);
  	}

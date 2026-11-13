@@ -1558,7 +1558,32 @@ The 10 s zoned reacting arm is §36.
 - **What is left is set below 0.3 m:** the plume already carries 84% of FDS's mass flux at 0.29 m and holds that ratio to 3 m (it gains 87% of FDS's mass flux from 1 to 3 m). The centre stays 14–37% hotter than FDS throughout.
 - These are single 4 s windows; §36's 2 s blocks spread by 9–20% in centre excess T, so differences of that size between arms are not resolved.
 
-**Running:** `ab_lc_zone16_cv01` (C_v 0.01 below 0.5 m, `below:16:0.1429`) and `ab_lc_zone10` (C_v 0.02 below 0.3 m, `below:10:0.2857`), 4 s each, to see whether the base deficit responds to a lower constant and how low the zone top can go.
+The two follow-up arms are §38.
+
+## 38. Base constant and zone depth: the base responds to C_v, and a sharper step costs more above it (2026-11-13)
+
+`r271_compact_stencil/ab_lc_zone16_cv01` (C_v 0.01 below 0.49 m, `below:16:0.1429`) and `ab_lc_zone10` (C_v 0.02 below 0.31 m, `below:10:0.2857`); carrier, compact, 4 s each from r270 step 9223, run concurrently (exit 0 both). Evidence: `s38_runs.txt`.
+
+| 4 s windows | McCaffrey | FDS | C_v 0.02 to 0.3 m | C_v 0.02 to 0.5 m (candidate, §37) | C_v 0.01 to 0.5 m |
+|---|---|---|---|---|---|
+| 90% / 99% heat-release height (m) | — | 0.43 / 0.77 | 0.49 / 0.89 | 0.46 / 0.80 | 0.40 / 0.70 |
+| centre excess T at 0.29 m (K) | 873 | 926 | 1046 | 1051 | 1041 |
+| 0.50 m | 551 | 631 | 785 | 764 | 692 |
+| 0.75 m | 367 | 355 | 500 | 467 | 429 |
+| 0.99 m | 247 | 228 | 317 | 311 | 292 |
+| 1.51 m | 122 | 114 | 147 | 156 | 159 |
+| 2.00 m | 76 | 72 | 86 | 89 | 97 |
+| 3.01 m | 39 | 39 | 47 | 48 | 47 |
+| plume mass flux, RISE / FDS, at 0.29 / 0.50 / 0.99 / 2.00 / 3.01 m | — | — | 0.83 / 0.81 / 0.81 / 0.83 / 0.85 | 0.84 / 0.85 / 0.85 / 0.81 / 0.87 | 0.98 / 0.98 / 0.86 / 0.74 / 0.83 |
+| centre rms w / w_c, RISE / FDS, at 0.29 / 0.75 / 0.99 / 1.51 m | — | — | 0.94 / 0.94 / 1.02 / 0.96 | 0.91 / 0.86 / 0.88 / 0.95 | 1.08 / 0.77 / 0.76 / 0.83 |
+| turbulent / mean heat flux, RISE / FDS, at 0.50 / 0.99 / 1.51 m | — | — | 0.81 / 0.91 / 0.91 | 0.69 / 0.74 / 0.85 | 0.60 / 0.60 / 0.79 |
+
+- **The base does respond to the constant.** With C_v 0.01 below 0.5 m the plume carries 98% of FDS's mass flux at 0.3–0.5 m, the 0.5 m centre is 10% above FDS (candidate: 21%), and the flame is one cell shorter than FDS's (0.40 / 0.70 m).
+- **But the gain is lost above the zone.** The fluctuation drops to 0.76–0.77 of FDS's at 0.75–1 m and the plume falls back to 74% of FDS's mass flux at 2 m. The sharper the step in ν_t (7× here, 3.5× in the candidate), the deeper the dip above it; §36's 1 m zone showed the same.
+- **A zone ending at 0.3 m is too shallow:** the flame is tall again (0.49 / 0.89 m) and 0.75 m is 36% above McCaffrey, although everything from 0.75 m up mixes like FDS (0.91–1.02).
+- So the candidate's 0.5 m top stands, and the open question is the step, not the level. **Test launched:** the zone switch gains a ramp form (`RISE_FIRE_VREMAN_ZONE=ramp:<k0>:<k1>:<scale>`: `<scale>` below layer k0, rising linearly to 1 at k1; diagnostic, uncommitted, in `s29_optins.patch`; driver `ab_build_ramp`). Arms `ab_lc_ramp16_33` (0.02 to 0.5 m, ramp to 0.07 at 1.0 m) and `ab_lc_ramp16_33_cv01` (0.01 to 0.5 m, same ramp), 4 s each.
+
+**Running:** `ab_lc_zone16_10s`, the 10 s confirmation of the candidate (zone top 0.5 m).
 
 ## Next (owner decisions)
 
@@ -1574,4 +1599,4 @@ The 10 s zoned reacting arm is §36.
    - The limited momentum carrier (§29) stays the one identified numerics contributor: 2–3× base unsteadiness with an FDS-like spectrum aloft. Superbee on top adds only 6–9% at k7–k16.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
 3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
-4. The seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman and advective-CFL opt-ins, and the §29.9 diagnostic switches, stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.
+4. The zone ramp form (§38), the seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman and advective-CFL opt-ins, and the §29.9 diagnostic switches, stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.
