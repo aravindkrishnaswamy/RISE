@@ -20,6 +20,7 @@
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
 #include <stdio.h>
+#include <limits>
 #include "../Utilities/DiskFileReadBuffer.h"
 
 using namespace RISE;
@@ -28,7 +29,7 @@ using namespace RISE::Implementation;
 TriangleMeshLoader3DS::TriangleMeshLoader3DS( IReadBuffer* pBuffer_ ) :
   nNumObjects( 0 ), pBuffer( pBuffer_ )
 {
-	if( pBuffer->Size() > 0 ) {
+	if( pBuffer && pBuffer->Size() > 0 ) {
 		pBuffer->addref();
 	} else {
 		pBuffer = 0;
@@ -58,63 +59,56 @@ TriangleMeshLoader3DS::TriangleMeshLoader3DS( IReadBuffer* pBuffer_ ) :
 		pBuffer->seek( IBuffer::START, 2 );
 		
 		// Now we have to get to the begining of the EDIT3DS chunk
-		unsigned int off = 0L, next = 0L;
+		const unsigned int fileSize = pBuffer->Size();
 		id = 0;
-		while( id != EDIT3DS ) {
+		while( id != EDIT3DS && pBuffer->getCurPos() <= fileSize &&
+			fileSize - pBuffer->getCurPos() >= 2 ) {
 			id = pBuffer->getUWord();
 		}
+		if( id != EDIT3DS || pBuffer->getCurPos() > fileSize || fileSize - pBuffer->getCurPos() < 4 ) return;
 
-		unsigned int chunkend = pBuffer->getUInt() + pBuffer->getCurPos() - 6;			// read the offset to the end of the chunk
-
-		// Now we sit tight and check the id's of all the subchunks
-		// Now we *should* be at the first chunk...
-		while( pBuffer->getCurPos() < chunkend )
-		{
+		const unsigned int editStart = pBuffer->getCurPos() - 2;
+		const unsigned int editLength = pBuffer->getUInt();
+		if( editLength < 6 || editLength > fileSize - editStart ) return;
+		const unsigned int editEnd = editStart + editLength;
+		const auto seekTo = [this]( unsigned int position ) {
+			return position <= static_cast<unsigned int>(std::numeric_limits<int>::max()) &&
+				pBuffer->seek( IBuffer::START, static_cast<int>(position) );
+		};
+		std::vector<unsigned long> objects;
+		for( unsigned int start = pBuffer->getCurPos(); start < editEnd; start = pBuffer->getCurPos() ) {
+			if( editEnd - start < 6 ) return;
 			id = pBuffer->getUWord();
-			off = pBuffer->getUInt() - 6;	// offset to the next object
-			next = pBuffer->getCurPos() + off;	
-			if( id == EDIT_OBJECT )
-			{
-				unsigned int objchunkend = pBuffer->getCurPos() + off;
-				//oooh... an object, first check the object's name to make sure it ain't a dummy object
-				if( ReadName( ) != -1 )
-				{
-					// Lets check if we are already there ( at OBJ_TRIMESH )
-					id = pBuffer->getUWord();
-					if( id != OBJ_TRIMESH )
-					{
-						off = pBuffer->getUInt();
-						pBuffer->seek( IBuffer::CUR, off-6 );
-						// Now we seach for OBJ_TRIMESH, but make sure we don't go past this object's end
-						while( pBuffer->getCurPos() < objchunkend )
-						{
-							id = pBuffer->getUWord();
-							if( id == OBJ_TRIMESH )
-							{
-								// ooohh... we found a mesh... update some stuff...
-								// First comes the object pointer...
-								objptrs.push_back( pBuffer->getCurPos() - 2 );
-								nNumObjects++;
-								break;	// we are done, so break...
-							}
-							else
-							{
-								off = pBuffer->getUInt();
-								pBuffer->seek( IBuffer::CUR, off-6 );
-							}
-						}
-					}
-					else
-					{
-						// ooohh... we found a mesh... update some stuff...
-						// First comes the object pointer...
-						objptrs.push_back( pBuffer->getCurPos()-2 );
-						nNumObjects++;
+			const unsigned int length = pBuffer->getUInt();
+			if( length < 6 || length > editEnd - start ) return;
+			const unsigned int end = start + length;
+			if( id == EDIT_OBJECT ) {
+				bool terminated = false;
+				const unsigned int nameStart = pBuffer->getCurPos();
+				while( pBuffer->getCurPos() < end ) {
+					if( pBuffer->getChar() == '\0' ) {
+						terminated = true;
+						break;
 					}
 				}
+				if( !terminated ) return;
+				for( unsigned int child = pBuffer->getCurPos();
+					child - nameStart > 1 && child < end; child = pBuffer->getCurPos() ) {
+					if( end - child < 6 ) return;
+					const auto childId = pBuffer->getUWord();
+					const unsigned int childLength = pBuffer->getUInt();
+					if( childLength < 6 || childLength > end - child ) return;
+					if( childId == OBJ_TRIMESH ) {
+						objects.push_back( child );
+						break;
+					}
+					if( !seekTo( child + childLength ) ) return;
+				}
 			}
-			pBuffer->seek( IBuffer::START, next );
+			if( !seekTo( end ) ) return;
 		}
+		objptrs.swap( objects );
+		nNumObjects = static_cast<unsigned int>(objptrs.size());
 	} else {
 		GlobalLog()->Print( eLog_Error, "TriangleMeshLoader3DS:: Failed to load file" );
 	}
@@ -144,11 +138,17 @@ bool TriangleMeshLoader3DS::LoadTriangleMesh_GoodObjNum( ITriangleMeshGeometryIn
 		return false;
 	}
 
+	for( const auto& triangle : tris ) {
+		for( const auto index : triangle.iVertices ) {
+			if( index >= vertices.size() ) return false;
+		}
+	}
+
 	if( !CalculateVertexNormals( tris, normals, vertices ) ) {
 		return false;
 	}
 
-	bValidCoords = GetCoords( coords, obj );	
+	bValidCoords = GetCoords( coords, obj ) && coords.size() >= vertices.size();
 
 	if( !bValidCoords ) {
 		GlobalLog()->Print( eLog_Warning, "TriangleMeshLoader3DS:: No texture co-ordinates in mesh" );
@@ -204,6 +204,7 @@ bool TriangleMeshLoader3DS::LoadTriangleMesh( ITriangleMeshGeometryIndexed* pGeo
 	// If obj is -1, then we load all the objects
 	if( obj == -1 )
 	{
+		if( nNumObjects == 0 ) return false;
 		pGeom->BeginIndexedTriangles();
 		for( unsigned int i=0; i<nNumObjects; i++ ) {
 			if( !LoadTriangleMesh_GoodObjNum( pGeom, i, bRecenter ) ) {
@@ -223,210 +224,81 @@ bool TriangleMeshLoader3DS::LoadTriangleMesh( ITriangleMeshGeometryIndexed* pGeo
 	}
 }
 
-int TriangleMeshLoader3DS::ReadName( )
+bool TriangleMeshLoader3DS::FindMeshChunk( unsigned int object, unsigned short wanted, unsigned int& payloadSize )
 {
-	char temp_name [100];
-	unsigned int teller = 0;
-	unsigned char letter;
+	if( object >= objptrs.size() ||
+		!pBuffer->seek( IBuffer::START, static_cast<int>(objptrs[object]) ) ) return false;
 
-	strcpy( temp_name,"Default name" );
+	const unsigned int start = pBuffer->getCurPos();
+	if( pBuffer->getUWord() != OBJ_TRIMESH ) return false;
+	const unsigned int length = pBuffer->getUInt();
+	if( length < 6 || length > pBuffer->Size() - start ) return false;
+	const unsigned int end = start + length;
 
-	letter = pBuffer->getUChar();
-	if ( letter == 0 ) {
-		return( -1 ); // dummy object
+	for( unsigned int child = pBuffer->getCurPos(); child < end; child = pBuffer->getCurPos() ) {
+		if( end - child < 6 ) return false;
+		const auto id = pBuffer->getUWord();
+		const unsigned int childLength = pBuffer->getUInt();
+		if( childLength < 6 || childLength > end - child ) return false;
+		if( id == wanted ) {
+			payloadSize = childLength - 6;
+			return true;
+		}
+		const auto next = child + childLength;
+		if( next > static_cast<unsigned int>(std::numeric_limits<int>::max()) ||
+			!pBuffer->seek( IBuffer::START, static_cast<int>(next) ) ) return false;
 	}
-
-	temp_name[teller] = letter;
-	teller++;
-
-	do {
-		letter = pBuffer->getUChar();
-		temp_name[teller] = letter;
-		teller++;
-	} while ( ( letter != 0 ) && ( teller < 12 ) );
-
-	temp_name[teller-1] = 0;
-	return ( 0 );
+	return false;
 }
 
-unsigned int TriangleMeshLoader3DS::ReadVertices( VerticesListType& vec )
+bool TriangleMeshLoader3DS::GetVertices( VerticesListType& vec, unsigned int object )
 {
-	// Read the vertices and toss them into the vector. 
-	// First read the number of vertices...
-	unsigned int numVerts = pBuffer->getUWord();
-	Vertex v;
-
-	for( unsigned int i = 0; i < numVerts; i++ ) {
+	unsigned int size = 0;
+	if( !FindMeshChunk( object, TRI_VERTEXL, size ) || size < 2 ) return false;
+	const unsigned int count = pBuffer->getUWord();
+	if( size - 2 != count * 12 ) return false;
+	vec.reserve( count );
+	for( unsigned int i = 0; i < count; ++i ) {
+		Vertex v;
 		v.x = pBuffer->getFloat();
 		v.y = pBuffer->getFloat();
 		v.z = pBuffer->getFloat();
 		vec.push_back( v );
 	}
-	return (12 * numVerts + 2);
+	return true;
 }
 
-bool TriangleMeshLoader3DS::GetVertices( VerticesListType& vec, unsigned int n )
+bool TriangleMeshLoader3DS::GetCoords( TexCoordsListType& vec, unsigned int object )
 {
-	if( n >= nNumObjects ) {
-		return false;
-	}
-
-	if (n >= objptrs.size()) {
-		return false;
-	}
-
-	pBuffer->seek( IBuffer::START, static_cast<int>(objptrs[n]) );		// seek to the object's position
-
-	unsigned int id = pBuffer->getUWord();
-	
-	// We should be at OBJ_TRIMESH
-	// So lets look for TRI_VERTEXL
-	unsigned int off = pBuffer->getUInt() - 6;
-	unsigned int thischunkend;
-	unsigned int chunkend = pBuffer->getCurPos() + off;
-
-	// loop until we find the vertex list
-	while( pBuffer->getCurPos() < chunkend )
-	{
-		id = pBuffer->getUWord();
-		off = pBuffer->getUInt() - 6;		// move current position to next chunk
-		thischunkend = pBuffer->getCurPos() + off;
-		if( id == TRI_VERTEXL )
-		{
-			if( ReadVertices( vec ) != off ) {	// make sure we read the required number of verts...
-				return false;
-			} else {
-				return true;
-			}
-		} else {								// unknown chunk, so skip it!
-			pBuffer->seek( IBuffer::START, thischunkend );
-		}
-	}
-	return false;
-}
-
-unsigned int TriangleMeshLoader3DS::ReadCoords( TexCoordsListType& vec )
-{
-	// Read the number of vertices here...
-	unsigned short numCoords = pBuffer->getUWord();
-	Point2 v;
-
-	for( unsigned int i = 0; i < numCoords; i++ ) {
+	unsigned int size = 0;
+	if( !FindMeshChunk( object, TRI_MAPPINGCOORS, size ) || size < 2 ) return false;
+	const unsigned int count = pBuffer->getUWord();
+	if( size - 2 != count * 8 ) return false;
+	vec.reserve( count );
+	for( unsigned int i = 0; i < count; ++i ) {
+		Point2 v;
 		v.x = pBuffer->getFloat();
 		v.y = 1.0f - pBuffer->getFloat();
 		vec.push_back( v );
 	}
-	return (8 * numCoords + 2 );
+	return true;
 }
 
-bool TriangleMeshLoader3DS::GetCoords( TexCoordsListType& vec, unsigned int n )
+bool TriangleMeshLoader3DS::GetFaces( IndexTriangleListType& vec, unsigned int object )
 {
-	if( n >= nNumObjects ) {
-		return false;
-	}
-
-	pBuffer->seek( IBuffer::START, static_cast<int>(objptrs[n]) );		// seek to the object's position
-
-	unsigned short id = pBuffer->getUWord();
-	
-	// We should be at OBJ_TRIMESH
-	// So lets look for TRI_MAPPINGCOORS
-	unsigned int off = pBuffer->getUInt() - 6;
-	unsigned int thischunkend;
-	unsigned int chunkend = pBuffer->getCurPos() + off;
-
-	// loop until we find the vertex list
-	while( pBuffer->getCurPos() < chunkend )
-	{
-		id = pBuffer->getUWord();
-		off = pBuffer->getUInt() - 6;		// move current position to next chunk
-		thischunkend = pBuffer->getCurPos() + off;
-		if( id == TRI_MAPPINGCOORS ) {
-			if( ReadCoords( vec ) != off ) {
-				return false;
-			} else {
-				return true;
-			}
-		} else {							// unknown chunk, so skip it!
-			pBuffer->seek( IBuffer::START, thischunkend );
+	unsigned int size = 0;
+	if( !FindMeshChunk( object, TRI_FACEL1, size ) || size < 2 ) return false;
+	const unsigned int count = pBuffer->getUWord();
+	if( size - 2 < count * 8 ) return false;
+	vec.reserve( count );
+	for( unsigned int i = 0; i < count; ++i ) {
+		IndexedTriangle tri;
+		for( unsigned int vertex = 0; vertex < 3; ++vertex ) {
+			const auto index = pBuffer->getUWord();
+			tri.iVertices[vertex] = tri.iNormals[vertex] = tri.iCoords[vertex] = index;
 		}
+		pBuffer->getUWord();  // face flags
+		vec.push_back( tri );
 	}
-	return false;
-}
-
-unsigned int TriangleMeshLoader3DS::ReadFaces( IndexTriangleListType& vec )
-{
-	// Read the number of faces..
-	unsigned short numFaces = pBuffer->getUWord();
-	unsigned int temp = 0;
-	IndexedTriangle c;
-
-	for( unsigned int i = 0; i < numFaces; i++ )
-	{
-		c.iVertices[0] = pBuffer->getUWord();
-		c.iVertices[1] = pBuffer->getUWord();
-		c.iVertices[2] = pBuffer->getUWord();
-		// We are just going to skip over it for now (normal calculation help)
-		pBuffer->seek( IBuffer::CUR, 2 );
-		// Set the normal and tmap indices to the same as the vertex...
-		c.iCoords[0] = c.iNormals[0] = c.iVertices[0];
-		c.iCoords[1] = c.iNormals[1] = c.iVertices[1];
-		c.iCoords[2] = c.iNormals[2] = c.iVertices[2];
-
-		vec.push_back( c );
-	}
-
-	// Check for smoothing
-	if( pBuffer->getUWord() == TRI_SMOOTH ) {
-		// We have smoothing info, which we will just ignore...
-		unsigned int ptr = pBuffer->getUInt();
-		temp += ptr;
-		pBuffer->seek( IBuffer::START, ptr-6 );
-	} else {
-		pBuffer->seek( IBuffer::CUR, -2 );			// go back
-	}
-
-	// Check for material info
-	if( pBuffer->getUWord() == TRI_MATERIAL ) {
-		// We have material info, which we will just ignore...
-		unsigned int ptr = pBuffer->getUInt();
-		temp += ptr;
-		pBuffer->seek( IBuffer::START, ptr-6 );
-	} else {
-		pBuffer->seek( IBuffer::CUR, -2 );			// go back
-	}
-	
-	return (8 * numFaces + 2 + temp);
-}
-
-bool TriangleMeshLoader3DS::GetFaces( IndexTriangleListType& vec, unsigned int n )
-{
-	if( n >= nNumObjects ) {
-		return false;
-	}
-
-	pBuffer->seek( IBuffer::START, static_cast<int>(objptrs[n]) );		// seek to the object's position
-
-	unsigned short id = pBuffer->getUWord();
-	
-	// We should be at OBJ_TRIMESH
-	// So lets look for TRI_FACEL1
-	unsigned int off = pBuffer->getUInt() - 6;
-	unsigned int thischunkend;
-	unsigned int chunkend = pBuffer->getCurPos() + off;
-
-	// loop until we find the face list
-	while( pBuffer->getCurPos() < chunkend )
-	{
-		id = pBuffer->getUWord();
-		off = pBuffer->getUInt() - 6;		// move current position to next chunk
-		thischunkend = pBuffer->getCurPos() + off;
-		if( id == TRI_FACEL1 ) {
-			ReadFaces( vec );
-			return true;
-		} else {						// unknown chunk, so skip it!
-			pBuffer->seek( IBuffer::START, thischunkend );
-		}
-	}
-	return false;
+	return true;
 }

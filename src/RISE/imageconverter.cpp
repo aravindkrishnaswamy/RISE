@@ -13,17 +13,23 @@
 
 #include <iostream>
 #include "../Library/RISE_API.h"
+#include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <filesystem>
+#include <limits>
 #include "../Library/Utilities/RString.h"
+#include "../Library/Utilities/DiskFileWriteBuffer.h"
 #include <string.h>
 
 using namespace RISE;
 
-void tolower( String& s )
+static std::string Extension( const char* path )
 {
-	const size_t length = strlen(s.c_str());
-	for( size_t i=0; i<length; i++ ) {
-		s[i] = tolower(s[i]);
-	}
+	std::string extension = std::filesystem::path( path ).extension().string();
+	std::transform( extension.begin(), extension.end(), extension.begin(),
+		[]( unsigned char c ) { return static_cast<char>( std::tolower(c) ); } );
+	return extension;
 }
 
 int main( int argc, char** argv )
@@ -44,6 +50,15 @@ int main( int argc, char** argv )
 		return 1;
 	}
 
+	const std::string inputExtension = Extension( argv[1] );
+	const std::string outputExtension = Extension( argv[2] );
+	if( outputExtension != ".tga" && outputExtension != ".png" &&
+		outputExtension != ".hdr" && outputExtension != ".exr" &&
+		outputExtension != ".tif" && outputExtension != ".ppm" ) {
+		std::cerr << "Unsupported output extension: " << outputExtension << '\n';
+		return 1;
+	}
+
 	// Try and load the input image
 	IMemoryBuffer*				pBuffer = 0;
 	RISE_API_CreateMemoryBufferFromFile( &pBuffer, argv[1] );
@@ -54,8 +69,8 @@ int main( int argc, char** argv )
 	COLOR_SPACE in = eColorSpace_sRGB;
 	COLOR_SPACE out = eColorSpace_sRGB;
 
-	int new_width = 0;
-	int new_height = 0;
+	unsigned int new_width = 0;
+	unsigned int new_height = 0;
 	int bpp = 8;
 
 	// Read all the options
@@ -80,11 +95,16 @@ int main( int argc, char** argv )
 		}
 
 		// Check for width/height changes
-		if( s[0] == 'w' ) {
-			new_width = atoi( &s[1] );
-			continue;
-		} else if( s[0] == 'h' ) {
-			new_height = atoi( &s[1] );
+		if( s[0] == 'w' || s[0] == 'h' ) {
+			unsigned int& dimension = s[0] == 'w' ? new_width : new_height;
+			const char* begin = s.c_str() + 1;
+			const char* end = s.c_str() + s.size() - 1;
+			const auto result = std::from_chars( begin, end, dimension );
+			if( result.ec != std::errc{} || result.ptr != end || dimension == 0 ) {
+				std::cerr << "Invalid resize dimension: " << argv[i] << '\n';
+				pBuffer->release();
+				return 1;
+			}
 			continue;
 		}
 
@@ -99,77 +119,103 @@ int main( int argc, char** argv )
 
 	{
 		// Figure out what loader to use, depending on the extension of the file
-		const char* three_letter_extension = &((argv[1])[strlen(argv[1])-4]);
-		String szExt( three_letter_extension );
-		tolower( szExt );
 
-		if( szExt == ".tga" ) {
+		if( inputExtension == ".tga" ) {
 			std::cout << "Using TGA image reader" << std::endl;
 			RISE_API_CreateTGAReader( &reader, *pBuffer, in );
-		} else if( szExt == ".png" ) {
+		} else if( inputExtension == ".png" ) {
 			std::cout << "Using PNG image reader" << std::endl;
 			RISE_API_CreatePNGReader( &reader, *pBuffer, in );
-		} else if( szExt == ".hdr" ) {
+		} else if( inputExtension == ".hdr" ) {
 			std::cout << "Using HDR image reader" << std::endl;
 			RISE_API_CreateHDRReader( &reader, *pBuffer );
-		} else if( szExt == ".exr" ) {
+		} else if( inputExtension == ".exr" ) {
 			std::cout << "Using EXR image reader" << std::endl;
 			RISE_API_CreateEXRReader( &reader, *pBuffer, in );
-		} else if( szExt == ".tif" ) {
+		} else if( inputExtension == ".tif" ) {
 			std::cout << "Using TIFF image reader" << std::endl;
 			RISE_API_CreateTIFFReader( &reader, *pBuffer, in );
 		} else {
-			std::cout << "Unknown extension for reader: " << three_letter_extension << " on file" << std::endl;
+			std::cout << "Unknown extension for reader: " << inputExtension << " on file" << std::endl;
 			pBuffer->release();
 			return 1;
 		}
 	}
 	
-	IRasterImage* pImage = 0;
-	RISE_API_CreateRISEColorRasterImage( &pImage, 0, 0, RISEColor() );
-//	RISE_API_CreateReadOnlyRISEColorRasterImage( &pImage );     // use this for memory efficiency
+	unsigned int width = 0, height = 0;
+	if( !reader || !reader->BeginRead( width, height ) ) {
+		safe_release( reader );
+		pBuffer->release();
+		return 1;
+	}
+	if( width == 0 || height == 0 || width > std::numeric_limits<unsigned int>::max() / height ) {
+		reader->EndRead();
+		reader->release();
+		pBuffer->release();
+		return 1;
+	}
 
-	pImage->LoadImage( reader );
+	IRasterImage* pImage = nullptr;
+	RISE_API_CreateRISEColorRasterImage( &pImage, width, height, RISEColor() );
+	for( unsigned int y = 0; y < height; ++y ) {
+		for( unsigned int x = 0; x < width; ++x ) {
+			RISEColor color;
+			reader->ReadColor( color, x, y );
+			pImage->SetPEL( x, y, color );
+		}
+	}
+	reader->EndRead();
+	reader->release();
+	pBuffer->release();
+	const unsigned int outputWidth = new_width ? new_width : width;
+	const unsigned int outputHeight = new_height ? new_height : height;
+	if( outputWidth > std::numeric_limits<unsigned int>::max() / 8 / outputHeight ) {
+		std::cerr << "Output image is too large\n";
+		pImage->release();
+		return 1;
+	}
 
 	IRasterImageWriter*			writer = 0;
 	
 	// Then dump the image out
-	IWriteBuffer* pOutBuffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &pOutBuffer, argv[2] );
+	auto* pOutBuffer = new Implementation::DiskFileWriteBuffer( argv[2] );
+	if( !pOutBuffer->ReadyToWrite() ) {
+		safe_release( pOutBuffer );
+		safe_release( pImage );
+		return 1;
+	}
 	
 	{
 		// Figure out what writer to use, depending on the extension of the file
-		const char* three_letter_extension = &((argv[2])[strlen(argv[2])-4]);
-		String szExt( three_letter_extension );
-		tolower( szExt );
 
-		if( szExt == ".tga" ) {
+		if( outputExtension == ".tga" ) {
 			std::cout << "Using TGA image writer" << std::endl;
 			RISE_API_CreateTGAWriter( &writer, *pOutBuffer, out );
-		} else if( szExt == ".png" ) {
+		} else if( outputExtension == ".png" ) {
 			std::cout << "Using PNG image writer" << std::endl;
 			RISE_API_CreatePNGWriter( &writer, *pOutBuffer, bpp, out );
-		} else if( szExt == ".hdr" ) {
+		} else if( outputExtension == ".hdr" ) {
 			std::cout << "Using HDR image writer" << std::endl;
 			RISE_API_CreateHDRWriter( &writer, *pOutBuffer, out );
-		} else if( szExt == ".exr" ) {
+		} else if( outputExtension == ".exr" ) {
 			std::cout << "Using EXR image writer" << std::endl;
 			// Landing 1 (PB pipeline) defaults: PIZ compression, RGBA channels
 			// — match the file_rasterizeroutput chunk's defaults.
 			RISE_API_CreateEXRWriter( &writer, *pOutBuffer, out,
 				eExrCompression_Piz, /*with_alpha*/ true );
-		} else if( szExt == ".tif" ) {
+		} else if( outputExtension == ".tif" ) {
 			std::cout << "Using TIFF image writer" << std::endl;
 			RISE_API_CreateTIFFWriter( &writer, *pOutBuffer, out );
-		} else if( szExt == ".ppm" ) {
+		} else if( outputExtension == ".ppm" ) {
 			std::cout << "Using PPM image writer" << std::endl;
 			RISE_API_CreatePPMWriter( &writer, *pOutBuffer, out );
-		} else {
-			std::cout << "Unknown extension for writer: " << three_letter_extension << " on file" << std::endl;
-			pImage->release();
-			pOutBuffer->release();
-			return 1;
 		}
+	}
+
+	if( !writer ) {
+		pImage->release();
+		pOutBuffer->release();
+		return 1;
 	}
 
 	if( new_width || new_height )
@@ -184,7 +230,7 @@ int main( int argc, char** argv )
 		// When resizing always use the write only raster image, at least that way the memory requirements
 		// don't kill us for large images
 		IRasterImage* pNewImage = 0;
-		RISE_API_CreateWriteOnlyRISEColorRasterImage( &pNewImage, new_width?new_width:pImage->GetWidth(), new_height?new_height:pImage->GetHeight() );
+		RISE_API_CreateWriteOnlyRISEColorRasterImage( &pNewImage, outputWidth, outputHeight );
 
 		// Set the writer
 		pNewImage->DumpImage( writer );
@@ -192,7 +238,9 @@ int main( int argc, char** argv )
 		for( unsigned int y=0; y<pNewImage->GetHeight(); y++ ) {
 			for( unsigned int x=0; x<pNewImage->GetWidth(); x++ ) {
 				RISEColor c;
-				pAccessor->GetPEL( Scalar(y)/Scalar(pNewImage->GetHeight()-1), Scalar(x)/Scalar(pNewImage->GetWidth()-1), c );
+				const Scalar v = pNewImage->GetHeight() > 1 ? Scalar(y) / (pNewImage->GetHeight() - 1) : 0.5;
+				const Scalar u = pNewImage->GetWidth() > 1 ? Scalar(x) / (pNewImage->GetWidth() - 1) : 0.5;
+				pAccessor->GetPEL( v, u, c );
 				pNewImage->SetPEL( x, y, c );
 			}
 			std::cout << '.';
@@ -200,6 +248,7 @@ int main( int argc, char** argv )
 
 		std::cout << ']' << std::endl;
 
+		safe_release( pAccessor );
 		pImage->release();
 		pImage = pNewImage;
 	} else {
@@ -207,11 +256,10 @@ int main( int argc, char** argv )
 		pImage->DumpImage( writer );
 	}
 
-	reader->release();
-	pBuffer->release();
-
 	pImage->release();
+	writer->release();
+	const bool saved = pOutBuffer->Finish( true );
 	pOutBuffer->release();
 
-	return 0;
+	return saved ? 0 : 1;
 }
