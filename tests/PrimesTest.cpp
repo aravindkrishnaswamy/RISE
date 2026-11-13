@@ -4,7 +4,6 @@
 #include <cmath>
 #include "../src/Library/Utilities/Primes.h"
 #include "../src/Library/Sampling/HaltonPoints.h"
-#include <cmath>
 
 // Helper to check if a number is prime
 bool IsPrime(unsigned int number) {
@@ -132,6 +131,15 @@ static bool TestHaltonSequences()
             std::cerr << "Halton sampler state mismatch at dimension " << dimension << '\n';
             return false;
         }
+    }
+    second.Reset();
+    const double start = second.next_halton(7);
+    second.next_halton(7);
+    second.Reset();
+    if (second.next_halton(7) != start ||
+        first.next_halton(255) != first.mod1(first.halton(255, 2))) {
+        std::cerr << "Halton reset did not replay one sampler independently\n";
+        return false;
     }
     return true;
 }
