@@ -6801,6 +6801,7 @@
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../src/Library",
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
 					/opt/homebrew/include/OpenEXR,
@@ -6820,7 +6821,6 @@
 				OTHER_CPLUSPLUSFLAGS = (
 					"-fno-finite-math-only",
 					"-DCOLORSPACE_RGB",
-					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
@@ -6871,6 +6871,7 @@
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../src/Library",
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
 					/opt/homebrew/include/OpenEXR,
@@ -6890,7 +6891,6 @@
 				OTHER_CPLUSPLUSFLAGS = (
 					"-fno-finite-math-only",
 					"-DCOLORSPACE_RGB",
-					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
@@ -6940,6 +6940,7 @@
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../src/Library",
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
 					/opt/homebrew/include/OpenEXR,
@@ -6959,7 +6960,6 @@
 				OTHER_CPLUSPLUSFLAGS = (
 					"-fno-finite-math-only",
 					"-DCOLORSPACE_RGB",
-					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
@@ -7132,6 +7132,7 @@
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../src/Library",
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
 					/opt/homebrew/include/OpenEXR,
@@ -7152,7 +7153,6 @@
 					"-ffast-math",
 					"-fno-finite-math-only",
 					"-DCOLORSPACE_RGB",
-					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
