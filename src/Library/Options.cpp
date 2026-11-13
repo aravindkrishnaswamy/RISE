@@ -37,11 +37,10 @@ Options::Options(
 	}
 
 	std::string line;
-	std::vector<String> tokens( 1024 );
 	while( std::getline( in, line ) ) {
 		if( line.find( '\0' ) != std::string::npos ) continue;
-		const unsigned int numTokens = Implementation::AsciiCommandParser::TokenizeString(
-			line.c_str(), tokens.data(), static_cast<unsigned int>(tokens.size()) );
+		const auto tokens = Implementation::AsciiCommandParser::Tokenize( line );
+		const auto numTokens = tokens.size();
 
 		if( numTokens >= 2 ) {
 
@@ -63,11 +62,11 @@ Options::Options(
 					RISE::String val;
 					for( unsigned int i=2; i<numTokens; i++ ) {
 						val.concatenate( " " );
-						val.concatenate( tokens[i] );
+						val.concatenate( String(tokens[i].c_str()) );
 					}
 					options[tokens[0].c_str()] = val;
 				} else {
-					options[tokens[0].c_str()] = tokens[1];
+					options[tokens[0]] = tokens[1].c_str();
 				}
 			}
 		}

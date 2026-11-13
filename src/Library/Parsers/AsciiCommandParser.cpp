@@ -14,6 +14,10 @@
 
 #include "pch.h"
 #include <string>
+#include <cerrno>
+#include <cmath>
+#include <limits>
+#include <cctype>
 #include <stdio.h>
 #include <stdlib.h>
 #include <iostream>
@@ -24,149 +28,148 @@
 #include "../Utilities/MediaPathLocator.h"
 #include "../Utilities/RandomNumbers.h"
 
-static const unsigned int RISE_NUMCOMMANDS = 13;
 static const unsigned int RISE_MAX_TOKENS_PER_LINE = 1024;
 static const char RISE_COMMENT = '#';
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
-AsciiCommandParser::AsciiCommandParser( )
+AsciiCommandParser::AsciiCommandParser() = default;
+AsciiCommandParser::~AsciiCommandParser() = default;
+
+namespace
 {
-	tCommandPair	funcTemp[RISE_NUMCOMMANDS] = 
+	template<class Consumer>
+	unsigned int ReadCommandTokens( std::string_view line, unsigned int limit, Consumer consume )
 	{
-		{"set", ParseSet},
-		{"remove", ParseRemove},
-		{"modify", ParseModify},
-		{"clearall", ParseClearAll},
-		{"predict", ParsePredictRasterizationTime},
-		{"render", ParseRasterize},
-		{"renderanimation", ParseRasterizeAnimation},
-		{"load", ParseLoad},
-		{"photonmap", ParsePhotonMap},
-		{"run", ParseRun},
-		{"quit", ParseQuit},
-		{"mediapath", ParseMediaPath},
-		{"echo", ParseEcho},
-	};
-
-	functionList = new tCommandPair[RISE_NUMCOMMANDS];
-	GlobalLog()->PrintNew( functionList, __FILE__, __LINE__, "functions list" );
-
-	memcpy( functionList, funcTemp, sizeof( tCommandPair ) * RISE_NUMCOMMANDS );
-}
-
-AsciiCommandParser::~AsciiCommandParser( )
-{
-	if( functionList ) {
-		GlobalLog()->PrintDelete( functionList, __FILE__, __LINE__ );
-		delete [] functionList;
-		functionList = 0;
-	}
-}
-
-unsigned int AsciiCommandParser::TokenizeString( const char* szStr, String* tokens, unsigned int max_tokens )
-{
-	std::string		st( szStr );
-	unsigned int	cur_token = 0;
-
-	std::string::size_type	x = 0;
-	std::string			mine = st;
-
-	for(;;)
-	{
-		x = mine.find_first_not_of( " \t\r" );
-
-		if( x == std::string::npos ) {
-			break;
-		}
-
-		if( cur_token >= max_tokens ) {
-			break;
-		}
-
-		mine = mine.substr( x );
-		if( mine[0] == '"' ) {
-			const std::string::size_type closeQuote = mine.find( '"', 1 );
-			if( closeQuote != std::string::npos ) {
-				tokens[cur_token++] = String( mine.substr( 1, closeQuote - 1 ).c_str() );
-				if( closeQuote + 1 >= mine.size() ) {
-					break;
+		unsigned int count = 0;
+		while( count < limit ) {
+			const auto first = line.find_first_not_of( " \t\r" );
+			if( first == std::string_view::npos ) break;
+			line.remove_prefix( first );
+			if( line.front() == '"' ) {
+				const auto close = line.find( '"', 1 );
+				if( close != std::string_view::npos ) {
+					consume( line.substr( 1, close - 1 ) );
+					++count;
+					line.remove_prefix( close + 1 );
+					continue;
 				}
-				mine = mine.substr( closeQuote + 1 );
-				continue;
+			}
+			const auto end = line.find_first_of( " \t\r" );
+			consume( line.substr( 0, end ) );
+			++count;
+			if( end == std::string_view::npos ) break;
+			line.remove_prefix( end + 1 );
+		}
+		return count;
+	}
+
+	// Preserve decimal prefixes and explicit signs accepted by the old console.
+	bool ReadUnsigned( const std::string& token, unsigned int& result )
+	{
+		const char* begin = token.c_str();
+		while( std::isspace( static_cast<unsigned char>(*begin) ) ) ++begin;
+		const bool negative = *begin == '-';
+		if( negative || *begin == '+' ) ++begin;
+		if( std::isdigit( static_cast<unsigned char>(*begin) ) ) {
+			char* end = nullptr;
+			errno = 0;
+			const auto value = std::strtoull( begin, &end, 10 );
+			if( errno != ERANGE && value <= std::numeric_limits<unsigned int>::max() ) {
+				result = static_cast<unsigned int>(value);
+				if( negative ) result = 0U - result;
+				return true;
 			}
 		}
-
-		x = mine.find_first_of( " \t\r" );
-
-		if( x == std::string::npos ) {
-			x = mine.size();
-		}
-
-		tokens[cur_token] = String( mine.substr( 0, x ).c_str() );
-		cur_token++;
-
-		if( x == mine.size() ) {
-			break;
-		}
-
-		mine = mine.substr( x+1, mine.size() );
-
-		if( mine.size() == 0 ) {
-			break;
-		}
+		GlobalLog()->PrintEx( eLog_Error, "Expected an unsigned number, got '%s'", token.c_str() );
+		return false;
 	}
 
-	return cur_token;
+	bool ReadDouble( const std::string& token, double& result )
+	{
+		char* end = nullptr;
+		errno = 0;
+		const double value = std::strtod( token.c_str(), &end );
+		if( end != token.c_str() && errno != ERANGE && std::isfinite(value) ) {
+			result = value;
+			return true;
+		}
+		GlobalLog()->PrintEx( eLog_Error, "Expected a finite number, got '%s'", token.c_str() );
+		return false;
+	}
+
+	bool ReadBoolean( const std::string& token )
+	{
+		return std::toupper( static_cast<unsigned char>(token.c_str()[0]) ) == 'T';
+	}
+
+	bool DispatchCommand( const std::string* tokens, unsigned int count, IJob& job, AsciiCommandParser* parser )
+	{
+		if( count == 0 ) return false;
+		using Command = bool (*)(const std::string*, unsigned int, IJob&, AsciiCommandParser*);
+		static constexpr std::pair<std::string_view, Command> commands[] = {
+			{"set", AsciiCommandParser::ParseSet},
+			{"remove", AsciiCommandParser::ParseRemove},
+			{"modify", AsciiCommandParser::ParseModify},
+			{"clearall", AsciiCommandParser::ParseClearAll},
+			{"predict", AsciiCommandParser::ParsePredictRasterizationTime},
+			{"render", AsciiCommandParser::ParseRasterize},
+			{"renderanimation", AsciiCommandParser::ParseRasterizeAnimation},
+			{"load", AsciiCommandParser::ParseLoad},
+			{"photonmap", AsciiCommandParser::ParsePhotonMap},
+			{"run", AsciiCommandParser::ParseRun},
+			{"quit", AsciiCommandParser::ParseQuit},
+			{"mediapath", AsciiCommandParser::ParseMediaPath},
+			{"echo", AsciiCommandParser::ParseEcho}
+		};
+		for( const auto& command : commands ) {
+			if( tokens[0] == command.first ) return command.second( tokens + 1, count - 1, job, parser );
+		}
+		return false;
+	}
 }
 
-bool AsciiCommandParser::ParseCommand( const char * szLine, IJob& pJob )
+unsigned int AsciiCommandParser::TokenizeString( const char* line, String* tokens, unsigned int maxTokens )
 {
-	// First parse the line into tokens
-	std::vector<String> tokens( RISE_MAX_TOKENS_PER_LINE );
-
-	unsigned int numTokens = TokenizeString( szLine, tokens.data(), RISE_MAX_TOKENS_PER_LINE );
-
-	String&			token = tokens[0];
-
-	// First thing to always check is for the comment
-	bool	bSuccess = false;
-
-	if( strlen(szLine) == 0 ) {
-		bSuccess = true;
-	} else if( numTokens ) {
-		if( token.c_str()[0] == RISE_COMMENT ) {
-			bSuccess = true;
-		}
-	}
-
-	if( !bSuccess ) {
-		bSuccess = ParseCommand( tokens.data(), numTokens, pJob );
-	}
-
-	return bSuccess;
+	if( !line || !tokens ) return 0;
+	return ReadCommandTokens( line, maxTokens, [&]( std::string_view token ) {
+		*tokens++ = std::string(token).c_str();
+	} );
 }
 
-bool AsciiCommandParser::ParseCommand( String* tokens, unsigned int numTokens, IJob& pJob )
+std::vector<std::string> AsciiCommandParser::Tokenize( std::string_view line )
 {
-	// Otherwise, read the first token, the first token should always tell us
-	// what we are dealing with and call that function
-	String&			token = tokens[0];
-	for( unsigned int j=0; j<RISE_NUMCOMMANDS; j++ ) {
-		if( token == functionList[j].szCommand ) {
-			return (*functionList[j].pFunc)(&tokens[1], numTokens-1, pJob, this);
-		}
-	}
-	return false;
+	std::vector<std::string> tokens;
+	ReadCommandTokens( line, RISE_MAX_TOKENS_PER_LINE,
+		[&tokens]( std::string_view token ) { tokens.emplace_back( token ); } );
+	return tokens;
 }
 
-bool AsciiCommandParser::ParseClearAll( String*, unsigned int, IJob& pJob, AsciiCommandParser* )
+bool AsciiCommandParser::ParseCommand( const char* line, IJob& job )
+{
+	if( !line ) return false;
+	if( !*line ) return true;
+	const auto tokens = Tokenize( line );
+	if( !tokens.empty() && tokens[0].c_str()[0] == RISE_COMMENT ) return true;
+	return DispatchCommand( tokens.data(), static_cast<unsigned int>(tokens.size()), job, this );
+}
+
+bool AsciiCommandParser::ParseCommand( String* tokens, unsigned int count, IJob& job )
+{
+	if( !tokens || count == 0 ) return false;
+	std::vector<std::string> owned;
+	owned.reserve( count );
+	for( unsigned int i = 0; i < count; ++i ) owned.emplace_back( tokens[i].c_str() );
+	return DispatchCommand( owned.data(), count, job, this );
+}
+
+bool AsciiCommandParser::ParseClearAll( const std::string*, unsigned int, IJob& pJob, AsciiCommandParser* )
 {
 	return pJob.ClearAll();
 }
 
-bool AsciiCommandParser::ParseLoad( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
+bool AsciiCommandParser::ParseLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
 {
 	// Loads an ascii scene file
 	if( num_tokens < 1 ) {
@@ -180,7 +183,7 @@ bool AsciiCommandParser::ParseLoad( String* tokens, unsigned int num_tokens, IJo
 	return pJob.LoadAsciiSceneAuto( tokens[0].c_str() );
 }
 
-bool AsciiCommandParser::ParseRun( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise )
+bool AsciiCommandParser::ParseRun( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise )
 {
 	// Loads an ascii script file
 	if( num_tokens < 1 ) {
@@ -191,14 +194,14 @@ bool AsciiCommandParser::ParseRun( String* tokens, unsigned int num_tokens, IJob
 	return pJob.RunAsciiScript( tokens[0].c_str() );
 }
 
-bool AsciiCommandParser::ParseQuit( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise )
+bool AsciiCommandParser::ParseQuit( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise )
 {
 	GlobalLog()->Print( eLog_Warning, "Bye!" );
 	exit(1);
 	return true;
 }
 
-bool ParseSetAccelerator( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseSetAccelerator( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	// Check for the correct number of parameters
 	if( num_tokens < 3 )
@@ -212,20 +215,19 @@ bool ParseSetAccelerator( String* tokens, unsigned int num_tokens, IJob& pJob )
 	unsigned int nMaxObj;
 	unsigned int nMaxRecur;
 
-	char c = toupper((tokens[0].c_str())[0]);
+	char c = std::toupper(static_cast<unsigned char>(tokens[0].c_str()[0]));
 	if( c == 'B' ) {
 		bBSP = true;
 	} else if( c == 'O' ) {
 		bOctree = true;
 	}
 
-	nMaxObj = tokens[1].toUInt();
-	nMaxRecur = tokens[2].toUInt();
+	if( !ReadUnsigned( tokens[1], nMaxObj ) || !ReadUnsigned( tokens[2], nMaxRecur ) ) return false;
 
 	return pJob.SetPrimaryAcceleration( bBSP, bOctree, nMaxObj, nMaxRecur );
 }
 
-bool AsciiCommandParser::ParseSet( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser*)
+bool AsciiCommandParser::ParseSet( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser*)
 {
 	// We are to add some element into the engine
 	if( num_tokens < 1 )
@@ -245,7 +247,8 @@ bool AsciiCommandParser::ParseSet( String* tokens, unsigned int num_tokens, IJob
 			GlobalLog()->Print( eLog_Error, "AsciiCommandParser::ParseSet: light_rr_threshold requires a value" );
 			return false;
 		}
-		return pJob.SetLightSampleRRThreshold( tokens[1].toDouble() );
+		double threshold;
+		return ReadDouble( tokens[1], threshold ) && pJob.SetLightSampleRRThreshold( threshold );
 	}
 
 	if( tokens[0] == "global_medium" ) {
@@ -260,7 +263,7 @@ bool AsciiCommandParser::ParseSet( String* tokens, unsigned int num_tokens, IJob
 	return false;
 }
 
-bool ParseModifyObject_UV_Spherical( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseModifyObject_UV_Spherical( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 2 )
 	{
@@ -268,12 +271,13 @@ bool ParseModifyObject_UV_Spherical( String* tokens, unsigned int num_tokens, IJ
 		return false;
 	}
 
-	const double radius = tokens[1].toDouble();
+	double radius;
+	if( !ReadDouble( tokens[1], radius ) ) return false;
 
 	return pJob.SetObjectUVToSpherical( tokens[0].c_str(), radius );
 }
 
-bool ParseModifyObject_UV_Box( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseModifyObject_UV_Box( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 4 )
 	{
@@ -281,14 +285,14 @@ bool ParseModifyObject_UV_Box( String* tokens, unsigned int num_tokens, IJob& pJ
 		return false;
 	}
 
-	const double width = tokens[1].toDouble();
-	const double height = tokens[2].toDouble();
-	const double depth = tokens[3].toDouble();
+	double width, height, depth;
+	if( !ReadDouble( tokens[1], width ) || !ReadDouble( tokens[2], height ) ||
+		!ReadDouble( tokens[3], depth ) ) return false;
 
 	return pJob.SetObjectUVToBox( tokens[0].c_str(), width, height, depth );
 }
 
-bool ParseModifyObject_UV_Cylindrical( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseModifyObject_UV_Cylindrical( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 4 )
 	{
@@ -296,14 +300,14 @@ bool ParseModifyObject_UV_Cylindrical( String* tokens, unsigned int num_tokens, 
 		return false;
 	}
 
-	char axis = (tokens[2])[0];
-	const double radius = tokens[1].toDouble();
-	const double size = tokens[2].toDouble();
+	const char axis = tokens[2].c_str()[0];
+	double radius, size;
+	if( !ReadDouble( tokens[1], radius ) || !ReadDouble( tokens[3], size ) ) return false;
 
 	return pJob.SetObjectUVToCylindrical( tokens[0].c_str(), radius, axis, size );
 }
 
-bool ParseModifyObject_UV( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseModifyObject_UV( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 )
 	{
@@ -330,7 +334,7 @@ bool ParseModifyObject_UV( String* tokens, unsigned int num_tokens, IJob& pJob )
 	}
 }
 
-bool ParseModifyObject( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseModifyObject( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 )
 	{
@@ -354,7 +358,8 @@ bool ParseModifyObject( String* tokens, unsigned int num_tokens, IJob& pJob )
 			return false;
 		}
 
-		const double err = tokens[2].toDouble();
+		double err;
+		if( !ReadDouble( tokens[2], err ) ) return false;
 
 		return pJob.SetObjectIntersectionError( tokens[1].c_str(), err );
 	}
@@ -383,7 +388,7 @@ bool ParseModifyObject( String* tokens, unsigned int num_tokens, IJob& pJob )
 
 //! `> modify material <name> scale <value>` — rescales a luminaire
 //! material's emission.
-bool ParseModifyMaterial( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseModifyMaterial( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 3 )
 	{
@@ -393,7 +398,8 @@ bool ParseModifyMaterial( String* tokens, unsigned int num_tokens, IJob& pJob )
 
 	if( tokens[1] == "scale" )
 	{
-		const double scale = tokens[2].toDouble();
+		double scale;
+		if( !ReadDouble( tokens[2], scale ) ) return false;
 		return pJob.SetMaterialEmissionScale( tokens[0].c_str(), scale );
 	}
 
@@ -403,7 +409,7 @@ bool ParseModifyMaterial( String* tokens, unsigned int num_tokens, IJob& pJob )
 
 //! `> modify rasterizer radiance_scale <value>` — overrides the active
 //! rasterizer's environment radiance scale.
-bool ParseModifyRasterizer( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseModifyRasterizer( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 2 )
 	{
@@ -413,7 +419,8 @@ bool ParseModifyRasterizer( String* tokens, unsigned int num_tokens, IJob& pJob 
 
 	if( tokens[0] == "radiance_scale" )
 	{
-		const double scale = tokens[1].toDouble();
+		double scale;
+		if( !ReadDouble( tokens[1], scale ) ) return false;
 		return pJob.SetActiveRasterizerRadianceScale( scale );
 	}
 
@@ -423,7 +430,7 @@ bool ParseModifyRasterizer( String* tokens, unsigned int num_tokens, IJob& pJob 
 
 //! `> modify animation <name>` — selects the active named animation
 //! (the one rendered by `renderanimation` / scrubbed in the GUI).
-bool ParseModifyAnimation( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseModifyAnimation( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 )
 	{
@@ -434,7 +441,7 @@ bool ParseModifyAnimation( String* tokens, unsigned int num_tokens, IJob& pJob )
 	return pJob.SetActiveAnimation( tokens[0].c_str() );
 }
 
-bool AsciiCommandParser::ParseModify( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
+bool AsciiCommandParser::ParseModify( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
 {
 	// We are to modify some existing item
 	if( num_tokens < 1 )
@@ -465,7 +472,7 @@ bool AsciiCommandParser::ParseModify( String* tokens, unsigned int num_tokens, I
 
 
 
-bool AsciiCommandParser::ParseRemovePainter( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool AsciiCommandParser::ParseRemovePainter( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 )
 	{
@@ -476,7 +483,7 @@ bool AsciiCommandParser::ParseRemovePainter( String* tokens, unsigned int num_to
 	return pJob.RemovePainter( tokens[0].c_str() );
 }
 
-bool AsciiCommandParser::ParseRemoveMaterial( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool AsciiCommandParser::ParseRemoveMaterial( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 )
 	{
@@ -487,7 +494,7 @@ bool AsciiCommandParser::ParseRemoveMaterial( String* tokens, unsigned int num_t
 	return pJob.RemoveMaterial( tokens[0].c_str() );
 }
 
-bool AsciiCommandParser::ParseRemoveGeometry( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool AsciiCommandParser::ParseRemoveGeometry( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 )
 	{
@@ -498,7 +505,7 @@ bool AsciiCommandParser::ParseRemoveGeometry( String* tokens, unsigned int num_t
 	return pJob.RemoveGeometry( tokens[0].c_str() );
 }
 
-bool AsciiCommandParser::ParseRemoveObject( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool AsciiCommandParser::ParseRemoveObject( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 )
 	{
@@ -509,7 +516,7 @@ bool AsciiCommandParser::ParseRemoveObject( String* tokens, unsigned int num_tok
 	return pJob.RemoveObject( tokens[0].c_str() );
 }
 
-bool AsciiCommandParser::ParseRemoveLight( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool AsciiCommandParser::ParseRemoveLight( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 )
 	{
@@ -520,7 +527,7 @@ bool AsciiCommandParser::ParseRemoveLight( String* tokens, unsigned int num_toke
 	return pJob.RemoveLight( tokens[0].c_str() );
 }
 
-bool AsciiCommandParser::ParseRemoveModifier( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool AsciiCommandParser::ParseRemoveModifier( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 )
 	{
@@ -531,12 +538,12 @@ bool AsciiCommandParser::ParseRemoveModifier( String* tokens, unsigned int num_t
 	return pJob.RemoveModifier( tokens[0].c_str() );
 }
 
-bool AsciiCommandParser::ParseRemoveRasterizerOutputs( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool AsciiCommandParser::ParseRemoveRasterizerOutputs( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	return pJob.RemoveRasterizerOutputs();
 }
 
-bool AsciiCommandParser::ParseRemove( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
+bool AsciiCommandParser::ParseRemove( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
 {
 	// We are to add some element into the engine
 	if( num_tokens < 1 )
@@ -584,7 +591,7 @@ bool AsciiCommandParser::ParseRemove( String* tokens, unsigned int num_tokens, I
 	return false;
 }
 
-bool AsciiCommandParser::ParsePredictRasterizationTime( String*, unsigned int, IJob& pJob, AsciiCommandParser* )
+bool AsciiCommandParser::ParsePredictRasterizationTime( const std::string*, unsigned int, IJob& pJob, AsciiCommandParser* )
 {
 	unsigned int		predicted = 0;
 	bool ret = pJob.PredictRasterizationTime( 4096, &predicted, 0 );
@@ -644,8 +651,12 @@ bool AsciiCommandParser::ParsePredictRasterizationTime( String*, unsigned int, I
 	return ret;
 }
 
-bool AsciiCommandParser::ParseRasterize( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
+bool AsciiCommandParser::ParseRasterize( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
 {
+	unsigned int left, right, top, bottom;
+	if( num_tokens >= 4 && (!ReadUnsigned( tokens[0], left ) || !ReadUnsigned( tokens[1], right ) ||
+		!ReadUnsigned( tokens[2], top ) || !ReadUnsigned( tokens[3], bottom )) ) return false;
+
 	Timer t;
 	bool bRet = true;
 	
@@ -653,11 +664,7 @@ bool AsciiCommandParser::ParseRasterize( String* tokens, unsigned int num_tokens
 	pJob.SetProgress( &progress );
 	if( num_tokens >= 4 )
 	{
-		// Read the region to rasterize
-		const unsigned int left = tokens[0].toUInt();
-		const unsigned int right = tokens[1].toUInt();
-		const unsigned int top = tokens[2].toUInt();
-		const unsigned int bottom = tokens[3].toUInt();
+
 
 		t.start();
 		bRet = pJob.RasterizeRegion(left, top, right, bottom);
@@ -725,19 +732,20 @@ bool AsciiCommandParser::ParseRasterize( String* tokens, unsigned int num_tokens
 	return bRet;
 }
 
-bool AsciiCommandParser::ParseRasterizeAnimation( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
+bool AsciiCommandParser::ParseRasterizeAnimation( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
 {
 	double time_start=0, time_end=1.0;
 	unsigned int frames=30;
 
 	if( num_tokens >= 3 ) {
-		time_start = tokens[0].toDouble();
-		time_end = tokens[1].toDouble();
-		frames = tokens[2].toUInt();
+		if( !ReadDouble( tokens[0], time_start ) || !ReadDouble( tokens[1], time_end ) ||
+			!ReadUnsigned( tokens[2], frames ) ) return false;
 	}
 
-	const bool do_fields = num_tokens>=4?(tokens[3].toBoolean()):false;
-	const bool invert_fields = num_tokens>=5?(tokens[4].toBoolean()):false;
+	const bool do_fields = num_tokens >= 4 && ReadBoolean( tokens[3] );
+	const bool invert_fields = num_tokens >= 5 && ReadBoolean( tokens[4] );
+	unsigned int specificFrame = 0;
+	if( num_tokens >= 1 && num_tokens < 3 && !ReadUnsigned( tokens[0], specificFrame ) ) return false;
 
 	Timer t;
 	bool bRet = true;
@@ -750,8 +758,7 @@ bool AsciiCommandParser::ParseRasterizeAnimation( String* tokens, unsigned int n
 		bRet = pJob.RasterizeAnimation(time_start, time_end, frames, do_fields, invert_fields );
 	} else {
 		if( num_tokens >= 1 ) {
-			const unsigned int specific_frame = tokens[0].toUInt();
-			bRet = pJob.RasterizeAnimationUsingOptions( specific_frame );
+			bRet = pJob.RasterizeAnimationUsingOptions( specificFrame );
 		} else {
 			bRet = pJob.RasterizeAnimationUsingOptions( );
 		}
@@ -813,7 +820,7 @@ bool AsciiCommandParser::ParseRasterizeAnimation( String* tokens, unsigned int n
 	return bRet;
 }
 
-bool ParseCausticPelSave( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseCausticPelSave( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseCausticPelSave: Invalid number of paramters, need 1" );
@@ -822,7 +829,7 @@ bool ParseCausticPelSave( String* tokens, unsigned int num_tokens, IJob& pJob )
 	return pJob.SaveCausticPelPhotonmap( tokens[0].c_str() );
 }
 
-bool ParseGlobalPelSave( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseGlobalPelSave( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseGlobalPelSave: Invalid number of paramters, need 1" );
@@ -831,7 +838,7 @@ bool ParseGlobalPelSave( String* tokens, unsigned int num_tokens, IJob& pJob )
 	return pJob.SaveGlobalPelPhotonmap( tokens[0].c_str() );
 }
 
-bool ParseTranslucentPelSave( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseTranslucentPelSave( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseTranslucentPelSave: Invalid number of paramters, need 1" );
@@ -840,7 +847,7 @@ bool ParseTranslucentPelSave( String* tokens, unsigned int num_tokens, IJob& pJo
 	return pJob.SaveTranslucentPelPhotonmap( tokens[0].c_str() );
 }
 
-bool ParseShadowSave( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseShadowSave( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseShadowSave: Invalid number of paramters, need 1" );
@@ -850,7 +857,7 @@ bool ParseShadowSave( String* tokens, unsigned int num_tokens, IJob& pJob )
 }
 
 
-bool ParseCausticSpectralSave( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseCausticSpectralSave( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseCausticSpectralSave: Invalid number of paramters, need 1" );
@@ -859,7 +866,7 @@ bool ParseCausticSpectralSave( String* tokens, unsigned int num_tokens, IJob& pJ
 	return pJob.SaveCausticSpectralPhotonmap( tokens[0].c_str() );
 }
 
-bool ParseCausticPelLoad( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseCausticPelLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseCausticPelLoad: Invalid number of paramters, need 1" );
@@ -868,7 +875,7 @@ bool ParseCausticPelLoad( String* tokens, unsigned int num_tokens, IJob& pJob )
 	return pJob.LoadCausticPelPhotonmap( tokens[0].c_str() );
 }
 
-bool ParseTranslucentPelLoad( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseTranslucentPelLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseTranslucentPelLoad: Invalid number of paramters, need 1" );
@@ -877,7 +884,7 @@ bool ParseTranslucentPelLoad( String* tokens, unsigned int num_tokens, IJob& pJo
 	return pJob.LoadTranslucentPelPhotonmap( tokens[0].c_str() );
 }
 
-bool ParseGlobalPelLoad( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseGlobalPelLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseGlobalPelLoad: Invalid number of paramters, need 1" );
@@ -886,7 +893,7 @@ bool ParseGlobalPelLoad( String* tokens, unsigned int num_tokens, IJob& pJob )
 	return pJob.LoadGlobalPelPhotonmap( tokens[0].c_str() );
 }
 
-bool ParseCausticSpectralLoad( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseCausticSpectralLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseCausticSpectralLoad: Invalid number of paramters, need 1" );
@@ -895,7 +902,7 @@ bool ParseCausticSpectralLoad( String* tokens, unsigned int num_tokens, IJob& pJ
 	return pJob.LoadCausticSpectralPhotonmap( tokens[0].c_str() );
 }
 
-bool ParseShadowLoad( String* tokens, unsigned int num_tokens, IJob& pJob )
+bool ParseShadowLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseShadowLoad: Invalid number of paramters, need 1" );
@@ -904,7 +911,7 @@ bool ParseShadowLoad( String* tokens, unsigned int num_tokens, IJob& pJob )
 	return pJob.LoadShadowPhotonmap( tokens[0].c_str() );
 }
 
-bool AsciiCommandParser::ParsePhotonMap( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
+bool AsciiCommandParser::ParsePhotonMap( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
 {
 	// Does stuff with photon map
 	if( num_tokens < 1 )
@@ -1007,18 +1014,18 @@ bool AsciiCommandParser::ParsePhotonMap( String* tokens, unsigned int num_tokens
 	}
 }
 
-static String AssembleFromTokens( String* tokens, unsigned int num_tokens )
+static std::string AssembleFromTokens( const std::string* tokens, unsigned int num_tokens )
 {
-	String ret;
+	std::string ret;
 	for( unsigned int i=0; i<num_tokens; i++ ) {
-		ret.concatenate( tokens[i] );
-		ret.concatenate( " " );
+		ret += tokens[i];
+		ret += ' ';
 	}
 
 	return ret;
 }
 
-bool AsciiCommandParser::ParseMediaPath( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise )
+bool AsciiCommandParser::ParseMediaPath( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise )
 {
 	if( num_tokens < 1 ) {
 		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseMediaPath: You need to do something with the media path (add|remove|clearall)" );
@@ -1056,7 +1063,7 @@ bool AsciiCommandParser::ParseMediaPath( String* tokens, unsigned int num_tokens
 	return true;
 }
 
-bool AsciiCommandParser::ParseEcho( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise )
+bool AsciiCommandParser::ParseEcho( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise )
 {
 	if( num_tokens < 2 ) {
 		GlobalLog()->PrintEasyError( "Usage: ParseEcho (info|warning|error) message" );

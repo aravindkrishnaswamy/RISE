@@ -134,6 +134,14 @@ int main()
 		script( std::string( "RISE ASCII SCRIPT 3\nclearall" ) + '\0' + "unknown\n",
 			false, "script rejects embedded NUL" );
 		script( "RISE ASCII SCRIPT 3\n\"\"\n", false, "script rejects an empty quoted command" );
+		script( "RISE ASCII SCRIPT 3\nset light_rr_threshold nonsense\n", false,
+			"script rejects a malformed scalar before changing the job" );
+		script( "RISE ASCII SCRIPT 3\nset light_rr_threshold +0.25legacy\n", true,
+			"script preserves signed scalar prefixes" );
+		script( "RISE ASCII SCRIPT 3\nrenderanimation 999999999999999999999999\n", false,
+			"script rejects overflowing frame numbers" );
+		script( "RISE ASCII SCRIPT 3\nrender 0 10 bad 10\n", false,
+			"script rejects malformed raster bounds before starting a render" );
 		script( "RISE ASCII SCRIPT 3\nrun \"" + path + "\"", false, "script rejects a recursive run" );
 		const std::string child = RISE::TestSupport::ScratchPath( "child_ascii.RISEscript" );
 		Check( WriteTmp( child.c_str(), "RISE ASCII SCRIPT 3\nclearall" ), "write nested script fixture" );
