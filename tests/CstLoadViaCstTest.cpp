@@ -162,7 +162,8 @@ int main()
 			"script preserves signed scalar prefixes" );
 		struct CommandJob final : Job {
 			unsigned int calls = 0;
-			bool Rasterize() override { ++calls; return true; }
+			unsigned int renderCalls = 0;
+			bool Rasterize() override { ++calls; ++renderCalls; return true; }
 			bool RasterizeRegion( unsigned int, unsigned int, unsigned int, unsigned int ) override { ++calls; return true; }
 			bool RasterizeAnimationUsingOptions( unsigned int ) override { ++calls; return true; }
 			bool SaveCausticPelPhotonmap( const char* ) override { ++calls; return true; }
@@ -177,6 +178,15 @@ int main()
 			"malformed arguments fail before touching the job" );
 		Check( parser->ParseCommand( "photonmap caustic save file.photonmap", *commandJob ) &&
 			commandJob->calls == 1, "valid photon map command dispatches once" );
+		Check( parser->ParseCommand( "render # trailing comment", *commandJob ) &&
+			commandJob->renderCalls == 1, "render ignores a trailing comment and dispatches once" );
+		const auto callsAfterRender = commandJob->calls;
+		Check( parser->ParseCommand( "  # full comment", *commandJob ) &&
+			parser->ParseCommand( "   ", *commandJob ) && commandJob->calls == callsAfterRender,
+			"comments and whitespace are successful no-op commands" );
+		const auto commented = AsciiCommandParser::Tokenize( "echo \"# quoted\" file#tag # ignored" );
+		Check( commented == std::vector<std::string>({ "echo", "# quoted", "file#tag" }),
+			"console preserves quoted and embedded hashes while dropping trailing comments" );
 		parser->release();
 		commandJob->release();
 		script( "RISE ASCII SCRIPT 3\nrun \"" + path + "\"", false, "script rejects a recursive run" );
@@ -379,6 +389,23 @@ int main()
 		const std::string painter = "RISE ASCII SCENE 7\nworley3d_painter\n{\nname cells\noutput ";
 		Case( "canonical Worley boundary output", scenePath.c_str(), painter + "f2-f1\n}\n" );
 		RefuseCase( "unrecognized Worley output", scenePath.c_str(), painter + "f2f1\n}\n" );
+	}
+
+	{
+		const std::string scene = RISE::TestSupport::ScratchPath( "table_compat.RISEscene" );
+		const std::string data = RISE::TestSupport::ScratchPath( "table_compat.txt" );
+		Check( WriteTmp( data.c_str(), "wavelength amplitude extra\n380 0.5 0.7\ninvalid row\n780 0.8 extra\n" ),
+			"write a table with headers and additional columns" );
+		for( const char* keyword : { "spectral_painter", "piecewise_linear_function" } ) {
+			const std::string head = std::string("RISE ASCII SCENE 7\n") + keyword + "\n{\nname table\n";
+			Case( "table reader accepts leading finite columns and skips headers", scene.c_str(),
+				head + "file " + data + "\n}\n" );
+			Case( "inline table sample accepts extra columns", scene.c_str(),
+				head + "cp 380 0.5 0.7\ncp 780 0.8 0.9\n}\n" );
+			RefuseCase( "inline table sample requires both columns", scene.c_str(), head + "cp 380\n}\n" );
+			RefuseCase( "inline table sample requires finite values", scene.c_str(), head + "cp 380 nan\n}\n" );
+		}
+		std::remove( data.c_str() );
 	}
 
 	{

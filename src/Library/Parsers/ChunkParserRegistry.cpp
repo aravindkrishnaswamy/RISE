@@ -112,12 +112,30 @@ static bool ReadDataFileLines( const String& filename, std::vector<std::string>&
 	if( !file ) return false;
 	std::string line;
 	while( std::getline( file, line ) ) {
+		if( line.find( '\0' ) != std::string::npos ) return false;
 		const auto start = line.find_first_not_of( " \t\r" );
 		if( start != std::string::npos && line[start] != '#' ) {
 			outLines.push_back( line );
 		}
 	}
 	return !file.bad();
+}
+
+// Table readers consume the leading required finite columns. Extra columns
+// belong to the source table and can be ignored by a narrower consumer.
+static bool ReadSampleColumns( const std::string& row, double* samples, size_t count )
+{
+	if( row.find( '\0' ) != std::string::npos ) return false;
+	const char* cursor = row.c_str();
+	for( size_t i = 0; i < count; ++i ) {
+		char* end = nullptr;
+		const double sample = std::strtod( cursor, &end );
+		if( end == cursor || !RISE::IsFiniteDouble(sample) ) return false;
+		samples[i] = sample;
+		cursor = end;
+		if( i + 1 < count && !std::isspace( static_cast<unsigned char>(*cursor) ) ) return false;
+	}
+	return true;
 }
 
 // Phase 6.2 helper (docs/ROUND_TRIP_SAVE_PLAN.md §8.10): compose a
@@ -1285,26 +1303,10 @@ namespace RISE
 					std::vector<double> wavelengths;
 					std::vector<double> amplitudes;
 
-					const auto readSamples = []( const std::string& row, double* samples, size_t count ) {
-						const char* cursor = row.c_str();
-						for( size_t i = 0; i < count; ++i ) {
-							char* end = nullptr;
-							samples[i] = std::strtod( cursor, &end );
-							if( end == cursor || !RISE::IsFiniteDouble( samples[i] ) ) {
-								return false;
-							}
-							cursor = end;
-							if( i + 1 < count && !std::isspace( static_cast<unsigned char>( *cursor ) ) ) {
-								return false;
-							}
-						}
-						while( std::isspace( static_cast<unsigned char>( *cursor ) ) ) ++cursor;
-						return cursor == row.data() + row.size() || *cursor == '#';
-					};
 
 					const auto appendPair = [&]( const std::string& row ) {
 						double pair[2];
-						if( !readSamples( row, pair, 2 ) ) return false;
+						if( !ReadSampleColumns( row, pair, 2 ) ) return false;
 						wavelengths.push_back( pair[0] );
 						amplitudes.push_back( pair[1] );
 						return true;
@@ -1328,13 +1330,14 @@ namespace RISE
 						const std::string_view kind( field );
 						std::string row;
 						while( std::getline( input, row ) ) {
+							if( row.find( '\0' ) != std::string::npos ) return false;
 							const auto first = row.find_first_not_of( " \t\r\f\v" );
 							if( first == std::string::npos || row[first] == '#' ) continue;
 							double sample = 0;
-							const bool valid = kind == "file" ? appendPair( row ) : readSamples( row, &sample, 1 );
+							const bool valid = kind == "file" ? appendPair( row ) : ReadSampleColumns( row, &sample, 1 );
 							if( !valid ) {
-								GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: invalid sample in `%s`", name.c_str(), filename.c_str() );
-								return false;
+								GlobalLog()->PrintEx( eLog_Warning, "spectral_painter `%s`: skipping malformed line in `%s`", name.c_str(), filename.c_str() );
+								continue;
 							}
 							if( kind != "file" ) {
 								(kind == "nmfile" ? wavelengths : amplitudes).push_back( sample );
@@ -1364,7 +1367,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "nmbegin"; p.kind = ValueKind::Double;   p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
 						{ auto& p = P(); p.name = "nmend";   p.kind = ValueKind::Double;   p.description = "End wavelength (nm)"; p.defaultValueHint = "700"; }
 						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;   p.description = "Multiplies the spectrum on every path (spectral samples and the RGB projections alike, DL-464); as a reflectance, a scaled spectrum above 1 is an energy gain"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Wavelength,amplitude sample (repeatable)"; }
+						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Wavelength amplitude sample (repeatable)"; }
 						{ auto& p = P(); p.name = "file";    p.kind = ValueKind::Filename; p.description = "Spectrum text file (pairs)"; }
 						{ auto& p = P(); p.name = "nmfile";  p.kind = ValueKind::Filename; p.description = "Wavelength list file"; }
 						{ auto& p = P(); p.name = "ampfile"; p.kind = ValueKind::Filename; p.description = "Amplitude list file"; }
@@ -3400,11 +3403,14 @@ namespace RISE
 
 					// Repeatable per-sample control points: "cp <x> <y>"
 					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
-					for( size_t k = 0; k < cps.size(); ++k ) {
-						double x = 0.0, y = 0.0;
-						sscanf( cps[k].c_str(), "%lf %lf", &x, &y );
-						cp_x.push_back( x );
-						cp_y.push_back( y );
+					for( const std::string& row : cps ) {
+						double pair[2];
+						if( !ReadSampleColumns( row, pair, 2 ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "piecewise_linear_function `%s`: invalid control point", name.c_str() );
+							return false;
+						}
+						cp_x.push_back( pair[0] );
+						cp_y.push_back( pair[1] );
 					}
 
 					// Optional file-loaded function (pairs)
@@ -3416,10 +3422,10 @@ namespace RISE
 							return false;
 						}
 						for( const std::string& ln : fileLines ) {
-							double x = 0.0, y = 0.0;
-							if( sscanf( ln.c_str(), "%lf %lf", &x, &y ) == 2 ) {
-								cp_x.push_back( x );
-								cp_y.push_back( y );
+							double pair[2];
+							if( ReadSampleColumns( ln, pair, 2 ) ) {
+								cp_x.push_back( pair[0] );
+								cp_y.push_back( pair[1] );
 							} else {
 								GlobalLog()->PrintEx( eLog_Warning, "piecewise_linear_function:: skipping malformed line in `%s`", fname.c_str() );
 							}

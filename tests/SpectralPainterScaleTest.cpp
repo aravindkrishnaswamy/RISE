@@ -213,7 +213,7 @@ static void TestSpectralFileCounts()
 	if( accepted ) {
 		Check( !loadWithWavelengths( "400\n" ), "spectral painter rejects unequal file sample counts" );
 		Check( !loadWithWavelengths( "400\nnan\n" ), "spectral painter rejects a nonfinite wavelength" );
-		Check( !loadWithWavelengths( "400\n500 junk\n" ), "spectral painter rejects an incomplete file record" );
+		Check( loadWithWavelengths( "wavelength column\n400 7\n500 junk\n" ), "spectral painter skips headers and reads the first table column" );
 		const std::string splitRecord = "400" + std::string( 8188, ' ' ) + "500\n";
 		Check( !loadWithWavelengths( splitRecord ), "spectral painter treats a long physical row as one record" );
 		const char embeddedNull[] = "400\n500\0junk\n";

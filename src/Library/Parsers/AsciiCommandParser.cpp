@@ -47,6 +47,7 @@ namespace
 			const auto first = line.find_first_not_of( " \t\r" );
 			if( first == std::string_view::npos ) break;
 			line.remove_prefix( first );
+			if( line.front() == RISE_COMMENT ) break;
 			if( line.front() == '"' ) {
 				const auto close = line.find( '"', 1 );
 				if( close != std::string_view::npos ) {
@@ -150,7 +151,7 @@ bool AsciiCommandParser::ParseCommand( const char* line, IJob& job )
 	if( !line ) return false;
 	if( !*line ) return true;
 	const auto tokens = Tokenize( line );
-	if( !tokens.empty() && tokens[0].c_str()[0] == RISE_COMMENT ) return true;
+	if( tokens.empty() ) return true;
 	return DispatchCommand( tokens.data(), static_cast<unsigned int>(tokens.size()), job, this );
 }
 
