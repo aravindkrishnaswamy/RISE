@@ -47,7 +47,7 @@ ProbabilityDensityFunction::ProbabilityDensityFunction( const SpectralPacket& fu
 {
 	// Build from the robust spectral packet
 	Scalar	accrued=0;
-	for( unsigned int bin=0; bin<func.NumBins(); ++bin )
+	for( unsigned int bin=0; bin<func.NumBins() && func.minLambda()<func.maxLambda(); ++bin )
 	{
 		const Scalar wavelength = func.minLambda() + Scalar(bin) * func.deltaLambda();
 		// We are only interested in the visible spectrum

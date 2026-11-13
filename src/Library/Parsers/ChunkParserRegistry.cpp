@@ -1315,7 +1315,7 @@ namespace RISE
 							}
 						}
 						while( std::isspace( static_cast<unsigned char>( *cursor ) ) ) ++cursor;
-						return *cursor == '\0' || *cursor == '#';
+						return cursor == row.data() + row.size() || *cursor == '#';
 					};
 
 					const auto appendPair = [&]( const std::string& row ) {

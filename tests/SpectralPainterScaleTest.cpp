@@ -197,7 +197,7 @@ static void TestSpectralFileCounts()
 		<< "\n  ampfile " << amplitudes << "\n}\n";
 	std::ofstream( amplitudes ) << "0.2\n0.4\n";
 
-	const auto loadWithWavelengths = [&]( const char* samples ) {
+	const auto loadWithWavelengths = [&]( const std::string& samples ) {
 		std::ofstream( wavelengths ) << samples;
 		IJobPriv* job = nullptr;
 		if( !RISE_CreateJobPriv( &job ) || !job ) {
@@ -215,7 +215,10 @@ static void TestSpectralFileCounts()
 		Check( !loadWithWavelengths( "400\nnan\n" ), "spectral painter rejects a nonfinite wavelength" );
 		Check( !loadWithWavelengths( "400\n500 junk\n" ), "spectral painter rejects an incomplete file record" );
 		const std::string splitRecord = "400" + std::string( 8188, ' ' ) + "500\n";
-		Check( !loadWithWavelengths( splitRecord.c_str() ), "spectral painter treats a long physical row as one record" );
+		Check( !loadWithWavelengths( splitRecord ), "spectral painter treats a long physical row as one record" );
+		const char embeddedNull[] = "400\n500\0junk\n";
+		Check( !loadWithWavelengths( std::string( embeddedNull, sizeof(embeddedNull)-1 ) ),
+			"spectral painter rejects an embedded NUL in a sample record" );
 	}
 	std::remove( scene.c_str() );
 	std::remove( wavelengths.c_str() );
