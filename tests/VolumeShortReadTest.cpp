@@ -29,6 +29,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <filesystem>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -42,6 +43,7 @@
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileReadBuffer.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
+#include "../src/Library/Utilities/MediaPathLocator.h"
 #include "../src/Library/RISE_API.h"
 #include "TestTempDir.h"
 
@@ -461,6 +463,33 @@ static void TestLittleEndianScalars()
 	std::remove( path.c_str() );
 }
 
+static void TestMediaSearchRoots()
+{
+	namespace fs = std::filesystem;
+	const auto root = fs::path( RISE::TestSupport::ScratchPath( "media_lookup" ) );
+	const auto first = root / "first";
+	const auto second = root / "second";
+	const std::string name = u8"rise_media_é.bin";
+	fs::create_directories( first );
+	fs::create_directories( second );
+	std::ofstream( first / fs::u8path(name) ) << '1';
+	std::ofstream( second / fs::u8path(name) ) << '2';
+	MediaPathLocator locator;
+	Check( !locator.AddPath( "" ) && locator.AddPath( first.u8string().c_str() ) &&
+		!locator.AddPath( (first.u8string() + "/").c_str() ) && locator.AddPath( second.u8string().c_str() ),
+		"media roots reject empty input and equivalent duplicate spellings" );
+	Check( locator.Find( name.c_str() ) == (first.u8string() + "/" + name).c_str(),
+		"media roots search in insertion order, including UTF-8 names" );
+	const std::string direct = (second / fs::u8path(name)).u8string();
+	Check( locator.Find( direct.c_str() ) == direct.c_str() &&
+		locator.RemovePath( (first.u8string() + "/").c_str() ) &&
+		locator.Find( name.c_str() ) == (second.u8string() + "/" + name).c_str(),
+		"media lookup prefers a direct path and removal accepts the normalized spelling" );
+	locator.ClearAllPaths();
+	Check( locator.Find( name.c_str() ) == name.c_str(), "a media miss preserves original spelling" );
+	fs::remove_all( root );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeShortReadTest — missing/truncated binary reads zero, never uninitialised"
@@ -475,6 +504,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestVolumeOverflowDims();
 	TestBufferWriteFailures();
 	TestLittleEndianScalars();
+	TestMediaSearchRoots();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
