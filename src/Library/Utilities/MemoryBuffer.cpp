@@ -37,24 +37,13 @@ MemoryBuffer::MemoryBuffer( ) :
 {
 }
 
-  /*
-MemoryBuffer::MemoryBuffer( const MemoryBuffer* mb ) :
-  nSize( mb->nSize ),
-  pBuffer( mb->pBuffer ),
-  nCursor( mb->nCursor ),
-  bIOwnMemory( false )
-{
-}
-*/
-
 MemoryBuffer::MemoryBuffer( const unsigned int size ) :
   nSize( size ),
   pBuffer( 0 ),
   nCursor( 0 ),
   bIOwnMemory( true )
 {
-	pBuffer = new char[ nSize ];
-	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+	ReplaceStorage( std::unique_ptr<char[]>(new char[nSize]), nSize );
 }
 
 MemoryBuffer::MemoryBuffer( char * pMemory, const unsigned int size, bool bTakeOwnership ) :
@@ -63,6 +52,10 @@ MemoryBuffer::MemoryBuffer( char * pMemory, const unsigned int size, bool bTakeO
   nCursor( 0 ),
   bIOwnMemory( bTakeOwnership )
 {
+	if( bIOwnMemory ) {
+		ownedStorage.reset( pMemory );
+		capacity = nSize;
+	}
 }
 
 MemoryBuffer::MemoryBuffer( const MemoryBuffer& mb ) :
@@ -72,8 +65,7 @@ MemoryBuffer::MemoryBuffer( const MemoryBuffer& mb ) :
   bIOwnMemory( mb.bIOwnMemory )
 {
 	if( bIOwnMemory ) {
-		pBuffer = new char[ nSize ];
-		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+		ReplaceStorage( std::unique_ptr<char[]>(new char[nSize]), nSize );
 
 		if( nSize ) memcpy( pBuffer, mb.pBuffer, nSize );
 	} else {
@@ -92,8 +84,7 @@ MemoryBuffer::MemoryBuffer( IMemoryBuffer& mb ) :
 	nSize = source ? mb.Size() : 0;
 	nCursor = std::min( nCursor, nSize );
 	if( bIOwnMemory ) {
-		pBuffer = new char[ nSize ];
-		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+		ReplaceStorage( std::unique_ptr<char[]>(new char[nSize]), nSize );
 
 		if( nSize ) memcpy( pBuffer, source, nSize );
 	} else {
@@ -133,9 +124,8 @@ MemoryBuffer::MemoryBuffer( const char * szFileName ) :
 				GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Failed to read file: %s", szFileName );
 				return;
 			}
-			pBuffer = storage.release();
+			ReplaceStorage( std::move(storage), size );
 			nSize = size;
-			GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 			if( bytesRead < nSize ) {
 				memset( pBuffer + bytesRead, 0, nSize - bytesRead );
 				GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Short read on \'%s\': got %u of %u bytes (tail zeroed)", szFileName, static_cast<unsigned>(bytesRead), nSize );
@@ -148,16 +138,25 @@ MemoryBuffer::MemoryBuffer( const char * szFileName ) :
 	}
 }
 
-MemoryBuffer::~MemoryBuffer( )
+MemoryBuffer::~MemoryBuffer()
 {
-	if( bIOwnMemory && pBuffer ) {
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;		
-	}
+	if( ownedStorage ) GlobalLog()->PrintDelete( ownedStorage.get(), __FILE__, __LINE__ );
+}
 
-	pBuffer = 0;
-	nSize = 0;
-	nCursor = 0;
+void MemoryBuffer::ReplaceStorage( std::unique_ptr<char[]> replacement, unsigned int newCapacity )
+{
+	if( ownedStorage ) GlobalLog()->PrintDelete( ownedStorage.get(), __FILE__, __LINE__ );
+	ownedStorage = std::move(replacement);
+	pBuffer = ownedStorage.get();
+	capacity = newCapacity;
+	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+}
+
+unsigned int MemoryBuffer::GrowthCapacity( unsigned int required ) const
+{
+	const auto grown = std::uint64_t(capacity) + std::max( 1U, capacity / 2 );
+	return static_cast<unsigned int>(std::max( std::uint64_t(required),
+		std::min( grown, std::uint64_t(std::numeric_limits<unsigned int>::max()) ) ));
 }
 
 void MemoryBuffer::Clear( )
@@ -173,16 +172,14 @@ bool MemoryBuffer::Resize( unsigned int new_size, bool bForce )
 		return false;
 	}
 
-	// Do the resizng
-	char * pTempBuffer = new char[ new_size ];
-	GlobalLog()->PrintNew( pTempBuffer, __FILE__, __LINE__, "temp buffer" );
-
-	if( pBuffer ) {
-		memcpy( pTempBuffer, pBuffer, r_min(new_size,nSize) );
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;
+	// Keep explicit shrink behavior and grow spare storage only as needed.
+	if( new_size < nSize || new_size > capacity ) {
+		const unsigned int newCapacity = new_size < nSize ? new_size : GrowthCapacity( new_size );
+		std::unique_ptr<char[]> replacement( new char[newCapacity] );
+		const auto preserved = std::min( new_size, nSize );
+		if( preserved ) memcpy( replacement.get(), pBuffer, preserved );
+		ReplaceStorage( std::move(replacement), newCapacity );
 	}
-	pBuffer = pTempBuffer;
 	nSize = new_size;
 
 	if( nCursor >= nSize ) {
@@ -590,29 +587,20 @@ bool MemoryBuffer::setBytes( const void* pSource, unsigned int amount )
 		return true;
 	}
 
-	if( amount > nSize - nCursor ) {
-		if( !bIOwnMemory ) {
-			return false;
-		}
-		// The source may point into this buffer. Copy into the new
-		// allocation while the original storage is still alive.
-		const unsigned int newSize = nCursor + amount;
-		std::unique_ptr<char[]> replacement( new char[newSize] );
-		if( pBuffer ) {
-			memcpy( replacement.get(), pBuffer, nSize );
-		}
-		memcpy( replacement.get() + nCursor, pSource, amount );
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;
-		pBuffer = replacement.release();
-		nSize = newSize;
-		nCursor = newSize;
-		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
-		return true;
-	}
+	const unsigned int end = nCursor + amount;
+	if( end > nSize && !bIOwnMemory ) return false;
 
-	memmove( pBuffer + nCursor, pSource, amount );
-	nCursor += amount;
+	if( end > nSize && end > capacity ) {
+		// An input span can alias this buffer. Copy it before replacing storage.
+		const unsigned int newCapacity = GrowthCapacity( end );
+		std::unique_ptr<char[]> replacement( new char[newCapacity] );
+		if( nSize ) memcpy( replacement.get(), pBuffer, nSize );
+		memcpy( replacement.get() + nCursor, pSource, amount );
+		ReplaceStorage( std::move(replacement), newCapacity );
+	} else {
+		memmove( pBuffer + nCursor, pSource, amount );
+	}
+	nCursor = end;
+	nSize = std::max( nSize, end );
 	return true;
 }
-

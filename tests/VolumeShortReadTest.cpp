@@ -395,6 +395,31 @@ static void TestBufferWriteFailures()
 		"H: capacity request rejects cursor-plus-length overflow" );
 	owned->release();
 
+	auto* growing = new MemoryBuffer();
+	bool validGrowth = true;
+	for( unsigned int i = 0; i < 64; ++i ) {
+		validGrowth &= growing->setUInt( i ) && growing->Size() == (i+1)*4 &&
+			growing->getCurPos() == growing->Size();
+	}
+	auto* clone = new MemoryBuffer( *growing );
+	validGrowth &= clone->Pointer() != growing->Pointer() && clone->seek( IBuffer::START, 0 );
+	for( unsigned int i = 0; i < 64; ++i ) validGrowth &= clone->getUInt() == i;
+	Check( validGrowth && growing->Resize( 8, true ) && growing->Size() == 8 &&
+		growing->getCurPos() == 0 && growing->getUInt() == 0 && growing->getUInt() == 1,
+		"H: growing buffers preserve logical size, deep copies and forced shrink" );
+	clone->release();
+	growing->release();
+
+	auto* adopted = new MemoryBuffer( new char[2]{ 'A', 'B' }, 2, true );
+	auto* adoptedCopy = new MemoryBuffer( static_cast<IMemoryBuffer&>(*adopted) );
+	Check( adopted->seek( IBuffer::START, 2 ) && adopted->setBytes( adopted->Pointer(), 2 ) &&
+		adoptedCopy->DoOwnMemory() && adoptedCopy->Size() == 2 &&
+		std::memcmp( adopted->Pointer(), "ABAB", 4 ) == 0 &&
+		std::memcmp( adoptedCopy->Pointer(), "AB", 2 ) == 0,
+		"H: adopted storage grows safely and interface copy owns independent bytes" );
+	adoptedCopy->release();
+	adopted->release();
+
 	auto* invalid = new DiskFileWriteBuffer( nullptr );
 	Check( !invalid->ReadyToWrite() && !invalid->setChar( 'x' ) && !invalid->setDouble( 1 ) &&
 		!invalid->setBytes( "XY", 2 ) && !invalid->Finish(),
