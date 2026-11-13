@@ -40,13 +40,13 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		// Whitespace test that handles all four ASCII whitespace
+		// Whitespace test that handles all six ASCII whitespace
 		// characters strtod's leading-whitespace skip recognises.
 		// `static` keeps the helper file-local so it doesn't leak as
 		// an external symbol.
 		static inline bool IsWhitespace( char ch )
 		{
-			return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+			return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\v' || ch == '\f';
 		}
 
 		// Case-insensitive 3-byte match.  Guards against the input
