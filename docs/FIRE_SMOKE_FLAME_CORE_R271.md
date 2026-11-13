@@ -1480,7 +1480,56 @@ Owner-approved check of whether the remaining first-metre gap is a resolution li
 - **Left over:** twice FDS's grid-scale share below 1 m, and centre w 10–12% low at 1–1.5 m.
 - So the reacting flame's remaining gap (mass flux 76–80% of FDS's) is not in the cold-flow dynamics the inert pair tests. It is either the short 4 s window or combustion coupling.
 
-**Running:** `ab_lc_zone33_10s`: the zoned reacting arm for 10 s (driver `ab_build_lc10`; `ab_driver.cpp`'s window cap raised from 4 to 10 s, `run_ab.sh` takes `RISE_R271_AB_WINDOW`), to get statistics beyond one 4 s window.
+The 10 s zoned reacting arm is §36.
+
+## 36. Zoned candidate over 10 s: the gap is not the window; it sits above the zone and in how the zone's turbulence carries heat (2026-11-12)
+
+`r271_compact_stencil/ab_lc_zone33_10s`: the §35 arm run for 10 s (driver `ab_build_lc10`; `ab_driver.cpp`'s window cap raised from 4 to 10 s, `run_ab.sh` takes `RISE_R271_AB_WINDOW`; exit 0). Its first 4 s reproduce `ab_lc_zone33` byte for byte. Tools: `long_compare.py` (time windows), `long_fluct.py` (fluctuations, plume-only mass flux). Evidence: `s36_runs.txt`.
+
+**36.1 The longer window changes nothing.**
+
+| | McCaffrey | FDS | 0–4 s | 4–10 s | 0–10 s |
+|---|---|---|---|---|---|
+| 90% / 99% heat-release height (m) | — | 0.43 / 0.77 | 0.43 / 0.73 | 0.43 / 0.73 | 0.43 / 0.73 |
+| centre excess T at 0.29 m (K) | 873 | 926 | 1045 | 1065 | 1057 |
+| 0.50 m | 551 | 631 | 749 | 762 | 757 |
+| 0.75 m | 367 | 355 | 449 | 448 | 448 |
+| 0.99 m | 247 | 228 | 291 | 281 | 285 |
+| 1.51 m | 122 | 114 | 161 | 155 | 157 |
+| 2.00 m | 76 | 72 | 104 | 99 | 101 |
+| 3.01 m | 39 | 39 | 47 | 49 | 48 |
+| centre w at 0.99 / 2.00 / 3.01 m (m/s) | 3.60 / 2.85 / 2.48 | 3.47 / 2.68 / 2.33 | 3.50 / 3.08 / 2.44 | 3.41 / 3.03 / 2.52 | 3.45 / 3.05 / 2.49 |
+| upward mass flux at 0.50 / 0.99 / 3.01 m (kg/s) | — | 0.184 / 0.314 / 1.176 | 0.148 / 0.244 / 0.897 | 0.153 / 0.257 / 0.960 | 0.147 / 0.249 / 0.933 |
+
+- Over 10 s the centre excess T is 22% / 15% above McCaffrey at 0.75 / 0.99 m and 23–33% above it from 1.5 to 3 m (FDS: within 8%).
+- Consecutive 2 s blocks spread by 8–13% in mass flux and 9–20% in centre excess T, with no trend after the first 4 s. The remaining gap is real, not a short-window artefact.
+
+**36.2 Where the mass-flux gap is.** The upward mass flux used so far counts every rising cell in the 2.1 m domain. Split at mean w = 0.1 w_c:
+
+| RISE / FDS | 0.29 m | 0.50 m | 0.75 m | 0.99 m | 1.51 m | 2.00 m | 2.49 m | 3.01 m |
+|---|---|---|---|---|---|---|---|---|
+| mass flux inside the plume | 0.86 | 0.86 | 0.92 | 0.93 | 0.83 | 0.76 | 0.76 | 0.78 |
+| upward flux outside the plume | 0.76 | 0.75 | 0.63 | 0.55 | 0.62 | 0.81 | 0.89 | 0.92 |
+| velocity width b_w | 0.95 | 0.95 | 0.98 | 0.98 | 0.89 | 0.83 | 0.83 | 0.87 |
+
+- **Inside the zone the plume itself is within 7–14% of FDS** in mass flux and 2–5% in width. A third to a half of the earlier 80% figure below 1 m is slow ambient updraught outside the plume (1–3 cm/s over a wide ring, about half of FDS's), not plume entrainment.
+- **Above the zone boundary the plume falls behind:** it gains 0.67 kg/s from 1 to 3 m against FDS's 0.90 (75%), and its width drops to 0.83 of FDS's at 2–2.5 m.
+
+**36.3 Why: fluctuations.** RISE / FDS, same heights:
+
+| RISE / FDS | 0.29 m | 0.50 m | 0.75 m | 0.99 m | 1.51 m | 2.00 m | 2.49 m | 3.01 m |
+|---|---|---|---|---|---|---|---|---|
+| zoned 10 s: centre rms w / w_c | 0.95 | 0.92 | 0.87 | 0.88 | 0.73 | 0.79 | 0.87 | 0.95 |
+| zoned 10 s: grid-scale share of w′ | 1.52 | 1.95 | 2.38 | 2.52 | 1.46 | 1.29 | 1.14 | 1.10 |
+| zoned 10 s: resolved turbulent / mean heat flux | 0.70 | 0.64 | 0.55 | 0.53 | 0.63 | 0.78 | 0.99 | 1.09 |
+| carrier, C_v 0.07 (§32, 4 s): centre rms w / w_c | 0.71 | 0.74 | 0.98 | 1.10 | 0.97 | 0.92 | 0.88 | 1.12 |
+| carrier, C_v 0.07: resolved turbulent / mean heat flux | 0.56 | 0.62 | 0.84 | 0.94 | 1.00 | 1.04 | 0.98 | 1.11 |
+| carrier, C_v 0.07: mass flux inside the plume | 0.74 | 0.71 | 0.72 | 0.74 | 0.76 | 0.77 | 0.82 | 0.84 |
+
+- **In the zone, the velocity fluctuation is nearly FDS's (0.87–0.95) but carries half the heat (0.53–0.70).** Its grid-scale share is 1.5–2.5× FDS's: C_v 0.02 buys fluctuation that is partly grid-scale and mixes less than its amplitude suggests.
+- **The plume leaves the zone under-mixed and is damped at the boundary:** rms w / w_c drops to 0.73–0.79 at 1.5–2 m and recovers only by 3 m. That is where the entrainment falls to 75%.
+- **The unzoned carrier arm is the mirror image:** from 0.75 m up its fluctuation and turbulent heat flux are FDS's (0.84–1.11) and it gains 86% of FDS's mass flux from 1 to 3 m, but it is too quiet at 0.3–0.5 m (0.71–0.74), which is what makes its flame tall.
+- So the 0.02 zone is needed only near the base, and it costs mixing quality wherever it is on. **Test launched:** the zone top lowered to 0.5 m (`ab_lc_zone16`) and 0.77 m (`ab_lc_zone25`), 4 s each, run concurrently.
 
 ## Next (owner decisions)
 
