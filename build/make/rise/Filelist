@@ -452,7 +452,6 @@ SRCLIBPARSERS =\
 	$(PATHLIBRARY)Parsers/AsciiCommandParser.cpp				\
 	$(PATHLIBRARY)Parsers/ChunkParserRegistry.cpp				\
 	$(PATHLIBRARY)Parsers/AsciiScriptParser.cpp					\
-	$(PATHLIBRARY)Parsers/MathExpressionEvaluator.cpp			\
 	$(PATHLIBRARY)Options.cpp
 
 # Scene-editor suggestion engine

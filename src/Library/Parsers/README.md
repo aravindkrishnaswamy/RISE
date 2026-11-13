@@ -10,7 +10,7 @@ This directory defines the chunk-parser registry, script, command, and options p
 - Derive-time scene loading (the ONLY scene-load path): `../Cst/Cst.cpp` (`ParseToCst` + `DeriveToJob`)
 - Command parser: `AsciiCommandParser.*` (the console `load`/`run`/`modify` commands — `ICommandParser`)
 - Script parser: `AsciiScriptParser.*`
-- Math expression evaluator: `MathExpressionEvaluator.*`
+- Legacy expression evaluation for the v6 migration tool: [LegacyMathExpression.h](../../../tools/LegacyMathExpression.h)
 - Options parser: [../Options.h](../Options.h) (constructed via `RISE_API_CreateOptionsParser`)
 
 ## Scene File Basics

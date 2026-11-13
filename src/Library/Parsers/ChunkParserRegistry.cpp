@@ -59,7 +59,6 @@
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/MediaPathLocator.h"
-#include "MathExpressionEvaluator.h"
 #include "../Utilities/RasterizerDefaults.h"
 #include "../Utilities/Transformable.h"
 #include "../Rendering/Film.h"		// kDefaultFilm* constants for `film` chunk

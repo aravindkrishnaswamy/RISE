@@ -575,8 +575,6 @@
 		F24B733E2F52A632008304FF /* ChunkParserRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */; };
 		F24B73402F52A632008304C4 /* AsciiScriptParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */; };
 		F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
-		F24B73422F52A632008304C4 /* MathExpressionEvaluator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */; };
-		F24B73432F52A632008304C4 /* MathExpressionEvaluator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */; };
 		F24B73442F52A632008304C4 /* StdOutProgress.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0958069C42900069C9E5 /* StdOutProgress.h */; };
 		F24B73452F52A632008304C4 /* pch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0959069C42900069C9E5 /* pch.cpp */; };
 		F24B73462F52A632008304C4 /* pch.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F095A069C42900069C9E5 /* pch.h */; };
@@ -1310,8 +1308,6 @@
 		F27F0BB5069C42910069CFFF /* ChunkParserRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */; };
 		F27F0BB7069C42910069C9E5 /* AsciiScriptParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */; };
 		F27F0BB8069C42910069C9E5 /* AsciiScriptParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
-		F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */; };
-		F27F0BBA069C42910069C9E5 /* MathExpressionEvaluator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */; };
 		F27F0BBB069C42910069C9E5 /* StdOutProgress.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0958069C42900069C9E5 /* StdOutProgress.h */; };
 		F27F0BBC069C42910069C9E5 /* pch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0959069C42900069C9E5 /* pch.cpp */; };
 		F27F0BBD069C42910069C9E5 /* pch.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F095A069C42900069C9E5 /* pch.h */; };
@@ -2610,8 +2606,6 @@
 		F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ChunkParserRegistry.cpp; sourceTree = "<group>"; };
 		F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AsciiScriptParser.cpp; sourceTree = "<group>"; };
 		F27F0955069C42900069C9E5 /* AsciiScriptParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AsciiScriptParser.h; sourceTree = "<group>"; };
-		F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = MathExpressionEvaluator.cpp; sourceTree = "<group>"; };
-		F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MathExpressionEvaluator.h; sourceTree = "<group>"; };
 		F27F0958069C42900069C9E5 /* StdOutProgress.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = StdOutProgress.h; sourceTree = "<group>"; };
 		F27F0959069C42900069C9E5 /* pch.cpp */ = {isa = PBXFileReference; explicitFileType = sourcecode.cpp.cpp; fileEncoding = 30; path = pch.cpp; sourceTree = "<group>"; };
 		F27F095A069C42900069C9E5 /* pch.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = pch.h; sourceTree = "<group>"; };
@@ -3958,8 +3952,6 @@
 				F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */,
 				F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */,
 				F27F0955069C42900069C9E5 /* AsciiScriptParser.h */,
-				F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */,
-				F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */,
 				F27F0958069C42900069C9E5 /* StdOutProgress.h */,
 				F2CD000100000000000000A1 /* ChunkDescriptor.h */,
 				F2CD000200000000000000A1 /* ChunkParserRegistry.h */,
@@ -4984,7 +4976,6 @@
 				F2C5D5E72F716C5000546C97 /* BDPTPelRasterizer.h in Headers */,
 				F27F0BB4069C42910069C9E5 /* AsciiCommandParser.h in Headers */,
 				F27F0BB8069C42910069C9E5 /* AsciiScriptParser.h in Headers */,
-				F27F0BBA069C42910069C9E5 /* MathExpressionEvaluator.h in Headers */,
 				F27F0BBB069C42910069C9E5 /* StdOutProgress.h in Headers */,
 				F2CD000100000000000000C1 /* ChunkDescriptor.h in Headers */,
 				F2CD000200000000000000C1 /* ChunkParserRegistry.h in Headers */,
@@ -5569,7 +5560,6 @@
 				F27F0BB3069C42910069C9E5 /* AsciiCommandParser.cpp in Sources */,
 				F27F0BB5069C42910069CFFF /* ChunkParserRegistry.cpp in Sources */,
 				F27F0BB7069C42910069C9E5 /* AsciiScriptParser.cpp in Sources */,
-				F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */,
 				F2E0000200000000000000C1 /* SceneGrammar.cpp in Sources */,
 				F2E0000400000000000000C1 /* CompletionContext.cpp in Sources */,
 				F2E0000600000000000000C1 /* NameIndex.cpp in Sources */,
@@ -6264,8 +6254,6 @@
 				F24B733E2F52A632008304FF /* ChunkParserRegistry.cpp in Sources */,
 				F24B73402F52A632008304C4 /* AsciiScriptParser.cpp in Sources */,
 				F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */,
-				F24B73422F52A632008304C4 /* MathExpressionEvaluator.cpp in Sources */,
-				F24B73432F52A632008304C4 /* MathExpressionEvaluator.h in Sources */,
 				F24B73442F52A632008304C4 /* StdOutProgress.h in Sources */,
 				F2CD000100000000000000B1 /* ChunkDescriptor.h in Sources */,
 				F2CD000200000000000000B1 /* ChunkParserRegistry.h in Sources */,

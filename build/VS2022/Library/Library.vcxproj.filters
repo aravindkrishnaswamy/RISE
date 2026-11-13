@@ -1128,9 +1128,6 @@
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp">
-      <Filter>Parser</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp">
       <Filter>Shaders</Filter>
     </ClCompile>
@@ -2842,9 +2839,6 @@
       <Filter>Parser</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\IAsciiChunkParser.h">
-      <Filter>Parser</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h">
       <Filter>Parser</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h">
