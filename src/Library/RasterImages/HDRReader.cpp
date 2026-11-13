@@ -83,7 +83,7 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 		}
 	}
 
-	if( numRead == 0 ) {
+	if( numRead == 0 || (numRead == sizeof(buf) && buf[numRead-1] != '\n') ) {
 		GlobalLog()->Print( eLog_Error, "HDRReader: Something went wrong looking for image dimensions" );
 		return false;
 	}
@@ -153,7 +153,9 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 		const int step = 1;
 
 		// Start by reading the first four bytes of every scanline
-		pReadBuffer.getBytes( col, 4 );
+		if( !pReadBuffer.getBytes( col, 4 ) ) {
+			return RejectMalformed();
+		}
 
 		// This is Radiance's new RLE scheme
 		// Header of 0x2, 0x2 is RLE encoding
@@ -169,7 +171,10 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 				while( x < width ){
 
 					// Check to see if we have a run
-					unsigned char num = pReadBuffer.getUChar();
+					unsigned char num;
+					if( !pReadBuffer.getBytes( &num, 1 ) ) {
+						return RejectMalformed();
+					}
 					bool bRun = false;
 					unsigned int runLen = 0;
 					unsigned char value = 0;
@@ -180,12 +185,12 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 						// A run: read the value once and repeat it
 						bRun = true;
 						runLen = num - 128;
-						value = pReadBuffer.getUChar();
+						if( !pReadBuffer.getBytes( &value, 1 ) ) {
+							return RejectMalformed();
+						}
 					}
 
-					// A zero-length code makes no forward progress; on a
-					// truncated / crafted file getUChar() returns 0 forever,
-					// so treat it as malformed rather than spinning.
+					// A zero-length code makes no forward progress.
 					if( runLen == 0 ) {
 						return RejectMalformed();
 					}
@@ -196,12 +201,16 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 						return RejectMalformed();
 					}
 
+					unsigned char literals[128];
+					if( !bRun && !pReadBuffer.getBytes( literals, runLen ) ) {
+						return RejectMalformed();
+					}
 					for( unsigned int i=0; i<runLen; i++ ) {
 						const long long idx = (long long)component + (long long)pos*4;
 						if( idx < 0 || idx >= nBytesSigned ) {
 							return RejectMalformed();
 						}
-						pBuffer[idx] = bRun ? value : pReadBuffer.getUChar();
+						pBuffer[idx] = bRun ? value : literals[i];
 						pos += step;
 					}
 					x += runLen;
@@ -214,8 +223,8 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 			// check for right away.
 			int pos = start;
 			for( unsigned int x=0; x<width; x++ ) {
-				if( x > 0 ){
-					pReadBuffer.getBytes( col, 4 );
+				if( x > 0 && !pReadBuffer.getBytes( col, 4 ) ) {
+					return RejectMalformed();
 				}
 
 				// Check for the RLE header for this scanline

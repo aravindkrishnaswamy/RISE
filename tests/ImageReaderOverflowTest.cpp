@@ -270,12 +270,17 @@ static void TestHDRNewRLE()
 	Check( ok && px0.a == 1.0, "B: decoded pixel alpha == 1.0" );
 	Check( ok && px0.base.r > 0.0 && px0.base.r < px0.base.g && px0.base.g < px0.base.b,
 		"B: pixel channels decode in R<G<B order (no transposition)" );
+	good.pop_back();
+	Check( !RunHDR( good, w, h ), "B: HDR rejects a missing final RLE literal" );
 }
 
 static void TestHDROldRLE()
 {
 	std::cout << "C: HDR old-RLE valid raw / valid run / crafted run-at-pixel-0" << std::endl;
 	unsigned int w, h;
+
+	std::vector<char> headerOnly = MakeHDRHeader( "-Y 1 +X 1\n" );
+	Check( !RunHDR( headerOnly, w, h ), "C: HDR rejects a header without the first pixel" );
 
 	// Valid old-RLE raw scanline (first byte != 2 selects old scheme; != 1,1,1
 	// selects the raw branch).  Exercises the `col`-not-`buf` store fix.
