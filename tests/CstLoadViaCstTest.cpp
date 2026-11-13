@@ -150,6 +150,13 @@ int main()
 		Case( "Voronoi generators use full names and the default border", path.c_str(), base +
 			"voronoi2d_painter\n{\nname cells2\ngen 0 0 " + name + "\ngen 1 1 " + name + "\n}\n"
 			"voronoi3d_painter\n{\nname cells3\ngen 0 0 0 " + name + "\ngen 1 1 1 " + name + "\n}\n" );
+		const std::string longName( 8300, 'q' );
+		const std::string rows = RISE::TestSupport::ScratchPath( "voronoi_generators.txt" );
+		Check( WriteTmp( rows.c_str(), "0 0 " + longName + "\n1 1 " + longName ), "write long Voronoi generator rows" );
+		Case( "file-backed Voronoi generator reads whole rows", path.c_str(),
+			"RISE ASCII SCENE 7\nuniformcolor_painter\n{\nname " + longName +
+			"\ncolor 0.5 0.25 0.1\n}\nvoronoi2d_painter\n{\nname cells2\nfile " + rows + "\n}\n" );
+		std::remove( rows.c_str() );
 	}
 
 	// Slice 6e header-bump back-compat pair: the reader accepts BOTH the post-cutover `7` header and the

@@ -106,33 +106,19 @@ using namespace RISE::Implementation;
 #define MAX_CHARS_PER_LINE		8192
 
 // Read a data file into its meaningful lines, tolerant of comments and
-// blank lines.  Skips blank / whitespace-only lines and lines whose first
-// non-blank character is '#'.  Returns false (the caller logs) if the file
-// cannot be opened.  Each returned line still contains its trailing
-// newline; callers sscanf their own column format from it and validate the
-// conversion count, so a malformed or non-numeric line is skipped rather
-// than — as the historical `while( !feof(f) ) { fscanf(...); push; }` loops
-// did — spinning forever on a comment line (fscanf matches nothing and does
-// not advance) or pushing uninitialized / duplicated values at EOF.
+// blank lines. Skips blank lines and lines whose first nonblank byte is '#'.
 static bool ReadDataFileLines( const String& filename, std::vector<std::string>& outLines )
 {
-	FILE* f = fopen( GlobalMediaPathLocator().Find( filename ).c_str(), "r" );
-	if( !f ) {
-		return false;
-	}
-	char buf[MAX_CHARS_PER_LINE];
-	while( fgets( buf, sizeof( buf ), f ) ) {
-		const char* p = buf;
-		while( *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' ) {
-			++p;
+	std::ifstream file( GlobalMediaPathLocator().Find( filename ).c_str() );
+	if( !file ) return false;
+	std::string line;
+	while( std::getline( file, line ) ) {
+		const auto start = line.find_first_not_of( " \t\r" );
+		if( start != std::string::npos && line[start] != '#' ) {
+			outLines.push_back( line );
 		}
-		if( *p == '\0' || *p == '#' ) {
-			continue;   // blank / whitespace-only / comment line
-		}
-		outLines.push_back( std::string( buf ) );
 	}
-	fclose( f );
-	return true;
+	return !file.bad();
 }
 
 inline bool string_split( const String& s, String& first, String& second, const char ch )
