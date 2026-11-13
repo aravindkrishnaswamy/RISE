@@ -15,7 +15,6 @@
 #include "../Interfaces/ILog.h"
 
 #include <cstdio>
-#include <cstring>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -75,42 +74,28 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 	if ( !exts.empty() ) ext = exts.front();
 	else                  ext = "out";
 
-	// Build the filename — same templating as
-	// FileRasterizerOutput.cpp:156-160.
-	static const int MAX_BUFFER_SIZE = 2048;
-	char filename[MAX_BUFFER_SIZE];
+	// Animated output has a minimum of four digits for the frame number.
+	std::string frameNumber;
 	if ( bMultiple_ ) {
-		snprintf( filename, MAX_BUFFER_SIZE, "%s%s%.4u.%s",
-			pattern_.c_str(), suffix, frame, ext.c_str() );
-	} else {
-		snprintf( filename, MAX_BUFFER_SIZE, "%s%s.%s",
-			pattern_.c_str(), suffix, ext.c_str() );
+		frameNumber = std::to_string( frame );
+		if( frameNumber.size() < 4 ) frameNumber.insert( 0, 4 - frameNumber.size(), '0' );
 	}
+	std::string filename = pattern_ + suffix + frameNumber + "." + ext;
 
 	// Open the disk file.  If the open fails, mirror the legacy
 	// "fall back to fro_temp_…" emergency-file behaviour from
 	// FileRasterizerOutput.cpp:167-186 — we don't want to lose
 	// the rendered data when a path is unwritable.
-	DiskFileWriteBuffer* buf = new DiskFileWriteBuffer( filename );
+	DiskFileWriteBuffer* buf = new DiskFileWriteBuffer( filename.c_str() );
 
 	if ( !buf->ReadyToWrite() ) {
 		safe_release( buf );
 
-		const FileEncoderObserver* pMe = this;
-		char emergency[MAX_BUFFER_SIZE];
-		if ( bMultiple_ ) {
-			snprintf( emergency, MAX_BUFFER_SIZE,
-				"fro_temp_%lu%s_%.4u.%s",
-				static_cast<unsigned long>( reinterpret_cast<uintptr_t>( pMe ) ),
-				suffix, frame, ext.c_str() );
-		} else {
-			snprintf( emergency, MAX_BUFFER_SIZE,
-				"fro_temp_%lu%s.%s",
-				static_cast<unsigned long>( reinterpret_cast<uintptr_t>( pMe ) ),
-				suffix, ext.c_str() );
-		}
+		const std::string emergency = "fro_temp_" +
+			std::to_string( reinterpret_cast<uintptr_t>( this ) ) + suffix +
+			(bMultiple_ ? "_" : "") + frameNumber + "." + ext;
 
-		buf = new DiskFileWriteBuffer( emergency );
+		buf = new DiskFileWriteBuffer( emergency.c_str() );
 		if ( !buf->ReadyToWrite() ) {
 			GlobalLog()->PrintEasyError(
 				"FileEncoderObserver:: Fatal error trying to write image, "
@@ -119,20 +104,20 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 			return;
 		}
 		GlobalLog()->PrintEx( eLog_Warning,
-			"Failed to open specified file '%s', rendered scene written "
-			"to emergency file '%s' instead!", filename, emergency );
-		// Use the emergency filename as the effective filename for
-		// the success log message below.
-		std::strncpy( filename, emergency, MAX_BUFFER_SIZE );
-		filename[ MAX_BUFFER_SIZE - 1 ] = '\0';
+			"Failed to open specified file '%s', trying emergency file '%s'",
+			filename.c_str(), emergency.c_str() );
+		filename = emergency;
 	}
 
 	GlobalLog()->PrintNew( buf, __FILE__, __LINE__, "DiskFileWriteBuffer" );
 
 	encoder_->Encode( *store_, *buf, opts_ );
 
+	const bool written = buf->Finish( true );
 	safe_release( buf );
 
-	GlobalLog()->PrintEx( eLog_Event,
-		"FileEncoderObserver:: Written to '%s'", filename );
+	if( written ) {
+		GlobalLog()->PrintEx( eLog_Event,
+			"FileEncoderObserver:: Written to '%s'", filename.c_str() );
+	}
 }

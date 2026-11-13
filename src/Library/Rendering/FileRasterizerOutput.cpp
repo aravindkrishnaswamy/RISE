@@ -65,17 +65,17 @@ FileRasterizerOutput::FileRasterizerOutput(
 		// Do the concatenation
 		const char* szmediapath = getenv( "RISE_MEDIA_PATH" );
 		if( szmediapath ) {
-			strcpy( szPattern, szmediapath );
-			strcat( szPattern, szPattern_ );
+			outputPattern = szmediapath;
 		} else {
 			GlobalLog()->PrintEasyWarning( "FileRenderedOutput: Asked to use media path for rendered files, but media path is not set!" );
-			strcpy( szPattern, szPattern_ );
 		}
 	} else {
 		// Look for an option that gives us the folder
 		RISE::String strOutputFolder = options.ReadString( "rendered_output_folder", "" );
-		strcpy( szPattern, strOutputFolder.c_str() );
-		strcat( szPattern, szPattern_ );
+		outputPattern = strOutputFolder.c_str();
+	}
+	if( szPattern_ ) {
+		outputPattern += szPattern_;
 	}
 
 	if( color_space==eColorSpace_Rec709RGB_Linear || color_space==eColorSpace_ROMMRGB_Linear ) {
@@ -294,7 +294,7 @@ bool FileRasterizerOutput::BuildAndAttachObserver_( FrameStore* store )
 
 	encoderObserver_ = new FileEncoderObserver(
 		store, encoder, opts,
-		std::string( szPattern ), bMultiple );
+		outputPattern, bMultiple );
 	store->AddObserver( encoderObserver_ );
 	return true;
 }
@@ -481,19 +481,19 @@ void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* 
 {
 	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
 	if ( framesink_ ) framesink_->OutputImage( pImage, pRegion, frame );
-	ScanForPathologicalPixels( pImage, szPattern );
+	ScanForPathologicalPixels( pImage, outputPattern.c_str() );
 }
 
 void FileRasterizerOutput::OutputPreDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame )
 {
 	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
 	if ( framesink_ ) framesink_->OutputPreDenoisedImage( pImage, pRegion, frame );
-	ScanForPathologicalPixels( pImage, szPattern );
+	ScanForPathologicalPixels( pImage, outputPattern.c_str() );
 }
 
 void FileRasterizerOutput::OutputDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame )
 {
 	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
 	if ( framesink_ ) framesink_->OutputDenoisedImage( pImage, pRegion, frame );
-	ScanForPathologicalPixels( pImage, szPattern );
+	ScanForPathologicalPixels( pImage, outputPattern.c_str() );
 }
