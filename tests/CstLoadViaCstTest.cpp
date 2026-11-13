@@ -375,6 +375,13 @@ int main()
 	}
 
 	{
+		const std::string scenePath = RISE::TestSupport::ScratchPath( "cst_worley_output.RISEscene" );
+		const std::string painter = "RISE ASCII SCENE 7\nworley3d_painter\n{\nname cells\noutput ";
+		Case( "canonical Worley boundary output", scenePath.c_str(), painter + "f2-f1\n}\n" );
+		RefuseCase( "unrecognized Worley output", scenePath.c_str(), painter + "f2f1\n}\n" );
+	}
+
+	{
 		auto* row = new PiecewiseLinearFunction1D();
 		{
 			PiecewiseLinearFunction2D grid;
