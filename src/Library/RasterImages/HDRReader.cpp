@@ -14,6 +14,7 @@
 #include "pch.h"
 #include <charconv>
 #include <sstream>
+#include <string_view>
 #include <string.h>					// for strlen and strncmp
 #include "HDRReader.h"
 #include "../Interfaces/ILog.h"
@@ -53,50 +54,44 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 		return false;
 	}
 
-	// Next, skip past comments until we reach the portion that tells us the dimensions of the image
-	char buf[1024] = {0};
-	unsigned int numRead = 0;
-	while( (numRead = pReadBuffer.getLine( buf, 1024 )) ) {
-		if( numRead == sizeof(buf) && buf[numRead-1] != '\n' ) {
-			GlobalLog()->Print( eLog_Error, "HDRReader: Header line too long" );
-			return false;
+	// Read bounded prefixes and consume the rest of a long physical line
+	// so an ancillary line's continuation cannot become a header field.
+	char buf[1024];
+	bool longLine = false;
+	const auto readHeaderLine = [&]() {
+		const int length = pReadBuffer.getLine( buf, sizeof(buf) );
+		longLine = length == sizeof(buf) && buf[length-1] != '\n';
+		if( longLine ) {
+			char discarded[1024];
+			int n;
+			do {
+				n = pReadBuffer.getLine( discarded, sizeof(discarded) );
+			} while( n == sizeof(discarded) && discarded[n-1] != '\n' );
 		}
-		// Check to see if this line contains the format string
-		if( strncmp( buf, "FORMAT", 6 ) == 0 ) {
-			break;
-		}
-	}
+		return std::string_view( buf, length > 0 ? static_cast<size_t>( length ) : 0 );
+	};
+	std::string_view line;
+	do {
+		line = readHeaderLine();
+	} while( !line.empty() && line.substr( 0, 7 ) != "FORMAT=" );
 
-	if( numRead == 0 ) {
-		GlobalLog()->Print( eLog_Error, "HDRReader: Something went wrong looking for FORMAT string" );
+	const auto last = line.find_last_not_of( " \t\r\n" );
+	if( longLine || last == std::string_view::npos ||
+		line.substr( 0, last + 1 ) != "FORMAT=32-bit_rle_rgbe" ) {
+		GlobalLog()->Print( eLog_Error, "HDRReader: Missing or unsupported FORMAT" );
 		return false;
 	}
 
-	// Check if the format string is ok
-	const char * szFormat = "FORMAT=32-bit_rle_rgbe";
-	if( strncmp( buf, szFormat, strlen(szFormat) ) != 0 ) {
-		GlobalLog()->Print( eLog_Error, "HDRReader: The FORMAT is NOT 32-bit_rle_rgbe" );
-	}
+	do {
+		line = readHeaderLine();
+	} while( !line.empty() && line.substr( 0, 2 ) != "-Y" && line.substr( 0, 2 ) != "+Y" );
 
-	// Now look for the -Y or +Y
-	while( (numRead = pReadBuffer.getLine( buf, 1024 )) ) {
-		if( numRead == sizeof(buf) && buf[numRead-1] != '\n' ) {
-			GlobalLog()->Print( eLog_Error, "HDRReader: Header line too long" );
-			return false;
-		}
-		// Check to see if this line contains the format string
-		if( strncmp( buf, "-Y", 2 ) == 0 ||
-			strncmp( buf, "+Y", 2 ) == 0 ) {
-			break;
-		}
-	}
-
-	if( numRead == 0 ) {
-		GlobalLog()->Print( eLog_Error, "HDRReader: Something went wrong looking for image dimensions" );
+	if( line.empty() || longLine ) {
+		GlobalLog()->Print( eLog_Error, "HDRReader: Invalid image resolution line" );
 		return false;
 	}
 
-	std::istringstream resolution( std::string( buf, numRead ) );
+	std::istringstream resolution{ std::string( line ) };
 	std::string yAxis, heightToken, xAxis, widthToken, trailing;
 	const auto readDimension = []( const std::string& token, unsigned int& value ) {
 		const char* end = token.data() + token.size();
@@ -167,7 +162,7 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 
 		// This is Radiance's new RLE scheme
 		// Header of 0x2, 0x2 is RLE encoding
-		if( col[0] == 2 && col[1] == 2 && col[2] >= 0 ) {
+		if( col[0] == 2 && col[1] == 2 && (static_cast<unsigned char>( col[2] ) & 0x80u) == 0 ) {
 			const auto scanlineWidth = (static_cast<unsigned int>( col[2] ) << 8) |
 				static_cast<unsigned char>( col[3] );
 			if( scanlineWidth != width ) {

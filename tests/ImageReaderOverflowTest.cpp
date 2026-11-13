@@ -285,6 +285,20 @@ static void TestHDROldRLE()
 	std::vector<char> headerOnly = MakeHDRHeader( "-Y 1 +X 1\n" );
 	Check( !RunHDR( headerOnly, w, h ), "C: HDR rejects a header without the first pixel" );
 
+	std::vector<char> longComment;
+	AppendStr( longComment, "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n#" );
+	longComment.insert( longComment.end(), 1023, ' ' );
+	AppendStr( longComment, "-Y 1 +X 2\n-Y 1 +X 1\n" );
+	AppendByte( longComment, 2 ); AppendByte( longComment, 2 );
+	AppendByte( longComment, 128 ); AppendByte( longComment, 130 );
+	Check( RunHDR( longComment, w, h ) && w == 1 && h == 1,
+		"C: HDR skips long comment continuations and accepts a flat pixel with a high-bit blue sample" );
+
+	std::vector<char> xyze;
+	AppendStr( xyze, "#?RADIANCE\nFORMAT=32-bit_rle_xyze\n-Y 1 +X 1\n" );
+	AppendByte( xyze, 10 ); AppendByte( xyze, 20 ); AppendByte( xyze, 30 ); AppendByte( xyze, 130 );
+	Check( !RunHDR( xyze, w, h ), "C: HDR rejects unsupported XYZE encoding" );
+
 	// Valid old-RLE raw scanline (first byte != 2 selects old scheme; != 1,1,1
 	// selects the raw branch).  Exercises the `col`-not-`buf` store fix.
 	std::vector<char> raw = MakeHDRHeader( "-Y 1 +X 2\n" );
