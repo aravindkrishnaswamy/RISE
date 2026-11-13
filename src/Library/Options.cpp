@@ -15,6 +15,7 @@
 #include "Options.h"
 #include "Parsers/AsciiCommandParser.h"
 #include <fstream>
+#include <string_view>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -35,29 +36,23 @@ Options::Options(
 		return;
 	}
 
-	char				line[2048] = {0};
-
-	for(;;) {
-		in.getline( line, 2048 );
-
-		if( in.fail() ) {
-			break;
-		}
-
-		// Tokenize the string to get rid of comments etc
-		String			tokens[1024];
-		unsigned int numTokens = Implementation::AsciiCommandParser::TokenizeString( line, tokens, 1024 );
+	std::string line;
+	std::vector<String> tokens( 1024 );
+	while( std::getline( in, line ) ) {
+		if( line.find( '\0' ) != std::string::npos ) continue;
+		const unsigned int numTokens = Implementation::AsciiCommandParser::TokenizeString(
+			line.c_str(), tokens.data(), static_cast<unsigned int>(tokens.size()) );
 
 		if( numTokens >= 2 ) {
 
 			// Check the first character of the token to make sure its not a comment
-			if( (tokens[0])[0] != '#' ) {
+			if( tokens[0].c_str()[0] != '#' ) {
 
 				// There actually are tokens!
 				// Store them
 				
 				// First make sure the option isn't already in our map
-				if( options.find( tokens[0] ) != options.end() ) {
+				if( options.find( std::string_view(tokens[0].c_str()) ) != options.end() ) {
 					GlobalLog()->PrintEx( eLog_Warning, "Options::Options: This option exists more than once! \'%s\'", tokens[0].c_str() );
 					continue;
 				}
@@ -70,9 +65,9 @@ Options::Options(
 						val.concatenate( " " );
 						val.concatenate( tokens[i] );
 					}
-					options[tokens[0]] = val;
+					options[tokens[0].c_str()] = val;
 				} else {
-					options[tokens[0]] = tokens[1];
+					options[tokens[0].c_str()] = tokens[1];
 				}
 			}
 		}
@@ -85,7 +80,7 @@ Options::~Options()
 
 int Options::ReadInt( const char* name, int default_value )
 {
-	std::map<String,String>::iterator it = options.find( String(name) );
+	const auto it = name ? options.find( std::string_view(name) ) : options.end();
 
 	if( it != options.end() ) {
 		return atoi(it->second.c_str());
@@ -96,7 +91,7 @@ int Options::ReadInt( const char* name, int default_value )
 
 double Options::ReadDouble( const char* name, double default_value )
 {
-	std::map<String,String>::iterator it = options.find( String(name) );
+	const auto it = name ? options.find( std::string_view(name) ) : options.end();
 
 	if( it != options.end() ) {
 		return atof(it->second.c_str());
@@ -107,7 +102,7 @@ double Options::ReadDouble( const char* name, double default_value )
 
 bool Options::ReadBool( const char* name, bool default_value )
 {
-	std::map<String,String>::iterator it = options.find( String(name) );
+	const auto it = name ? options.find( std::string_view(name) ) : options.end();
 
 	if( it != options.end() ) {
 		return (it->second=="TRUE" || it->second=="true");
@@ -118,7 +113,7 @@ bool Options::ReadBool( const char* name, bool default_value )
 
 String Options::ReadString( const char* name, String default_value )
 {
-	std::map<String,String>::iterator it = options.find( String(name) );
+	const auto it = name ? options.find( std::string_view(name) ) : options.end();
 
 	if( it != options.end() ) {
 		return it->second;
