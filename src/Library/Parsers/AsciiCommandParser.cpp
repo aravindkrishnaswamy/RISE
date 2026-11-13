@@ -89,9 +89,8 @@ namespace
 	bool ReadDouble( const std::string& token, double& result )
 	{
 		char* end = nullptr;
-		errno = 0;
 		const double value = std::strtod( token.c_str(), &end );
-		if( end != token.c_str() && errno != ERANGE && std::isfinite(value) ) {
+		if( end != token.c_str() && std::isfinite(value) ) {
 			result = value;
 			return true;
 		}
@@ -301,6 +300,7 @@ bool ParseModifyObject_UV_Cylindrical( const std::string* tokens, unsigned int n
 	}
 
 	const char axis = tokens[2].c_str()[0];
+	if( tokens[2].size() != 1 || (axis != 'x' && axis != 'y' && axis != 'z') ) return false;
 	double radius, size;
 	if( !ReadDouble( tokens[1], radius ) || !ReadDouble( tokens[3], size ) ) return false;
 
@@ -653,6 +653,10 @@ bool AsciiCommandParser::ParsePredictRasterizationTime( const std::string*, unsi
 
 bool AsciiCommandParser::ParseRasterize( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
 {
+	if( num_tokens != 0 && num_tokens < 4 ) {
+		GlobalLog()->PrintEasyError( "Usage: render [left right top bottom]" );
+		return false;
+	}
 	unsigned int left, right, top, bottom;
 	if( num_tokens >= 4 && (!ReadUnsigned( tokens[0], left ) || !ReadUnsigned( tokens[1], right ) ||
 		!ReadUnsigned( tokens[2], top ) || !ReadUnsigned( tokens[3], bottom )) ) return false;
@@ -820,206 +824,42 @@ bool AsciiCommandParser::ParseRasterizeAnimation( const std::string* tokens, uns
 	return bRet;
 }
 
-bool ParseCausticPelSave( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
+bool AsciiCommandParser::ParsePhotonMap( const std::string* tokens, unsigned int count, IJob& job, AsciiCommandParser* )
 {
-	if( num_tokens < 1 ) {
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseCausticPelSave: Invalid number of paramters, need 1" );
-	}
-
-	return pJob.SaveCausticPelPhotonmap( tokens[0].c_str() );
-}
-
-bool ParseGlobalPelSave( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
-{
-	if( num_tokens < 1 ) {
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseGlobalPelSave: Invalid number of paramters, need 1" );
-	}
-
-	return pJob.SaveGlobalPelPhotonmap( tokens[0].c_str() );
-}
-
-bool ParseTranslucentPelSave( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
-{
-	if( num_tokens < 1 ) {
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseTranslucentPelSave: Invalid number of paramters, need 1" );
-	}
-
-	return pJob.SaveTranslucentPelPhotonmap( tokens[0].c_str() );
-}
-
-bool ParseShadowSave( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
-{
-	if( num_tokens < 1 ) {
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseShadowSave: Invalid number of paramters, need 1" );
-	}
-
-	return pJob.SaveShadowPhotonmap( tokens[0].c_str() );
-}
-
-
-bool ParseCausticSpectralSave( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
-{
-	if( num_tokens < 1 ) {
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseCausticSpectralSave: Invalid number of paramters, need 1" );
-	}
-
-	return pJob.SaveCausticSpectralPhotonmap( tokens[0].c_str() );
-}
-
-bool ParseCausticPelLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
-{
-	if( num_tokens < 1 ) {
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseCausticPelLoad: Invalid number of paramters, need 1" );
-	}
-
-	return pJob.LoadCausticPelPhotonmap( tokens[0].c_str() );
-}
-
-bool ParseTranslucentPelLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
-{
-	if( num_tokens < 1 ) {
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseTranslucentPelLoad: Invalid number of paramters, need 1" );
-	}
-
-	return pJob.LoadTranslucentPelPhotonmap( tokens[0].c_str() );
-}
-
-bool ParseGlobalPelLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
-{
-	if( num_tokens < 1 ) {
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseGlobalPelLoad: Invalid number of paramters, need 1" );
-	}
-
-	return pJob.LoadGlobalPelPhotonmap( tokens[0].c_str() );
-}
-
-bool ParseCausticSpectralLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
-{
-	if( num_tokens < 1 ) {
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseCausticSpectralLoad: Invalid number of paramters, need 1" );
-	}
-
-	return pJob.LoadCausticSpectralPhotonmap( tokens[0].c_str() );
-}
-
-bool ParseShadowLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob )
-{
-	if( num_tokens < 1 ) {
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseShadowLoad: Invalid number of paramters, need 1" );
-	}
-
-	return pJob.LoadShadowPhotonmap( tokens[0].c_str() );
-}
-
-bool AsciiCommandParser::ParsePhotonMap( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
-{
-	// Does stuff with photon map
-	if( num_tokens < 1 )
-	{
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParsePhotonMap: no map type specified" );
+	if( count < 3 || tokens[2].empty() ) {
+		GlobalLog()->PrintEasyError( "Usage: photonmap <type> <save|load> <file>" );
 		return false;
 	}
-
-	if( num_tokens < 2 )
-	{
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParsePhotonMap: no operation specified" );
-		return false;
-
-	}
-
-	if( tokens[0] == "caustic" )
-	{
-		if( tokens[1] == "save" )
-		{
-			return ParseCausticPelSave( &tokens[2], num_tokens-2, pJob );
-		}
-		else if( tokens[1] == "load" )
-		{
-			return ParseCausticPelLoad( &tokens[2], num_tokens-2, pJob );
-		}
-		else
-		{
-			GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParsePhotonMap: Unknown operation: %s", tokens[1].c_str() );
-			return false;
-		}
-	}
-	else if( tokens[0] == "global" )
-	{
-		if( tokens[1] == "save" )
-		{
-			return ParseGlobalPelSave( &tokens[2], num_tokens-2, pJob );
-		}
-		else if( tokens[1] == "load" )
-		{
-			return ParseGlobalPelLoad( &tokens[2], num_tokens-2, pJob );
-		}
-		else
-		{
-			GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParsePhotonMap: Unknown operation: %s", tokens[1].c_str() );
-			return false;
-		}
-	}
-	else if( tokens[0] == "translucent" )
-	{
-		if( tokens[1] == "save" )
-		{
-			return ParseTranslucentPelSave( &tokens[2], num_tokens-2, pJob );
-		}
-		else if( tokens[1] == "load" )
-		{
-			return ParseTranslucentPelLoad( &tokens[2], num_tokens-2, pJob );
-		}
-		else
-		{
-			GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParsePhotonMap: Unknown operation: %s", tokens[1].c_str() );
-			return false;
-		}
-	}
-	else if( tokens[0] == "spectral_caustic" )
-	{
-		if( tokens[1] == "save" )
-		{
-			return ParseCausticSpectralSave( &tokens[2], num_tokens-2, pJob );
-		}
-		else if( tokens[1] == "load" )
-		{
-			return ParseCausticSpectralLoad( &tokens[2], num_tokens-2, pJob );
-		}
-		else
-		{
-			GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParsePhotonMap: Unknown operation: %s", tokens[1].c_str() );
-			return false;
-		}
-	}
-	else if( tokens[0] == "shadow" )
-	{
-		if( tokens[1] == "save" )
-		{
-			return ParseShadowSave( &tokens[2], num_tokens-2, pJob );
-		}
-		else if( tokens[1] == "load" )
-		{
-			return ParseShadowLoad( &tokens[2], num_tokens-2, pJob );
-		}
-		else
-		{
-			GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParsePhotonMap: Unknown operation: %s", tokens[1].c_str() );
-			return false;
-		}
-	}
-	else
-	{
-		GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParsePhotonMap: Unknown photonmap type: %s", tokens[0].c_str() );
+	using Action = bool (IJob::*)(const char*);
+	struct Map {
+		std::string_view name;
+		Action save;
+		Action load;
+	};
+	static constexpr Map maps[] = {
+		{"caustic", &IJob::SaveCausticPelPhotonmap, &IJob::LoadCausticPelPhotonmap},
+		{"global", &IJob::SaveGlobalPelPhotonmap, &IJob::LoadGlobalPelPhotonmap},
+		{"translucent", &IJob::SaveTranslucentPelPhotonmap, &IJob::LoadTranslucentPelPhotonmap},
+		{"spectral_caustic", &IJob::SaveCausticSpectralPhotonmap, &IJob::LoadCausticSpectralPhotonmap},
+		{"shadow", &IJob::SaveShadowPhotonmap, &IJob::LoadShadowPhotonmap}
+	};
+	for( const auto& map : maps ) {
+		if( tokens[0] != map.name ) continue;
+		if( tokens[1] == "save" ) return (job.*map.save)( tokens[2].c_str() );
+		if( tokens[1] == "load" ) return (job.*map.load)( tokens[2].c_str() );
+		GlobalLog()->PrintEx( eLog_Error, "Unknown photon map operation: %s", tokens[1].c_str() );
 		return false;
 	}
+	GlobalLog()->PrintEx( eLog_Error, "Unknown photon map type: %s", tokens[0].c_str() );
+	return false;
 }
 
-static std::string AssembleFromTokens( const std::string* tokens, unsigned int num_tokens )
+static std::string JoinTokens( const std::string* tokens, unsigned int num_tokens )
 {
 	std::string ret;
 	for( unsigned int i=0; i<num_tokens; i++ ) {
+		if( i ) ret += ' ';
 		ret += tokens[i];
-		ret += ' ';
 	}
 
 	return ret;
@@ -1039,7 +879,7 @@ bool AsciiCommandParser::ParseMediaPath( const std::string* tokens, unsigned int
 			return false;
 		}
 
-		return GlobalMediaPathLocator().AddPath( AssembleFromTokens(&tokens[1],num_tokens-1).c_str() );
+		return GlobalMediaPathLocator().AddPath( JoinTokens(&tokens[1],num_tokens-1).c_str() );
 	}
 	else if( tokens[0] == "remove" )
 	{
@@ -1048,7 +888,7 @@ bool AsciiCommandParser::ParseMediaPath( const std::string* tokens, unsigned int
 			return false;
 		}
 
-		return GlobalMediaPathLocator().RemovePath( AssembleFromTokens(&tokens[1],num_tokens-1).c_str() );
+		return GlobalMediaPathLocator().RemovePath( JoinTokens(&tokens[1],num_tokens-1).c_str() );
 	}
 	else if( tokens[0] == "clearall" )
 	{
@@ -1057,10 +897,10 @@ bool AsciiCommandParser::ParseMediaPath( const std::string* tokens, unsigned int
 	}
 	else
 	{
-		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseMediaPath: Note sure what you want but valid commands are (add|remove|clearall)" );
+		GlobalLog()->PrintEasyError( "AsciiCommandParser::ParseMediaPath: expected add, remove, or clearall" );
 	}
 
-	return true;
+	return false;
 }
 
 bool AsciiCommandParser::ParseEcho( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise )
@@ -1070,14 +910,15 @@ bool AsciiCommandParser::ParseEcho( const std::string* tokens, unsigned int num_
 		return false;
 	}
 
+	const std::string message = JoinTokens( &tokens[1], num_tokens - 1 ) + ' ';
 	if( tokens[0] == "info" ) {
-		GlobalLog()->Print( eLog_Info, AssembleFromTokens(&tokens[1],num_tokens-1).c_str() );
+		GlobalLog()->Print( eLog_Info, message.c_str() );
 	} else if( tokens[0] == "warning" ) {
-		GlobalLog()->Print( eLog_Warning, AssembleFromTokens(&tokens[1],num_tokens-1).c_str() );
+		GlobalLog()->Print( eLog_Warning, message.c_str() );
 	} else if( tokens[0] == "event" ) {
-		GlobalLog()->Print( eLog_Event, AssembleFromTokens(&tokens[1],num_tokens-1).c_str() );
+		GlobalLog()->Print( eLog_Event, message.c_str() );
 	} else if( tokens[0] == "error" ) {
-		GlobalLog()->Print( eLog_Error, AssembleFromTokens(&tokens[1],num_tokens-1).c_str() );
+		GlobalLog()->Print( eLog_Error, message.c_str() );
 	} else {
 		GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParseEcho:: Unknown type '%s'", tokens[0].c_str() );
 		return false;

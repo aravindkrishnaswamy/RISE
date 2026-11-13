@@ -31,9 +31,12 @@
 
 #include <cstdio>
 #include <fstream>
+#include <filesystem>
 #include <string>
 #include "../src/Library/Interfaces/IShaderManager.h"
 #include "../src/Library/Utilities/PiecewiseLinearFunction.h"
+#include "../src/Library/Utilities/MediaPathLocator.h"
+#include "../src/Library/Parsers/AsciiCommandParser.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -138,16 +141,43 @@ int main()
 			"script rejects a malformed scalar before changing the job" );
 		script( "RISE ASCII SCRIPT 3\nset light_rr_threshold +0.25legacy\n", true,
 			"script preserves signed scalar prefixes" );
-		script( "RISE ASCII SCRIPT 3\nrenderanimation 999999999999999999999999\n", false,
-			"script rejects overflowing frame numbers" );
-		script( "RISE ASCII SCRIPT 3\nrender 0 10 bad 10\n", false,
-			"script rejects malformed raster bounds before starting a render" );
+		struct CommandJob final : Job {
+			unsigned int calls = 0;
+			bool Rasterize() override { ++calls; return true; }
+			bool RasterizeRegion( unsigned int, unsigned int, unsigned int, unsigned int ) override { ++calls; return true; }
+			bool RasterizeAnimationUsingOptions( unsigned int ) override { ++calls; return true; }
+			bool SaveCausticPelPhotonmap( const char* ) override { ++calls; return true; }
+			void SetProgress( IProgressCallback* ) override { ++calls; }
+		};
+		auto* commandJob = new CommandJob();
+		auto* parser = new AsciiCommandParser();
+		Check( !parser->ParseCommand( "renderanimation 999999999999999999999999", *commandJob ) &&
+			!parser->ParseCommand( "render 0 10 bad 10", *commandJob ) &&
+			!parser->ParseCommand( "render 0 10 2", *commandJob ) &&
+			!parser->ParseCommand( "photonmap caustic save", *commandJob ) && commandJob->calls == 0,
+			"malformed arguments fail before touching the job" );
+		Check( parser->ParseCommand( "photonmap caustic save file.photonmap", *commandJob ) &&
+			commandJob->calls == 1, "valid photon map command dispatches once" );
+		parser->release();
+		commandJob->release();
 		script( "RISE ASCII SCRIPT 3\nrun \"" + path + "\"", false, "script rejects a recursive run" );
 		const std::string child = RISE::TestSupport::ScratchPath( "child_ascii.RISEscript" );
 		Check( WriteTmp( child.c_str(), "RISE ASCII SCRIPT 3\nclearall" ), "write nested script fixture" );
 		script( "RISE ASCII SCRIPT 3\nrun \"" + child + "\"\nrun \"" + child + "\"", true,
 			"script can run a child again after it returns" );
 		std::remove( child.c_str() );
+		const auto media = std::filesystem::path( RISE::TestSupport::ScratchPath( "script media root" ) );
+		std::filesystem::create_directory( media );
+		const std::string filename = "rise_script_media_fixture.txt";
+		const std::string found = (media / filename).string();
+		Check( WriteTmp( found.c_str(), "fixture" ), "write script media lookup fixture" );
+		script( "RISE ASCII SCRIPT 3\nmediapath add \"" + media.string() + "\"", true,
+			"script adds a quoted media root" );
+		Check( std::filesystem::path(GlobalMediaPathLocator().Find( filename.c_str() ).c_str()) == media / filename,
+			"script media root resolves a real file without a trailing space" );
+		script( "RISE ASCII SCRIPT 3\nmediapath remove \"" + media.string() + "\"", true,
+			"script removes a quoted media root" );
+		std::filesystem::remove_all( media );
 	}
 
 	{
