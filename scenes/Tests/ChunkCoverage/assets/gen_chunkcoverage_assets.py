@@ -48,11 +48,7 @@ def gen_tiff():
 def gen_3ds():
     """Minimal one-triangle .3ds -> 3dsmesh_geometry.
 
-    RISE's TriangleMeshLoader3DS only reads the MAIN3DS/EDIT3DS/EDIT_OBJECT/
-    OBJ_TRIMESH/TRI_VERTEXL/TRI_FACEL1 chunk chain (it ignores everything else)
-    and requires byte 28 of the file to be >= 3 (its crude version gate).  The
-    layout below satisfies both: the M3D_VERSION chunk right after the 6-byte
-    MAIN header makes the file long enough that byte 28 is a non-zero length byte.
+    The MAIN3DS chunk carries a version and one EDIT3DS triangle mesh.
     """
     def chunk(cid, payload):
         return struct.pack('<HI', cid, 6 + len(payload)) + payload
@@ -66,7 +62,6 @@ def gen_3ds():
     trimesh = chunk(OBJ_TRIMESH, chunk(TRI_VERTEXL, vbuf) + chunk(TRI_FACEL1, fbuf))
     obj = chunk(EDIT_OBJECT, b'cube\x00' + trimesh)
     main = chunk(MAIN3DS, ver + chunk(EDIT3DS, obj))
-    assert main[28] >= 3, "byte 28 must satisfy the loader's version gate"
     with open(os.path.join(HERE, 'tiny.3ds'), 'wb') as f:
         f.write(main)
     print("wrote tiny.3ds")

@@ -1059,6 +1059,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\CPU.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\CubicInterpolator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskBuffer.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\LittleEndian.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RenderParallelScope.h" />

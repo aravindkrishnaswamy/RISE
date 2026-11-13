@@ -1290,6 +1290,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskBuffer.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\LittleEndian.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.h">
       <Filter>Utilities</Filter>
     </ClInclude>

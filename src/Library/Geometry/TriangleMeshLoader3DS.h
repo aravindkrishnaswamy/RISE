@@ -39,8 +39,6 @@ namespace RISE
 
 			bool FindMeshChunk( unsigned int object, unsigned short wanted, unsigned int& payloadSize );
 
-			bool LoadTriangleMesh_GoodObjNum( ITriangleMeshGeometryIndexed* pGeom, int obj, bool bRecenter );
-
 		public:
 			TriangleMeshLoader3DS( IReadBuffer* pBuffer_ );
 
