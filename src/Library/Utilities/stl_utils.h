@@ -35,32 +35,6 @@ namespace RISE
 			v.swap( opto );
 		}
 
-		template<typename A, typename B>
-		inline bool shuffle( std::vector< A > const& left, std::vector< B > const& right, std::vector< std::pair< A, B > >& result ) {
-			typedef std::vector< A > const left_t;
-			typedef std::vector< B > const right_t;
-
-			// sanity check
-			if (left.size() != right.size()) {
-				return false;
-			}
-
-			// result.clear(); // optional really, but hey.
-			result.reserve( result.size() + left.size() );
-
-			typename left_t::const_iterator it_l;
-			typename right_t::const_iterator it_r;
-			{for(
-				(it_l = left.begin()), (it_r = right.begin());
-				(it_l != left.end()) && (it_r != right.end());
-				++it_l, ++it_r
-				)
-			{
-				result.push_back( std::pair< A, B >( *it_l, *it_r ) );
-			}}
-
-			return true;
-		}
 	}
 }
 
