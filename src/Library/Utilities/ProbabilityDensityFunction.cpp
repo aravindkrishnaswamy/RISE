@@ -19,11 +19,13 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-ProbabilityDensityFunction::ProbabilityDensityFunction()
+ProbabilityDensityFunction::ProbabilityDensityFunction() :
+	LUTwarped{}, LUTweight{}, meanProbability( 0 )
 {
 }
 
-ProbabilityDensityFunction::ProbabilityDensityFunction( const IFunction1D* pFunc, const unsigned int numsteps )
+ProbabilityDensityFunction::ProbabilityDensityFunction( const IFunction1D* pFunc, const unsigned int numsteps ) :
+	ProbabilityDensityFunction()
 {
 	// Build from the function
 	Scalar	accrued=0;
@@ -40,21 +42,28 @@ ProbabilityDensityFunction::ProbabilityDensityFunction( const IFunction1D* pFunc
 	BuildLUT();
 }
 
-ProbabilityDensityFunction::ProbabilityDensityFunction( const SpectralPacket& func )
+ProbabilityDensityFunction::ProbabilityDensityFunction( const SpectralPacket& func ) :
+	ProbabilityDensityFunction()
 {
 	// Build from the robust spectral packet
 	Scalar	accrued=0;
-	for( Scalar i=func.minLambda(), e=func.maxLambda(); i<e; i+=func.deltaLambda() )
+	Scalar wavelength = func.minLambda();
+	for( unsigned int bin=0; bin<func.NumBins() && wavelength<func.maxLambda(); ++bin )
 	{
 		// We are only interested in the visible spectrum
-		if( i>= 380 && i<= 720 )
+		if( wavelength>= 380 && wavelength<= 720 )
 		{
 			ProbPair prob;
-			prob.first = i;
+			prob.first = wavelength;
 			prob.second = func.ValueAtNM( prob.first );
 			accrued += prob.second;
 			values.push_back( prob );
 		}
+		const Scalar next = wavelength + func.deltaLambda();
+		if( !(next > wavelength) ) {
+			break;
+		}
+		wavelength = next;
 	}
 
 	if( func.minLambda() == 400.0 && func.maxLambda() == 700.0 && func.deltaLambda() == 300.0 ) {
@@ -109,10 +118,14 @@ void ProbabilityDensityFunction::Normalize( )
 
 Scalar ProbabilityDensityFunction::warp( const Scalar canonical, Scalar& weight, bool bUseLUT ) const
 {
+	weight = 0;
 	if( bUseLUT ) {
 		unsigned int idx = (unsigned int)(canonical*1023.0);
 		weight = LUTweight[ idx ];
 		return LUTwarped[ idx ];
+	}
+	if( values.empty() ) {
+		return 0;
 	}
 
 	// Iterate through the values

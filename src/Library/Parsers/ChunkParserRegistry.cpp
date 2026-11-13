@@ -1369,6 +1369,10 @@ namespace RISE
 						GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: no samples (empty / all-comment file, no inline cp)", name.c_str() );
 						return false;
 					}
+					if( amplitudes.size() != wavelengths.size() ) {
+						GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: wavelength and amplitude sample counts differ", name.c_str() );
+						return false;
+					}
 					return pJob.AddSpectralColorPainter( name.c_str(), &amplitudes[0], &wavelengths[0], nmbegin, nmend, static_cast<unsigned int>(amplitudes.size()), scale );
 				}
 

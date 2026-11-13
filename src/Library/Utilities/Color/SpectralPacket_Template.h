@@ -103,7 +103,9 @@ namespace RISE
 		inline		SpectralPacket_Template<T, lambda_begin, lambda_end, I>	operator=(
 			const SpectralPacket_Template<T, lambda_begin, lambda_end, I>& s )
 		{
-			memcpy( amplitudes, s.amplitudes, sizeof( T ) * I );
+			if( this != &s ) {
+				memcpy( amplitudes, s.amplitudes, sizeof( T ) * I );
+			}
 
 			// Return the left hand side
 			return *this;
@@ -248,9 +250,12 @@ namespace RISE
 				return 0;
 			}
 
-			// Find the rigt frequency
-			int idx = (nm-lambda_begin)/delta;
-			return amplitudes[idx];
+			// The upper endpoint belongs to the last bin.
+			if( nm == lambda_end || delta == 0 ) {
+				return amplitudes[I-1];
+			}
+			const int idx = (nm-lambda_begin)/delta;
+			return amplitudes[idx < I ? idx : I-1];
 		}
 	};
 

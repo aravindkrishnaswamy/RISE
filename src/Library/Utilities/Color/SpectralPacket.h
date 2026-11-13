@@ -104,7 +104,7 @@ namespace RISE
 		lambda_begin( lambda_begin_ ),
 		lambda_end( lambda_end_ ),
 		num_freq( num_freq_ ),
-		delta( (lambda_end-lambda_begin) / Scalar(num_freq) )
+		delta( num_freq ? (lambda_end-lambda_begin) / Scalar(num_freq) : 0 )
 		{
 			amplitudes = new Scalar[num_freq];
 			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
@@ -113,14 +113,14 @@ namespace RISE
 				amplitudes[i] = 0;
 			}
 
-			OVnumfreq = 1.0 / Scalar(num_freq);
+			OVnumfreq = num_freq ? 1.0 / Scalar(num_freq) : 0;
 		}
 
 		SpectralPacket( Scalar lambda_begin_, Scalar lambda_end_, unsigned int num_freq_, Scalar& d ) : 
 		lambda_begin( lambda_begin_ ),
 		lambda_end( lambda_end_ ),
 		num_freq( num_freq_ ),
-		delta( (lambda_end-lambda_begin) / Scalar(num_freq) )
+		delta( num_freq ? (lambda_end-lambda_begin) / Scalar(num_freq) : 0 )
 		{
 			amplitudes = new Scalar[num_freq];
 			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
@@ -129,24 +129,22 @@ namespace RISE
 				amplitudes[i] = d;
 			}
 
-			OVnumfreq = 1.0 / Scalar(num_freq);
+			OVnumfreq = num_freq ? 1.0 / Scalar(num_freq) : 0;
 		}
 
 		SpectralPacket( Scalar lambda_begin_, Scalar lambda_end_, unsigned int num_freq_, const IFunction1D* pFunc ) : 
 		lambda_begin( lambda_begin_ ),
 		lambda_end( lambda_end_ ),
 		num_freq( num_freq_ ),
-		delta( (lambda_end-lambda_begin) / Scalar(num_freq) )
+		delta( num_freq ? (lambda_end-lambda_begin) / Scalar(num_freq) : 0 )
 		{
-			amplitudes = new Scalar[num_freq];
-			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
-
-			// Pull the values from the function
+			std::unique_ptr<Scalar[]> samples( new Scalar[num_freq] );
 			for( unsigned int i=0; i<num_freq; i++ ) {
-				amplitudes[i] = pFunc->Evaluate( lambda_begin + (i*delta) );
+				samples[i] = pFunc->Evaluate( lambda_begin + (i*delta) );
 			}
-				
-			OVnumfreq = 1.0 / Scalar(num_freq);
+			OVnumfreq = num_freq ? 1.0 / Scalar(num_freq) : 0;
+			GlobalLog()->PrintNew( samples.get(), __FILE__, __LINE__, "amplitudes" );
+			amplitudes = samples.release();
 		}
 
 		//
@@ -301,19 +299,18 @@ namespace RISE
 		{
 			// Get the value at the particular wavelength
 
-			// Outside the frequency range
-			if( nm < lambda_begin || nm > lambda_end ) {
+			if( num_freq == 0 || !(nm >= lambda_begin && nm <= lambda_end) ) {
 				return 0;
 			}
 
-			// Find the rigt frequency.  nm == lambda_end lands one past the
-			// last bin; it belongs to the last bin (DL-464: this read past
-			// the array).
-			unsigned int idx = (unsigned int)((nm-lambda_begin)/delta);
-			if( idx >= num_freq ) {
-				idx = num_freq - 1;
+			// The upper endpoint belongs to the last bin, including a
+			// packet whose endpoints coincide.
+			if( nm == lambda_end || delta == 0 ) {
+				return amplitudes[num_freq-1];
 			}
-			return amplitudes[idx];
+			const Scalar bin = (nm-lambda_begin) / delta;
+			return bin >= 0 && bin < num_freq
+				? amplitudes[static_cast<unsigned int>(bin)] : amplitudes[num_freq-1];
 		}
 	};
 }
