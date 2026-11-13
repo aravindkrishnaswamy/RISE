@@ -419,6 +419,34 @@ static void TestPNG()
 			std::fabs( pixel.base.g - expected.base.g ) < 1e-12 &&
 			std::fabs( pixel.base.b - expected.base.b ) < 1e-12,
 			"D: 16-bit PNG decodes independently specified network-order RGBA samples" );
+		rgba16.pop_back();
+		Check( !RunPNG( rgba16, w, h ), "D: short PNG read returns failure" );
+	}
+
+	for( unsigned char colorType : { 0, 4 } ) {
+		std::vector<char> grayscale;
+		for( unsigned char byte : sig ) AppendByte( grayscale, byte );
+		AppendPNGChunk( grayscale, "IHDR", { 0,0,0,1, 0,0,0,1, 16,colorType,0,0,0 } );
+		const unsigned char grayRow[] = { 0, 0x12,0x34, 0x56,0x78 };
+		compressed.resize( compressBound( sizeof(grayRow) ) );
+		length = static_cast<uLongf>( compressed.size() );
+		if( compress( compressed.data(), &length, grayRow, colorType == 4 ? 5 : 3 ) != Z_OK ) {
+			Check( false, "D: compress grayscale fixture" );
+			continue;
+		}
+		compressed.resize( length );
+		AppendPNGChunk( grayscale, "IDAT", compressed );
+		AppendPNGChunk( grayscale, "IEND", {} );
+		RISEColor pixel;
+		const bool ok = RunPNG( grayscale, w, h, &pixel );
+		const double gray = 0x1234 / 65535.0;
+		const RISEPel expected( Rec709RGBPel( gray, gray, gray ) );
+		const double alpha = colorType == 4 ? 0x5678 / 65535.0 : 1.0;
+		Check( ok && w == 1 && h == 1 && std::fabs( pixel.a-alpha ) < 1e-12 &&
+			std::fabs( pixel.base.r-expected.r ) < 1e-12 &&
+			std::fabs( pixel.base.g-expected.g ) < 1e-12 &&
+			std::fabs( pixel.base.b-expected.b ) < 1e-12,
+			colorType == 4 ? "D: expanded grayscale preserves alpha" : "D: expanded grayscale has opaque alpha" );
 	}
 }
 #endif

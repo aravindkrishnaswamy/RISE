@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "PNGReader.h"
 #include "../Interfaces/ILog.h"
+#include <limits>
 
 #ifndef NO_PNG_SUPPORT
 	#include <png.h>
@@ -56,15 +57,15 @@ png_read_data(png_structp png_ptr, png_bytep data, png_size_t length)
 {
 	IReadBuffer*	pBuffer = (IReadBuffer*)png_get_io_ptr(png_ptr);
 
-	if( pBuffer ) {
-		pBuffer->getBytes( (char*)data, static_cast<unsigned int>(length) );
-	} else {
-		GlobalLog()->PrintSourceError( "png_read_data (callback func):: bad MemoryBuffer", __FILE__, __LINE__ );
+	if( !pBuffer || length > std::numeric_limits<unsigned int>::max() ||
+		!pBuffer->getBytes( data, static_cast<unsigned int>(length) ) ) {
+		png_error( png_ptr, "Truncated PNG data" );
 	}
 }
 
 bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 {
+	EndRead();
 	if( pReadBuffer.Size() == 0 ) {
 		GlobalLog()->PrintSourceError( "PNGReader::BeginRead:: Passed empty buffer to read from", __FILE__, __LINE__ );
 		return false;
@@ -74,20 +75,22 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 
 	if( !png_ptr ) {
 		GlobalLog()->PrintSourceError( "PNGReader:: Could not allocate structure", __FILE__, __LINE__ );
+		return false;
 	}
 
 	png_infop info_ptr = png_create_info_struct(png_ptr);
 
 	if( !info_ptr ) {
-		png_destroy_write_struct(&png_ptr, NULL);
+		png_destroy_read_struct( &png_ptr, nullptr, nullptr );
 		GlobalLog()->PrintSourceError( "PNGReader:: Could not create info structure", __FILE__, __LINE__ );
+		return false;
 	}
 
-//	if( setjmp( png_ptr->jumpbuf ) )
-//	{
-//		png_destroy_write_struct(&png_ptr, info_ptr);
-//		GlobalLog()->PrintSourceError( "PNGWriter:: Could not setjmp", __FILE__, __LINE__ );
-//	}
+	if( setjmp( png_jmpbuf( png_ptr ) ) ) {
+		png_destroy_read_struct( &png_ptr, &info_ptr, nullptr );
+		EndRead();
+		return false;
+	}
 	
 	// Set a read function to read from our buffer rather than file
 	png_set_read_fn( png_ptr, (void*)&pReadBuffer, png_read_data );
@@ -116,15 +119,21 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 		png_set_gray_to_rgb(png_ptr);
 	}
 
-	bAlphaInfo = false;
-
-	if (color_type == PNG_COLOR_TYPE_RGBA) {
-		bAlphaInfo = true;
+	if( color_type == PNG_COLOR_TYPE_PALETTE ) {
+		png_set_palette_to_rgb( png_ptr );
 	}
-	
-	int nPngChannels = png_get_channels(png_ptr, info_ptr);
+	if( bit_depth < 8 && color_type == PNG_COLOR_TYPE_GRAY ) {
+		png_set_expand_gray_1_2_4_to_8( png_ptr );
+	}
+	if( png_get_valid( png_ptr, info_ptr, PNG_INFO_tRNS ) ) {
+		png_set_tRNS_to_alpha( png_ptr );
+	}
 
+	const int passes = png_set_interlace_handling( png_ptr );
 	png_read_update_info(png_ptr, info_ptr);
+	bpp = png_get_bit_depth( png_ptr, info_ptr );
+	const int channels = png_get_channels( png_ptr, info_ptr );
+	bAlphaInfo = channels == 4;
 
 	// Get the gamma from the file
 //	png_get_gAMA(png_ptr, info_ptr, &png_file_gamma);
@@ -139,28 +148,27 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 	// `height*image_stride` product can wrap to a tiny allocation that
 	// png_read_row then writes past (heap OOB write).  Compute the stride
 	// and total in 64-bit and cap at a sane ceiling; reject (releasing the
-	// libpng structs) before allocating on overflow / degenerate size.  A
-	// sub-8-bit depth makes (bit_depth>>3)==0 -> stride 0 -> total 0, which
-	// ReadColor cannot represent anyway, so it is rejected here too.
-	const unsigned long long stride64 =
-		(unsigned long long)width * (unsigned long long)nPngChannels * (unsigned long long)(bit_depth>>3);
-	const unsigned long long total64 = (unsigned long long)height * stride64;
+	// libpng structs) before allocating on overflow or unsupported layout.
+	const auto image_stride = png_get_rowbytes( png_ptr, info_ptr );
 	static const unsigned long long kMaxImageBytes = 2ULL * 1024 * 1024 * 1024; // 2 GiB ceiling
-	if( total64 == 0 || total64 > kMaxImageBytes ) {
+	if( (bpp != 8 && bpp != 16) || (channels != 3 && channels != 4) || height == 0 ||
+		image_stride != static_cast<unsigned long long>(width) * channels * (bpp/8) ||
+		image_stride == 0 || image_stride > kMaxImageBytes / height ) {
 		GlobalLog()->Print( eLog_Error, "PNGReader: Invalid or too-large image dimensions" );
 		png_destroy_read_struct( &png_ptr, &info_ptr, (png_infopp)NULL );
 		return false;
 	}
-	const size_t image_stride = (size_t)stride64;
-	const size_t nBytes = (size_t)total64;
+	const size_t nBytes = image_stride * height;
 
 	pBuffer = new unsigned char[nBytes];
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 	memset( pBuffer, 0, nBytes );          // full allocation (was width*height*nPngChannels — undersized for 16-bit depth)
 
 	// Read scanline by scanline
-	for( unsigned int y=0; y<height; y++ ) {
-		png_read_row(png_ptr, &pBuffer[(size_t)y*image_stride], NULL);
+	for( int pass=0; pass<passes; ++pass ) {
+		for( unsigned int y=0; y<height; y++ ) {
+			png_read_row(png_ptr, &pBuffer[(size_t)y*image_stride], NULL);
+		}
 	}
 
 	// Close
