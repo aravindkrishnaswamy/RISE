@@ -18,6 +18,7 @@
 #include "../Utilities/MediaPathLocator.h"
 #include <fstream>
 #include <sstream>
+#include <cstdlib>
 #include "../Utilities/FiniteMath.h"
 
 using namespace RISE;
@@ -62,7 +63,11 @@ bool TriangleMeshLoaderRAW::LoadTriangleMesh( ITriangleMeshGeometry* pGeom )
 		double vertices[12];
 		const int coordinateCount = kind == "tri" ? 9 : 12;
 		for( int coordinate = 0; coordinate < coordinateCount; ++coordinate ) {
-			if( !(fields >> vertices[coordinate]) || !IsFiniteDouble( vertices[coordinate] ) ) {
+			std::string token;
+			fields >> token;
+			char* end = nullptr;
+			vertices[coordinate] = std::strtod( token.c_str(), &end );
+			if( token.empty() || end != token.data() + token.size() || !IsFiniteDouble( vertices[coordinate] ) ) {
 				GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW:: Invalid polygon coordinates" );
 				return false;
 			}
@@ -139,6 +144,7 @@ bool TriangleMeshLoaderRAW::LoadTriangleMesh( ITriangleMeshGeometry* pGeom )
 	for( const Triangle& triangle : triangles ) {
 		pGeom->AddTriangle( triangle );
 	}
+	std::vector<Triangle>().swap( triangles );
 	pGeom->DoneTriangles();
 	
 	return true;
