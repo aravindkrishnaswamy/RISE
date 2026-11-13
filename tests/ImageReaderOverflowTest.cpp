@@ -144,6 +144,28 @@ static void TestRasterStorage()
 	Check( destroyed, "the last borrowed view releases its source" );
 }
 
+static void TestHDRWriterBounds()
+{
+	auto* buffer = new MemoryBuffer();
+	IRasterImageWriter* writer = nullptr;
+	const bool made = RISE_API_CreateHDRWriter( &writer, *buffer, eColorSpace_Rec709RGB_Linear );
+	if( !made || !writer ) {
+		Check( false, "create HDR writer" );
+		buffer->release();
+		return;
+	}
+	writer->BeginWrite( 65536, 65536 );
+	writer->WriteColor( RISEColor(1, 0, 0, 1), 0, 0 );
+	writer->EndWrite();
+	Check( buffer->getCurPos() == 0, "invalid HDR dimensions emit no partial header or pixels" );
+	writer->BeginWrite( 1, 1 );
+	writer->WriteColor( RISEColor(1, 0, 0, 1), 0, 0 );
+	writer->EndWrite();
+	Check( buffer->getCurPos() > 4, "HDR writer can start a valid image after a rejected size" );
+	writer->release();
+	buffer->release();
+}
+
 //----------------------------------------------------------------------
 // Byte-buffer helpers.
 //----------------------------------------------------------------------
@@ -638,6 +660,7 @@ static void TestTIFF()
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	TestRasterStorage();
+	TestHDRWriterBounds();
 	std::cout << "ImageReaderOverflowTest — header-driven write-side overflows are rejected"
 		<< std::endl;
 
