@@ -51,8 +51,15 @@ StandardShader::StandardShader(
 }
 
 StandardShader::StandardShader( const StandardShader& other ) :
-	StandardShader( other.shaderops )
+	Reference( other ),
+	shaderops( other.shaderops ),
+	bComputeSPF( other.bComputeSPF ),
+	bHasDirectLightingOp( other.bHasDirectLightingOp ),
+	bHasBsdfContinuationOp( other.bHasBsdfContinuationOp )
 {
+	for( IShaderOp* op : shaderops ) {
+		op->addref();
+	}
 }
 
 StandardShader::~StandardShader( )

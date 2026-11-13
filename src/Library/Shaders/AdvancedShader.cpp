@@ -101,8 +101,13 @@ AdvancedShader::AdvancedShader(
 }
 
 AdvancedShader::AdvancedShader( const AdvancedShader& other ) :
-	AdvancedShader( other.shaderops )
+	Reference( other ),
+	shaderops( other.shaderops ),
+	bComputeSPF( other.bComputeSPF )
 {
+	for( const SHADE_OP& op : shaderops ) {
+		op.pShaderOp->addref();
+	}
 }
 
 AdvancedShader::~AdvancedShader( )
