@@ -16,6 +16,11 @@
 #include "DiskFileReadBuffer.h"
 #include "../Interfaces/ILog.h"
 #include <string.h>
+#include <limits>
+#include <cstdint>
+#ifdef _WIN32
+#include <io.h>
+#endif
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "MediaPathLocator.h"
@@ -24,23 +29,31 @@ using namespace RISE::Implementation;
 
 DiskFileReadBuffer::DiskFileReadBuffer( const char * file_name ) : nSize( 0 )
 {
-	strncpy( szFileName, GlobalMediaPathLocator().Find(file_name).c_str(), 1024 );
+	if( !file_name ) return;
+	filename = GlobalMediaPathLocator().Find( file_name ).c_str();
 
-	struct stat file_stats = {0};
-
-	if( stat( szFileName, &file_stats ) == -1 ) {
-		GlobalLog()->PrintEx( eLog_Warning, "DiskFileReadBuffer:: Could not stat file \'%s\'", file_name );
-	} else {
-		nSize = static_cast<unsigned int>(file_stats.st_size);
-
-		hFile = fopen( szFileName, "rb" );
-
-		if( hFile == 0 ) {
-			GlobalLog()->PrintEx( eLog_Warning, "DiskFileReadBuffer:: Failed to open file \'%s\'", file_name );
-		} else {
-			GlobalLog()->PrintEx( eLog_Info, "DiskFileReadBuffer:: Opened file \'%s\' of size %d bytes for reading", file_name, nSize );
-		}
+	hFile = fopen( filename.c_str(), "rb" );
+	if( !hFile ) {
+		GlobalLog()->PrintEx( eLog_Warning, "DiskFileReadBuffer:: Failed to open file '%s'", file_name );
+		return;
 	}
+#ifdef _WIN32
+	struct _stat64 fileStats{};
+	const bool regular = _fstat64( _fileno(hFile), &fileStats ) == 0 &&
+		(fileStats.st_mode & _S_IFMT) == _S_IFREG;
+#else
+	struct stat fileStats{};
+	const bool regular = fstat( fileno(hFile), &fileStats ) == 0 && S_ISREG( fileStats.st_mode );
+#endif
+	if( !regular || fileStats.st_size < 0 ||
+		static_cast<std::uintmax_t>(fileStats.st_size) > std::numeric_limits<unsigned int>::max() ) {
+		fclose( hFile );
+		hFile = nullptr;
+		GlobalLog()->PrintEx( eLog_Warning, "DiskFileReadBuffer:: Unsupported file or size '%s'", file_name );
+		return;
+	}
+	nSize = static_cast<unsigned int>(fileStats.st_size);
+	GlobalLog()->PrintEx( eLog_Info, "DiskFileReadBuffer:: Opened file '%s' of size %u bytes for reading", file_name, nSize );
 }
 
 DiskFileReadBuffer::~DiskFileReadBuffer( )

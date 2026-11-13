@@ -31,13 +31,15 @@ DiskBuffer::~DiskBuffer( )
 
 unsigned int DiskBuffer::HowFarToEnd( ) const
 {
-	return Size() - getCurPos();
+	const unsigned int size = Size();
+	const unsigned int cursor = getCurPos();
+	return cursor < size ? size - cursor : 0;
 }
 
 unsigned int DiskBuffer::Size( ) const
 {	
 	struct stat file_stats = {0};
-	stat( szFileName, &file_stats );
+	stat( filename.c_str(), &file_stats );
 	return static_cast<unsigned int>(file_stats.st_size);
 }
 

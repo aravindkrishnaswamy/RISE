@@ -33,26 +33,27 @@ namespace RISE
 
 			// This is the only constructor
 			DiskFileReadBuffer( const char * file_name );
+			unsigned int Size() const override { return nSize; }
 
 			//
 			// This is for the IReadBuffer interface
 			//
 
-			char getChar();
-			unsigned char getUChar();
+			char getChar() override;
+			unsigned char getUChar() override;
 
-			short getWord();
-			unsigned short getUWord();
+			short getWord() override;
+			unsigned short getUWord() override;
 
-			int getInt();
-			unsigned int getUInt();
+			int getInt() override;
+			unsigned int getUInt() override;
 
-			float getFloat();
-			double getDouble();
+			float getFloat() override;
+			double getDouble() override;
 
-			bool getBytes( void* pDest, unsigned int amount );
+			bool getBytes( void* pDest, unsigned int amount ) override;
 
-			int getLine( char* pDest, unsigned int max );
+			int getLine( char* pDest, unsigned int max ) override;
 
 		protected:
 			// Default destructor

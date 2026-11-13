@@ -17,6 +17,7 @@
 #include "../Interfaces/IBuffer.h"
 #include "Reference.h"
 #include <stdio.h>
+#include <string>
 
 #ifndef DISK_BUFFER_
 #define DISK_BUFFER_
@@ -44,7 +45,7 @@ namespace RISE
 			virtual ~DiskBuffer();
 
 			FILE*		hFile;				///< Handle to the file on disk
-			char		szFileName[1024];	///< Name of the file
+			std::string filename;			///< Name of the file
 		};
 	}
 }

@@ -16,6 +16,7 @@
 #include "../Interfaces/IWriteBuffer.h"
 #include "DiskBuffer.h"
 #include "Reference.h"
+#include <functional>
 
 #ifndef DISKFILEWRITE_BUFFER_
 #define DISKFILEWRITE_BUFFER_
@@ -59,12 +60,19 @@ namespace RISE
 
 			bool ReadyToWrite() const;
 			// Close the output and report buffered write errors.
-			bool Finish();
+			bool Finish( bool requireOutput = false );
+			// Publish a completed, nonempty output beside the destination.
+			static bool WriteAtomically( const std::string& path,
+				const std::function<bool(DiskFileWriteBuffer&)>& write );
 
 
 		protected:
 			// Default destructor
 			virtual ~DiskFileWriteBuffer( );
+
+		private:
+			bool hasWritten = false;
+			bool writeFailed = false;
 		};
 	}
 }

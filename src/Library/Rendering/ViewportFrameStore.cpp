@@ -33,6 +33,47 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		namespace
+		{
+			class CheckedWriteBuffer final : public IWriteBuffer, public Reference
+			{
+			public:
+				explicit CheckedWriteBuffer( IWriteBuffer& target ) : target_( target ) {}
+
+				unsigned int HowFarToEnd() const override { return target_.HowFarToEnd(); }
+				unsigned int Size() const override { return target_.Size(); }
+				bool EndOfBuffer() const override { return target_.EndOfBuffer(); }
+				bool seek( eSeek origin, int offset ) override { return Record( target_.seek( origin, offset ), false ); }
+				unsigned int getCurPos() const override { return target_.getCurPos(); }
+				bool setChar( char v ) override { return Record( target_.setChar( v ) ); }
+				bool setUChar( unsigned char v ) override { return Record( target_.setUChar( v ) ); }
+				bool setWord( short v ) override { return Record( target_.setWord( v ) ); }
+				bool setUWord( unsigned short v ) override { return Record( target_.setUWord( v ) ); }
+				bool setInt( int v ) override { return Record( target_.setInt( v ) ); }
+				bool setUInt( unsigned int v ) override { return Record( target_.setUInt( v ) ); }
+				bool setFloat( float v ) override { return Record( target_.setFloat( v ) ); }
+				bool setDouble( double v ) override { return Record( target_.setDouble( v ) ); }
+				bool setBytes( const void* bytes, unsigned int size ) override
+				{
+					return Record( target_.setBytes( bytes, size ), size != 0 );
+				}
+				void Clear() override { target_.Clear(); written_ = false; }
+				bool Resize( unsigned int size, bool force ) override { return target_.Resize( size, force ); }
+				bool ResizeForMore( unsigned int size ) override { return target_.ResizeForMore( size ); }
+				bool Succeeded() const { return written_ && !failed_; }
+
+			private:
+				bool Record( bool ok, bool wrote = true )
+				{
+					failed_ |= !ok;
+					written_ |= ok && wrote;
+					return ok;
+				}
+				IWriteBuffer& target_;
+				bool written_ = false;
+				bool failed_ = false;
+			};
+		}
 
 		// ─────────────────────────────────────────────────────────────
 		// BridgeObserver — internal IRenderObserver registered on the
@@ -518,24 +559,21 @@ namespace RISE
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( !snap ) return false;
 
-			DiskFileWriteBuffer* buf = new DiskFileWriteBuffer( path.c_str() );
-			if ( !buf->ReadyToWrite() ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"ViewportFrameStore::SaveAs: failed to open '%s' for writing",
-					path.c_str() );
-				safe_release( buf );
-				snap->release();
-				return false;
-			}
-
-			GlobalLog()->PrintNew( buf, __FILE__, __LINE__, "DiskFileWriteBuffer" );
-			encoder->Encode( *snap, *buf, opts );
-			safe_release( buf );
+			const bool written = DiskFileWriteBuffer::WriteAtomically( path,
+				[&]( DiskFileWriteBuffer& buffer ) {
+					encoder->Encode( *snap, buffer, opts );
+					return true;
+				} );
 			snap->release();
 
-			GlobalLog()->PrintEx( eLog_Event,
-				"ViewportFrameStore::SaveAs: written to '%s'", path.c_str() );
-			return true;
+			if( written ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"ViewportFrameStore::SaveAs: written to '%s'", path.c_str() );
+			} else {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"ViewportFrameStore::SaveAs: failed to write '%s'", path.c_str() );
+			}
+			return written;
 		}
 
 		bool ViewportFrameStore::SaveTo(
@@ -546,9 +584,10 @@ namespace RISE
 			if ( !encoder ) return false;
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( !snap ) return false;
-			encoder->Encode( *snap, dst, opts );
+			CheckedWriteBuffer checked( dst );
+			encoder->Encode( *snap, checked, opts );
 			snap->release();
-			return true;
+			return checked.Succeeded();
 		}
 
 		// ─────────────────────────────────────────────────────────────

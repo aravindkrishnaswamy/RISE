@@ -14,6 +14,14 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <atomic>
+#include <filesystem>
+#include <memory>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 #include <string.h>
 #include "DiskFileWriteBuffer.h"
 #include "../Interfaces/ILog.h"
@@ -23,12 +31,9 @@ using namespace RISE::Implementation;
 
 DiskFileWriteBuffer::DiskFileWriteBuffer( const char * file_name ) 
 {
-	szFileName[0] = '\0';
-	if( !file_name || strlen( file_name ) >= sizeof(szFileName) ) {
-		return;
-	}
-	strcpy( szFileName, file_name );
-	hFile = fopen( szFileName, "wb" );
+	if( !file_name ) return;
+	filename = file_name;
+	hFile = fopen( filename.c_str(), "wb" );
 
 	if( hFile == 0 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "DiskFileWriteBuffer:: Failed to open file \'%s\'", file_name );
@@ -124,7 +129,14 @@ bool DiskFileWriteBuffer::setDouble( const double d )
 
 bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
 {
-	return pSource && hFile && !ferror( hFile ) && fwrite( pSource, 1, amount, hFile ) == amount;
+	if( !pSource || !hFile || ferror( hFile ) ) {
+		writeFailed = true;
+		return false;
+	}
+	const size_t written = fwrite( pSource, 1, amount, hFile );
+	hasWritten |= written != 0;
+	writeFailed |= written != amount;
+	return written == amount;
 }
 
 void DiskFileWriteBuffer::Clear( )
@@ -150,17 +162,59 @@ bool DiskFileWriteBuffer::ReadyToWrite() const
 	return (hFile!=0);
 }
 
-bool DiskFileWriteBuffer::Finish()
+bool DiskFileWriteBuffer::Finish( bool requireOutput )
 {
 	if( !hFile ) {
 		return false;
 	}
-	const bool written = !ferror( hFile );
+	const bool written = !writeFailed && !ferror( hFile ) && (!requireOutput || hasWritten);
 	const bool closed = fclose( hFile ) == 0;
 	hFile = nullptr;
 	if( !written || !closed ) {
-		GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Failed to write `%s`", szFileName );
+		GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Failed to write `%s`", filename.c_str() );
 		return false;
 	}
 	return true;
+}
+
+bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
+	const std::function<bool(DiskFileWriteBuffer&)>& write )
+{
+	namespace fs = std::filesystem;
+	static std::atomic<unsigned long long> nextId{ 0 };
+#ifdef _WIN32
+	const auto pid = ::_getpid();
+#else
+	const auto pid = ::getpid();
+#endif
+	const fs::path target( path );
+	std::error_code error;
+	fs::path directory;
+	for( unsigned int attempt = 0; attempt < 16; ++attempt ) {
+		directory = target.parent_path() / (".rise-write-" + std::to_string( pid ) + "-" +
+			std::to_string( nextId.fetch_add( 1, std::memory_order_relaxed ) ));
+		if( fs::create_directory( directory, error ) ) break;
+		directory.clear();
+		if( error && error != std::errc::file_exists ) break;
+	}
+	if( directory.empty() ) return false;
+
+	const fs::path staging = directory / "output";
+	struct Cleanup {
+		const fs::path& file;
+		const fs::path& directory;
+		~Cleanup() {
+			std::error_code ignored;
+			fs::remove( file, ignored );
+			fs::remove( directory, ignored );
+		}
+	} cleanup{ staging, directory };
+	const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
+	std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer(
+		new DiskFileWriteBuffer( staging.string().c_str() ), release );
+	if( !buffer->ReadyToWrite() ) return false;
+	const bool encoded = write( *buffer );
+	if( !buffer->Finish( true ) || !encoded ) return false;
+	fs::rename( staging, target, error );
+	return !error;
 }

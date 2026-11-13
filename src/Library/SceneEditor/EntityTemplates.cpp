@@ -16,13 +16,13 @@
 #include "ChunkDescriptorRegistry.h"
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IRasterImageWriter.h"
-#include "../Interfaces/IWriteBuffer.h"
+#include "../Utilities/DiskFileWriteBuffer.h"
 #include "../Utilities/Color/Color.h"
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
-#include <sys/stat.h>
 
 namespace RISE
 {
@@ -1125,34 +1125,29 @@ std::string EntityTemplates::EnsureDefaultTextureFile()
 
 	// Idempotent: reuse an existing file from a prior call in this
 	// (or an earlier) process rather than rewriting every time.
-	struct stat st;
-	if( ::stat( path.c_str(), &st ) == 0 && st.st_size > 0 )
-		return path;
+	const auto isCached = [&path] {
+		std::error_code error;
+		return std::filesystem::is_regular_file( path, error ) &&
+			std::filesystem::file_size( path, error ) > 0 && !error;
+	};
+	if( isCached() ) return path;
 
 	IRasterImage* img = nullptr;
 	if( !RISE_API_CreateRISEColorRasterImage( &img, 4, 4, RISEColor( RISEPel( 0.6, 0.6, 0.6 ), 1.0 ) ) || !img )
 		return std::string();
 
-	IWriteBuffer* buf = nullptr;
-	if( !RISE_API_CreateDiskFileWriteBuffer( &buf, path.c_str() ) || !buf )
-	{
-		img->release();
-		return std::string();
-	}
-
-	IRasterImageWriter* writer = nullptr;
-	const bool madeWriter = RISE_API_CreatePNGWriter( &writer, *buf, 8, eColorSpace_Rec709RGB_Linear ) && writer;
-	if( madeWriter )
-	{
-		img->DumpImage( writer );   // void -- verify success via stat() below
-		writer->release();
-	}
-	buf->release();
+	const bool written = Implementation::DiskFileWriteBuffer::WriteAtomically( path,
+		[img]( Implementation::DiskFileWriteBuffer& buffer ) {
+			IRasterImageWriter* writer = nullptr;
+			if( !RISE_API_CreatePNGWriter( &writer, buffer, 8, eColorSpace_Rec709RGB_Linear ) || !writer )
+				return false;
+			img->DumpImage( writer );
+			writer->release();
+			return true;
+		} );
 	img->release();
+	return written || isCached() ? path : std::string();
 
-	if( !madeWriter || ::stat( path.c_str(), &st ) != 0 || st.st_size <= 0 )
-		return std::string();
-	return path;
 }
 
 }   // namespace RISE

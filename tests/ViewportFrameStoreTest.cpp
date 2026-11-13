@@ -409,6 +409,15 @@ namespace
 	// ─── Section 4: SaveAs byte-identical to L2 ───────────────────
 	void TestSaveAsByteIdenticalToL2()
 	{
+		struct EmptyEncoder final : IFrameEncoder, Reference
+		{
+			std::string FormatName() const override { return "empty"; }
+			std::vector<std::string> Extensions() const override { return { "empty" }; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode( const FrameStore&, IWriteBuffer&, const EncodeOpts& ) override {}
+		};
+
 		auto* vfs = new ViewportFrameStore();
 		auto* img = MakeTestImage();
 		vfs->OutputImage( *img, nullptr, 0 );
@@ -464,6 +473,18 @@ namespace
 		const bool emptyOk = vfsEmpty->SaveAs( vfsPath, enc, opts );
 		Check( !emptyOk, "SaveAs returns false when FrameStore not allocated" );
 		vfsEmpty->release();
+
+		EmptyEncoder emptyEncoder;
+		Check( !vfs->SaveAs( vfsPath, &emptyEncoder, opts ),
+			"SaveAs returns false when the encoder writes no bytes" );
+		std::vector<unsigned char> preserved;
+		Check( ReadFileAllBytes( vfsPath, preserved ) && preserved == vfsBytes,
+			"failed SaveAs preserves the existing image" );
+		char byte = 0;
+		auto* rejected = new MemoryBuffer( &byte, 0, false );
+		Check( !vfs->SaveTo( *rejected, &emptyEncoder, opts ) &&
+			!vfs->SaveTo( *rejected, enc, opts ), "SaveTo refuses empty and rejected output" );
+		rejected->release();
 
 		std::remove( vfsPath.c_str() );
 		std::remove( l2Path.c_str() );
