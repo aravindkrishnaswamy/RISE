@@ -161,7 +161,13 @@ static void TestHDRWriterBounds()
 	writer->BeginWrite( 1, 1 );
 	writer->WriteColor( RISEColor(1, 0, 0, 1), 0, 0 );
 	writer->EndWrite();
-	Check( buffer->getCurPos() > 4, "HDR writer can start a valid image after a rejected size" );
+	const std::string bytes( buffer->Pointer(), buffer->getCurPos() );
+	const std::string dimensions = "-Y 1 +X 1\n";
+	const auto offset = bytes.find( dimensions );
+	const unsigned char expected[] = { 128, 0, 0, 129 };
+	Check( offset != std::string::npos && bytes.size() == offset + dimensions.size() + sizeof(expected) &&
+		std::memcmp( bytes.data() + offset + dimensions.size(), expected, sizeof(expected) ) == 0,
+		"HDR writer recovers with one independently specified RGBE pixel" );
 	writer->release();
 	buffer->release();
 }
