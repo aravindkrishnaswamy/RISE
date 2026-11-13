@@ -46,6 +46,8 @@
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/Utilities/MediaPathLocator.h"
 #include "../src/Library/RISE_API.h"
+#include "../src/Library/Geometry/TriangleMeshLoader3DS.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -520,6 +522,109 @@ static void TestMediaSearchRoots()
 	fs::remove_all( root );
 }
 
+namespace
+{
+	using Bytes3DS = std::vector<unsigned char>;
+
+	void Append3DSWord( Bytes3DS& bytes, unsigned int value )
+	{
+		bytes.push_back( static_cast<unsigned char>(value) );
+		bytes.push_back( static_cast<unsigned char>(value >> 8) );
+	}
+
+	void Append3DSUInt( Bytes3DS& bytes, unsigned int value )
+	{
+		for( unsigned int shift = 0; shift < 32; shift += 8 )
+			bytes.push_back( static_cast<unsigned char>(value >> shift) );
+	}
+
+	void Append3DSBytes( Bytes3DS& bytes, const Bytes3DS& extra )
+	{
+		bytes.insert( bytes.end(), extra.begin(), extra.end() );
+	}
+
+	Bytes3DS Make3DSChunk( unsigned int id, const Bytes3DS& payload )
+	{
+		Bytes3DS bytes;
+		Append3DSWord( bytes, id );
+		Append3DSUInt( bytes, static_cast<unsigned int>(payload.size() + 6) );
+		Append3DSBytes( bytes, payload );
+		return bytes;
+	}
+
+	Bytes3DS Make3DSObject( bool emptyVertices, bool emptyFaces, bool invalidIndex = false )
+	{
+		Bytes3DS vertices;
+		Append3DSWord( vertices, emptyVertices ? 0 : 3 );
+		if( !emptyVertices ) {
+			for( float component : { 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f } ) {
+				std::uint32_t bits;
+				std::memcpy( &bits, &component, sizeof(bits) );
+				Append3DSUInt( vertices, bits );
+			}
+		}
+		Bytes3DS faces;
+		Append3DSWord( faces, emptyFaces ? 0 : 1 );
+		if( !emptyFaces ) {
+			for( unsigned int value : { 0U, 1U, invalidIndex ? 3U : 2U, 0U } ) Append3DSWord( faces, value );
+		}
+		Bytes3DS mesh = Make3DSChunk( 0x4110, vertices );
+		Append3DSBytes( mesh, Make3DSChunk( 0x4120, faces ) );
+		Bytes3DS object = { 'm', 0 };
+		Append3DSBytes( object, Make3DSChunk( 0x4100, mesh ) );
+		return Make3DSChunk( 0x4000, object );
+	}
+
+	void Check3DSLoad( const Bytes3DS& bytes, int selected, bool expected, unsigned int points )
+	{
+		auto* buffer = new MemoryBuffer( static_cast<unsigned int>(bytes.size()) );
+		buffer->setBytes( bytes.data(), static_cast<unsigned int>(bytes.size()) );
+		auto* loader = new TriangleMeshLoader3DS( buffer );
+		auto* geometry = new TriangleMeshGeometryIndexed( false, false );
+		Check( loader->LoadTriangleMesh( geometry, selected ) == expected && geometry->numPoints() == points,
+			"3DS compatibility fixture preserves usable vertices and load outcome" );
+		geometry->release();
+		loader->release();
+		buffer->release();
+	}
+}
+
+static void Test3DSCompatibility()
+{
+	for( int version : { 3, 2, -1 } ) {
+		for( unsigned int empty : { 0U, 1U, 2U } ) {
+			for( bool badTail : { false, true } ) {
+				Bytes3DS main;
+				if( version >= 0 ) {
+					Bytes3DS value;
+					Append3DSUInt( value, static_cast<unsigned int>(version) );
+					Append3DSBytes( main, Make3DSChunk( 0x0002, value ) );
+				}
+				Bytes3DS edit;
+				if( empty ) Append3DSBytes( edit, Make3DSObject( empty == 1, true ) );
+				Append3DSBytes( edit, Make3DSObject( false, false ) );
+				Append3DSBytes( main, Make3DSChunk( 0x3d3d, edit ) );
+				if( badTail ) {
+					Append3DSWord( main, 0xb000 );
+					Append3DSUInt( main, 1 );
+				}
+				auto bytes = Make3DSChunk( 0x4d4d, main );
+				Check3DSLoad( bytes, -1, true, 3 );
+				if( empty ) Check3DSLoad( bytes, 0, true, 0 );
+			}
+		}
+	}
+	const auto edit = Make3DSChunk( 0x3d3d, Make3DSObject( false, false ) );
+	auto truncatedTail = Make3DSChunk( 0x4d4d, edit );
+	truncatedTail[2] += 100;
+	Check3DSLoad( truncatedTail, -1, true, 3 );
+	auto truncatedMesh = Make3DSChunk( 0x4d4d, edit );
+	truncatedMesh.pop_back();
+	Check3DSLoad( truncatedMesh, -1, false, 0 );
+	Check3DSLoad( Make3DSChunk( 0x4d4d, Make3DSChunk( 0x3d3d,
+		Make3DSObject(false, false, true) ) ), -1, false, 0 );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeShortReadTest — missing/truncated binary reads zero, never uninitialised"
@@ -535,6 +640,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestBufferWriteFailures();
 	TestLittleEndianScalars();
 	TestMediaSearchRoots();
+	Test3DSCompatibility();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

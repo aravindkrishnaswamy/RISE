@@ -21,6 +21,7 @@
 #include "../Interfaces/ILog.h"
 #include <stdio.h>
 #include <limits>
+#include <algorithm>
 #include "../Utilities/LittleEndian.h"
 #include <cstdint>
 
@@ -54,25 +55,24 @@ TriangleMeshLoader3DS::TriangleMeshLoader3DS( IReadBuffer* pBuffer_ ) :
 	}
 	pBuffer->addref();
 
-	unsigned short id = 0;
-	unsigned int mainEnd = 0;
-	if( !ReadChunk( *pBuffer, 0, pBuffer->Size(), id, mainEnd ) || id != MAIN3DS ) return;
-
-	constexpr unsigned short kVersionChunk = 0x0002;
-	bool supportedVersion = false;
+	unsigned char header[6];
+	if( !pBuffer->seek( IBuffer::START, 0 ) || !pBuffer->getBytes( header, sizeof(header) ) ) return;
+	unsigned short id = DecodeLittleEndian<unsigned short, std::uint16_t>( header );
+	const auto declaredEnd = DecodeLittleEndian<unsigned int, std::uint32_t>( header + 2 );
+	if( id != MAIN3DS || declaredEnd < sizeof(header) ) return;
+	// Only mesh data is consumed. A truncated animation tail may extend the
+	// outer chunk beyond EOF, while every mesh chunk must fit the available bytes.
+	const unsigned int mainEnd = std::min( declaredEnd, pBuffer->Size() );
 	unsigned int editStart = 0, editEnd = 0;
 	for( unsigned int start = 6, end = 0; start < mainEnd; start = end ) {
 		if( !ReadChunk( *pBuffer, start, mainEnd, id, end ) ) return;
-		if( id == kVersionChunk ) {
-			unsigned char version[4];
-			if( end - start < 10 || !pBuffer->getBytes( version, sizeof(version) ) ) return;
-			supportedVersion = DecodeLittleEndian<unsigned int, std::uint32_t>( version ) >= 3;
-		} else if( id == EDIT3DS && editStart == 0 ) {
+		if( id == EDIT3DS ) {
 			editStart = start;
 			editEnd = end;
+			break;
 		}
 	}
-	if( !supportedVersion || editStart == 0 ) return;
+	if( editStart == 0 ) return;
 
 	std::vector<unsigned long> objects;
 	for( unsigned int start = editStart + 6, end = 0; start < editEnd; start = end ) {
@@ -127,8 +127,11 @@ bool TriangleMeshLoader3DS::LoadTriangleMesh( ITriangleMeshGeometryIndexed* geom
 	meshes.reserve( last - first );
 	for( auto i = first; i < last; ++i ) {
 		auto& mesh = meshes.emplace_back();
-		if( !GetVertices( mesh.vertices, i ) || !GetFaces( mesh.triangles, i ) ||
-			mesh.vertices.empty() || mesh.triangles.empty() ) return false;
+		if( !GetVertices( mesh.vertices, i ) || !GetFaces( mesh.triangles, i ) ) return false;
+		if( mesh.vertices.empty() || mesh.triangles.empty() ) {
+			meshes.pop_back();
+			continue;
+		}
 		for( const auto& triangle : mesh.triangles ) {
 			for( const auto index : triangle.iVertices ) {
 				if( index >= mesh.vertices.size() ) return false;
