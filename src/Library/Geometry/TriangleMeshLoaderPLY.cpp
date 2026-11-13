@@ -21,6 +21,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <cstdint>
 #include "TriangleMeshLoaderPLY.h"
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
@@ -852,11 +853,10 @@ bool TriangleMeshLoaderPLY::LoadTriangleMesh( ITriangleMeshGeometryIndexed* pGeo
 	if( bAscii ) {
 		bSuccess = LoadAsciiBodyImpl( pGeom, pGeom2, inputFile, elements, vlay, flay, bInvertFaces );
 	} else {
-#ifdef RISE_BIG_ENDIAN
-		bSuccess = LoadBinaryBodyImpl( pGeom, pGeom2, inputFile, elements, vlay, flay, !bBigEndian, bInvertFaces );
-#else
-		bSuccess = LoadBinaryBodyImpl( pGeom, pGeom2, inputFile, elements, vlay, flay, bBigEndian, bInvertFaces );
-#endif
+		const std::uint16_t endianProbe = 1;
+		const bool hostLittleEndian = *reinterpret_cast<const unsigned char*>(&endianProbe) == 1;
+		bSuccess = LoadBinaryBodyImpl( pGeom, pGeom2, inputFile, elements, vlay, flay,
+			bBigEndian == hostLittleEndian, bInvertFaces );
 	}
 
 	fclose( inputFile );

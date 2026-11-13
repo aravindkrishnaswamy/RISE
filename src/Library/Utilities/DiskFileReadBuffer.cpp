@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "DiskFileReadBuffer.h"
+#include "LittleEndian.h"
 #include "../Interfaces/ILog.h"
 #include <string.h>
 #include <limits>
@@ -78,7 +79,7 @@ char DiskFileReadBuffer::getChar()
 	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
 	#endif
-		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
+		seek( IBuffer::END, 0 );   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
 	char c=0;
@@ -100,7 +101,7 @@ unsigned char DiskFileReadBuffer::getUChar()
 	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
 	#endif
-		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
+		seek( IBuffer::END, 0 );   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
 
@@ -111,185 +112,81 @@ unsigned char DiskFileReadBuffer::getUChar()
 
 short DiskFileReadBuffer::getWord()
 {
-	// No file handle (open failed): degrade gracefully instead of
-	// ftell(NULL)/fread(NULL) UB.
-	if( !hFile ) {
+	unsigned char bytes[sizeof(std::uint16_t)];
+	if( !hFile ) return 0;
+	const unsigned int cursor = getCurPos();
+	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
+		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
-	// the buffer end otherwise partial-reads into the local (a
-	// truncated file yields a corrupt value).  Return 0 on exhaustion.
-	if( getCurPos() > nSize || sizeof(short) > nSize - getCurPos() ) {
-	#ifdef _DEBUG
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getWord:: Attempted read past end of buffer", __FILE__, __LINE__ );
-	#endif
-		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
-		return 0;
-	}
-
-#ifdef RISE_BIG_ENDIAN
-	short Low = getUChar();
-    short High = getUChar();
-	return Low | (High << 8);
-#else
-	short sh = 0;
-	fread( &sh, sizeof( short ), 1, hFile );
-	return sh;
-#endif
+	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	return DecodeLittleEndian<short, std::uint16_t>( bytes );
 }
 
 
 unsigned short DiskFileReadBuffer::getUWord()
 {
-	// No file handle (open failed): degrade gracefully instead of
-	// ftell(NULL)/fread(NULL) UB.
-	if( !hFile ) {
+	unsigned char bytes[sizeof(std::uint16_t)];
+	if( !hFile ) return 0;
+	const unsigned int cursor = getCurPos();
+	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
+		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
-	// the buffer end otherwise partial-reads into the local (a
-	// truncated file yields a corrupt value).  Return 0 on exhaustion.
-	if( getCurPos() > nSize || sizeof(unsigned short) > nSize - getCurPos() ) {
-	#ifdef _DEBUG
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUWord:: Attempted read past end of buffer", __FILE__, __LINE__ );
-	#endif
-		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
-		return 0;
-	}
-
-#ifdef RISE_BIG_ENDIAN
-	unsigned short Low = getUChar();
-    unsigned short High = getUChar();
-	return Low | (High << 8);
-#else
-	unsigned short sh = 0;
-	fread( &sh, sizeof( unsigned short ), 1, hFile );
-	return sh;
-#endif
+	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	return DecodeLittleEndian<unsigned short, std::uint16_t>( bytes );
 }
 
 int DiskFileReadBuffer::getInt()
 {
-	// No file handle (open failed): degrade gracefully instead of
-	// ftell(NULL)/fread(NULL) UB.
-	if( !hFile ) {
+	unsigned char bytes[sizeof(std::uint32_t)];
+	if( !hFile ) return 0;
+	const unsigned int cursor = getCurPos();
+	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
+		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
-	// the buffer end otherwise partial-reads into the local (a
-	// truncated file yields a corrupt value).  Return 0 on exhaustion.
-	if( getCurPos() > nSize || sizeof(int) > nSize - getCurPos() ) {
-	#ifdef _DEBUG
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getInt:: Attempted read past end of buffer", __FILE__, __LINE__ );
-	#endif
-		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
-		return 0;
-	}
-
-#ifdef RISE_BIG_ENDIAN
-	int Low = getUWord();
-    int High = getUWord();
-    return Low | (High << 16);
-#else
-	int n = 0;
-	fread( &n, sizeof( int ), 1, hFile );
-	return n;
-#endif
+	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	return DecodeLittleEndian<int, std::uint32_t>( bytes );
 }
 
 unsigned int DiskFileReadBuffer::getUInt()
 {
-	// No file handle (open failed): degrade gracefully instead of
-	// ftell(NULL)/fread(NULL) UB.
-	if( !hFile ) {
+	unsigned char bytes[sizeof(std::uint32_t)];
+	if( !hFile ) return 0;
+	const unsigned int cursor = getCurPos();
+	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
+		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
-	// the buffer end otherwise partial-reads into the local (a
-	// truncated file yields a corrupt value).  Return 0 on exhaustion.
-	if( getCurPos() > nSize || sizeof(unsigned int) > nSize - getCurPos() ) {
-	#ifdef _DEBUG
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUInt:: Attempted read past end of buffer", __FILE__, __LINE__ );
-	#endif
-		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
-		return 0;
-	}
-
-#ifdef RISE_BIG_ENDIAN
-	unsigned int Low = getUWord();
-    unsigned int High = getUWord();
-    return Low | (High << 16);
-#else
-	unsigned int n = 0;
-	fread( &n, sizeof( unsigned int ), 1, hFile );
-	return n;
-#endif
+	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	return DecodeLittleEndian<unsigned int, std::uint32_t>( bytes );
 }
 
 float DiskFileReadBuffer::getFloat()
 {
-	// No file handle (open failed): degrade gracefully instead of
-	// ftell(NULL)/fread(NULL) UB.
-	if( !hFile ) {
+	unsigned char bytes[sizeof(std::uint32_t)];
+	if( !hFile ) return 0;
+	const unsigned int cursor = getCurPos();
+	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
+		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
-	// the buffer end otherwise partial-reads into the local (a
-	// truncated file yields a corrupt value).  Return 0 on exhaustion.
-	if( getCurPos() > nSize || sizeof(float) > nSize - getCurPos() ) {
-	#ifdef _DEBUG
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getFloat:: Attempted read past end of buffer", __FILE__, __LINE__ );
-	#endif
-		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
-		return 0;
-	}
-
-#ifdef RISE_BIG_ENDIAN
-	float f = 0;
-	unsigned int d = getUInt();
-	memcpy( &f, &d, sizeof( float ) );
-	return f;
-#else
-	float f = 0;
-	fread( &f, sizeof( float ), 1, hFile );
-	return f;
-#endif
+	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	return DecodeLittleEndian<float, std::uint32_t>( bytes );
 }
 
 double DiskFileReadBuffer::getDouble()
 {
-	// No file handle (open failed): degrade gracefully instead of
-	// ftell(NULL)/fread(NULL) UB.
-	if( !hFile ) {
+	unsigned char bytes[sizeof(std::uint64_t)];
+	if( !hFile ) return 0;
+	const unsigned int cursor = getCurPos();
+	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
+		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
-	// the buffer end otherwise partial-reads into the local (a
-	// truncated file yields a corrupt value).  Return 0 on exhaustion.
-	if( getCurPos() > nSize || sizeof(double) > nSize - getCurPos() ) {
-	#ifdef _DEBUG
-		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getDouble:: Attempted read past end of buffer", __FILE__, __LINE__ );
-	#endif
-		fseek( hFile, 0, SEEK_END );   // consume to end so loop-until-cursor callers terminate
-		return 0;
-	}
-
-#ifdef RISE_BIG_ENDIAN
-	unsigned int Low = getUInt();
-    unsigned int High = getUInt();
-
-	double d = 0;
-	char* ptrd = (char*)&d;
-	memcpy( ptrd, &High, sizeof( unsigned int  ) );
-	memcpy( &ptrd[4], &Low, sizeof( unsigned int ) );
-	return d;
-#else
-	double d = 0;
-	if( fread( &d, sizeof( double ), 1, hFile ) == 0 ) {
-		GlobalLog()->PrintEasyError( "DiskFileReadBuffer::getDouble:: Failed to read all the bytes required for a double" );
-	}
-	return d;
-#endif
+	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	return DecodeLittleEndian<double, std::uint64_t>( bytes );
 }
 
 bool DiskFileReadBuffer::getBytes( void* pDest, unsigned int amount )
@@ -325,15 +222,14 @@ int DiskFileReadBuffer::getLine( char* pDest, unsigned int max )
 		return false;
 	}
 
-	// We keep reading until the end if we have to
 	unsigned int numRead = 0;
-	while( getCurPos() < nSize && numRead < max ) {
-		pDest[numRead] = getChar();
-
-		if( pDest[numRead] == '\n' ) {
-			return numRead+1;
-		}
-		numRead++;
+	unsigned int cursor = getCurPos();
+	while( cursor < nSize && numRead < max ) {
+		const int byte = fgetc( hFile );
+		if( byte == EOF ) break;
+		pDest[numRead++] = static_cast<char>(byte);
+		++cursor;
+		if( byte == '\n' ) break;
 	}
 
 	return numRead;

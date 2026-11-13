@@ -15,6 +15,8 @@
 #include "pch.h"
 #include "PNGWriter.h"
 #include "../Interfaces/ILog.h"
+#include <limits>
+#include <new>
 #ifndef NO_PNG_SUPPORT
 	#include <png.h>
 	#include <zlib.h>
@@ -50,16 +52,30 @@ PNGWriter::~PNGWriter( )
 
 void PNGWriter::BeginWrite( const unsigned int width, const unsigned int height )
 {
-	// Setup the buffer
+	if( pBuffer ) {
+		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
+		delete [] pBuffer;
+		pBuffer = nullptr;
+	}
+	const size_t pixelBytes = 4 * (bpp >> 3);
+	if( width == 0 || height == 0 || width > 0x7fffffffU || height > 0x7fffffffU ||
+		width > std::numeric_limits<size_t>::max() / pixelBytes / height ) {
+		GlobalLog()->PrintEasyError( "PNGWriter: Invalid image dimensions" );
+		return;
+	}
 	bufW = width;
 	bufH = height;
-	pBuffer = new unsigned char[width*height*4*(bpp>>3)];
+	pBuffer = new (std::nothrow) unsigned char[static_cast<size_t>(width) * height * pixelBytes];
+	if( !pBuffer ) {
+		GlobalLog()->PrintEasyError( "PNGWriter: Could not allocate pixel buffer" );
+		return;
+	}
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 }
 
 void PNGWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y )
 {
-	if( pBuffer ) {
+	if( pBuffer && x < bufW && y < bufH ) {
 		switch( bpp ) {
 		case 8:
 			{
@@ -86,7 +102,7 @@ void PNGWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsi
 					} break;
 				}
 
-				const unsigned int idx = y*bufW*4+x*4;
+				const size_t idx = (static_cast<size_t>(y)*bufW+x)*4;
 
 				pBuffer[idx] = p.b;
 				pBuffer[idx+1] = p.g;
@@ -119,28 +135,14 @@ void PNGWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsi
 					} break;
 				}
 
-				const unsigned int idx = y*bufW*8+x*8;
+				const size_t idx = (static_cast<size_t>(y)*bufW+x)*8;
 
-#ifdef RISE_BIG_ENDIAN
-				*((unsigned short*)(&pBuffer[idx])) = p.b;
-				*((unsigned short*)(&pBuffer[idx+2])) = p.g;
-				*((unsigned short*)(&pBuffer[idx+4])) = p.r;
-				*((unsigned short*)(&pBuffer[idx+6])) = p.a;
-#else
-				// Byte order in PNG is flipped!  Its little endian!
-				unsigned short tempB = (unsigned short)(p.b);
-				pBuffer[idx] = ((tempB>>8)&0xFF);
-				pBuffer[idx+1] = (tempB&0xFF);
-				unsigned short tempG = (unsigned short)(p.g);
-				pBuffer[idx+2] = ((tempG>>8)&0xFF);
-				pBuffer[idx+3] = (tempG&0xFF);
-				unsigned short tempR = (unsigned short)(p.r);
-				pBuffer[idx+4] = ((tempR>>8)&0xFF);
-				pBuffer[idx+5] = (tempR&0xFF);
-				unsigned short tempA = (unsigned short)(p.a);
-				pBuffer[idx+6] = ((tempA>>8)&0xFF);
-				pBuffer[idx+7] = (tempA&0xFF);
-#endif
+				// PNG stores 16-bit samples most significant byte first.
+				const unsigned short samples[] = { p.b, p.g, p.r, p.a };
+				for( unsigned int i = 0; i < 4; ++i ) {
+					pBuffer[idx + i*2] = static_cast<unsigned char>(samples[i] >> 8);
+					pBuffer[idx + i*2 + 1] = static_cast<unsigned char>(samples[i]);
+				}
 			}
 			break;
 		};
@@ -161,11 +163,9 @@ png_write_data(png_structp png_ptr, png_bytep data, png_size_t length)
 {
 	IWriteBuffer*	pBuffer = (IWriteBuffer*)png_get_io_ptr(png_ptr);
 
-	if( pBuffer ) {
-		pBuffer->setBytes( data, static_cast<unsigned int>(length) );
-	} else {
-		GlobalLog()->PrintSourceError( "png_write_data (callback func):: bad MemoryBuffer", __FILE__, __LINE__ );
-	}
+	if( !pBuffer || length > std::numeric_limits<unsigned int>::max() ||
+		!pBuffer->setBytes( data, static_cast<unsigned int>(length) ) )
+		png_error( png_ptr, "PNG output write failed" );
 }
 
 static void
@@ -183,6 +183,7 @@ void PNGWriter::EndWrite( )
 
 		if( !png_ptr ) {
 			GlobalLog()->PrintSourceError( "PNGWriter:: Could not allocate structure", __FILE__, __LINE__ );
+			return;
 		}
 
 		png_infop info_ptr = png_create_info_struct(png_ptr);
@@ -190,13 +191,13 @@ void PNGWriter::EndWrite( )
 		if( !info_ptr ) {
 			png_destroy_write_struct(&png_ptr, NULL);
 			GlobalLog()->PrintSourceError( "PNGWriter:: Could not create info structure", __FILE__, __LINE__ );
+			return;
 		}
 
-//		if( setjmp( png_ptr->jumpbuf ) )
-//		{
-//			png_destroy_write_struct(&png_ptr, info_ptr);
-//			GlobalLog()->PrintSourceError( "PNGWriter:: Could not setjmp", __FILE__, __LINE__ );
-//		}
+		if( setjmp( png_jmpbuf(png_ptr) ) ) {
+			png_destroy_write_struct( &png_ptr, &info_ptr );
+			return;
+		}
 
 		// Set a write function to write to our buffer rather than a file
 		png_set_write_fn( png_ptr, (void*)&pWriteBuffer, png_write_data, png_flush );
@@ -236,7 +237,7 @@ void PNGWriter::EndWrite( )
 
 		png_write_info( png_ptr, info_ptr );
 		for( unsigned int y=0; y<bufH; y++ ) {
-			png_write_row(png_ptr, &pBuffer[y*bufW*4*(bpp>>3)]);
+			png_write_row(png_ptr, &pBuffer[static_cast<size_t>(y)*bufW*4*(bpp>>3)]);
 		}
 
 		// Free stuff

@@ -100,21 +100,16 @@ void RGBEAWriter::WriteColor( const RISEColor& c, const unsigned int x, const un
 			pBuffer[idx+7] = 0;
 		} else {
 			v = frexp(v,&e) * 65536.0/v;
-#ifndef RISE_BIG_ENDIAN
-			*((unsigned short*)(&pBuffer[idx])) = (unsigned short)(p.r*v);
-			*((unsigned short*)(&pBuffer[idx+2])) = (unsigned short)(p.g*v);
-			*((unsigned short*)(&pBuffer[idx+4])) = (unsigned short)(p.b*v);
-#else
-			unsigned short tempR = (unsigned short)(p.r*v);
-			pBuffer[idx] = ((tempR>>8)&0xFF);
-			pBuffer[idx+1] = (tempR&0xFF);
-			unsigned short tempG = (unsigned short)(p.g*v);
-			pBuffer[idx+2] = ((tempG>>8)&0xFF);
-			pBuffer[idx+3] = (tempG&0xFF);
-			unsigned short tempB = (unsigned short)(p.b*v);
-			pBuffer[idx+4] = ((tempB>>8)&0xFF);
-			pBuffer[idx+5] = (tempB&0xFF);
-#endif
+			// RISE RGBEA stores its mantissas least significant byte first.
+			const unsigned short samples[] = {
+				static_cast<unsigned short>(p.r*v),
+				static_cast<unsigned short>(p.g*v),
+				static_cast<unsigned short>(p.b*v)
+			};
+			for( unsigned int i = 0; i < 3; ++i ) {
+				pBuffer[idx + i*2] = static_cast<unsigned char>(samples[i]);
+				pBuffer[idx + i*2 + 1] = static_cast<unsigned char>(samples[i] >> 8);
+			}
 			pBuffer[idx+6] = (e + RGBEBase);
 			pBuffer[idx+7] = (unsigned char)(c.a*255.0);
 		}

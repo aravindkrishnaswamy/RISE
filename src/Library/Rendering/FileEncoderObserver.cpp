@@ -82,42 +82,25 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 	}
 	std::string filename = pattern_ + suffix + frameNumber + "." + ext;
 
-	// Open the disk file.  If the open fails, mirror the legacy
-	// "fall back to fro_temp_…" emergency-file behaviour from
-	// FileRasterizerOutput.cpp:167-186 — we don't want to lose
-	// the rendered data when a path is unwritable.
-	DiskFileWriteBuffer* buf = new DiskFileWriteBuffer( filename.c_str() );
-
-	if ( !buf->ReadyToWrite() ) {
-		safe_release( buf );
-
+	// Stage each frame beside its destination so an encoder error cannot
+	// truncate an existing image. Keep the emergency path for an unavailable
+	// destination, including a failure to publish the staged file.
+	const auto encode = [&]( DiskFileWriteBuffer& buffer ) {
+		encoder_->Encode( *store_, buffer, opts_ );
+		return true;
+	};
+	if( !DiskFileWriteBuffer::WriteAtomically( filename, encode ) ) {
 		const std::string emergency = "fro_temp_" +
 			std::to_string( reinterpret_cast<uintptr_t>( this ) ) + suffix +
 			(bMultiple_ ? "_" : "") + frameNumber + "." + ext;
-
-		buf = new DiskFileWriteBuffer( emergency.c_str() );
-		if ( !buf->ReadyToWrite() ) {
-			GlobalLog()->PrintEasyError(
-				"FileEncoderObserver:: Fatal error trying to write image, "
-				"couldn't even write the emergency file!" );
-			safe_release( buf );
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Could not publish '%s', trying emergency file '%s'",
+			filename.c_str(), emergency.c_str() );
+		if( !DiskFileWriteBuffer::WriteAtomically( emergency, encode ) ) {
+			GlobalLog()->PrintEasyError( "FileEncoderObserver: Could not write the emergency file" );
 			return;
 		}
-		GlobalLog()->PrintEx( eLog_Warning,
-			"Failed to open specified file '%s', trying emergency file '%s'",
-			filename.c_str(), emergency.c_str() );
 		filename = emergency;
 	}
-
-	GlobalLog()->PrintNew( buf, __FILE__, __LINE__, "DiskFileWriteBuffer" );
-
-	encoder_->Encode( *store_, *buf, opts_ );
-
-	const bool written = buf->Finish( true );
-	safe_release( buf );
-
-	if( written ) {
-		GlobalLog()->PrintEx( eLog_Event,
-			"FileEncoderObserver:: Written to '%s'", filename.c_str() );
-	}
+	GlobalLog()->PrintEx( eLog_Event, "FileEncoderObserver:: Written to '%s'", filename.c_str() );
 }

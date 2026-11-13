@@ -13,7 +13,8 @@
 
 #include "pch.h"
 #include "DiskBuffer.h"
-#include <stdlib.h>
+#include <cstdlib>
+#include <limits>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "../Interfaces/ILog.h"
@@ -51,7 +52,14 @@ unsigned int DiskBuffer::getCurPos( ) const
 	if( !hFile ) {
 		return 0;
 	}
-	return static_cast<unsigned int>(ftell( hFile ));
+	#ifdef _WIN32
+	const auto position = _ftelli64( hFile );
+#else
+	const auto position = ftello( hFile );
+#endif
+	if( position < 0 || static_cast<unsigned long long>(position) > std::numeric_limits<unsigned int>::max() )
+		return std::numeric_limits<unsigned int>::max();
+	return static_cast<unsigned int>(position);
 }
 
 bool DiskBuffer::EndOfBuffer( ) const
@@ -68,21 +76,16 @@ bool DiskBuffer::seek( const eSeek type, const int amount )
 		return false;
 	}
 
-	bool bReturn = false;
-
-	switch( type )
-	{
-	case START:
-		bReturn = !fseek( hFile, amount, SEEK_SET );
-		break;
-
-	case CUR:
-		bReturn = !fseek( hFile, amount, SEEK_CUR );
-		break;
-	case END:
-		bReturn = !fseek( hFile, amount, SEEK_END );
-		break;
+	int origin;
+	switch( type ) {
+	case START: origin = SEEK_SET; break;
+	case CUR: origin = SEEK_CUR; break;
+	case END: origin = SEEK_END; break;
+	default: return false;
 	}
-
-	return bReturn;
+#ifdef _WIN32
+	return _fseeki64( hFile, amount, origin ) == 0;
+#else
+	return fseeko( hFile, amount, origin ) == 0;
+#endif
 }

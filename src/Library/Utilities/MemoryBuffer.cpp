@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "MemoryBuffer.h"
+#include "LittleEndian.h"
 #include <memory.h>
 #include <cstdint>
 #include <limits>
@@ -250,7 +251,7 @@ bool MemoryBuffer::seek( const eSeek type, const int amount )
 	default:
 		return false;
 	}
-	if( position < 0 || position >= nSize ) {
+	if( position < 0 || position > nSize ) {
 		return false;
 	}
 	nCursor = static_cast<unsigned int>( position );
@@ -338,16 +339,9 @@ short MemoryBuffer::getWord()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	short Low = getUChar();
-    short High = getUChar();
-	return Low | (High << 8);
-#else
-	short sh = 0;
-	memcpy( &sh, &pBuffer[nCursor], sizeof( short ) );
-	nCursor += sizeof( short );
-	return sh;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint16_t);
+	return DecodeLittleEndian<short, std::uint16_t>( bytes );
 }
 
 
@@ -364,16 +358,9 @@ unsigned short MemoryBuffer::getUWord()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned short Low = getUChar();
-    unsigned short High = getUChar();
-	return Low | (High << 8);
-#else
-	unsigned short sh = 0;
-	memcpy( &sh, &pBuffer[nCursor], sizeof( unsigned short ) );
-	nCursor += sizeof( unsigned short );
-	return sh;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint16_t);
+	return DecodeLittleEndian<unsigned short, std::uint16_t>( bytes );
 }
 
 int MemoryBuffer::getInt()
@@ -389,16 +376,9 @@ int MemoryBuffer::getInt()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	int Low = getUWord();
-    int High = getUWord();
-    return Low | (High << 16);
-#else
-	int n = 0;
-	memcpy( &n, &pBuffer[nCursor], sizeof( int ) );
-	nCursor += sizeof( int );
-	return n;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint32_t);
+	return DecodeLittleEndian<int, std::uint32_t>( bytes );
 }
 
 unsigned int MemoryBuffer::getUInt()
@@ -414,16 +394,9 @@ unsigned int MemoryBuffer::getUInt()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned int Low = getUWord();
-    unsigned int High = getUWord();
-    return Low | (High << 16);
-#else
-	unsigned int n = 0;
-	memcpy( &n, &pBuffer[nCursor], sizeof( unsigned int ) );
-	nCursor += sizeof( unsigned int );
-	return n;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint32_t);
+	return DecodeLittleEndian<unsigned int, std::uint32_t>( bytes );
 }
 
 float MemoryBuffer::getFloat()
@@ -439,17 +412,9 @@ float MemoryBuffer::getFloat()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	float f = 0;
-	unsigned int d = getUInt();
-	memcpy( &f, &d, sizeof( float ) );
-	return f;
-#else
-	float f = 0;
-	memcpy( &f, &pBuffer[nCursor], sizeof( float ) );
-	nCursor += sizeof( float );
-	return f;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint32_t);
+	return DecodeLittleEndian<float, std::uint32_t>( bytes );
 }
 
 double MemoryBuffer::getDouble()
@@ -465,21 +430,9 @@ double MemoryBuffer::getDouble()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned int Low = getUInt();
-    unsigned int High = getUInt();
-
-	double d = 0;
-	char* ptrd = (char*)&d;
-	memcpy( ptrd, &High, sizeof( unsigned int  ) );
-	memcpy( &ptrd[4], &Low, sizeof( unsigned int ) );
-	return d;
-#else
-	double f = 0;
-	memcpy( &f, &pBuffer[nCursor], sizeof( double ) );
-	nCursor += sizeof( double );
-	return f;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint64_t);
+	return DecodeLittleEndian<double, std::uint64_t>( bytes );
 }
 
 bool MemoryBuffer::getBytes( void* pDest, unsigned int amount )
@@ -564,15 +517,8 @@ bool MemoryBuffer::setWord( const short sh )
 		return false;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned char low = sh & 0xFF;
-	unsigned char high = (sh >> 8) & 0xFF;
-	setUChar( low );
-	setUChar( high );
-#else
-	memcpy( &pBuffer[nCursor], &sh, sizeof( short ) );
-	nCursor += sizeof( short );
-#endif
+	EncodeLittleEndian<std::uint16_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), sh );
+	nCursor += sizeof(std::uint16_t);
 	return true;
 }
 
@@ -581,15 +527,8 @@ bool MemoryBuffer::setUWord( const unsigned short sh )
 	if( nCursor > nSize || (sizeof(unsigned short) > nSize - nCursor && !ResizeForMore( sizeof(unsigned short) )) ) {
 		return false;
 	}
-#ifdef RISE_BIG_ENDIAN
-	unsigned char low = sh & 0xFF;
-	unsigned char high = (sh >> 8) & 0xFF;
-	setUChar( low );
-	setUChar( high );
-#else
-	memcpy( &pBuffer[nCursor], &sh, sizeof( unsigned short ) );
-	nCursor += sizeof( unsigned short );
-#endif
+	EncodeLittleEndian<std::uint16_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), sh );
+	nCursor += sizeof(std::uint16_t);
 	return true;
 }
 
@@ -599,15 +538,8 @@ bool MemoryBuffer::setInt( const int n )
 		return false;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned short low = n & 0xFFFF;
-	unsigned short high = (n >> 16) & 0xFFF;
-	setUWord( low );
-	setUWord( high );
-#else
-	memcpy( &pBuffer[nCursor], &n, sizeof( int ) );
-	nCursor += sizeof( int );
-#endif
+	EncodeLittleEndian<std::uint32_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), n );
+	nCursor += sizeof(std::uint32_t);
 	return true;
 }
 
@@ -617,15 +549,8 @@ bool MemoryBuffer::setUInt( const unsigned int n )
 		return false;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned short low = n & 0xFFFF;
-	unsigned short high = (n >> 16) & 0xFFF;
-	setUWord( low );
-	setUWord( high );
-#else
-	memcpy( &pBuffer[nCursor], &n, sizeof( unsigned int ) );
-	nCursor += sizeof( unsigned int );
-#endif
+	EncodeLittleEndian<std::uint32_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), n );
+	nCursor += sizeof(std::uint32_t);
 	return true;
 }
 
@@ -635,14 +560,8 @@ bool MemoryBuffer::setFloat( const float f )
 		return false;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned int n;
-	memcpy( &n, &f, sizeof( float ) );
-	setUInt( n );
-#else
-	memcpy( &pBuffer[nCursor], &f, sizeof( float ) );
-	nCursor += sizeof( float );
-#endif
+	EncodeLittleEndian<std::uint32_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), f );
+	nCursor += sizeof(std::uint32_t);
 	return true;
 }
 
@@ -652,19 +571,8 @@ bool MemoryBuffer::setDouble( const double d )
 		return false;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned int first;
-	unsigned int last;
-
-	char* ptrd = (char*)&d;
-	memcpy( &first, ptrd, 4 );
-	memcpy( &last, &ptrd[4], 4 );
-	setUInt( last );
-	setUInt( first );
-#else
-	memcpy( &pBuffer[nCursor], &d, sizeof( double ) );
-	nCursor += sizeof( double );
-#endif
+	EncodeLittleEndian<std::uint64_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), d );
+	nCursor += sizeof(std::uint64_t);
 	return true;
 }
 

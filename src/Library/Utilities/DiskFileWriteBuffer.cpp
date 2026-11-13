@@ -14,8 +14,10 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #ifdef _WIN32
 #include <process.h>
@@ -24,6 +26,8 @@
 #endif
 #include <string.h>
 #include "DiskFileWriteBuffer.h"
+#include "LittleEndian.h"
+#include <cstdint>
 #include "../Interfaces/ILog.h"
 #include "MediaPathLocator.h"
 
@@ -59,72 +63,44 @@ bool DiskFileWriteBuffer::setUChar( const unsigned char ch )
 
 bool DiskFileWriteBuffer::setWord( const short sh )
 {
-#ifdef RISE_BIG_ENDIAN
-	unsigned char low = sh & 0xFF;
-	unsigned char high = (sh >> 8) & 0xFF;
-	return setUChar( low ) && setUChar( high );
-#else
-	return setBytes( &sh, sizeof(sh) );
-#endif
+	unsigned char bytes[sizeof(std::uint16_t)];
+	EncodeLittleEndian<std::uint16_t>( bytes, sh );
+	return setBytes( bytes, sizeof(bytes) );
 }
 
 bool DiskFileWriteBuffer::setUWord( const unsigned short sh )
 {
-#ifdef RISE_BIG_ENDIAN
-	unsigned char low = sh & 0xFF;
-	unsigned char high = (sh >> 8) & 0xFF;
-	return setUChar( low ) && setUChar( high );
-#else
-	return setBytes( &sh, sizeof(sh) );
-#endif
+	unsigned char bytes[sizeof(std::uint16_t)];
+	EncodeLittleEndian<std::uint16_t>( bytes, sh );
+	return setBytes( bytes, sizeof(bytes) );
 }
 
 bool DiskFileWriteBuffer::setInt( const int n )
 {
-#ifdef RISE_BIG_ENDIAN
-	unsigned short low = n & 0xFFFF;
-	unsigned short high = (n >> 16) & 0xFFF;
-	return setUWord( low ) && setUWord( high );
-#else
-	return setBytes( &n, sizeof(n) );
-#endif
+	unsigned char bytes[sizeof(std::uint32_t)];
+	EncodeLittleEndian<std::uint32_t>( bytes, n );
+	return setBytes( bytes, sizeof(bytes) );
 }
 
 bool DiskFileWriteBuffer::setUInt( const unsigned int n )
 {
-#ifdef RISE_BIG_ENDIAN
-	unsigned short low = n & 0xFFFF;
-	unsigned short high = (n >> 16) & 0xFFF;
-	return setUWord( low ) && setUWord( high );
-#else
-	return setBytes( &n, sizeof(n) );
-#endif
+	unsigned char bytes[sizeof(std::uint32_t)];
+	EncodeLittleEndian<std::uint32_t>( bytes, n );
+	return setBytes( bytes, sizeof(bytes) );
 }
 
 bool DiskFileWriteBuffer::setFloat( const float f )
 {
-#ifdef RISE_BIG_ENDIAN
-	unsigned int n;
-	memcpy( &n, &f, sizeof( float ) );
-	return setUInt( n );
-#else
-	return setBytes( &f, sizeof(f) );
-#endif
+	unsigned char bytes[sizeof(std::uint32_t)];
+	EncodeLittleEndian<std::uint32_t>( bytes, f );
+	return setBytes( bytes, sizeof(bytes) );
 }
 
 bool DiskFileWriteBuffer::setDouble( const double d )
 {
-#ifdef RISE_BIG_ENDIAN
-	unsigned int first;
-	unsigned int last;
-	
-	char* ptrd = (char*)&d;
-	memcpy( &first, ptrd, 4 );
-	memcpy( &last, &ptrd[4], 4 );
-	return setUInt( last ) && setUInt( first );
-#else
-	return setBytes( &d, sizeof(d) );
-#endif
+	unsigned char bytes[sizeof(std::uint64_t)];
+	EncodeLittleEndian<std::uint64_t>( bytes, d );
+	return setBytes( bytes, sizeof(bytes) );
 }
 
 bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
@@ -133,10 +109,34 @@ bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
 		writeFailed = true;
 		return false;
 	}
+	if( amount > std::numeric_limits<unsigned int>::max() - cursor ) {
+		writeFailed = true;
+		return false;
+	}
 	const size_t written = fwrite( pSource, 1, amount, hFile );
+	cursor += static_cast<unsigned int>(written);
+	logicalSize = std::max( logicalSize, cursor );
 	hasWritten |= written != 0;
 	writeFailed |= written != amount;
 	return written == amount;
+}
+
+unsigned int DiskFileWriteBuffer::Size() const
+{
+	return logicalSize;
+}
+
+unsigned int DiskFileWriteBuffer::getCurPos() const
+{
+	return cursor;
+}
+
+bool DiskFileWriteBuffer::seek( eSeek type, int amount )
+{
+	const bool moved = DiskBuffer::seek( type, amount );
+	writeFailed |= !moved;
+	if( moved ) cursor = DiskBuffer::getCurPos();
+	return moved;
 }
 
 void DiskFileWriteBuffer::Clear( )
@@ -187,8 +187,24 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 #else
 	const auto pid = ::getpid();
 #endif
-	const fs::path target( path );
+	fs::path target( path );
 	std::error_code error;
+	const auto link = fs::symlink_status( target, error );
+	if( error && error != std::errc::no_such_file_or_directory ) return false;
+	if( fs::is_symlink( link ) ) {
+		target = fs::canonical( target, error );
+		if( error ) return false;
+	}
+	const auto previous = fs::status( target, error );
+	if( error && error != std::errc::no_such_file_or_directory ) return false;
+	const bool replacing = fs::exists( previous );
+	if( replacing ) {
+		if( !fs::is_regular_file( previous ) ) return false;
+		FILE* probe = fopen( target.string().c_str(), "r+b" );
+		if( !probe ) return false;
+		fclose( probe );
+	}
+	error.clear();
 	fs::path directory;
 	for( unsigned int attempt = 0; attempt < 16; ++attempt ) {
 		directory = target.parent_path() / (".rise-write-" + std::to_string( pid ) + "-" +
@@ -215,6 +231,10 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	if( !buffer->ReadyToWrite() ) return false;
 	const bool encoded = write( *buffer );
 	if( !buffer->Finish( true ) || !encoded ) return false;
+	if( replacing ) {
+		fs::permissions( staging, previous.permissions(), error );
+		if( error ) return false;
+	}
 	fs::rename( staging, target, error );
 	return !error;
 }

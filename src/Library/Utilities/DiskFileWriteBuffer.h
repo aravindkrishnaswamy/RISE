@@ -34,29 +34,32 @@ namespace RISE
 
 			// There is only one constructor
 			DiskFileWriteBuffer( const char * file_name );
+			unsigned int Size() const override;
+			unsigned int getCurPos() const override;
+			bool seek( eSeek type, int amount ) override;
 
 			//
 			// This is for the IWriteBuffer interface
 			//
 
-			bool setChar( const char ch );
-			bool setUChar( const unsigned char ch );
+			bool setChar( const char ch ) override;
+			bool setUChar( const unsigned char ch ) override;
 
-			bool setWord( const short sh );
-			bool setUWord( const unsigned short sh );
+			bool setWord( const short sh ) override;
+			bool setUWord( const unsigned short sh ) override;
 
-			bool setInt( const int n );
-			bool setUInt( const unsigned int n );
+			bool setInt( const int n ) override;
+			bool setUInt( const unsigned int n ) override;
 
-			bool setFloat( const float f );
-			bool setDouble( const double d );
+			bool setFloat( const float f ) override;
+			bool setDouble( const double d ) override;
 
-			bool setBytes( const void* pSource, unsigned int amount );
+			bool setBytes( const void* pSource, unsigned int amount ) override;
 
 
-			void Clear( );
-			bool Resize( unsigned int new_size, bool bForce );
-			bool ResizeForMore( unsigned int more_bytes );
+			void Clear( ) override;
+			bool Resize( unsigned int new_size, bool bForce ) override;
+			bool ResizeForMore( unsigned int more_bytes ) override;
 
 			bool ReadyToWrite() const;
 			// Close the output and report buffered write errors.
@@ -73,6 +76,8 @@ namespace RISE
 		private:
 			bool hasWritten = false;
 			bool writeFailed = false;
+			unsigned int logicalSize = 0;
+			unsigned int cursor = 0;
 		};
 	}
 }

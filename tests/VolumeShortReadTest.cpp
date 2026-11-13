@@ -413,6 +413,54 @@ static void TestBufferWriteFailures()
 	std::remove( path.c_str() );
 }
 
+static void TestLittleEndianScalars()
+{
+	const unsigned char expected[] = {
+		0xfe, 0xff, 0xef, 0xbe,
+		0xfe, 0xff, 0xff, 0xff, 0xef, 0xcd, 0xab, 0xf9,
+		0x00, 0x00, 0xa0, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xc0
+	};
+	const auto write = []( IWriteBuffer& buffer ) {
+		return buffer.setWord( -2 ) && buffer.setUWord( 0xbeef ) &&
+			buffer.setInt( -2 ) && buffer.setUInt( 0xf9abcdef ) &&
+			buffer.setFloat( 1.25f ) && buffer.setDouble( -2.5 );
+	};
+	const auto read = []( IReadBuffer& buffer ) {
+		return buffer.getWord() == -2 && buffer.getUWord() == 0xbeef &&
+			buffer.getInt() == -2 && buffer.getUInt() == 0xf9abcdef &&
+			buffer.getFloat() == 1.25f && buffer.getDouble() == -2.5;
+	};
+	auto* memory = new MemoryBuffer();
+	Check( write( *memory ) && memory->getCurPos() == sizeof(expected) &&
+		std::memcmp( memory->Pointer(), expected, sizeof(expected) ) == 0,
+		"memory scalar writes match independent little-endian bytes" );
+	memory->release();
+	char fixture[sizeof(expected)];
+	std::memcpy( fixture, expected, sizeof(fixture) );
+	auto* borrowed = new MemoryBuffer( fixture, sizeof(fixture), false );
+	Check( read( *borrowed ), "memory scalar reads decode independent little-endian bytes" );
+	borrowed->release();
+
+	const auto path = RISE::TestSupport::ScratchPath( "scalar_little_endian.bin" );
+	auto* diskWrite = new DiskFileWriteBuffer( path.c_str() );
+	const bool written = write( *diskWrite );
+	Check( diskWrite->Finish( true ) && written, "disk scalar writes complete" );
+	diskWrite->release();
+	std::ifstream file( path, std::ios::binary );
+	unsigned char actual[sizeof(expected)];
+	Check( file.read( reinterpret_cast<char*>(actual), sizeof(actual) ) &&
+		std::memcmp( actual, expected, sizeof(expected) ) == 0,
+		"disk scalar writes match independent little-endian bytes" );
+	file.close();
+	std::ofstream fixtureFile( path, std::ios::binary );
+	fixtureFile.write( fixture, sizeof(fixture) );
+	fixtureFile.close();
+	auto* diskRead = new DiskFileReadBuffer( path.c_str() );
+	Check( read( *diskRead ), "disk scalar reads decode independent little-endian bytes" );
+	diskRead->release();
+	std::remove( path.c_str() );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "VolumeShortReadTest — missing/truncated binary reads zero, never uninitialised"
@@ -426,6 +474,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestDiskFileReadBufferMissingFile();
 	TestVolumeOverflowDims();
 	TestBufferWriteFailures();
+	TestLittleEndianScalars();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
