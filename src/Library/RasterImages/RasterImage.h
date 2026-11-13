@@ -46,6 +46,21 @@ namespace RISE
 			// image is reloaded. Borrowed external pixels remain caller-owned.
 			std::shared_ptr<PEL[]> storage;
 
+			struct ReleaseSource {
+				void operator()( RasterImage_Template* source ) const { source->release(); }
+			};
+			std::unique_ptr<RasterImage_Template, ReleaseSource> borrowedSource;
+
+			void RetainBacking( RasterImage_Template* source )
+			{
+				storage = source->storage;
+				if( !storage && source->pData ) {
+					auto* owner = source->borrowedSource ? source->borrowedSource.get() : source;
+					owner->addref();
+					borrowedSource.reset( owner );
+				}
+			}
+
 			static std::shared_ptr<PEL[]> Adopt( PEL* data )
 			{
 				if( !data ) return {};
@@ -70,6 +85,7 @@ namespace RISE
 			{
 				storage = std::move(pixels);
 				pData = storage.get();
+				borrowedSource.reset();
 				width = w;
 				height = h;
 				stride = w;
@@ -100,7 +116,7 @@ namespace RISE
 			explicit RasterImage_Template( RasterImage_Template* source )
 			{
 				if( !source ) return;
-				storage = source->storage;
+				RetainBacking( source );
 				pData = source->pData;
 				width = source->width;
 				height = source->height;
@@ -112,7 +128,7 @@ namespace RISE
 			{
 				if( !source || !source->pData || clip.left >= clip.right || clip.top >= clip.bottom ||
 					clip.right > source->width || clip.bottom > source->height ) return;
-				storage = source->storage;
+				RetainBacking( source );
 				stride = source->stride;
 				pData = source->pData + static_cast<size_t>(clip.top) * stride + clip.left;
 				width = clip.right - clip.left;
@@ -190,20 +206,21 @@ namespace RISE
 					if( !pData ) Replace( Allocate( 1, 1, 1 ), 1, 1 );
 					return;
 				}
-				struct EndRead {
-					IRasterImageReader* reader;
-					~EndRead() { reader->EndRead(); }
-				} endRead{ reader };
-
-				if( w != width || h != height ) Replace( Allocate( w, h, w ), w, h );
-				for( unsigned int y = 0; y < height; ++y ) {
-					const size_t offset = static_cast<size_t>(y) * stride;
-					for( unsigned int x = 0; x < width; ++x ) {
-						RISEColor color;
-						reader->ReadColor( color, x, y );
-						pData[offset+x] = color;
+				try {
+					if( w != width || h != height ) Replace( Allocate( w, h, w ), w, h );
+					for( unsigned int y = 0; y < height; ++y ) {
+						const size_t offset = static_cast<size_t>(y) * stride;
+						for( unsigned int x = 0; x < width; ++x ) {
+							RISEColor color;
+							reader->ReadColor( color, x, y );
+							pData[offset+x] = color;
+						}
 					}
+				} catch( ... ) {
+					try { reader->EndRead(); } catch( ... ) {}
+					throw;
 				}
+				reader->EndRead();
 			}
 
 			// For IRasterImage

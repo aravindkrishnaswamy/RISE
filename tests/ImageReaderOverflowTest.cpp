@@ -79,7 +79,8 @@ static void TestRasterStorage()
 	struct Reader final : IRasterImageReader, Reference
 	{
 		bool ended = false;
-		bool BeginRead( unsigned int& w, unsigned int& h ) override { w = h = 1; return true; }
+		unsigned int side = 1;
+		bool BeginRead( unsigned int& w, unsigned int& h ) override { w = h = side; return true; }
 		void ReadColor( RISEColor& color, unsigned int, unsigned int ) override
 		{
 			color = RISEColor( 0.125, 0.25, 0.5, 1.0 );
@@ -118,6 +119,29 @@ static void TestRasterStorage()
 	borrowed->SetPEL( 0, 0, blank );
 	borrowed->release();
 	Check( external[0].base.r == 0, "borrowed pixels remain caller-owned and writable" );
+
+	struct OwningSource final : RISERasterImage
+	{
+		std::unique_ptr<RISEColor[]> owner;
+		bool& destroyed;
+		OwningSource( RISEColor* pixels, bool& ended ) :
+			RISERasterImage( pixels, 1, 1, false ), owner( pixels ), destroyed( ended ) {}
+		~OwningSource() override { destroyed = true; }
+	};
+	bool destroyed = false;
+	auto* source = new OwningSource( new RISEColor[1]{marker}, destroyed );
+	auto* borrowedView = new RISERasterImage( source );
+	auto* nested = new RISERasterImage( borrowedView );
+	source->release();
+	Check( !destroyed && borrowedView->GetPEL( 0, 0 ).base.r == 0.5,
+		"borrowed views retain a source that owns its external storage" );
+	reader.side = 2;
+	borrowedView->LoadImage( &reader );
+	borrowedView->release();
+	Check( !destroyed && nested->GetPEL( 0, 0 ).base.r == 0.5,
+		"nested borrowed view retains its allocation after an intermediate view reloads" );
+	nested->release();
+	Check( destroyed, "the last borrowed view releases its source" );
 }
 
 //----------------------------------------------------------------------
