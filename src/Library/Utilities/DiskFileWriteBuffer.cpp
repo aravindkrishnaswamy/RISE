@@ -37,9 +37,9 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char * file_name )
 {
 	if( !file_name ) return;
 	filename = file_name;
-	hFile = fopen( filename.c_str(), "wb" );
+	hFile.reset( fopen( filename.c_str(), "wb" ) );
 
-	if( hFile == 0 ) {
+	if( !hFile ) {
 		GlobalLog()->PrintEx( eLog_Warning, "DiskFileWriteBuffer:: Failed to open file \'%s\'", file_name );
 	}
 }
@@ -105,7 +105,7 @@ bool DiskFileWriteBuffer::setDouble( const double d )
 
 bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
 {
-	if( !pSource || !hFile || ferror( hFile ) ) {
+	if( !pSource || !hFile || ferror( hFile.get() ) ) {
 		writeFailed = true;
 		return false;
 	}
@@ -113,7 +113,7 @@ bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
 		writeFailed = true;
 		return false;
 	}
-	const size_t written = fwrite( pSource, 1, amount, hFile );
+	const size_t written = fwrite( pSource, 1, amount, hFile.get() );
 	cursor += static_cast<unsigned int>(written);
 	logicalSize = std::max( logicalSize, cursor );
 	hasWritten |= written != 0;
@@ -159,7 +159,7 @@ bool DiskFileWriteBuffer::ResizeForMore( unsigned int )
 
 bool DiskFileWriteBuffer::ReadyToWrite() const
 {
-	return (hFile!=0);
+	return static_cast<bool>(hFile);
 }
 
 bool DiskFileWriteBuffer::Finish( bool requireOutput )
@@ -167,9 +167,8 @@ bool DiskFileWriteBuffer::Finish( bool requireOutput )
 	if( !hFile ) {
 		return false;
 	}
-	const bool written = !writeFailed && !ferror( hFile ) && (!requireOutput || hasWritten);
-	const bool closed = fclose( hFile ) == 0;
-	hFile = nullptr;
+	const bool written = !writeFailed && !ferror( hFile.get() ) && (!requireOutput || hasWritten);
+	const bool closed = fclose( hFile.release() ) == 0;
 	if( !written || !closed ) {
 		GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Failed to write `%s`", filename.c_str() );
 		return false;

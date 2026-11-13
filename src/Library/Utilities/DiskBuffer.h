@@ -18,6 +18,7 @@
 #include "Reference.h"
 #include <stdio.h>
 #include <string>
+#include <memory>
 
 #ifndef DISK_BUFFER_
 #define DISK_BUFFER_
@@ -44,7 +45,10 @@ namespace RISE
 			DiskBuffer();
 			virtual ~DiskBuffer();
 
-			FILE*		hFile;				///< Handle to the file on disk
+			struct CloseFile {
+				void operator()( FILE* file ) const { std::fclose( file ); }
+			};
+			std::unique_ptr<FILE, CloseFile> hFile;
 			std::string filename;			///< Name of the file
 		};
 	}

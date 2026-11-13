@@ -21,10 +21,7 @@
 
 using namespace RISE::Implementation;
 
-DiskBuffer::DiskBuffer( ) : 
-  hFile( 0 )
-{
-}
+DiskBuffer::DiskBuffer() = default;
 
 DiskBuffer::~DiskBuffer( )
 {
@@ -53,9 +50,9 @@ unsigned int DiskBuffer::getCurPos( ) const
 		return 0;
 	}
 	#ifdef _WIN32
-	const auto position = _ftelli64( hFile );
+	const auto position = _ftelli64( hFile.get() );
 #else
-	const auto position = ftello( hFile );
+	const auto position = ftello( hFile.get() );
 #endif
 	if( position < 0 || static_cast<unsigned long long>(position) > std::numeric_limits<unsigned int>::max() )
 		return std::numeric_limits<unsigned int>::max();
@@ -84,8 +81,8 @@ bool DiskBuffer::seek( const eSeek type, const int amount )
 	default: return false;
 	}
 #ifdef _WIN32
-	return _fseeki64( hFile, amount, origin ) == 0;
+	return _fseeki64( hFile.get(), amount, origin ) == 0;
 #else
-	return fseeko( hFile, amount, origin ) == 0;
+	return fseeko( hFile.get(), amount, origin ) == 0;
 #endif
 }

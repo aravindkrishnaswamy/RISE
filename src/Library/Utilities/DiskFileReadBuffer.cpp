@@ -33,23 +33,22 @@ DiskFileReadBuffer::DiskFileReadBuffer( const char * file_name ) : nSize( 0 )
 	if( !file_name ) return;
 	filename = GlobalMediaPathLocator().Find( file_name ).c_str();
 
-	hFile = fopen( filename.c_str(), "rb" );
+	hFile.reset( fopen( filename.c_str(), "rb" ) );
 	if( !hFile ) {
 		GlobalLog()->PrintEx( eLog_Warning, "DiskFileReadBuffer:: Failed to open file '%s'", file_name );
 		return;
 	}
 #ifdef _WIN32
 	struct _stat64 fileStats{};
-	const bool regular = _fstat64( _fileno(hFile), &fileStats ) == 0 &&
+	const bool regular = _fstat64( _fileno(hFile.get()), &fileStats ) == 0 &&
 		(fileStats.st_mode & _S_IFMT) == _S_IFREG;
 #else
 	struct stat fileStats{};
-	const bool regular = fstat( fileno(hFile), &fileStats ) == 0 && S_ISREG( fileStats.st_mode );
+	const bool regular = fstat( fileno(hFile.get()), &fileStats ) == 0 && S_ISREG( fileStats.st_mode );
 #endif
 	if( !regular || fileStats.st_size < 0 ||
 		static_cast<std::uintmax_t>(fileStats.st_size) > std::numeric_limits<unsigned int>::max() ) {
-		fclose( hFile );
-		hFile = nullptr;
+		hFile.reset();
 		GlobalLog()->PrintEx( eLog_Warning, "DiskFileReadBuffer:: Unsupported file or size '%s'", file_name );
 		return;
 	}
@@ -57,13 +56,7 @@ DiskFileReadBuffer::DiskFileReadBuffer( const char * file_name ) : nSize( 0 )
 	GlobalLog()->PrintEx( eLog_Info, "DiskFileReadBuffer:: Opened file '%s' of size %u bytes for reading", file_name, nSize );
 }
 
-DiskFileReadBuffer::~DiskFileReadBuffer( )
-{
-	if( hFile ) {
-		fclose( hFile );
-		hFile = 0;
-	}
-}
+DiskFileReadBuffer::~DiskFileReadBuffer() = default;
 
 char DiskFileReadBuffer::getChar()
 {
@@ -83,7 +76,7 @@ char DiskFileReadBuffer::getChar()
 		return 0;
 	}
 	char c=0;
-	fread( &c, 1, 1, hFile );
+	fread( &c, 1, 1, hFile.get() );
 	return c;
 }
 
@@ -106,7 +99,7 @@ unsigned char DiskFileReadBuffer::getUChar()
 	}
 
 	unsigned char c=0;
-	fread( &c, 1, 1, hFile );
+	fread( &c, 1, 1, hFile.get() );
 	return c;
 }
 
@@ -119,7 +112,7 @@ short DiskFileReadBuffer::getWord()
 		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
 	return DecodeLittleEndian<short, std::uint16_t>( bytes );
 }
 
@@ -133,7 +126,7 @@ unsigned short DiskFileReadBuffer::getUWord()
 		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
 	return DecodeLittleEndian<unsigned short, std::uint16_t>( bytes );
 }
 
@@ -146,7 +139,7 @@ int DiskFileReadBuffer::getInt()
 		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
 	return DecodeLittleEndian<int, std::uint32_t>( bytes );
 }
 
@@ -159,7 +152,7 @@ unsigned int DiskFileReadBuffer::getUInt()
 		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
 	return DecodeLittleEndian<unsigned int, std::uint32_t>( bytes );
 }
 
@@ -172,7 +165,7 @@ float DiskFileReadBuffer::getFloat()
 		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
 	return DecodeLittleEndian<float, std::uint32_t>( bytes );
 }
 
@@ -185,7 +178,7 @@ double DiskFileReadBuffer::getDouble()
 		seek( IBuffer::END, 0 );
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile ) != sizeof(bytes) ) return 0;
+	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
 	return DecodeLittleEndian<double, std::uint64_t>( bytes );
 }
 
@@ -205,7 +198,7 @@ bool DiskFileReadBuffer::getBytes( void* pDest, unsigned int amount )
 
 	size_t got = 0;
 	if( toRead ) {
-		got = fread( pDest, 1, toRead, hFile );
+		got = fread( pDest, 1, toRead, hFile.get() );
 	}
 	if( got < amount ) {
 		// Short read (truncation / EOF): zero the tail and signal failure.
@@ -225,7 +218,7 @@ int DiskFileReadBuffer::getLine( char* pDest, unsigned int max )
 	unsigned int numRead = 0;
 	unsigned int cursor = getCurPos();
 	while( cursor < nSize && numRead < max ) {
-		const int byte = fgetc( hFile );
+		const int byte = fgetc( hFile.get() );
 		if( byte == EOF ) break;
 		pDest[numRead++] = static_cast<char>(byte);
 		++cursor;
