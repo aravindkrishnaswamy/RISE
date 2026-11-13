@@ -200,6 +200,19 @@ int main()
 	}
 
 	{
+		namespace fs = std::filesystem;
+		const auto root = fs::path( RISE::TestSupport::ScratchPath( "long_raw_path" ) );
+		const auto directory = root / std::string(100, 'a') / std::string(100, 'b') / std::string(80, 'c');
+		fs::create_directories( directory );
+		const auto mesh = directory / "mesh.raw";
+		Check( WriteTmp( mesh.string().c_str(), "tri 0 0 0 1 0 0 0 1 0" ), "write RAW fixture under a long path" );
+		Case( "RAW importer accepts a filename longer than 255 bytes",
+			RISE::TestSupport::ScratchPath( "long_raw.RISEscene" ).c_str(),
+			"RISE ASCII SCENE 7\nrawmesh_geometry\n{\nname mesh\nfile " + mesh.string() + "\n}\n" );
+		fs::remove_all( root );
+	}
+
+	{
 		const std::string name( 300, 'p' );
 		const std::string path = RISE::TestSupport::ScratchPath( "voronoi_long_reference.RISEscene" );
 		const std::string base = "RISE ASCII SCENE 7\nuniformcolor_painter\n{\nname " + name +

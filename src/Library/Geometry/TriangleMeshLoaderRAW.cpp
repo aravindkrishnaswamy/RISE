@@ -26,13 +26,7 @@ using namespace RISE::Implementation;
 
 TriangleMeshLoaderRAW::TriangleMeshLoaderRAW( const char * szFile )
 {
-	const String filename = GlobalMediaPathLocator().Find( szFile );
-	if( std::strlen( filename.c_str() ) < sizeof(szFilename) ) {
-		std::strcpy( szFilename, filename.c_str() );
-	} else {
-		szFilename[0] = '\0';
-		GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW:: File name is too long" );
-	}
+	if( szFile ) filename = GlobalMediaPathLocator().Find( szFile ).c_str();
 }
 
 TriangleMeshLoaderRAW::~TriangleMeshLoaderRAW( )
@@ -41,7 +35,7 @@ TriangleMeshLoaderRAW::~TriangleMeshLoaderRAW( )
 
 bool TriangleMeshLoaderRAW::LoadTriangleMesh( ITriangleMeshGeometry* pGeom )
 {
-	std::ifstream inputFile( szFilename );
+	std::ifstream inputFile( filename );
 
 	if( !inputFile || !pGeom ) {
 		GlobalLog()->Print( eLog_Error, "TriangleMeshLoaderRAW:: Failed to open file or bad geometry object" );
