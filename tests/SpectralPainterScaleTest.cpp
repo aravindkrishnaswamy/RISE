@@ -37,6 +37,7 @@
 
 #include "SMSRenderTestSupport.h"
 #include <sstream>
+#include <string_view>
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Painters/Painter.h"
 #include "../src/Library/Painters/BlackBodyPainter.h"
@@ -86,6 +87,30 @@ static IPainter* MakeSpectral( double (*F)( double ), double scale )
 	RISE_API_CreateSpectralColorPainter( &p, sp, scale );
 	safe_release( pFunc );
 	return p;
+}
+
+static void TestPacketAssignment()
+{
+	SpectralPacket source( 400, 800, 4 );
+	for( unsigned int bin = 0; bin < source.NumBins(); ++bin ) {
+		source.SetAtIndex( bin, bin + 1 );
+	}
+
+	SpectralPacket sameCount( 400, 600, 4 );
+	sameCount = source;
+	Check( sameCount.minLambda() == 400 && sameCount.maxLambda() == 800 &&
+		sameCount.deltaLambda() == 100 && sameCount.ValueAtNM( 525 ) == 2,
+		"packet assignment updates wavelength mapping for an equal bin count" );
+
+	SpectralPacket differentCount;
+	differentCount = source;
+	Check( differentCount.NumBins() == 4 && differentCount.deltaLambda() == 100 &&
+		differentCount.ValueAtNM( 400 ) == 1 && differentCount.ValueAtNM( 525 ) == 2 &&
+		differentCount.ValueAtNM( 650 ) == 3 && differentCount.ValueAtNM( 800 ) == 4,
+		"packet assignment copies every bin when the count changes" );
+	source.SetAtIndex( 1, 9 );
+	Check( differentCount.ValueAtNM( 525 ) == 2,
+		"packet assignment owns an independent copy of the bins" );
 }
 
 static void TestPainterLevel()
@@ -273,10 +298,13 @@ static void TestRenders()
 
 int main( int argc, char** argv )
 {
-	(void)argc; (void)argv;
+	const bool packetOnly = argc == 2 && std::string_view( argv[1] ) == "--packet-only";
 	std::cout << "SpectralPainterScaleTest (DL-464)" << std::endl;
-	TestPainterLevel();
-	TestRenders();
+	TestPacketAssignment();
+	if( !packetOnly ) {
+		TestPainterLevel();
+		TestRenders();
+	}
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;
 }

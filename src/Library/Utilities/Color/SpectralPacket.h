@@ -16,6 +16,7 @@
 #define SPECTRAL_PACKET_
 
 #include <memory.h>
+#include <memory>
 #include "../../Interfaces/ILog.h"
 #include "../../Interfaces/IFunction1D.h"
 
@@ -203,38 +204,27 @@ namespace RISE
 		// Assignment
 		inline		SpectralPacket	operator=( const SpectralPacket& s )
 		{
-			// Check if the packet we are assigned to has the same frequencies responsible
-			// and same discretization of frequencies
-			if( SameFreqs( *this, s ) )
-			{
-				// Then its a lot easier
-				memcpy( amplitudes, s.amplitudes, sizeof( Scalar ) * num_freq );
+			if( this == &s ) {
+				return *this;
 			}
-			else if( s.num_freq == num_freq )
-			{
-				// If the number of frequencies are atleast the same, we don't need to 
-				// reallocate
-				lambda_begin = s.lambda_begin;
-				lambda_end = s.lambda_end;
-				memcpy( amplitudes, s.amplitudes, sizeof( Scalar ) * num_freq );
-			}
-			else
-			{
-				// We have to reallocate the array
+
+			const bool resize = num_freq != s.num_freq;
+			if( resize ) {
+				std::unique_ptr<Scalar[]> replacement( new Scalar[s.num_freq] );
 				GlobalLog()->PrintDelete( amplitudes, __FILE__, __LINE__ );
-				delete amplitudes;
-				lambda_begin = s.lambda_begin;
-				lambda_end = s.lambda_end;
-				num_freq = s.num_freq;
-				delta = (lambda_end-lambda_begin) / Scalar(num_freq);
-				OVnumfreq = 1.0 / Scalar(num_freq);
-				amplitudes = new Scalar[num_freq];
-				GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
-
-				memcpy( amplitudes, s.amplitudes, sizeof( Scalar ) * num_freq );
+				delete [] amplitudes;
+				amplitudes = replacement.release();
 			}
 
-			// Return the left hand side
+			lambda_begin = s.lambda_begin;
+			lambda_end = s.lambda_end;
+			num_freq = s.num_freq;
+			delta = s.delta;
+			OVnumfreq = s.OVnumfreq;
+			memcpy( amplitudes, s.amplitudes, sizeof( Scalar ) * num_freq );
+			if( resize ) {
+				GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
+			}
 			return *this;
 		}
 
