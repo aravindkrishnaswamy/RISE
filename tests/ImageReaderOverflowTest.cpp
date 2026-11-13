@@ -55,6 +55,7 @@
 #include "../src/Library/RasterImages/HDRReader.h"
 #include "../src/Library/RasterImages/PNGReader.h"
 #include "../src/Library/RasterImages/TIFFReader.h"
+#include "../src/Library/RasterImages/RasterImage.h"
 #include "TestTempDir.h"
 
 #ifndef NO_TIFF_SUPPORT
@@ -71,6 +72,52 @@ static void Check( bool cond, const char* name )
 {
 	if( cond ) { ++passCount; }
 	else { ++failCount; std::cout << "  FAIL: " << name << std::endl; }
+}
+
+static void TestRasterStorage()
+{
+	struct Reader final : IRasterImageReader, Reference
+	{
+		bool ended = false;
+		bool BeginRead( unsigned int& w, unsigned int& h ) override { w = h = 1; return true; }
+		void ReadColor( RISEColor& color, unsigned int, unsigned int ) override
+		{
+			color = RISEColor( 0.125, 0.25, 0.5, 1.0 );
+		}
+		void EndRead() override { ended = true; }
+	};
+	const RISEColor blank( 0.0, 0.0, 0.0, 1.0 );
+	const RISEColor marker( 0.5, 0.25, 0.125, 1.0 );
+	auto* parent = new RISERasterImage( 6, 4, blank );
+	parent->SetPEL( 4, 3, marker );
+	auto* view = new RISERasterImage( parent, Rect( 1, 2, 4, 5 ) );
+	auto* copy = new RISERasterImage( *view );
+	Check( copy->GetStride() == 6 && copy->GetPEL( 2, 2 ).base.r == 0.5,
+		"strided image copies retain the last row and its stride" );
+	view->SetPEL( 2, 2, blank );
+	Check( copy->GetPEL( 2, 2 ).base.r == 0.5 && parent->GetPEL( 4, 3 ).base.r == 0,
+		"image copies are independent and views write through" );
+	view->SetPEL( 2, 2, marker );
+	Reader reader;
+	parent->LoadImage( &reader );
+	Check( reader.ended && parent->GetWidth() == 1 && parent->GetPEL( 0, 0 ).base.r == 0.125,
+		"raster reload replaces dimensions and closes the reader" );
+	parent->release();
+	Check( view->GetPEL( 2, 2 ).base.r == 0.5, "view retains the old pixel allocation after source reload" );
+	view->release();
+	copy->release();
+
+	auto* adopted = new RISERasterImage( new RISEColor[1]{marker}, 1, 1, true );
+	auto* retained = new RISERasterImage( adopted );
+	adopted->release();
+	Check( retained->GetPEL( 0, 0 ).base.r == 0.5, "view retains adopted pixels" );
+	retained->release();
+
+	RISEColor external[] = {marker};
+	auto* borrowed = new RISERasterImage( external, 1, 1, false );
+	borrowed->SetPEL( 0, 0, blank );
+	borrowed->release();
+	Check( external[0].base.r == 0, "borrowed pixels remain caller-owned and writable" );
 }
 
 //----------------------------------------------------------------------
@@ -566,6 +613,7 @@ static void TestTIFF()
 
 int main( int /*argc*/, char* /*argv*/[] )
 {
+	TestRasterStorage();
 	std::cout << "ImageReaderOverflowTest — header-driven write-side overflows are rejected"
 		<< std::endl;
 
