@@ -7,12 +7,65 @@
 - The local series covers spectral assignment and lookup, scene and asset records, scripts and descriptor ownership, buffer and codec failures, file output paths, Halton storage, and unused utilities. The later commits move manager and options lookups to owned keys with borrowed probes, use a monotonic clock for elapsed timing, normalize media roots, fix intrusive reference locking, and scope procedural scratch and hair file ownership.
 - Halton sample and migration outputs matched byte for byte. The TIFF reader correction changes one scene digest, `cc_tiff_painter.RISEscene`. Its golden entry was refreshed after independent TIFF decoding checks. The legacy expression evaluator moved to the migration tool. Valid comparison fixtures produce identical output, malformed expressions remain unexpanded, and nesting is bounded.
 - An arm64 probe rebuilt the old scalar writer branches with `RISE_BIG_ENDIAN` and confirmed lost high bits and reversed double halves in both disk and memory output. Files from those branches can contain irreversible loss. The new disk and memory writers matched independent little-endian scalar fixtures. Independent PNG scanline inspection confirmed network-order 16-bit RGBA samples.
-- The factory and interface signatures used by supported clients remain the compatibility boundary. Concrete implementation headers including `MultiHalton`, `GenericManager`, `AsciiCommandParser`, `MemoryBuffer`, the disk buffers, `RasterImage_Template`, mesh cache and stream-printer types, and file rasterizer output have changed. Clients that construct or subclass these types directly need to rebuild. Existing `String` types at public interfaces and in public configurations retain their layouts.
+- The factory and interface signatures used by supported clients remain the compatibility boundary. Concrete implementation headers including `MultiHalton`, `GenericManager`, `AsciiCommandParser`, `MemoryBuffer`, the disk buffers, `EXRReader`, `EXRWriter`, `RasterImage_Template`, mesh cache and stream-printer types, and file rasterizer output have changed. Clients that construct or subclass these types directly need to rebuild. Existing `String` types at public interfaces and in public configurations retain their layouts.
 - CLI token ownership now uses `std::string`, with compatibility adapters at the existing `String` entry points. Descriptor parameter names and material-slot comparisons use borrowed views. Checked descriptor, console, options, and camera-keyframe conversion replaces unchecked numeric reads. Invalid commands are rejected before dispatch. Camera keyframes require complete finite scalar/vector input and reject trailing junk. Interpolated dimensions and aperture counts are range-checked before integer conversion.
 - Raster images explicitly own shared backing storage, retain borrowed source owners across nested views, and preserve clipped/strided copies and reload behavior. Disk streams use scoped ownership. Memory buffers use scoped array storage with separate capacity and exact logical size. Growth preserves borrowed/adopted ownership, aliasing, cursor behavior, and failed-write state. HDR/RGBEA headers and RAW/RAW2 importer filenames now use owned strings.
 - `stl_utils.h` was removed after pairing the factory inputs explicitly and selecting standard vector operations at each mesh/patch call site. Mesh compaction uses `shrink_to_fit()`. Sites requiring release use empty-vector swaps. Active elapsed-time callers use `steady_clock`, with bounded conversions at integer interfaces. The historical timer and seed APIs remain available for compatibility and frozen callers.
 - Private-lock pilots use scoped `std::mutex` in the mesh signal cache and stream printer. Intrusive lifetime semantics continue through `IReference`. The atomic-count prototype and standard RNG prototype were measured separately, as recorded below.
 - Native MSVC Debug/Release verification is still required before retiring the Windows keyframe workaround. Windows and Android verification are outside this continuation's requested host scope. Public string replacement and an atomic `Reference` layout change remain conditional on compatibility and workload evidence.
+
+
+### Compatibility review follow-up
+
+The review identified regressions in accepted inputs and file output. Focused
+follow-up commits restore compatible inputs and retain diagnosed errors for
+undefined or corrupt data. User-visible changes and binary regeneration
+requirements are recorded in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+
+| Finding | Disposition |
+| --- | --- |
+| 1. 3DS metadata and empty meshes | Accept older/missing version chunks, skip empty meshes, and stop outer metadata scanning after the first complete mesh section. Consumed mesh bounds and indices remain checked. The old version gate actually inspected an arbitrary byte at offset 28. |
+| 2. Outputs beyond 4 GiB | Disk cursors, sizes, seeks and photon availability checks use 64 bits through an optional `IBuffer64` interface. Existing `IBuffer` virtual signatures remain intact and narrow disk queries saturate. Sparse fixtures cover writes, packet reads across the boundary, normal Job loads, and codec offsets. Photon saves require staging. |
+| 3. Spectral and piecewise tables | Both consume leading finite columns and tolerate extra columns. File headers/malformed rows are skipped with warnings. Inline rows need two values. NUL, empty results, I/O failure and unequal spectral counts fail. |
+| 4. Console input | Token-boundary comments are supported, including `render # comment`. Malformed numeric arguments, incomplete render rectangles and unknown media-path commands remain diagnosed hard errors. |
+| 5. Restricted staging parents | Image output explicitly permits direct writes when staging is unavailable or a dangling symlink can be opened. Failed direct image writes may leave partial output. Photon saves retain staging-required failure safety. |
+| 6. Damaged TIFF strips | A compressed-strip fixture confirms partial decoding reports success with an opaque-black row. Strict rejection is retained and tested. |
+| 7. Windows path encoding | Existence checks use the native narrow path constructor shared with CRT/stream opens. Native Windows non-ASCII verification is still required. |
+| 8. Memory tracking | The scoped disk-writer construction shared by staged saves and image fallback registers its allocation with `PrintNew`. |
+| 9. Logger static lifetime | Filename storage survives static destruction. An exit-time recreation fixture covers the confirmed ASan use-after-free. |
+| 10. Historical Xcode CLI binary assets | Regenerate affected photon maps, caches, serialized meshes and other outputs using the scalar serializers from source. The plan and release notes record the incompatible endian branches and irreversible bit loss. |
+| 11. Checked descriptor numbers | The parser guide documents range errors, non-numeric fields, `.5` in unsigned fields, signs and retained prefix conversion. |
+| 12. Script/result corrections | Release notes record media-path registration, cylindrical UV size arguments and the default Voronoi border correction. |
+
+The first follow-up review round found an EOF termination violation after a
+file was truncated while open. The cached readable end is now reduced when
+I/O observes the earlier EOF, including preflight failures and line/scalar
+reads. Missing-file block reads zero the destination. Regression fixtures
+cover each scalar width, line and block reads. The media fixture now creates
+and reopens native narrow names, including non-ASCII bytes, through the same
+convention as the locator.
+
+Codec fault injection covers early and final writes. Frame encoders retain
+scoped writer ownership, TIFF metadata/scanline/directory failures propagate,
+and EXR finalization checks a latched stream error after OpenEXR closes its
+output. These failures preserve staged destinations and release references.
+
+Follow-up verification passed 13 focused executables, including 480 exact
+corpus matches, all four photon families, 119 buffer checks, and 131 encoder
+checks. Clean make, Xcode Deployment and Opto builds, and the Blender native
+LTO link passed without compiler warnings. Xcode's expected AppIntents
+metadata notice was discounted. Targeted ASan/UBSan checks passed for the
+buffer, photon, image, parser, spectral and frame-encoder paths. The
+`LOG_TRACK_MEMORY` writer probe balanced three allocations and three frees
+with zero reported leaks. Concurrent buffer-test runs passed after isolating
+temporary paths by process.
+
+The first adversarial source round found the EOF termination issue and the
+missing-file zero-fill mismatch. Both were fixed and covered by regressions.
+The second fresh source round reported zero P1 findings and one fixture
+isolation P2, which was fixed. Native Windows execution of the non-ASCII
+path case remains outstanding because this workspace provides macOS and
+has no Windows runtime or MSVC toolchain.
 
 
 ### Host measurements and decisions
@@ -23,10 +76,10 @@
 - An isolated intrusive-count prototype measured mutex versus atomic retain/release pairs at 2.18 ± 0.05 ms versus 0.69 ± 0.01 ms for one thread, and 32.57 ± 0.54 ms versus 9.03 ± 0.37 ms for four threads, using 200,000 pairs per thread. Renderer-wide ownership cost has yet to be established. `Reference` embeds a mutex in a publicly subclassable concrete type, so a production atomic replacement still needs a concrete-layout compatibility decision and concurrency validation.
 - The final corpus sweep exposed an invalid `output f2f1` token in `graph_stress_wide.RISEscene`. Its former unchecked conversion reached an uninitialized integer. The scene now uses canonical `f1`, which reproduces its existing golden digest exactly. Invalid output tokens are rejected, and focused tests guard rejection before job mutation.
 
-### Host verification checkpoint
+### Initial host verification at ffffa9633
 
 - Clean make and Xcode Deployment and Opto builds passed, followed by a clean Blender native LTO bridge link. Compiler output was warning-free. Xcode emitted its expected AppIntents metadata-extraction notice.
-- All 21 focused test executables passed. Coverage includes scalar and packet bytes, mesh compatibility, memory buffers, image ownership and codecs, parser and options behavior, descriptor mutation, mesh-cache construction, native keyframes, camera units and editor angles, animation/render parity, frame output, viewport storage and source-list hygiene. The corpus has 480 exact matches, zero drift, zero uncovered entries and zero stale entries. Animation parity passed 102 checks.
+- The initial series passed all 21 focused test executables. Coverage includes scalar and packet bytes, mesh compatibility, memory buffers, image ownership and codecs, parser and options behavior, descriptor mutation, mesh-cache construction, native keyframes, camera units and editor angles, animation/render parity, frame output, viewport storage and source-list hygiene. The corpus has 480 exact matches, zero drift, zero uncovered entries and zero stale entries. Animation parity passed 102 checks.
 - Targeted ASan/UBSan reruns passed for `VolumeShortReadTest`, `ImageReaderOverflowTest` and `NativeKeyframeAllocationTest`, with buffer, HDR/RGBEA writer, strict-parse and camera implementation objects instrumented.
 - Fresh adversarial rounds covered growth contracts and measured cost, CLI and descriptor parsing, raster lifetime and reload, timing bounds, and final file-output behavior. Review findings fixed missing command arguments, media-path spelling, nested borrowed-view lifetime, unsigned conversion before mutation, and empty prediction samples. The first camera review round found zero P1s and requested six-character ASCII whitespace support and stronger valid-application assertions. Both P2 findings were resolved in a separate commit. The final fresh review covers the resulting committed code and this checkpoint.
 

@@ -24,6 +24,8 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
 
 ## Current Technical References
 
+- [RELEASE_NOTES.md](RELEASE_NOTES.md) records user-visible changes and asset regeneration requirements.
+
 - [ARCHITECTURE.md](ARCHITECTURE.md): scene/runtime ownership, render phases,
   snapshots, TLAS, OIDN/film behavior, and thread-safety invariants
 - [PERFORMANCE.md](PERFORMANCE.md): topology-aware worker policy, benchmarking,
