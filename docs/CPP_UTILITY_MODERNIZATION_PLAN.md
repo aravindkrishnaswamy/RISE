@@ -1,6 +1,13 @@
 # C++ utility modernization plan
 
-**Status:** Proposal for review. Audit baseline `5fc6acaef`.
+**Status:** Implementation in progress on `codex/cpp-utility-modernization`. Audit baseline `5fc6acaef`.
+
+## Implementation checkpoint
+
+- The local series covers spectral assignment and lookup, scene and asset records, scripts and descriptor ownership, buffer and codec failures, file output paths, Halton storage, and unused utilities. The later commits move manager and options lookups to owned keys with borrowed probes, use a monotonic clock for elapsed timing, normalize media roots, fix intrusive reference locking, and scope procedural scratch and hair file ownership.
+- Halton sample and migration outputs matched byte for byte. The TIFF reader correction changes one scene digest, `cc_tiff_painter.RISEscene`. Its golden entry was refreshed after independent TIFF decoding checks. The legacy expression evaluator moved to the migration tool. Valid comparison fixtures produce identical output, malformed expressions remain unexpanded, and nesting is bounded.
+- The factory and interface signatures used by supported clients remain the compatibility boundary. Concrete implementation headers such as `MultiHalton`, `GenericManager`, the disk buffers, and file rasterizer output have changed. Clients that construct or subclass these types directly need to rebuild. Existing `String` types at public interfaces and in public configurations still need to be carried through that boundary.
+- The Windows keyframe workaround requires native MSVC Debug and Release link verification. The remaining work also includes broader CLI and editor token conversion, image backing-store ownership, mesh and patch compaction decisions, additional private locking, buffer storage and growth, and the profiling-dependent RNG and atomic reference-count decisions. Final independent review is pending on the latest parser, migration, and manager changes.
 
 Start with live correctness fixes for spectral packet assignment, scene and asset parser bounds, binary I/O byte order, and failed buffer writes. Then fix Halton table ownership, script and parser resource lifetimes, and the Windows animation build workaround. One `MultiHalton` construction and destruction performs 1,875 array allocations and 257 array frees. A local allocation probe counted this, and the numbers follow from the code (the 256th prime is 1619). Manager name lookups and per-object reference-count mutexes remain performance candidates. Their workload impact needs a baseline.
 
