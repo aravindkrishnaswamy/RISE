@@ -21,6 +21,7 @@
 
 namespace RISE
 {
+	// Monotonic elapsed milliseconds, with the legacy unsigned interval interface.
 	class Timer
 	{
 	protected:
@@ -38,6 +39,7 @@ namespace RISE
 		unsigned int getInterval() const;
 	};
 
+	// Legacy platform clock used for seed generation and the POSIX sleep fallback.
 	extern unsigned int GetMilliseconds();
 }
 
