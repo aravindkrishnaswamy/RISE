@@ -201,8 +201,7 @@ namespace RISE
 		void AddElements( const std::vector<Element>& elements, const unsigned char max_recursion_level )
 		{
 			GlobalLog()->PrintEx( eLog_Info, "BSPTreeSAH:: Generating tree for %d elements, Max Recursion: %d, Max Elements/node: %d", static_cast<int>(elements.size()), max_recursion_level, maxPerNode );
-			Timer t;
-			t.start();
+			const auto tStart = std::chrono::steady_clock::now();
 
 			ElementInfoListType info;
 			info.reserve( elements.size() );
@@ -213,8 +212,8 @@ namespace RISE
 
 			root.AddElements( ep, info, maxPerNode, bbox, max_recursion_level, 1 );
 
-			t.stop();
-			GlobalLog()->PrintEx( eLog_Info, "BSPTreeSAH:: Time to generate BSPTreeSAH %d seconds, %d ms", t.getInterval()/1000, t.getInterval()%1000 );
+			const auto tEnd = std::chrono::steady_clock::now();
+			GlobalLog()->PrintEx( eLog_Info, "BSPTreeSAH:: Time to generate BSPTreeSAH %d seconds, %d ms", ElapsedMilliseconds(tStart, tEnd)/1000, ElapsedMilliseconds(tStart, tEnd)%1000 );
 		}
 
 		void DumpStatistics( const LOG_ENUM e ) const

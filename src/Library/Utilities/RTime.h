@@ -19,8 +19,20 @@
 #ifndef RTIME_
 #define RTIME_
 
+#include <chrono>
+#include <limits>
+
 namespace RISE
 {
+	inline unsigned int ElapsedMilliseconds( std::chrono::steady_clock::time_point start,
+		std::chrono::steady_clock::time_point end )
+	{
+		const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+		if( elapsed <= 0 ) return 0;
+		const auto max = std::numeric_limits<unsigned int>::max();
+		return static_cast<unsigned long long>(elapsed) > max ? max : static_cast<unsigned int>(elapsed);
+	}
+
 	// Monotonic elapsed milliseconds, with the legacy unsigned interval interface.
 	class Timer
 	{

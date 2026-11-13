@@ -152,8 +152,7 @@ bool MeshSignalBake::Build( const Kind kind, const Input& in, std::vector<float>
 	// not ask for explicitly (they wrote `occlusion(0.05)` in a material,
 	// not "bake now"), so it has to be visible when it happens and how long
 	// it took -- the same courtesy the SSS point-set build extends.
-	Timer timer;
-	timer.start();
+	const auto timerStart = std::chrono::steady_clock::now();
 
 	for( size_t vi = 0; vi < verts.size(); ++vi ) {
 		const Vector3& nRaw = normals[vi];
@@ -278,7 +277,7 @@ bool MeshSignalBake::Build( const Kind kind, const Input& in, std::vector<float>
 		out[vi] = static_cast<float>( v );
 	}
 
-	timer.stop();
+	const auto timerEnd = std::chrono::steady_clock::now();
 	// eLog_Event, not eLog_Info, and deliberately louder than the BVH /
 	// area-CDF builds around it: those are part of loading ANY scene,
 	// whereas this is a seconds-scale cost the user triggered IMPLICITLY by
@@ -290,7 +289,7 @@ bool MeshSignalBake::Build( const Kind kind, const Input& in, std::vector<float>
 	                                              : "CONVEXITY";
 	GlobalLog()->PrintEx( eLog_Event,
 		"MeshSignalBake:: baked per-vertex %s over %u vertices x %d rays in %u ms",
-		kindName, (unsigned)verts.size(), kRayCount, timer.getInterval() );
+		kindName, (unsigned)verts.size(), kRayCount, ElapsedMilliseconds(timerStart, timerEnd) );
 
 	return true;
 }

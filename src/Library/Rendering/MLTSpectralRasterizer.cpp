@@ -696,8 +696,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	std::vector<BootstrapSample> bootstrapSamples( nBootstrap );
 	Scalar luminanceSum = 0;
 
-	Timer bootstrapTimer;
-	bootstrapTimer.start();
+	const auto bootstrapTimerStart = std::chrono::steady_clock::now();
 
 	// Bootstrap uses a PSSMLTSampler so the path generated for seed i
 	// can be EXACTLY reproduced later by the chain init creating a
@@ -723,7 +722,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 		}
 	}
 
-	bootstrapTimer.stop();
+	const auto bootstrapTimerEnd = std::chrono::steady_clock::now();
 
 	const Scalar b_mean = luminanceSum / static_cast<Scalar>( nBootstrap );
 
@@ -770,7 +769,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	}
 
 	unsigned int numRounds = 1;
-	const unsigned int bootstrapMs = bootstrapTimer.getInterval();
+	const unsigned int bootstrapMs = ElapsedMilliseconds(bootstrapTimerStart, bootstrapTimerEnd);
 
 	if( bootstrapMs > 0 && nBootstrap > 0 )
 	{
@@ -897,8 +896,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 			? ( mutationsPerChain - mutationsDonePerChain )
 			: effectiveMutPerRound;
 
-		Timer roundTimer;
-		roundTimer.start();
+		const auto roundTimerStart = std::chrono::steady_clock::now();
 
 		if( threads > 1 )
 		{
@@ -946,9 +944,9 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 			FlushCallingThreadSplatBuffer();
 		}
 
-		roundTimer.stop();
+		const auto roundTimerEnd = std::chrono::steady_clock::now();
 		mutationsDonePerChain += mutThisRound;
-		const unsigned int roundWallMs = roundTimer.getInterval();
+		const unsigned int roundWallMs = ElapsedMilliseconds(roundTimerStart, roundTimerEnd);
 
 		// Adaptive round-size correction after round 0 — mirrors
 		// MLTRasterizer.cpp.  See the comment there for rationale.

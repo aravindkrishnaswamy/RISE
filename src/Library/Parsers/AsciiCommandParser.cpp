@@ -661,7 +661,8 @@ bool AsciiCommandParser::ParseRasterize( const std::string* tokens, unsigned int
 	if( num_tokens >= 4 && (!ReadUnsigned( tokens[0], left ) || !ReadUnsigned( tokens[1], right ) ||
 		!ReadUnsigned( tokens[2], top ) || !ReadUnsigned( tokens[3], bottom )) ) return false;
 
-	Timer t;
+	std::chrono::steady_clock::time_point tStart;
+	std::chrono::steady_clock::time_point tEnd;
 	bool bRet = true;
 	
 	StdOutProgress	progress( "Rasterizing Scene: " );	
@@ -670,20 +671,20 @@ bool AsciiCommandParser::ParseRasterize( const std::string* tokens, unsigned int
 	{
 
 
-		t.start();
+		tStart = std::chrono::steady_clock::now();
 		bRet = pJob.RasterizeRegion(left, top, right, bottom);
-		t.stop();
+		tEnd = std::chrono::steady_clock::now();
 
 	} else {
 
-		t.start();
+		tStart = std::chrono::steady_clock::now();
 		bRet = pJob.Rasterize();
-		t.stop();
+		tEnd = std::chrono::steady_clock::now();
 	}
 
 	pJob.SetProgress( 0 );
 
-	unsigned int		duration = t.getInterval();
+	unsigned int		duration = ElapsedMilliseconds(tStart, tEnd);
 	unsigned int		days = duration/1000/60/60/24;
 	duration -= days*1000*60*60*24;
 	unsigned int		hours = duration/1000/60/60;
@@ -751,13 +752,12 @@ bool AsciiCommandParser::ParseRasterizeAnimation( const std::string* tokens, uns
 	unsigned int specificFrame = 0;
 	if( num_tokens >= 1 && num_tokens < 3 && !ReadUnsigned( tokens[0], specificFrame ) ) return false;
 
-	Timer t;
 	bool bRet = true;
 
 	StdOutProgress	progress( "Rasterizing Scene: " );	
 	pJob.SetProgress( &progress );
 	
-	t.start();
+	const auto tStart = std::chrono::steady_clock::now();
 	if( num_tokens >= 3 ) {
 		bRet = pJob.RasterizeAnimation(time_start, time_end, frames, do_fields, invert_fields );
 	} else {
@@ -767,11 +767,11 @@ bool AsciiCommandParser::ParseRasterizeAnimation( const std::string* tokens, uns
 			bRet = pJob.RasterizeAnimationUsingOptions( );
 		}
 	}
-	t.stop();
+	const auto tEnd = std::chrono::steady_clock::now();
 
 	pJob.SetProgress( 0 );
 
-	unsigned int		duration = t.getInterval();
+	unsigned int		duration = ElapsedMilliseconds(tStart, tEnd);
 	unsigned int		days = duration/1000/60/60/24;
 	duration -= days*1000*60*60*24;
 	unsigned int		hours = duration/1000/60/60;

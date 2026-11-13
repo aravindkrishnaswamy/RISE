@@ -806,8 +806,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 	std::vector<BootstrapSample> bootstrapSamples( nBootstrap );
 	Scalar luminanceSum = 0;
 
-	Timer bootstrapTimer;
-	bootstrapTimer.start();
+	const auto bootstrapTimerStart = std::chrono::steady_clock::now();
 
 	// Bootstrap uses a PSSMLTSampler (not IndependentSampler) so the
 	// path generated for seed i can be EXACTLY reproduced later by
@@ -844,7 +843,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 		}
 	}
 
-	bootstrapTimer.stop();
+	const auto bootstrapTimerEnd = std::chrono::steady_clock::now();
 
 	// Normalization constant b:
 	// b_mean = mean luminance per bootstrap sample.  The full
@@ -910,7 +909,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 	}
 
 	unsigned int numRounds = 1;
-	const unsigned int bootstrapMs = bootstrapTimer.getInterval();
+	const unsigned int bootstrapMs = ElapsedMilliseconds(bootstrapTimerStart, bootstrapTimerEnd);
 
 	if( bootstrapMs > 0 && nBootstrap > 0 )
 	{
@@ -1042,8 +1041,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 			? ( mutationsPerChain - mutationsDonePerChain )
 			: effectiveMutPerRound;
 
-		Timer roundTimer;
-		roundTimer.start();
+		const auto roundTimerStart = std::chrono::steady_clock::now();
 
 		if( threads > 1 )
 		{
@@ -1109,9 +1107,9 @@ bool MLTRasterizer::RenderFrameOfMLT(
 		// Round work complete — stop the timer BEFORE the resolve/I-O
 		// so we measure pure render cost, then track how much of each
 		// chain's mutation budget we've consumed.
-		roundTimer.stop();
+		const auto roundTimerEnd = std::chrono::steady_clock::now();
 		mutationsDonePerChain += mutThisRound;
-		const unsigned int roundWallMs = roundTimer.getInterval();
+		const unsigned int roundWallMs = ElapsedMilliseconds(roundTimerStart, roundTimerEnd);
 
 		//////////////////////////////////////////////////////////////
 		// Adaptive round-size correction (after round 0 only).

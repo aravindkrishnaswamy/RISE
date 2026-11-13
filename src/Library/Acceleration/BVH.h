@@ -243,12 +243,12 @@ namespace RISE
 		//////////////////////////////////////////////////////////////////
 		unsigned int Refit()
 		{
-			Timer t; t.start();
+			const auto tStart = std::chrono::steady_clock::now();
 			if( nodes.empty() ) {
 				BuildFastFilter();  // no-op on empty
 				BuildBVH4();        // no-op on empty
-				t.stop();
-				return (unsigned int)t.getInterval();
+				const auto tEnd = std::chrono::steady_clock::now();
+				return (unsigned int)ElapsedMilliseconds(tStart, tEnd);
 			}
 
 			BoundingBox newOverall(
@@ -301,8 +301,8 @@ namespace RISE
 			BuildFastFilter();
 			BuildBVH4();
 
-			t.stop();
-			const unsigned int ms = (unsigned int)t.getInterval();
+			const auto tEnd = std::chrono::steady_clock::now();
+			const unsigned int ms = (unsigned int)ElapsedMilliseconds(tStart, tEnd);
 
 			// Tier C3: SAH-degradation log.  We don't *force* a rebuild
 			// from inside Refit (BVH doesn't own the input prim list,
@@ -772,7 +772,7 @@ namespace RISE
 		//////////////////////////////////////////////////////////////////
 		void Build( const std::vector<Element>& inputPrims )
 		{
-			Timer t; t.start();
+			const auto tStart = std::chrono::steady_clock::now();
 
 			GlobalLog()->PrintEx( eLog_Info,
 				"BVH:: Building over %u primitives (binCount=%u, maxLeafSize=%u)",
@@ -833,12 +833,12 @@ namespace RISE
 			}
 			prims.swap( reordered );
 
-			t.stop();
+			const auto tEnd = std::chrono::steady_clock::now();
 			GlobalLog()->PrintEx( eLog_Info,
 				"BVH:: Built %u nodes (%u leaves) in %u ms",
 				(unsigned)nodes.size(),
 				(unsigned)CountLeaves(),
-				(unsigned)t.getInterval() );
+				(unsigned)ElapsedMilliseconds(tStart, tEnd) );
 		}
 
 	protected:

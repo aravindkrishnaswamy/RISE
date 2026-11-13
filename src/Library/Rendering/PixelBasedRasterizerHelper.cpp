@@ -241,7 +241,7 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 
 	// The prediction is based on how long it takes to rasterize the set of random
 	// rays given by the sampling kernel pSampling
-	Timer	t;
+	std::chrono::steady_clock::time_point tStart;
 
 	// Create a runtime context
 	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_IRRADIANCE_CACHE, false );
@@ -259,7 +259,7 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 
 	ISampling2D::SamplesList2D::const_iterator		m, n;
 
-	t.start();
+	tStart = std::chrono::steady_clock::now();
 
 	for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
 		RISEPel			c;
@@ -274,7 +274,7 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 		}
 	}
 
-	t.stop();
+	const auto tEnd = std::chrono::steady_clock::now();
 
 	Scalar		num_subsamples = 1;
 
@@ -283,11 +283,11 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 	}
 
 	if( pActualTime ) {
-		*pActualTime = t.getInterval();
+		*pActualTime = ElapsedMilliseconds(tStart, tEnd);
 	}
 
 	int threads = HowManyThreadsToSpawn();
-	return (unsigned int)((Scalar(t.getInterval())/Scalar(samples.size())) * width*height*num_subsamples / threads);
+	return (unsigned int)((Scalar(ElapsedMilliseconds(tStart, tEnd))/Scalar(samples.size())) * width*height*num_subsamples / threads);
 }
 
 void PixelBasedRasterizerHelper::DrawToggles( IRasterImage& image, const Rect& rc_region, const RISEColor& toggle_color, const double toggle_size ) const
