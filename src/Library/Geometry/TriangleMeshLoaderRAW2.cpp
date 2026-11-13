@@ -124,6 +124,15 @@ bool TriangleMeshLoaderRAW2::LoadTriangleMesh( ITriangleMeshGeometryIndexed* pGe
 		triangles.push_back( triangle );
 	}
 
+	while( std::getline( input, line ) ) {
+		const auto first = line.find_first_not_of( " \t\r\f\v" );
+		if( first != std::string::npos && line[first] != '#' ) {
+			GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW2:: Extra records after declared triangles" );
+			return false;
+		}
+	}
+	if( input.bad() ) return false;
+
 	pGeom->BeginIndexedTriangles();
 	pGeom->AddVertices( vertices );
 	pGeom->AddNormals( normals );
@@ -139,6 +148,11 @@ bool TriangleMeshLoaderRAW2::LoadTriangleMesh( ITriangleMeshGeometryIndexed* pGe
 		}
 	}
 	pGeom->AddIndexedTriangles( triangles );
+	VerticesListType().swap( vertices );
+	NormalsListType().swap( normals );
+	TexCoordsListType().swap( coordinates );
+	std::vector<RISEPel>().swap( colors );
+	IndexTriangleListType().swap( triangles );
 	pGeom->DoneIndexedTriangles();
 	return true;
 }

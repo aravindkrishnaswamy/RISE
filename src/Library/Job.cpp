@@ -7275,21 +7275,19 @@ bool Job::AddPiecewiseLinearFunction2D(
 {
 	IPiecewiseFunction2D* pFunction = 0;
 	RISE_API_CreatePiecewiseLinearFunction2D( &pFunction );
+	const auto release = []( IPiecewiseFunction2D* function ) { function->release(); };
+	std::unique_ptr<IPiecewiseFunction2D, decltype(release)> function( pFunction, release );
 
 	for( unsigned int i=0; i<num; i++ ) {
 		IFunction1D* pFunc = pFunc1DManager->GetItem( y[i] );
 		if( !pFunc ) {
 			GlobalLog()->PrintEx( eLog_Error, "Job::AddPiecewiseLinearFunction2D:: Failed to find function '%s'", y[i] );
-			safe_release( pFunction );
 			return false;
 		}
-		pFunction->addControlPoint( x[i], pFunc );
+		function->addControlPoint( x[i], pFunc );
 	}
 
-	const bool ok = RegisterOrDiag( pFunc2DManager, pFunction, name, "function" );
-	safe_release( pFunction );
-
-	return ok;
+	return RegisterOrDiag( pFunc2DManager, function.get(), name, "function" );
 }
 
 //
