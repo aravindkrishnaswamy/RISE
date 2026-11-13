@@ -58,6 +58,11 @@ DiskFileReadBuffer::DiskFileReadBuffer( const char * file_name ) : nSize( 0 )
 
 DiskFileReadBuffer::~DiskFileReadBuffer() = default;
 
+void DiskFileReadBuffer::RecordReadEnd()
+{
+	nSize = std::min(nSize, getCurPos64());
+}
+
 char DiskFileReadBuffer::getChar()
 {
 	// No file handle (open failed): degrade gracefully instead of
@@ -72,11 +77,12 @@ char DiskFileReadBuffer::getChar()
 	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
 	#endif
-		seek( IBuffer::END, 0 );   // consume to end so loop-until-cursor callers terminate
+		seek( IBuffer::END, 0 );
+		RecordReadEnd();   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
 	char c=0;
-	fread( &c, 1, 1, hFile.get() );
+	if( fread(&c, 1, 1, hFile.get()) != 1 ) RecordReadEnd();
 	return c;
 }
 
@@ -94,12 +100,13 @@ unsigned char DiskFileReadBuffer::getUChar()
 	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
 	#endif
-		seek( IBuffer::END, 0 );   // consume to end so loop-until-cursor callers terminate
+		seek( IBuffer::END, 0 );
+		RecordReadEnd();   // consume to end so loop-until-cursor callers terminate
 		return 0;
 	}
 
 	unsigned char c=0;
-	fread( &c, 1, 1, hFile.get() );
+	if( fread(&c, 1, 1, hFile.get()) != 1 ) RecordReadEnd();
 	return c;
 }
 
@@ -110,9 +117,13 @@ short DiskFileReadBuffer::getWord()
 	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
+		RecordReadEnd();
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
+	if( fread(bytes, 1, sizeof(bytes), hFile.get()) != sizeof(bytes) ) {
+		RecordReadEnd();
+		return 0;
+	}
 	return DecodeLittleEndian<short, std::uint16_t>( bytes );
 }
 
@@ -124,9 +135,13 @@ unsigned short DiskFileReadBuffer::getUWord()
 	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
+		RecordReadEnd();
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
+	if( fread(bytes, 1, sizeof(bytes), hFile.get()) != sizeof(bytes) ) {
+		RecordReadEnd();
+		return 0;
+	}
 	return DecodeLittleEndian<unsigned short, std::uint16_t>( bytes );
 }
 
@@ -137,9 +152,13 @@ int DiskFileReadBuffer::getInt()
 	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
+		RecordReadEnd();
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
+	if( fread(bytes, 1, sizeof(bytes), hFile.get()) != sizeof(bytes) ) {
+		RecordReadEnd();
+		return 0;
+	}
 	return DecodeLittleEndian<int, std::uint32_t>( bytes );
 }
 
@@ -150,9 +169,13 @@ unsigned int DiskFileReadBuffer::getUInt()
 	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
+		RecordReadEnd();
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
+	if( fread(bytes, 1, sizeof(bytes), hFile.get()) != sizeof(bytes) ) {
+		RecordReadEnd();
+		return 0;
+	}
 	return DecodeLittleEndian<unsigned int, std::uint32_t>( bytes );
 }
 
@@ -163,9 +186,13 @@ float DiskFileReadBuffer::getFloat()
 	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
+		RecordReadEnd();
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
+	if( fread(bytes, 1, sizeof(bytes), hFile.get()) != sizeof(bytes) ) {
+		RecordReadEnd();
+		return 0;
+	}
 	return DecodeLittleEndian<float, std::uint32_t>( bytes );
 }
 
@@ -176,15 +203,21 @@ double DiskFileReadBuffer::getDouble()
 	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
+		RecordReadEnd();
 		return 0;
 	}
-	if( fread( bytes, 1, sizeof(bytes), hFile.get() ) != sizeof(bytes) ) return 0;
+	if( fread(bytes, 1, sizeof(bytes), hFile.get()) != sizeof(bytes) ) {
+		RecordReadEnd();
+		return 0;
+	}
 	return DecodeLittleEndian<double, std::uint64_t>( bytes );
 }
 
 bool DiskFileReadBuffer::getBytes( void* pDest, unsigned int amount )
 {
-	if( !pDest || !hFile ) {
+	if( !pDest ) return false;
+	if( !hFile ) {
+		std::memset(pDest, 0, amount);
 		return false;
 	}
 
@@ -201,6 +234,7 @@ bool DiskFileReadBuffer::getBytes( void* pDest, unsigned int amount )
 		got = fread( pDest, 1, toRead, hFile.get() );
 	}
 	if( got < amount ) {
+		RecordReadEnd();
 		// Short read (truncation / EOF): zero the tail and signal failure.
 		memset( static_cast<char*>(pDest) + got, 0, amount - got );
 		GlobalLog()->PrintEx( eLog_Error, "DiskFileReadBuffer::getBytes:: short read (want %u at cursor %llu of %llu, got %u); rest zeroed", amount,
@@ -220,7 +254,10 @@ int DiskFileReadBuffer::getLine( char* pDest, unsigned int max )
 	auto cursor = getCurPos64();
 	while( cursor < nSize && numRead < max ) {
 		const int byte = fgetc( hFile.get() );
-		if( byte == EOF ) break;
+		if( byte == EOF ) {
+			RecordReadEnd();
+			break;
+		}
 		pDest[numRead++] = static_cast<char>(byte);
 		++cursor;
 		if( byte == '\n' ) break;

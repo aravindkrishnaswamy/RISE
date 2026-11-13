@@ -52,6 +52,7 @@
 #include "../src/Library/Interfaces/ILogPriv.h"
 #include <iterator>
 #include <stdexcept>
+#include <functional>
 #ifndef NO_TIFF_SUPPORT
 #include <tiffio.h>
 #include "../src/Library/RasterImages/TIFFCommon.h"
@@ -151,7 +152,6 @@ static void TestVolumeSlices()
 
 	const std::string pattern = base + "%d.raw";
 	Volume<unsigned char>* v = new Volume<unsigned char>( pattern.c_str(), W, H, 0, 2 );
-	v->addref();
 
 	// slice0 (z=-1): fully present -> 200 everywhere.
 	Check( std::fabs( ByteAt( v, -32, -32, -1 ) - 200.0 ) < 1.5, "A: slice0 corner == 200 (present)" );
@@ -185,7 +185,6 @@ static void TestMemoryBufferMissingFile()
 
 	// MemoryBuffer is Reference-counted (heap + release).
 	MemoryBuffer* mb = new MemoryBuffer( missing.c_str() );
-	mb->addref();
 	Check( mb->Size() == 0, "B: missing-file MemoryBuffer has Size()==0 (no bogus alloc/read)" );
 	mb->release();
 }
@@ -205,7 +204,6 @@ static void TestMemoryBufferGetBytesOverread()
 	WriteBytes( path, 0xAB, 8 );        // an 8-byte file
 
 	MemoryBuffer* mb = new MemoryBuffer( path.c_str() );
-	mb->addref();
 	Check( mb->Size() == 8, "C: 8-byte file loaded" );
 
 	// Ask for 32 bytes from an 8-byte buffer.
@@ -248,7 +246,6 @@ static void TestMemoryBufferScalarOverread()
 	}
 
 	MemoryBuffer* mb = new MemoryBuffer( path.c_str() );
-	mb->addref();
 	Check( mb->Size() == 8, "D: 8-byte scalar file loaded" );
 
 	const unsigned int v0 = mb->getUInt();   // bytes 0..3
@@ -265,7 +262,6 @@ static void TestMemoryBufferScalarOverread()
 	const std::string path2 = TmpDir() + "rise_membuf_scalar2.bin";
 	WriteBytes( path2, 0xCD, 4 );
 	MemoryBuffer* mb2 = new MemoryBuffer( path2.c_str() );
-	mb2->addref();
 	const double d = mb2->getDouble();       // only 4 of 8 bytes available
 	Check( d == 0.0, "D: getDouble with < 8 bytes returns 0 (guarded, not partial/OOB)" );
 	mb2->release();
@@ -287,7 +283,6 @@ static void TestDiskFileReadBufferGetBytesOverread()
 	WriteBytes( path, 0xBE, 8 );
 
 	DiskFileReadBuffer* db = new DiskFileReadBuffer( path.c_str() );
-	db->addref();
 
 	unsigned char dest[32];
 	std::memset( dest, 0x22, sizeof( dest ) );
@@ -320,14 +315,16 @@ static void TestDiskFileReadBufferMissingFile()
 	std::remove( missing.c_str() );
 
 	DiskFileReadBuffer* db = new DiskFileReadBuffer( missing.c_str() );
-	db->addref();
 
 	// Each of these would ftell(NULL)/fread(NULL) crash pre-guard.
 	Check( db->getUInt() == 0,   "F: getUInt on null-hFile returns 0 (no crash)" );
 	Check( db->getDouble() == 0.0, "F: getDouble on null-hFile returns 0 (no crash)" );
 	unsigned char dest[8];
 	std::memset( dest, 0x33, sizeof( dest ) );
-	Check( !db->getBytes( dest, 8 ), "F: getBytes on null-hFile returns false (no crash)" );
+	const bool failed = !db->getBytes(dest, sizeof(dest));
+	bool zeroed = true;
+	for( unsigned char byte : dest ) zeroed &= byte == 0;
+	Check( failed && zeroed, "F: missing-file reads fail and zero every unread destination byte" );
 
 	// Base DiskBuffer methods (seek-first readers like TIFF call these
 	// before any getter): must also be null-safe (was fseek(NULL)/ftell(NULL)).
@@ -352,7 +349,6 @@ static void TestVolumeOverflowDims()
 
 	const std::string pattern = TmpDir() + "rise_vol_overflow_%d.raw";
 	Volume<unsigned char>* v = new Volume<unsigned char>( pattern.c_str(), 100000, 100000, 0, 0 );
-	v->addref();
 	Check( v->Width() == 0 && v->Height() == 0 && v->Depth() == 0,
 		"G: overflow volume reports zero dimensions (rejected before alloc)" );
 	Check( ByteAt( v, 0, 0, 0 ) == 0.0, "G: overflow volume GetValue returns 0 (no crash / no OOB)" );
@@ -362,7 +358,6 @@ static void TestVolumeOverflowDims()
 	// and wrap the product SMALL if the guard read the members instead of the
 	// raw unsigned params.  Must still be rejected (empty volume).
 	Volume<unsigned char>* v2 = new Volume<unsigned char>( pattern.c_str(), 0xFFFFFFFFu, 0xFFFFFFFFu, 0, 0 );
-	v2->addref();
 	Check( v2->Width() == 0 && v2->Height() == 0 && v2->Depth() == 0,
 		"G: >=2^31 dimension rejected (no sign-extension bypass)" );
 	Check( ByteAt( v2, 0, 0, 0 ) == 0.0, "G: >=2^31 volume GetValue returns 0 (no OOB)" );
@@ -371,7 +366,6 @@ static void TestVolumeOverflowDims()
 	// Reversed Z range (zend < zstart) would underflow the unsigned depth to a
 	// huge value; must be rejected too.
 	Volume<unsigned char>* v3 = new Volume<unsigned char>( pattern.c_str(), 4, 4, 5, 2 );
-	v3->addref();
 	Check( v3->Width() == 0 && v3->Depth() == 0, "G: reversed z-range (zend<zstart) rejected" );
 	v3->release();
 }
@@ -506,6 +500,39 @@ static void TestLittleEndianScalars()
 	std::remove( path.c_str() );
 }
 
+static void TestTruncatedOpenFile()
+{
+	const auto path = RISE::TestSupport::ScratchPath( "rise_open_truncate_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) );
+	const std::vector<std::function<bool(DiskFileReadBuffer&)>> readers = {
+		[](DiskFileReadBuffer& b) { return b.getChar() == 'a' && b.getChar() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getUChar() == 'a' && b.getUChar() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getWord() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getUWord() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getInt() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getUInt() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getFloat() == 0; },
+		[](DiskFileReadBuffer& b) { return b.getDouble() == 0; },
+		[](DiskFileReadBuffer& b) {
+			char bytes[6] = {};
+			return !b.getBytes(bytes, sizeof(bytes)) && bytes[0] == 'a' && bytes[1] == 0 && bytes[5] == 0;
+		},
+		[](DiskFileReadBuffer& b) {
+			char line[8] = {};
+			return b.getLine(line, sizeof(line)) == 1 && line[0] == 'a' && b.getLine(line, sizeof(line)) == 0;
+		}
+	};
+	for( const auto& read : readers ) {
+		std::ofstream(path, std::ios::binary) << "abcdef";
+		auto* buffer = new DiskFileReadBuffer(path.c_str());
+		std::filesystem::resize_file(path, 1);
+		Check( read(*buffer) && buffer->EndOfBuffer() && buffer->Size64() == 1 && buffer->getCurPos64() == 1,
+			"post-open truncation exposes the actual EOF and terminates readers" );
+		buffer->release();
+	}
+	std::filesystem::remove(path);
+}
+
 static void TestMediaSearchRoots()
 {
 	namespace fs = std::filesystem;
@@ -513,20 +540,26 @@ static void TestMediaSearchRoots()
 	const auto first = root / "first";
 	const auto second = root / "second";
 	const std::string name = u8"rise_media_é.bin";
+	const std::string firstRoot = first.string();
+	const std::string secondRoot = second.string();
 	fs::create_directories( first );
 	fs::create_directories( second );
-	std::ofstream( first / fs::u8path(name) ) << '1';
-	std::ofstream( second / fs::u8path(name) ) << '2';
+	std::ofstream( firstRoot + "/" + name ) << '1';
+	std::ofstream( secondRoot + "/" + name ) << '2';
 	MediaPathLocator locator;
-	Check( !locator.AddPath( "" ) && locator.AddPath( first.u8string().c_str() ) &&
-		!locator.AddPath( (first.u8string() + "/").c_str() ) && locator.AddPath( second.u8string().c_str() ),
+	Check( !locator.AddPath( "" ) && locator.AddPath( firstRoot.c_str() ) &&
+		!locator.AddPath( (firstRoot + "/").c_str() ) && locator.AddPath( secondRoot.c_str() ),
 		"media roots reject empty input and equivalent duplicate spellings" );
-	Check( locator.Find( name.c_str() ) == (first.u8string() + "/" + name).c_str(),
-		"media roots search in insertion order, including UTF-8 names" );
-	const std::string direct = (second / fs::u8path(name)).u8string();
+	const auto found = locator.Find(name.c_str());
+	std::ifstream readable(found.c_str(), std::ios::binary);
+	char value = 0;
+	Check( found == (firstRoot + "/" + name).c_str() && readable.get(value) && value == '1',
+		"media search order and native non-ASCII paths match narrow stream opens" );
+	readable.close();
+	const std::string direct = secondRoot + "/" + name;
 	Check( locator.Find( direct.c_str() ) == direct.c_str() &&
-		locator.RemovePath( (first.u8string() + "/").c_str() ) &&
-		locator.Find( name.c_str() ) == (second.u8string() + "/" + name).c_str(),
+		locator.RemovePath( (firstRoot + "/").c_str() ) &&
+		locator.Find( name.c_str() ) == (secondRoot + "/" + name).c_str(),
 		"media lookup prefers a direct path and removal accepts the normalized spelling" );
 	locator.ClearAllPaths();
 	Check( locator.Find( name.c_str() ) == name.c_str(), "a media miss preserves original spelling" );
@@ -847,6 +880,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestBufferWriteFailures();
 	TestLittleEndianScalars();
 	TestMediaSearchRoots();
+	TestTruncatedOpenFile();
 	Test3DSCompatibility();
 	TestLargeDiskWrites();
 	TestLargeCodecOffsets();

@@ -60,7 +60,9 @@ namespace RISE
 			// Default destructor
 			virtual ~DiskFileReadBuffer( );
 
-			std::uint64_t	nSize;		///< Size of the file we are reading from
+			std::uint64_t	nSize;		///< Readable end, reduced when I/O exposes an earlier EOF.
+		private:
+			void RecordReadEnd();
 		};
 	}
 }
