@@ -34,6 +34,8 @@
 #include <string>
 #include <sstream>
 #include <algorithm>
+#include <cctype>
+#include <string_view>
 #include <cstring>   // Phase 6.2: strstr for sentinel detection
 #include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
 #include <cstdlib>   // strtod for the ar_layer numeric parse
@@ -50,6 +52,7 @@
 #include "ChunkParserRegistry.h"
 #include "StdOutProgress.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/MediaPathLocator.h"
 #include "MathExpressionEvaluator.h"
@@ -1297,71 +1300,57 @@ namespace RISE
 					std::vector<double> wavelengths;
 					std::vector<double> amplitudes;
 
-					// Repeatable per-sample control points: "cp <nm> <amp>"
-					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
-					for( size_t k = 0; k < cps.size(); ++k ) {
-						double nm = 0.0, amp = 0.0;
-						sscanf( cps[k].c_str(), "%lf %lf", &nm, &amp );
-						wavelengths.push_back( nm );
-						amplitudes.push_back( amp );
-					}
-
-					// Optional file-loaded spectrum (pairs)
-					if( bag.Has( "file" ) ) {
-						std::string fname = bag.GetString( "file" );
-						std::vector<std::string> fileLines;
-						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
-							return false;
-						}
-						for( const std::string& ln : fileLines ) {
-							double nm = 0.0, amp = 0.0;
-							if( sscanf( ln.c_str(), "%lf %lf", &nm, &amp ) == 2 ) {
-								wavelengths.push_back( nm );
-								amplitudes.push_back( amp );
-							} else {
-								GlobalLog()->PrintEx( eLog_Warning, "spectral file:: skipping malformed line in `%s`", fname.c_str() );
+					const auto readSamples = []( const std::string& row, double* samples, size_t count ) {
+						const char* cursor = row.c_str();
+						for( size_t i = 0; i < count; ++i ) {
+							char* end = nullptr;
+							samples[i] = std::strtod( cursor, &end );
+							if( end == cursor || !RISE::IsFiniteDouble( samples[i] ) ) {
+								return false;
+							}
+							cursor = end;
+							if( i + 1 < count && !std::isspace( static_cast<unsigned char>( *cursor ) ) ) {
+								return false;
 							}
 						}
-					}
+						while( std::isspace( static_cast<unsigned char>( *cursor ) ) ) ++cursor;
+						return *cursor == '\0' || *cursor == '#';
+					};
 
-					// Optional file-loaded wavelengths
-					if( bag.Has( "nmfile" ) ) {
-						std::string fname = bag.GetString( "nmfile" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							char nmbuf[MAX_CHARS_PER_LINE];
-							while( fgets( nmbuf, sizeof( nmbuf ), f ) ) {
-								const char* q = nmbuf;
-								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
-								if( *q == '\0' || *q == '#' ) continue;
-								double nm = 0.0;
-								if( sscanf( nmbuf, "%lf", &nm ) == 1 ) wavelengths.push_back( nm );
-							}
-							fclose( f );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+					const auto appendPair = [&]( const std::string& row ) {
+						double pair[2];
+						if( !readSamples( row, pair, 2 ) ) return false;
+						wavelengths.push_back( pair[0] );
+						amplitudes.push_back( pair[1] );
+						return true;
+					};
+
+					for( const std::string& row : bag.GetRepeatable( "cp" ) ) {
+						if( !appendPair( row ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: invalid control point", name.c_str() );
 							return false;
 						}
 					}
 
-					// Optional file-loaded amplitudes
-					if( bag.Has( "ampfile" ) ) {
-						std::string fname = bag.GetString( "ampfile" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							char ampbuf[MAX_CHARS_PER_LINE];
-							while( fgets( ampbuf, sizeof( ampbuf ), f ) ) {
-								const char* q = ampbuf;
-								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
-								if( *q == '\0' || *q == '#' ) continue;
-								double amp = 0.0;
-								if( sscanf( ampbuf, "%lf", &amp ) == 1 ) amplitudes.push_back( amp );
-							}
-							fclose( f );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+					for( const char* field : { "file", "nmfile", "ampfile" } ) {
+						if( !bag.Has( field ) ) continue;
+						const std::string filename = bag.GetString( field );
+						std::vector<std::string> rows;
+						if( !ReadDataFileLines( filename.c_str(), rows ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
 							return false;
+						}
+						for( const std::string& row : rows ) {
+							const std::string_view kind( field );
+							double sample = 0;
+							const bool valid = kind == "file" ? appendPair( row ) : readSamples( row, &sample, 1 );
+							if( !valid ) {
+								GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: invalid sample in `%s`", name.c_str(), filename.c_str() );
+								return false;
+							}
+							if( kind != "file" ) {
+								(kind == "nmfile" ? wavelengths : amplitudes).push_back( sample );
+							}
 						}
 					}
 

@@ -132,6 +132,9 @@ static void TestPacketEndpoints()
 	Check( visible.ValueAtNM( 770 ) == 3 && visible.ValueAtNM( 780 ) == 3 &&
 		visible.ValueAtNM( 781 ) == 0,
 		"fixed visible spectrum includes 780 nm in the final bin" );
+	SpectralPacket_Template<Scalar, 380, 780, 1> singleBin( 2 );
+	Check( singleBin.ValueAtNM( 500 ) == 2 && singleBin.ValueAtNM( 780 ) == 2 &&
+		singleBin.ValueAtNM( 781 ) == 0, "one fixed bin covers its entire wavelength range" );
 
 	SpectralPacket outsidePDFBand( 730, 780, 5 );
 	IProbabilityDensityFunction* pdf = nullptr;
@@ -144,6 +147,21 @@ static void TestPacketEndpoints()
 		safe_release( pdf );
 	} else {
 		Check( false, "empty spectral density is representable through the PDF factory" );
+	}
+
+	SpectralPacket lastBinOnly( 400, 700, 11 );
+	lastBinOnly.SetAtIndex( 10, 1 );
+	if( RISE_API_CreatePDF_SpectralPacket( &pdf, lastBinOnly ) && pdf ) {
+		Scalar lookupWeight = 0;
+		Scalar directWeight = 0;
+		const Scalar lookup = pdf->warp( 0.5, lookupWeight, true );
+		const Scalar direct = pdf->warp( 0.5, directWeight, false );
+		Check( lookup == direct && direct >= 672 && direct <= 673 &&
+			lookupWeight == directWeight && directWeight > 0,
+			"spectral density includes the final bin on a fractional wavelength grid" );
+		safe_release( pdf );
+	} else {
+		Check( false, "fractional-grid spectral density is constructible" );
 	}
 }
 
@@ -178,6 +196,8 @@ static void TestSpectralFileCounts()
 	Check( accepted, "spectral painter loads matching amplitude and wavelength files" );
 	if( accepted ) {
 		Check( !loadWithWavelengths( "400\n" ), "spectral painter rejects unequal file sample counts" );
+		Check( !loadWithWavelengths( "400\nnan\n" ), "spectral painter rejects a nonfinite wavelength" );
+		Check( !loadWithWavelengths( "400\n500 junk\n" ), "spectral painter rejects an incomplete file record" );
 	}
 	std::remove( scene.c_str() );
 	std::remove( wavelengths.c_str() );

@@ -67,6 +67,13 @@ namespace RISE
 		Scalar			delta;
 		Scalar			OVnumfreq;
 
+		static std::unique_ptr<Scalar[]> AllocateAmplitudes( unsigned int count )
+		{
+			std::unique_ptr<Scalar[]> samples( new Scalar[count] );
+			GlobalLog()->PrintNew( samples.get(), __FILE__, __LINE__, "amplitudes" );
+			return samples;
+		}
+
 	public:
 		SpectralPacket( ) : 
 		lambda_begin( 400 ),
@@ -74,8 +81,7 @@ namespace RISE
 		num_freq( 1 ),
 		delta( 300 )
 		{
-			amplitudes = new Scalar[num_freq];
-			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
+			amplitudes = AllocateAmplitudes( num_freq ).release();
 
 			for( unsigned int i=0; i<num_freq; i++ ) {
 				amplitudes[i] = 0;
@@ -90,8 +96,7 @@ namespace RISE
 		num_freq( sp.num_freq ),
 		delta( sp.delta )
 		{
-			amplitudes = new Scalar[num_freq];
-			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
+			amplitudes = AllocateAmplitudes( num_freq ).release();
 
 			for( unsigned int i=0; i<num_freq; i++ ) {
 				amplitudes[i] = sp.amplitudes[i];
@@ -106,8 +111,7 @@ namespace RISE
 		num_freq( num_freq_ ),
 		delta( num_freq ? (lambda_end-lambda_begin) / Scalar(num_freq) : 0 )
 		{
-			amplitudes = new Scalar[num_freq];
-			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
+			amplitudes = AllocateAmplitudes( num_freq ).release();
 
 			for( unsigned int i=0; i<num_freq; i++ ) {
 				amplitudes[i] = 0;
@@ -122,8 +126,7 @@ namespace RISE
 		num_freq( num_freq_ ),
 		delta( num_freq ? (lambda_end-lambda_begin) / Scalar(num_freq) : 0 )
 		{
-			amplitudes = new Scalar[num_freq];
-			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
+			amplitudes = AllocateAmplitudes( num_freq ).release();
 
 			for( unsigned int i=0; i<num_freq; i++ ) {
 				amplitudes[i] = d;
@@ -167,6 +170,11 @@ namespace RISE
 		//! allocated with.  Required so callers iterating
 		//! `SetAtIndex` know the loop bound.
 		inline unsigned int NumBins() const { return num_freq; }
+
+		inline Scalar ValueAtIndex( unsigned int idx ) const
+		{
+			return idx < num_freq ? amplitudes[idx] : 0;
+		}
 
 		//! Writes one amplitude bin in place.  Used by RGB-source
 		//! painters (Landing 3) so their GetSpectrum can populate a

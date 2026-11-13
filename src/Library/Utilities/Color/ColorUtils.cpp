@@ -278,10 +278,7 @@ bool InterpSPDIndices(
 	const int wavelength_step				///< [in] Increment interval for the table
 	)
 {
-	if( nm < min_wavelength ) {
-		return false;
-	}
-	if( nm > max_wavelength ) {
+	if( !(nm >= min_wavelength && nm <= max_wavelength) ) {
 		return false;
 	}
 

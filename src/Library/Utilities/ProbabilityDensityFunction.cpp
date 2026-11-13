@@ -55,7 +55,7 @@ ProbabilityDensityFunction::ProbabilityDensityFunction( const SpectralPacket& fu
 		{
 			ProbPair prob;
 			prob.first = wavelength;
-			prob.second = func.ValueAtNM( prob.first );
+			prob.second = func.ValueAtIndex( bin );
 			accrued += prob.second;
 			values.push_back( prob );
 		}

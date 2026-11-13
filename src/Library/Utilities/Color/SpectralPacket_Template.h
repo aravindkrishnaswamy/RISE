@@ -40,13 +40,16 @@ namespace RISE
 	template< class T, int lambda_begin, int lambda_end, int I >
 	class SpectralPacket_Template
 	{
+		static_assert( I > 0, "A fixed spectral packet needs at least one bin" );
+		static constexpr int kDelta = I > 1 ? (lambda_end-lambda_begin) / (I-1) : 0;
+
 	protected:
 		T			amplitudes[I];
 		int			delta;
 
 	public:
 		SpectralPacket_Template( ) :
-		delta( (lambda_end-lambda_begin) / (I-1) )
+		delta( kDelta )
 		{
 			for( int i=0; i<I; i++ ) {
 				amplitudes[i] = 0;
@@ -54,7 +57,7 @@ namespace RISE
 		}
 
 		SpectralPacket_Template( const T d ) :
-		delta( (lambda_end-lambda_begin) / (I-1) )
+		delta( kDelta )
 		{
 			for( int i=0; i<I; i++ ) {
 				amplitudes[i] = d;
@@ -62,7 +65,7 @@ namespace RISE
 		}
 
 		SpectralPacket_Template( const IFunction1D& pFunc ) :
-		delta( (lambda_end-lambda_begin) / (I-1) )
+		delta( kDelta )
 		{
 			// Pull the values from the function
 			for( int i=0; i<I; i++ ) {
