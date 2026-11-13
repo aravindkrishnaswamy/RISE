@@ -14,6 +14,8 @@
 
 #include "pch.h"
 #include "TIFFReader.h"
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include "../Interfaces/ILog.h"
 
@@ -47,7 +49,7 @@ TIFFReader::~TIFFReader( )
 
 #ifdef NO_TIFF_SUPPORT
 
-bool TIFFReader::BeginRead( unsigned int& width, unsigned int& height )
+bool TIFFReader::BeginRead( unsigned int&, unsigned int& )
 {
 	GlobalLog()->PrintSourceError( "TIFFReader::BeginRead NO TIFF SUPPORT was compiled!  Nothing will be read", __FILE__, __LINE__ );
 	return false;
@@ -115,19 +117,26 @@ bool TIFFReader::BeginRead( unsigned int& width, unsigned int& height )
 
 #endif
 
+#ifdef NO_TIFF_SUPPORT
+void TIFFReader::ReadColor( RISEColor&, const unsigned int, const unsigned int )
+{
+}
+#else
 void TIFFReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned int y )
 {
 	if( pBuffer ) {
 		RGBA8 p = {0};
 		const unsigned int idx = y*bufW*4+x*4;
-		uint32_t pixel = 0;
+		std::uint32_t pixel = 0;
 		std::memcpy( &pixel, pBuffer + idx, sizeof(pixel) );
-#ifndef NO_TIFF_SUPPORT
-		p.r = TIFFGetR( pixel );
-		p.g = TIFFGetG( pixel );
-		p.b = TIFFGetB( pixel );
 		p.a = TIFFGetA( pixel );
-#endif
+		// The libtiff RGBA interface returns associated alpha.
+		const auto straight = [alpha = p.a]( unsigned int value ) {
+			return alpha ? static_cast<unsigned char>(std::min(255U, (value * 255 + alpha / 2) / alpha)) : 0;
+		};
+		p.r = straight( TIFFGetR(pixel) );
+		p.g = straight( TIFFGetG(pixel) );
+		p.b = straight( TIFFGetB(pixel) );
 
 		switch( color_space )
 		{
@@ -150,6 +159,7 @@ void TIFFReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned i
 		}
 	}
 }
+#endif
 
 void TIFFReader::EndRead( )
 {

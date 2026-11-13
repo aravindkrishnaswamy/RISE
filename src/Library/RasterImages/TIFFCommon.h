@@ -43,7 +43,7 @@ namespace RISE
 			return 0;
 		}
 
-		static inline toff_t TIFFSeek( IBuffer* buffer, toff_t offset, int whence )
+		static inline toff_t TIFFSeek( IBuffer* buffer, toff_t offset, int whence, IWriteBuffer* writer = nullptr )
 		{
 			constexpr toff_t failure = static_cast<toff_t>(-1);
 			if( !buffer || offset > static_cast<toff_t>(std::numeric_limits<int>::max()) )
@@ -56,8 +56,20 @@ namespace RISE
 			}
 			if( offset > static_cast<toff_t>(std::numeric_limits<int>::max()) )
 				return failure;
-			if( offset != buffer->getCurPos() &&
-				!buffer->seek( IBuffer::START, static_cast<int>(offset) ) )
+			if( offset > buffer->Size() && writer ) {
+				// libtiff may align a directory field beyond the current end.
+				// Write the alignment gap so in-memory output can seek there too.
+				const auto size = buffer->Size();
+				if( size != buffer->getCurPos() && !buffer->seek( IBuffer::START, static_cast<int>(size) ) )
+					return failure;
+				const unsigned char zeros[16]{};
+				for( auto remaining = offset - size; remaining != 0; ) {
+					const auto count = static_cast<unsigned int>(remaining > sizeof(zeros) ? sizeof(zeros) : remaining);
+					if( !writer->setBytes( zeros, count ) ) return failure;
+					remaining -= count;
+				}
+			}
+			if( offset != buffer->getCurPos() && !buffer->seek( IBuffer::START, static_cast<int>(offset) ) )
 				return failure;
 			return buffer->getCurPos();
 		}
@@ -69,7 +81,8 @@ namespace RISE
 
 		[[maybe_unused]] static toff_t TIFFSeekWriter( thandle_t handle, toff_t offset, int whence )
 		{
-			return TIFFSeek( static_cast<IWriteBuffer*>(handle), offset, whence );
+			auto* writer = static_cast<IWriteBuffer*>(handle);
+			return TIFFSeek( writer, offset, whence, writer );
 		}
 
 		__attribute__((unused))

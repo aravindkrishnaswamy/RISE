@@ -14,6 +14,8 @@
 
 #include "pch.h"
 #include "TIFFWriter.h"
+#include <limits>
+#include <new>
 #include "../Interfaces/ILog.h"
 
 #ifndef NO_TIFF_SUPPORT
@@ -46,16 +48,31 @@ TIFFWriter::~TIFFWriter( )
 
 void TIFFWriter::BeginWrite( const unsigned int width, const unsigned int height )
 {
-	// Setup the buffer
+	if( pBuffer ) {
+		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
+		delete [] pBuffer;
+		pBuffer = nullptr;
+	}
+	if( width == 0 || height == 0 || width > std::numeric_limits<unsigned int>::max() / 4 / height ||
+		width > std::numeric_limits<size_t>::max() / 4 / height ) {
+		GlobalLog()->PrintEasyError( "TIFFWriter: Invalid image dimensions" );
+		return;
+	}
+	const size_t bytes = static_cast<size_t>(width) * height * 4;
+	pBuffer = new (std::nothrow) unsigned char[bytes];
+	if( !pBuffer ) {
+		GlobalLog()->PrintEasyError( "TIFFWriter: Could not allocate pixel buffer" );
+		return;
+	}
 	bufW = width;
 	bufH = height;
-	pBuffer = new unsigned char[width*height*4];
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+
 }
 
 void TIFFWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y )
 {
-	if( pBuffer ) {
+	if( pBuffer && x < bufW && y < bufH ) {
 		RGBA8	p;
 
 		switch( color_space )
@@ -79,7 +96,7 @@ void TIFFWriter::WriteColor( const RISEColor& c, const unsigned int x, const uns
 			} break;
 		}
 
-		const unsigned int idx = y*bufW*4+x*4;
+		const size_t idx = (static_cast<size_t>(y)*bufW+x)*4;
 		pBuffer[idx] = p.r;
 		pBuffer[idx+1] = p.g;
 		pBuffer[idx+2] = p.b;

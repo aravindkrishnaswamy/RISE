@@ -50,7 +50,6 @@
 #include <zlib.h>						// crc32 for the crafted PNG chunks
 
 #include "../src/Library/Utilities/MemoryBuffer.h"
-#include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/RasterImages/TGAReader.h"
 #include "../src/Library/RasterImages/HDRReader.h"
@@ -529,16 +528,16 @@ static void TestTIFF()
 	Check( tOk && (tpx0.base.r + tpx0.base.g + tpx0.base.b) > 0.0,
 		"E: valid TIFF pixel (0,0) is non-empty (decode populated the buffer)" );
 
-	auto* output = new DiskFileWriteBuffer( path.c_str() );
+	auto* output = new MemoryBuffer();
 	IRasterImageWriter* writer = nullptr;
 	if( RISE_API_CreateTIFFWriter( &writer, *output, eColorSpace_Rec709RGB_Linear ) && writer ) {
 		writer->BeginWrite( 1, 1 );
 		RISEColor red;
-		red.SetFromIntegerized<Rec709RGBPel, unsigned char>( {255, 0, 0, 255}, 255.0 );
+		red.SetFromIntegerized<Rec709RGBPel, unsigned char>( {200, 100, 50, 128}, 255.0 );
 		writer->WriteColor( red, 0, 0 );
 		writer->EndWrite();
 		writer->release();
-		Check( output->Finish( true ), "E: RISE completes a TIFF file" );
+		Check( output->DumpToFile( path.c_str() ), "E: RISE writes a TIFF via a memory buffer" );
 	} else {
 		Check( false, "E: RISE creates a TIFF writer" );
 	}
@@ -546,10 +545,17 @@ static void TestTIFF()
 	TIFF* decoded = TIFFOpen( path.c_str(), "r" );
 	std::uint32_t pixel = 0;
 	const bool read = decoded && TIFFReadRGBAImage( decoded, 1, 1, &pixel, 1 );
-	Check( read && TIFFGetR(pixel) >= 254 && TIFFGetG(pixel) <= 1 &&
-		TIFFGetB(pixel) <= 1 && TIFFGetA(pixel) == 255,
-		"E: libtiff independently decodes the RISE-written red pixel" );
+	Check( read && TIFFGetR(pixel) == 100 && TIFFGetG(pixel) == 50 &&
+		TIFFGetB(pixel) == 25 && TIFFGetA(pixel) == 128,
+		"E: libtiff independently decodes the RISE-written pixel" );
 	if( decoded ) TIFFClose( decoded );
+	RISEColor roundTrip;
+	auto encoded = ReadFileBytes( path );
+	const bool readBack = RunTIFF( encoded, w, h, &roundTrip );
+	const auto rgba = roundTrip.Integerize<Rec709RGBPel, unsigned char>( 255.0 );
+	Check( readBack && std::abs( int(rgba.r) - 200 ) <= 2 && std::abs( int(rgba.g) - 100 ) <= 2 &&
+		std::abs( int(rgba.b) - 50 ) <= 2 && rgba.a == 128,
+		"E: RISE reads TIFF alpha as straight color" );
 	std::remove( path.c_str() );
 
 	std::vector<char> patched = bytes;
