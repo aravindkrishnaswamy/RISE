@@ -74,12 +74,10 @@ static void Check( bool cond, const char* name )
 	else { ++failCount; std::cout << "  FAIL: " << name << std::endl; }
 }
 
-static std::string TmpDir()
+static std::string TempPrefix()
 {
-	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
-	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
-	return dir;
+	return RISE::TestSupport::ScratchPath("rise_volume_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) + "_");
 }
 
 static void WriteBytes( const std::string& path, unsigned char value, int count )
@@ -137,7 +135,7 @@ static void TestVolumeSlices()
 	static const int SLICE = W * H;           // 4096 bytes/slice
 	static const int TOTAL = SLICE * 3;       // 12288 bytes (escapes nano zone)
 
-	const std::string base = TmpDir() + "rise_voltest_slice_";
+	const std::string base = TempPrefix() + "rise_voltest_slice_";
 	const std::string s0 = base + "0.raw";
 	const std::string s1 = base + "1.raw";
 	const std::string s2 = base + "2.raw";
@@ -180,7 +178,7 @@ static void TestMemoryBufferMissingFile()
 {
 	std::cout << "B: MemoryBuffer on a nonexistent file leaves an empty buffer (stat guard)" << std::endl;
 
-	const std::string missing = TmpDir() + "rise_membuf_definitely_absent_xyz.bin";
+	const std::string missing = TempPrefix() + "rise_membuf_definitely_absent_xyz.bin";
 	std::remove( missing.c_str() );
 
 	// MemoryBuffer is Reference-counted (heap + release).
@@ -200,7 +198,7 @@ static void TestMemoryBufferGetBytesOverread()
 {
 	std::cout << "C: MemoryBuffer::getBytes over-read is bounded (no OOB heap read)" << std::endl;
 
-	const std::string path = TmpDir() + "rise_membuf_small.bin";
+	const std::string path = TempPrefix() + "rise_membuf_small.bin";
 	WriteBytes( path, 0xAB, 8 );        // an 8-byte file
 
 	MemoryBuffer* mb = new MemoryBuffer( path.c_str() );
@@ -236,7 +234,7 @@ static void TestMemoryBufferScalarOverread()
 	std::cout << "D: MemoryBuffer scalar getters past EOF return 0 (no OOB heap read)" << std::endl;
 
 	// An 8-byte file = exactly two uint32.
-	const std::string path = TmpDir() + "rise_membuf_scalar.bin";
+	const std::string path = TempPrefix() + "rise_membuf_scalar.bin";
 	{
 		std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );
 		unsigned int a = 0x11223344u, b = 0x55667788u;
@@ -259,7 +257,7 @@ static void TestMemoryBufferScalarOverread()
 	mb->release();
 
 	// A 4-byte buffer + getDouble (needs 8) -> over-read -> 0.
-	const std::string path2 = TmpDir() + "rise_membuf_scalar2.bin";
+	const std::string path2 = TempPrefix() + "rise_membuf_scalar2.bin";
 	WriteBytes( path2, 0xCD, 4 );
 	MemoryBuffer* mb2 = new MemoryBuffer( path2.c_str() );
 	const double d = mb2->getDouble();       // only 4 of 8 bytes available
@@ -279,7 +277,7 @@ static void TestDiskFileReadBufferGetBytesOverread()
 {
 	std::cout << "E: DiskFileReadBuffer::getBytes over-read is bounded + cursor at EOF" << std::endl;
 
-	const std::string path = TmpDir() + "rise_diskbuf_small.bin";
+	const std::string path = TempPrefix() + "rise_diskbuf_small.bin";
 	WriteBytes( path, 0xBE, 8 );
 
 	DiskFileReadBuffer* db = new DiskFileReadBuffer( path.c_str() );
@@ -311,7 +309,7 @@ static void TestDiskFileReadBufferMissingFile()
 {
 	std::cout << "F: DiskFileReadBuffer on a missing file degrades gracefully (no ftell(NULL) crash)" << std::endl;
 
-	const std::string missing = TmpDir() + "rise_diskbuf_definitely_absent_xyz.bin";
+	const std::string missing = TempPrefix() + "rise_diskbuf_definitely_absent_xyz.bin";
 	std::remove( missing.c_str() );
 
 	DiskFileReadBuffer* db = new DiskFileReadBuffer( missing.c_str() );
@@ -347,7 +345,7 @@ static void TestVolumeOverflowDims()
 {
 	std::cout << "G: Volume with overflow dimensions degrades to an empty volume (no OOB alloc)" << std::endl;
 
-	const std::string pattern = TmpDir() + "rise_vol_overflow_%d.raw";
+	const std::string pattern = TempPrefix() + "rise_vol_overflow_%d.raw";
 	Volume<unsigned char>* v = new Volume<unsigned char>( pattern.c_str(), 100000, 100000, 0, 0 );
 	Check( v->Width() == 0 && v->Height() == 0 && v->Depth() == 0,
 		"G: overflow volume reports zero dimensions (rejected before alloc)" );
@@ -480,7 +478,7 @@ static void TestLittleEndianScalars()
 	Check( read( *borrowed ), "memory scalar reads decode independent little-endian bytes" );
 	borrowed->release();
 
-	const auto path = RISE::TestSupport::ScratchPath( "scalar_little_endian.bin" );
+	const auto path = RISE::TestSupport::ScratchPath( "scalar_little_endian_" + std::to_string(RISE::TestSupport::CurrentProcessId()) + ".bin" );
 	auto* diskWrite = new DiskFileWriteBuffer( path.c_str() );
 	const bool written = write( *diskWrite );
 	Check( diskWrite->Finish( true ) && written, "disk scalar writes complete" );
@@ -536,7 +534,7 @@ static void TestTruncatedOpenFile()
 static void TestMediaSearchRoots()
 {
 	namespace fs = std::filesystem;
-	const auto root = fs::path( RISE::TestSupport::ScratchPath( "media_lookup" ) );
+	const auto root = fs::path( RISE::TestSupport::ScratchTestRoot( "media_lookup_" ) );
 	const auto first = root / "first";
 	const auto second = root / "second";
 	const std::string name = u8"rise_media_é.bin";
