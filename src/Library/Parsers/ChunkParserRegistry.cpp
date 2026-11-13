@@ -36,6 +36,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <string_view>
 #include <cstring>   // Phase 6.2: strstr for sentinel detection
 #include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
@@ -3489,16 +3490,25 @@ namespace RISE
 					std::string name = bag.GetString( "name", "noname" );
 
 					std::vector<double> cp_x;
-					std::vector<String> cp_y;
+					std::vector<std::string> cp_y;
 
 					// Repeatable per-row entries: "cp <x> <Function1D name>"
 					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
-					for( size_t k = 0; k < cps.size(); ++k ) {
-						double x = 0.0;
-						char y[1024] = {0};
-						sscanf( cps[k].c_str(), "%lf %s", &x, y );
+					for( const std::string& row : cps ) {
+						std::istringstream fields( row );
+						std::string xToken, y, extra;
+						if( !(fields >> xToken >> y) || ((fields >> extra) && extra[0] != '#') ) {
+							SetFinalizeDiagIfEmpty( "piecewise_linear_function2d control point expects a coordinate and a function name" );
+							return false;
+						}
+						char* end = nullptr;
+						const double x = std::strtod( xToken.c_str(), &end );
+						if( end != xToken.data() + xToken.size() || !IsFiniteDouble( x ) ) {
+							SetFinalizeDiagIfEmpty( "piecewise_linear_function2d control point requires a finite coordinate" );
+							return false;
+						}
 						cp_x.push_back( x );
-						cp_y.push_back( String(y) );
+						cp_y.push_back( std::move(y) );
 					}
 
 					if( cp_x.empty() ) {
@@ -3512,16 +3522,12 @@ namespace RISE
 					}
 
 					// Setup the array of strings
-					char** func = new char*[cp_x.size()];
-					for( unsigned int i=0; i<cp_x.size(); i++ ) {
-						func[i] = (char*)(&(*(cp_y[i].begin())));
+					std::vector<char*> functions;
+					functions.reserve( cp_y.size() );
+					for( std::string& rowName : cp_y ) {
+						functions.push_back( rowName.data() );
 					}
-
-					bool bRet = pJob.AddPiecewiseLinearFunction2D( name.c_str(), cp_x.empty() ? 0 : &cp_x[0], func, static_cast<unsigned int>(cp_x.size()) );
-
-					delete [] func;
-
-					return bRet;
+					return pJob.AddPiecewiseLinearFunction2D( name.c_str(), cp_x.data(), functions.data(), static_cast<unsigned int>(cp_x.size()) );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -11463,39 +11469,47 @@ namespace RISE
 				{
 					std::string name = bag.GetString( "name", "noname" );
 
-					std::vector<String> shaderops;
+					std::vector<std::string> shaderops;
 					std::vector<unsigned int> mins, maxs;
 					std::vector<char> operations;
 
 					// Repeatable composite tokens: "<shaderop-name> <min-depth> <max-depth> <op>"
 					const std::vector<std::string>& sops = bag.GetRepeatable( "shaderop" );
-					for( size_t k = 0; k < sops.size(); ++k ) {
-						char buf[256] = {0};
+					const auto readDepth = []( const std::string& token, unsigned int& value ) {
+						const char* begin = token.data();
+						const char* end = begin + token.size();
+						if( begin != end && *begin == '+' ) ++begin;
+						const auto parsed = std::from_chars( begin, end, value );
+						return parsed.ec == std::errc{} && parsed.ptr == end;
+					};
+					for( const std::string& row : sops ) {
+						std::istringstream fields( row );
+						std::vector<std::string> tokens;
+						std::string token;
+						while( fields >> token && token[0] != '#' ) {
+							tokens.push_back( token );
+						}
 						unsigned int min=1, max=10000;
-						char operation = '+';
-						sscanf( sops[k].c_str(), "%s %u %u %c", buf, &min, &max, &operation );
-						shaderops.push_back( String(buf) );
+						if( tokens.empty() || tokens.size() > 4 ||
+							(tokens.size() > 1 && !readDepth( tokens[1], min )) ||
+							(tokens.size() > 2 && !readDepth( tokens[2], max )) ||
+							(tokens.size() > 3 && tokens[3].size() != 1) ) {
+							SetFinalizeDiagIfEmpty( "advanced_shader expects a shader-op name with optional minimum depth, maximum depth, and operation" );
+							return false;
+						}
+						shaderops.push_back( std::move(tokens[0]) );
 						mins.push_back( min );
 						maxs.push_back( max );
-						operations.push_back( operation );
+						operations.push_back( tokens.size() > 3 ? tokens[3][0] : '+' );
 					}
 
 					const unsigned int num = static_cast<unsigned int>(shaderops.size());
-					char* shmem = new char[num*256];
-					memset( shmem, 0, num*256 );
-					char** shops = new char*[num];
-
-					for( unsigned int i=0; i<num; i++ ) {
-						shops[i] = &shmem[i*256];
-						strncpy( shops[i], shaderops[i].c_str(), 255 );
+					std::vector<const char*> shops;
+					shops.reserve( num );
+					for( const std::string& opName : shaderops ) {
+						shops.push_back( opName.c_str() );
 					}
-
-					bool bRet = pJob.AddAdvancedShader( name.c_str(), num, (const char**)shops, (unsigned int*)(&(*(mins.begin()))), (unsigned int*)(&(*(maxs.begin()))), (char*)(&(*(operations.begin()))) );
-
-					delete [] shops;
-					delete [] shmem;
-
-					return bRet;
+					return pJob.AddAdvancedShader( name.c_str(), num, shops.data(), mins.data(), maxs.data(), operations.data() );
 				}
 
 				const ChunkDescriptor& Describe() const override {

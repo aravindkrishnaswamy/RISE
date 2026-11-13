@@ -214,6 +214,29 @@ int main()
 		}
 	}
 
+	{
+		const std::string scenePath = RISE::TestSupport::ScratchPath( "cst_tuple_records.RISEscene" );
+		const std::string rawPath = RISE::TestSupport::ScratchPath( "cst_raw_records.rawmesh" );
+		const std::string header = "RISE ASCII SCENE 7\n";
+		const std::string shader = "advanced_shader\n{\nname tuple_shader\n";
+		const std::string sphere = "sphere_geometry\n{\nname tuple_sphere\nradius 1\n}\n";
+		Case( "advanced shader shorthand", scenePath.c_str(),
+			header + shader + "shaderop DefaultEmission\n}\n" + sphere );
+		Case( "advanced shader with no entries", scenePath.c_str(), header + shader + "}\n" + sphere );
+		RefuseCase( "invalid optional depth", scenePath.c_str(),
+			header + shader + "shaderop DefaultEmission invalid\n}\n" );
+		RefuseCase( "long shader-op name", scenePath.c_str(),
+			header + shader + "shaderop " + std::string( 600, 'x' ) + "\n}\n" );
+		RefuseCase( "incomplete two-dimensional function row", scenePath.c_str(),
+			header + "piecewise_linear_function2d\n{\nname bad_row\ncp 0\n}\n" );
+		const std::string rawScene = header + "rawmesh_geometry\n{\nname raw_records\nfile " + rawPath + "\n}\n";
+		Check( WriteTmp( rawPath.c_str(), "tri 0 0 0 1 0 0 0 1 0\n" ), "write valid RAW fixture" );
+		Case( "valid RAW triangle", scenePath.c_str(), rawScene );
+		Check( WriteTmp( rawPath.c_str(), "tri 0 0 0 1 0 0 0 1 0\ntri 0 0\n" ), "write incomplete RAW fixture" );
+		RefuseCase( "incomplete RAW record after a valid triangle", scenePath.c_str(), rawScene );
+		std::remove( rawPath.c_str() );
+	}
+
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
 	return s_fail == 0 ? 0 : 1;
 }

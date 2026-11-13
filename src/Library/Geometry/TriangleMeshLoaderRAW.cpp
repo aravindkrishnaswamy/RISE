@@ -16,14 +16,22 @@
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/MediaPathLocator.h"
-#include <stdio.h>
+#include <fstream>
+#include <sstream>
+#include "../Utilities/FiniteMath.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 TriangleMeshLoaderRAW::TriangleMeshLoaderRAW( const char * szFile )
 {
-	strncpy( szFilename, GlobalMediaPathLocator().Find(szFile).c_str(), 256 );
+	const String filename = GlobalMediaPathLocator().Find( szFile );
+	if( std::strlen( filename.c_str() ) < sizeof(szFilename) ) {
+		std::strcpy( szFilename, filename.c_str() );
+	} else {
+		szFilename[0] = '\0';
+		GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW:: File name is too long" );
+	}
 }
 
 TriangleMeshLoaderRAW::~TriangleMeshLoaderRAW( )
@@ -32,35 +40,48 @@ TriangleMeshLoaderRAW::~TriangleMeshLoaderRAW( )
 
 bool TriangleMeshLoaderRAW::LoadTriangleMesh( ITriangleMeshGeometry* pGeom )
 {
-	FILE* inputFile = fopen( szFilename, "r" );
+	std::ifstream inputFile( szFilename );
 
 	if( !inputFile || !pGeom ) {
 		GlobalLog()->Print( eLog_Error, "TriangleMeshLoaderRAW:: Failed to open file or bad geometry object" );
 		return false;
 	}
 
-	pGeom->BeginTriangles();
+	std::vector<Triangle> triangles;
+	std::string line;
 
-	char line[4096];
-	char temp[32];
-
-	while( fgets( (char*)&line, 4096, inputFile ) != NULL )
+	while( std::getline( inputFile, line ) )
 	{
-		sscanf( line, "%s", temp );
+		std::istringstream fields( line );
+		std::string kind;
+		fields >> kind;
+		if( kind != "tri" && kind != "quad" ) {
+			continue;
+		}
+
+		double vertices[12];
+		const int coordinateCount = kind == "tri" ? 9 : 12;
+		for( int coordinate = 0; coordinate < coordinateCount; ++coordinate ) {
+			if( !(fields >> vertices[coordinate]) || !IsFiniteDouble( vertices[coordinate] ) ) {
+				GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW:: Invalid polygon coordinates" );
+				return false;
+			}
+		}
+		std::string trailing;
+		if( (fields >> trailing) && trailing[0] != '#' ) {
+			GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW:: Extra polygon coordinates" );
+			return false;
+		}
 
 		// What kind of polygon do we have ?
-		if( strcmp( temp, "tri" ) == 0 )
+		if( kind == "tri" )
 		{
-			// We have a triangle, so read the three vertices!
-			double vAx, vAy, vAz, vBx, vBy, vBz, vCx, vCy, vCz;
-			sscanf( line, "%s %lf %lf %lf %lf %lf %lf %lf %lf %lf", temp, &vAx, &vAy, &vAz, &vBx, &vBy, &vBz, &vCx, &vCy, &vCz );
-
 			// Compute the normals ourselves
 			// Only use face normals
 			Triangle	tri;
-			tri.vertices[0] = Point3( vAx, vAy, vAz );
-			tri.vertices[1] = Point3( vBx, vBy, vBz );
-			tri.vertices[2] = Point3( vCx, vCy, vCz );
+			tri.vertices[0] = Point3( vertices[0], vertices[1], vertices[2] );
+			tri.vertices[1] = Point3( vertices[3], vertices[4], vertices[5] );
+			tri.vertices[2] = Point3( vertices[6], vertices[7], vertices[8] );
 
 			tri.normals[0] = Vector3Ops::Normalize(Vector3Ops::Cross( 
 				Vector3Ops::mkVector3(tri.vertices[1], tri.vertices[0]),
@@ -70,24 +91,20 @@ bool TriangleMeshLoaderRAW::LoadTriangleMesh( ITriangleMeshGeometry* pGeom )
 			tri.coords[1] = Point2( 0,1 );
 			tri.coords[2] = Point2( 1,1 );
 
-			pGeom->AddTriangle( tri );
+			triangles.push_back( tri );
 		}
-		else if( strcmp( temp, "quad" ) == 0 )
+		else
 		{
-			// We have a quad, so read the four vertices
-			double vAx, vAy, vAz, vBx, vBy, vBz, vCx, vCy, vCz, vDx, vDy, vDz;
-			sscanf( line, "%s %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf", temp, &vAx, &vAy, &vAz, &vBx, &vBy, &vBz, &vCx, &vCy, &vCz, &vDx, &vDy, &vDz );
-
 			// Compute the normals ourselves and add two triangles
 			Triangle	triA;
-			triA.vertices[0] = Point3( vAx, vAy, vAz );
-			triA.vertices[1] = Point3( vBx, vBy, vBz );
-			triA.vertices[2] = Point3( vCx, vCy, vCz );
+			triA.vertices[0] = Point3( vertices[0], vertices[1], vertices[2] );
+			triA.vertices[1] = Point3( vertices[3], vertices[4], vertices[5] );
+			triA.vertices[2] = Point3( vertices[6], vertices[7], vertices[8] );
 
 			Triangle	triB;
-			triB.vertices[0] = Point3( vAx, vAy, vAz );
-			triB.vertices[1] = Point3( vCx, vCy, vCz );
-			triB.vertices[2] = Point3( vDx, vDy, vDz );
+			triB.vertices[0] = triA.vertices[0];
+			triB.vertices[1] = triA.vertices[2];
+			triB.vertices[2] = Point3( vertices[9], vertices[10], vertices[11] );
 
 			Vector3 vNormalA = Vector3Ops::Normalize(Vector3Ops::Cross( 
 				Vector3Ops::mkVector3(triA.vertices[1], triA.vertices[0]),
@@ -109,14 +126,20 @@ bool TriangleMeshLoaderRAW::LoadTriangleMesh( ITriangleMeshGeometry* pGeom )
 			triB.coords[1] = Point2( 0.0, 1.0 );
 			triB.coords[2] = Point2( 1.0, 1.0 );
 
-			pGeom->AddTriangle( triA );
-			pGeom->AddTriangle( triB );
+			triangles.push_back( triA );
+			triangles.push_back( triB );
 		}
 	}
 
-	pGeom->DoneTriangles();
+	if( inputFile.bad() ) {
+		return false;
+	}
 
-	fclose( inputFile );
+	pGeom->BeginTriangles();
+	for( const Triangle& triangle : triangles ) {
+		pGeom->AddTriangle( triangle );
+	}
+	pGeom->DoneTriangles();
 	
 	return true;
 }
