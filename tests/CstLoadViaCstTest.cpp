@@ -134,6 +134,22 @@ int main()
 		script( std::string( "RISE ASCII SCRIPT 3\nclearall" ) + '\0' + "unknown\n",
 			false, "script rejects embedded NUL" );
 		script( "RISE ASCII SCRIPT 3\n\"\"\n", false, "script rejects an empty quoted command" );
+		script( "RISE ASCII SCRIPT 3\nrun \"" + path + "\"", false, "script rejects a recursive run" );
+		const std::string child = RISE::TestSupport::ScratchPath( "child_ascii.RISEscript" );
+		Check( WriteTmp( child.c_str(), "RISE ASCII SCRIPT 3\nclearall" ), "write nested script fixture" );
+		script( "RISE ASCII SCRIPT 3\nrun \"" + child + "\"\nrun \"" + child + "\"", true,
+			"script can run a child again after it returns" );
+		std::remove( child.c_str() );
+	}
+
+	{
+		const std::string name( 300, 'p' );
+		const std::string path = RISE::TestSupport::ScratchPath( "voronoi_long_reference.RISEscene" );
+		const std::string base = "RISE ASCII SCENE 7\nuniformcolor_painter\n{\nname " + name +
+			"\ncolor 0.5 0.25 0.1\n}\n";
+		Case( "Voronoi generators use full names and the default border", path.c_str(), base +
+			"voronoi2d_painter\n{\nname cells2\ngen 0 0 " + name + "\ngen 1 1 " + name + "\n}\n"
+			"voronoi3d_painter\n{\nname cells3\ngen 0 0 0 " + name + "\ngen 1 1 1 " + name + "\n}\n" );
 	}
 
 	// Slice 6e header-bump back-compat pair: the reader accepts BOTH the post-cutover `7` header and the

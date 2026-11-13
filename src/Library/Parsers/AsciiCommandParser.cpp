@@ -124,9 +124,9 @@ unsigned int AsciiCommandParser::TokenizeString( const char* szStr, String* toke
 bool AsciiCommandParser::ParseCommand( const char * szLine, IJob& pJob )
 {
 	// First parse the line into tokens
-	String			tokens[RISE_MAX_TOKENS_PER_LINE];
+	std::vector<String> tokens( RISE_MAX_TOKENS_PER_LINE );
 
-	unsigned int numTokens = TokenizeString( szLine, tokens, RISE_MAX_TOKENS_PER_LINE );
+	unsigned int numTokens = TokenizeString( szLine, tokens.data(), RISE_MAX_TOKENS_PER_LINE );
 
 	String&			token = tokens[0];
 
@@ -142,7 +142,7 @@ bool AsciiCommandParser::ParseCommand( const char * szLine, IJob& pJob )
 	}
 
 	if( !bSuccess ) {
-		bSuccess = ParseCommand( tokens, numTokens, pJob );
+		bSuccess = ParseCommand( tokens.data(), numTokens, pJob );
 	}
 
 	return bSuccess;

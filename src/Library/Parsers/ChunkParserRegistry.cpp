@@ -3090,10 +3090,11 @@ namespace RISE
 
 					// Repeatable inline generators: "gen <x> <y> <painter>"
 					const std::vector<std::string>& gens = bag.GetRepeatable( "gen" );
-					for( size_t k = 0; k < gens.size(); ++k ) {
+					for( const std::string& gen : gens ) {
 						double x = 0, y = 0;
-						char painter[256] = {0};
-						sscanf( gens[k].c_str(), "%lf %lf %255s", &x, &y, painter );
+						std::string painter;
+						std::istringstream fields( gen );
+						if( !(fields >> x >> y >> painter) ) return false;
 						ptx.push_back( x );
 						pty.push_back( y );
 						painters.push_back( painter );
@@ -3106,8 +3107,9 @@ namespace RISE
 						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
 							for( const std::string& ln : fileLines ) {
 								double x = 0.0, y = 0.0;
-								char painter[256] = {0};
-								if( sscanf( ln.c_str(), "%lf %lf %255s", &x, &y, painter ) == 3 ) {
+								std::string painter;
+								std::istringstream fields( ln );
+								if( fields >> x >> y >> painter ) {
 									ptx.push_back( x );
 									pty.push_back( y );
 									painters.push_back( painter );
@@ -3123,7 +3125,7 @@ namespace RISE
 
 					return pJob.AddVoronoi2DPainter( name.c_str(), ptx.data(), pty.data(),
 						names.data(), static_cast<unsigned int>(names.size()),
-						border == "none" ? nullptr : border.c_str(), bordersize );
+						border.c_str(), bordersize );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3175,10 +3177,11 @@ namespace RISE
 
 					// Repeatable inline generators: "gen <x> <y> <z> <painter>"
 					const std::vector<std::string>& gens = bag.GetRepeatable( "gen" );
-					for( size_t k = 0; k < gens.size(); ++k ) {
+					for( const std::string& gen : gens ) {
 						double x = 0, y = 0, z = 0;
-						char painter[256] = {0};
-						sscanf( gens[k].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter );
+						std::string painter;
+						std::istringstream fields( gen );
+						if( !(fields >> x >> y >> z >> painter) ) return false;
 						ptx.push_back( x );
 						pty.push_back( y );
 						ptz.push_back( z );
@@ -3191,11 +3194,13 @@ namespace RISE
 						std::vector<std::string> fileLines;
 						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) && !fileLines.empty() ) {
 							int num = 0;
-							sscanf( fileLines[0].c_str(), "%d", &num );
-							for( int i = 1; i <= num && i < (int)fileLines.size(); ++i ) {
+							std::istringstream count( fileLines[0] );
+							count >> num;
+							for( size_t i = 1; num > 0 && i <= static_cast<size_t>(num) && i < fileLines.size(); ++i ) {
 								double x = 0.0, y = 0.0, z = 0.0;
-								char painter[256] = {0};
-								if( sscanf( fileLines[i].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter ) == 4 ) {
+								std::string painter;
+								std::istringstream fields( fileLines[i] );
+								if( fields >> x >> y >> z >> painter ) {
 									ptx.push_back( x );
 									pty.push_back( y );
 									ptz.push_back( z );
@@ -3212,7 +3217,7 @@ namespace RISE
 
 					return pJob.AddVoronoi3DPainterWithSpace( name.c_str(), ptx.data(), pty.data(), ptz.data(),
 						names.data(), static_cast<unsigned int>(names.size()),
-						border == "none" ? nullptr : border.c_str(), bordersize, worldSpace );
+						border.c_str(), bordersize, worldSpace );
 				}
 
 				const ChunkDescriptor& Describe() const override {

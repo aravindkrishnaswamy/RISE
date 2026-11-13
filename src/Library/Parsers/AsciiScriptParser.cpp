@@ -14,8 +14,11 @@
 
 #include "pch.h"
 #include <fstream>
+#include <filesystem>
+#include <algorithm>
 #include <memory>
 #include <cstdlib>
+#include <vector>
 #include "AsciiScriptParser.h"
 #include "AsciiCommandParser.h"
 #include "../Utilities/MediaPathLocator.h"
@@ -45,6 +48,21 @@ bool AsciiScriptParser::ParseScript( IJob& pJob )
 		GlobalLog()->PrintEx( eLog_Error, "AsciiScriptParser: Failed to load script file '%s'", filename.c_str() );
 		return false;
 	}
+
+	static thread_local std::vector<std::filesystem::path> activeScripts;
+	std::error_code pathError;
+	auto path = std::filesystem::canonical( filename, pathError );
+	if( pathError ) path = filename;
+	if( activeScripts.size() >= 64 ||
+		std::find( activeScripts.begin(), activeScripts.end(), path ) != activeScripts.end() ) {
+		GlobalLog()->PrintEx( eLog_Error, "AsciiScriptParser: Recursive or deeply nested script '%s'", filename.c_str() );
+		return false;
+	}
+	activeScripts.push_back( std::move(path) );
+	struct ActiveScript {
+		std::vector<std::filesystem::path>& scripts;
+		~ActiveScript() { scripts.pop_back(); }
+	} active{ activeScripts };
 
 	std::string line;
 
