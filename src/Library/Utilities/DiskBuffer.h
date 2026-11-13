@@ -27,23 +27,26 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class DiskBuffer : public virtual IBuffer, public virtual Reference
+		class DiskBuffer : public virtual IBuffer, public virtual Reference, public IBuffer64
 		{
 		public:
 			//
 			// These methods are to satisfy the IBuffer interface
 			//
-			virtual unsigned int HowFarToEnd( ) const;
-			virtual unsigned int Size( ) const;
-			virtual bool EndOfBuffer( ) const;
+			unsigned int HowFarToEnd( ) const override;
+			unsigned int Size( ) const override;
+			bool EndOfBuffer( ) const override;
 
-			virtual bool seek( const eSeek type, const int amount );
-			virtual unsigned int getCurPos( ) const;
+			bool seek( const eSeek type, const int amount ) override;
+			unsigned int getCurPos( ) const override;
+			std::uint64_t Size64() const override;
+			std::uint64_t getCurPos64() const override;
+			bool seek64( eSeek type, std::int64_t amount ) override;
 
 		protected:
 			// Default destructor
 			DiskBuffer();
-			virtual ~DiskBuffer();
+			~DiskBuffer() override;
 
 			struct CloseFile {
 				void operator()( FILE* file ) const { std::fclose( file ); }

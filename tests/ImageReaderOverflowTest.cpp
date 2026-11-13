@@ -585,6 +585,63 @@ static void PatchTIFFDims( std::vector<char>& t )
 	}
 }
 
+static void TestDamagedTIFFStrip()
+{
+	const std::string path = TmpDir() + "rise_bad_strip_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) + ".tif";
+	TIFF* output = TIFFOpen( path.c_str(), "w" );
+	if( !output ) { Check(false, "create damaged TIFF strip fixture"); return; }
+	TIFFSetField( output, TIFFTAG_IMAGEWIDTH, 4 );
+	TIFFSetField( output, TIFFTAG_IMAGELENGTH, 4 );
+	TIFFSetField( output, TIFFTAG_SAMPLESPERPIXEL, 3 );
+	TIFFSetField( output, TIFFTAG_BITSPERSAMPLE, 8 );
+	TIFFSetField( output, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT );
+	TIFFSetField( output, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG );
+	TIFFSetField( output, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB );
+	TIFFSetField( output, TIFFTAG_ROWSPERSTRIP, 1 );
+	TIFFSetField( output, TIFFTAG_COMPRESSION, COMPRESSION_ADOBE_DEFLATE );
+	bool written = true;
+	for( unsigned int y = 0; y < 4; ++y ) {
+		unsigned char row[12];
+		for( unsigned int x = 0; x < 4; ++x ) {
+			row[x*3] = static_cast<unsigned char>(20 + y*40);
+			row[x*3+1] = 40;
+			row[x*3+2] = 80;
+		}
+		written &= TIFFWriteScanline( output, row, y, 0 ) >= 0;
+	}
+	TIFFClose( output );
+	TIFF* input = TIFFOpen( path.c_str(), "r" );
+	std::uint64_t* offsets = nullptr;
+	std::uint64_t* counts = nullptr;
+	const bool indexed = input && TIFFGetField(input, TIFFTAG_STRIPOFFSETS, &offsets) &&
+		TIFFGetField(input, TIFFTAG_STRIPBYTECOUNTS, &counts) && TIFFNumberOfStrips(input) == 4;
+	if( !written || !indexed ) {
+		Check(false, "write and locate TIFF strips");
+		if( input ) TIFFClose(input);
+		std::remove(path.c_str());
+		return;
+	}
+	const auto offset = offsets[1];
+	const auto count = counts[1];
+	TIFFClose( input );
+	std::fstream corrupt( path, std::ios::binary | std::ios::in | std::ios::out );
+	corrupt.seekp( static_cast<std::streamoff>(offset) );
+	for( std::uint64_t i = 0; i < count; ++i ) corrupt.put( static_cast<char>(0xff) );
+	corrupt.close();
+	input = TIFFOpen( path.c_str(), "r" );
+	std::uint32_t pixels[16] = {};
+	const bool partial = input && TIFFReadRGBAImageOriented(input, 4, 4, pixels, ORIENTATION_TOPLEFT, 0);
+	if( input ) TIFFClose(input);
+	Check( partial && TIFFGetR(pixels[0]) == 20 && TIFFGetR(pixels[4]) == 0 &&
+		TIFFGetA(pixels[4]) == 255 && TIFFGetR(pixels[8]) == 100,
+		"permissive TIFF decoding reports success with an opaque-black damaged strip" );
+	unsigned int width = 0, height = 0;
+	auto damaged = ReadFileBytes(path);
+	Check( !RunTIFF(damaged, width, height), "RISE rejects a TIFF with a damaged compressed strip" );
+	std::remove( path.c_str() );
+}
+
 static void TestTIFF()
 {
 	std::cout << "E: TIFF valid 2x2 decodes; 65535^2-patched TIFF safely rejected" << std::endl;
@@ -679,6 +736,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 #endif
 #ifndef NO_TIFF_SUPPORT
 	TestTIFF();
+	TestDamagedTIFFStrip();
 #endif
 
 	std::cout << std::endl;

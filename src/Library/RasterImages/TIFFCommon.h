@@ -23,14 +23,12 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		__attribute__((unused))
-		static tsize_t TIFFReadDummy( thandle_t v, tdata_t ptr, tsize_t amount )
+		[[maybe_unused]] static tsize_t TIFFReadDummy( thandle_t v, tdata_t ptr, tsize_t amount )
 		{
 			return 0;
 		}
 
-		__attribute__((unused))
-		static tsize_t TIFFRead( thandle_t v, tdata_t ptr, tsize_t amount )
+		[[maybe_unused]] static tsize_t TIFFRead( thandle_t v, tdata_t ptr, tsize_t amount )
 		{
 			IReadBuffer* pBuffer = (IReadBuffer*)v;
 
@@ -46,21 +44,32 @@ namespace RISE
 		static inline toff_t TIFFSeek( IBuffer* buffer, toff_t offset, int whence, IWriteBuffer* writer = nullptr )
 		{
 			constexpr toff_t failure = static_cast<toff_t>(-1);
-			if( !buffer || offset > static_cast<toff_t>(std::numeric_limits<int>::max()) )
-				return failure;
+			if( !buffer ) return failure;
+			const auto maximum = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+			std::uint64_t base = 0;
 			switch( whence ) {
-			case SEEK_CUR: offset += buffer->getCurPos(); break;
-			case SEEK_END: offset += buffer->Size(); break;
-			case SEEK_SET: break;
+			case SEEK_CUR: base = BufferPosition(*buffer); break;
+			case SEEK_END: base = BufferSize(*buffer); break;
+			case SEEK_SET: if( offset > maximum ) return failure; break;
 			default: return failure;
 			}
-			if( offset > static_cast<toff_t>(std::numeric_limits<int>::max()) )
-				return failure;
-			if( offset > buffer->Size() && writer ) {
+			if( base > maximum ) return failure;
+			if( offset > maximum ) {
+				// libtiff passes negative relative offsets through unsigned toff_t.
+				const auto distance = toff_t(0) - offset;
+				if( distance > base ) return failure;
+				offset = base - distance;
+			} else {
+				if( offset > maximum - base ) return failure;
+				offset += base;
+			}
+			const bool wide = dynamic_cast<IBuffer64*>(buffer) != nullptr;
+			if( !wide && offset > static_cast<toff_t>(std::numeric_limits<int>::max()) ) return failure;
+			if( offset > BufferSize(*buffer) && writer && !wide ) {
 				// libtiff may align a directory field beyond the current end.
 				// Write the alignment gap so in-memory output can seek there too.
-				const auto size = buffer->Size();
-				if( size != buffer->getCurPos() && !buffer->seek( IBuffer::START, static_cast<int>(size) ) )
+				const auto size = BufferSize(*buffer);
+				if( size != BufferPosition(*buffer) && !BufferSeek(*buffer, IBuffer::START, static_cast<std::int64_t>(size)) )
 					return failure;
 				const unsigned char zeros[16]{};
 				for( auto remaining = offset - size; remaining != 0; ) {
@@ -69,9 +78,9 @@ namespace RISE
 					remaining -= count;
 				}
 			}
-			if( offset != buffer->getCurPos() && !buffer->seek( IBuffer::START, static_cast<int>(offset) ) )
+			if( offset != BufferPosition(*buffer) && !BufferSeek(*buffer, IBuffer::START, static_cast<std::int64_t>(offset)) )
 				return failure;
-			return buffer->getCurPos();
+			return BufferPosition(*buffer);
 		}
 
 		[[maybe_unused]] static toff_t TIFFSeekReader( thandle_t handle, toff_t offset, int whence )
@@ -85,8 +94,7 @@ namespace RISE
 			return TIFFSeek( writer, offset, whence, writer );
 		}
 
-		__attribute__((unused))
-		static tsize_t TIFFWrite( thandle_t v, tdata_t ptr, tsize_t amount )
+		[[maybe_unused]] static tsize_t TIFFWrite( thandle_t v, tdata_t ptr, tsize_t amount )
 		{
 			IWriteBuffer* pBuffer = (IWriteBuffer*)v;
 
@@ -99,50 +107,44 @@ namespace RISE
 			return 0;
 		}
 
-		__attribute__((unused))
-		static tsize_t TIFFWriteDummy( thandle_t v, tdata_t ptr, tsize_t amount )
+		[[maybe_unused]] static tsize_t TIFFWriteDummy( thandle_t v, tdata_t ptr, tsize_t amount )
 		{
 			return 0;
 		}
 
-		__attribute__((unused))
-		static int TIFFClose( thandle_t v )
+		[[maybe_unused]] static int TIFFClose( thandle_t v )
 		{
 			return 0;
 		}
 
-		__attribute__((unused))
-		static toff_t TIFFSizeReader( thandle_t v )
+		[[maybe_unused]] static toff_t TIFFSizeReader( thandle_t v )
 		{
 			IReadBuffer* pBuffer = (IReadBuffer*)v;
 
 			if( pBuffer ) {
-				return pBuffer->Size();
+				return BufferSize(*pBuffer);
 			}
 
 			return 0;
 		}
 
-		__attribute__((unused))
-		static toff_t TIFFSizeWriter( thandle_t v )
+		[[maybe_unused]] static toff_t TIFFSizeWriter( thandle_t v )
 		{
 			IWriteBuffer* pBuffer = (IWriteBuffer*)v;
 
 			if( pBuffer ) {
-				return pBuffer->Size();
+				return BufferSize(*pBuffer);
 			}
 
 			return 0;
 		}
 
-		__attribute__((unused))
-		static int TIFFMapFile( thandle_t, tdata_t*, toff_t* )
+		[[maybe_unused]] static int TIFFMapFile( thandle_t, tdata_t*, toff_t* )
 		{
 			return 0;
 		}
 
-		__attribute__((unused))
-		static void TIFFUnmapFile( thandle_t, tdata_t, toff_t )
+		[[maybe_unused]] static void TIFFUnmapFile( thandle_t, tdata_t, toff_t )
 		{
 		}
 	}

@@ -32,6 +32,7 @@
 	#include <ImfArray.h>
 	#include <vector>
 	#include <limits>
+	#include <stdexcept>
 #endif
 
 namespace RISE
@@ -44,25 +45,51 @@ namespace RISE
 		{
 		protected:
 			IWriteBuffer& pBuffer;
+			bool failed = false;
 
 		public:
 			OStreamWrapper( IWriteBuffer& buffer ) : Imf::OStream( "none" ), pBuffer( buffer )
 			{}
 
+			bool Failed() const { return failed; }
+			void ResetFailure() { failed = false; }
+
 			void write( const char c[/*n*/], int n )
 			{
-				pBuffer.ResizeForMore(n);
-				pBuffer.setBytes( c, n );
+				try {
+					if( n < 0 ) throw std::runtime_error("EXR output length is negative");
+					pBuffer.ResizeForMore( static_cast<unsigned int>(n) );
+					if( !pBuffer.setBytes(c, static_cast<unsigned int>(n)) )
+						throw std::runtime_error("EXR output write failed");
+				} catch( ... ) {
+					failed = true;
+					throw;
+				}
 			}
 
 			uint64_t tellp()
 			{
-				return pBuffer.getCurPos();
+				try {
+					const auto position = BufferPosition(pBuffer);
+					if( position == std::numeric_limits<std::uint64_t>::max() )
+						throw std::runtime_error("EXR output position is unavailable");
+					return position;
+				} catch( ... ) {
+					failed = true;
+					throw;
+				}
 			}
 
 			void seekp( uint64_t pos )
 			{
-				pBuffer.seek( IBuffer::START, static_cast<int>(pos) );
+				try {
+					if( pos > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+						!BufferSeek(pBuffer, IBuffer::START, static_cast<std::int64_t>(pos)) )
+						throw std::runtime_error("EXR output seek failed");
+				} catch( ... ) {
+					failed = true;
+					throw;
+				}
 			}
 		};
 	#endif

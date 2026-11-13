@@ -25,6 +25,7 @@
 #include <cassert>
 #include <cstring>
 #include <vector>
+#include <memory>
 
 // L5c — libpng for HDR10 PNG encoder.
 #ifndef NO_PNG_SUPPORT
@@ -50,7 +51,8 @@ namespace RISE
 			IWriteBuffer&     dst,
 			const EncodeOpts& opts )
 		{
-			IRasterImageWriter* pWriter = CreateWriter( dst, opts );
+			const auto release = []( IRasterImageWriter* writer ) { writer->release(); };
+			std::unique_ptr<IRasterImageWriter, decltype(release)> pWriter( CreateWriter(dst, opts), release );
 			if ( !pWriter ) {
 				GlobalLog()->PrintEx( eLog_Error,
 					"FrameEncoder[%s]: writer factory returned null",
@@ -70,8 +72,8 @@ namespace RISE
 			// at frame start via SetCameraExposureCompensationEV).
 			// This matches FileRasterizerOutput.cpp:231.  See L2
 			// adversarial review HIGH-2.
-			IRasterImageWriter* pEffective = pWriter;
-			DisplayTransformWriter* pDtw = nullptr;
+			IRasterImageWriter* pEffective = pWriter.get();
+			std::unique_ptr<IRasterImageWriter, decltype(release)> pDtw( nullptr, release );
 			if ( !IsHDRFormat() ) {
 				const Scalar staticEV =
 					static_cast<Scalar>( opts.viewTransform.exposureEV );
@@ -82,11 +84,11 @@ namespace RISE
 					   ( opts.viewTransform.toneCurve != eDisplayTransform_None )
 					|| ( totalEV != Scalar( 0 ) );
 				if ( useDt ) {
-					pDtw = new DisplayTransformWriter(
-						*pWriter, totalEV, opts.viewTransform.toneCurve );
+					pDtw.reset( new DisplayTransformWriter(
+						*pWriter, totalEV, opts.viewTransform.toneCurve ) );
 					GlobalLog()->PrintNew(
-						pDtw, __FILE__, __LINE__, "DisplayTransformWriter" );
-					pEffective = pDtw;
+						pDtw.get(), __FILE__, __LINE__, "DisplayTransformWriter" );
+					pEffective = pDtw.get();
 				}
 			}
 
@@ -98,14 +100,6 @@ namespace RISE
 			// for the same input.
 			store.AsBeautyRasterImage().DumpImage( pEffective );
 
-			// Release wrapper before inner writer (match
-			// FileRasterizerOutput.cpp:268-277 ordering).
-			if ( pDtw ) {
-				GlobalLog()->PrintDelete( pDtw, __FILE__, __LINE__ );
-				safe_release( pDtw );
-			}
-			GlobalLog()->PrintDelete( pWriter, __FILE__, __LINE__ );
-			safe_release( pWriter );
 		}
 
 		// ─────────────────────────────────────────────────────────────

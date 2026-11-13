@@ -17,6 +17,7 @@
 #include "DiskBuffer.h"
 #include "Reference.h"
 #include <functional>
+#include <cstdint>
 
 #ifndef DISKFILEWRITE_BUFFER_
 #define DISKFILEWRITE_BUFFER_
@@ -34,9 +35,13 @@ namespace RISE
 
 			// There is only one constructor
 			DiskFileWriteBuffer( const char * file_name );
+			// Legacy IBuffer queries saturate at UINT_MAX for large files.
 			unsigned int Size() const override;
+			std::uint64_t Size64() const override { return logicalSize; }
+			std::uint64_t getCurPos64() const override { return cursor; }
 			unsigned int getCurPos() const override;
 			bool seek( eSeek type, int amount ) override;
+			bool seek64( eSeek type, std::int64_t amount ) override;
 
 			//
 			// This is for the IWriteBuffer interface
@@ -64,9 +69,15 @@ namespace RISE
 			bool ReadyToWrite() const;
 			// Close the output and report buffered write errors.
 			bool Finish( bool requireOutput = false );
+			enum class StagingPolicy { Required, AllowInPlace };
 			// Publish a completed, nonempty output beside the destination.
 			static bool WriteAtomically( const std::string& path,
 				const std::function<bool(DiskFileWriteBuffer&)>& write );
+			// AllowInPlace restores direct writes when a staging directory cannot
+			// be created or a dangling symlink can be opened through the CRT.
+			// A failed direct write may leave a partial destination.
+			static bool WriteAtomically( const std::string& path,
+				const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy );
 
 
 		protected:
@@ -76,8 +87,8 @@ namespace RISE
 		private:
 			bool hasWritten = false;
 			bool writeFailed = false;
-			unsigned int logicalSize = 0;
-			unsigned int cursor = 0;
+			std::uint64_t logicalSize = 0;
+			std::uint64_t cursor = 0;
 		};
 	}
 }

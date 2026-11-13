@@ -29,6 +29,8 @@
 	#include <ImfIO.h>
 	#include <ImfArray.h>
 	#include <vector>
+	#include <limits>
+	#include <stdexcept>
 #endif
 
 namespace RISE
@@ -48,17 +50,21 @@ namespace RISE
 
 			bool read( char c[/*n*/], int n )
 			{
-				return pBuffer.getBytes( c, n );
+				if( n < 0 || !pBuffer.getBytes( c, static_cast<unsigned int>(n) ) )
+					throw std::runtime_error("EXR input read failed");
+				return true;
 			}
 
 			uint64_t tellg()
 			{
-				return pBuffer.getCurPos();
+				return BufferPosition(pBuffer);
 			}
 
 			void seekg( uint64_t pos )
 			{
-				pBuffer.seek( IBuffer::START, static_cast<int>(pos) );
+				if( pos > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+					!BufferSeek(pBuffer, IBuffer::START, static_cast<std::int64_t>(pos)) )
+					throw std::runtime_error("EXR input seek failed");
 			}
 		};
 	#endif
@@ -82,7 +88,7 @@ namespace RISE
 
 			IReadBuffer&		pReadBuffer;
 			COLOR_SPACE			color_space;
-			unsigned int		buffer_start_pos;
+			std::uint64_t		buffer_start_pos;
 
 		public:
 			EXRReader( IReadBuffer& buffer, const COLOR_SPACE color_space_ );

@@ -910,12 +910,83 @@ void TestHDR10PNGEncoder_L5c()
 	store->release();
 }
 
+static void TestEncoderFailureOwnership()
+{
+#if !defined(NO_EXR_SUPPORT) || !defined(NO_TIFF_SUPPORT)
+	class RejectingBuffer final : public MemoryBuffer {
+	public:
+		bool reject = true;
+		unsigned int budget = 0;
+		unsigned int written = 0;
+		bool setBytes( const void* data, unsigned int count ) override {
+			if( reject ) {
+				if( count > budget ) return false;
+				budget -= count;
+			}
+			written += count;
+			return MemoryBuffer::setBytes(data, count);
+		}
+	};
+	FrameStoreSpec spec;
+	spec.width = spec.height = 1;
+	spec.tileEdge = 8;
+	auto* store = new FrameStore(spec);
+	std::vector<const char*> formats;
+#ifndef NO_EXR_SUPPORT
+	formats.push_back("exr");
+#endif
+#ifndef NO_TIFF_SUPPORT
+	formats.push_back("tiff");
+#endif
+	for( const char* format : formats ) {
+		auto* encoder = FrameEncoderRegistry::Get().ByExtension(format);
+		Check( encoder != nullptr, "failure fixture has its requested encoder" );
+		if( !encoder ) continue;
+		for( unsigned int bpp : { 16U, 32U } ) {
+			EncodeOpts opts;
+			opts.bpp = bpp;
+			auto* complete = new RejectingBuffer();
+			complete->reject = false;
+			encoder->Encode(*store, *complete, opts);
+			const auto lastWrite = complete->written - 1;
+			complete->release();
+			// Budgets inject early failures and failure at the last write.
+			for( unsigned int budget : { 0U, 16U, 64U, lastWrite } ) {
+				auto* buffer = new RejectingBuffer();
+				buffer->budget = budget;
+				bool failed = false;
+				try { encoder->Encode(*store, *buffer, opts); }
+				catch( const std::exception& ) { failed = true; }
+				Check( failed && buffer->refcount() == 1, "failed encoding releases its writer and buffer reference" );
+				buffer->reject = false;
+				buffer->Resize(0, true);
+				encoder->Encode(*store, *buffer, opts);
+				Check( buffer->refcount() == 1 && buffer->getCurPos() > 0, "encoding recovers after a rejected output write" );
+				buffer->seek(IBuffer::START, 0);
+				IRasterImageReader* reader = nullptr;
+				if( std::strcmp(format, "exr") == 0 )
+					RISE_API_CreateEXRReader(&reader, *buffer, opts.colorSpace);
+				else RISE_API_CreateTIFFReader(&reader, *buffer, opts.colorSpace);
+				unsigned int width = 0, height = 0;
+				Check( reader && reader->BeginRead(width, height) && width == 1 && height == 1,
+					"retried encoder output decodes as a complete image" );
+				if( reader ) { reader->EndRead(); reader->release(); }
+				buffer->release();
+			}
+		}
+	}
+
+	store->release();
+#endif
+}
+
 int main()
 {
 	std::cout << "FrameEncoderTest L2 — IFrameEncoder byte-identical regression\n";
 	std::cout << "------------------------------------------------------------\n";
 
 	TestRegistry();
+	TestEncoderFailureOwnership();
 	TestByteIdentityAllFormats();
 	TestHDRFormatsIgnoreViewTransform();
 	TestNon10AlphaPrecision();

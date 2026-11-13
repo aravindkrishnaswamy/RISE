@@ -34,8 +34,7 @@ namespace
 		unsigned short& id, unsigned int& end )
 	{
 		if( start > limit || limit - start < 6 ||
-			start > static_cast<unsigned int>(std::numeric_limits<int>::max()) ||
-			!buffer.seek( IBuffer::START, static_cast<int>(start) ) ) return false;
+			!BufferSeek( buffer, IBuffer::START, start ) ) return false;
 		unsigned char header[6];
 		if( !buffer.getBytes( header, sizeof(header) ) ) return false;
 		id = DecodeLittleEndian<unsigned short, std::uint16_t>( header );
@@ -127,8 +126,13 @@ bool TriangleMeshLoader3DS::LoadTriangleMesh( ITriangleMeshGeometryIndexed* geom
 	meshes.reserve( last - first );
 	for( auto i = first; i < last; ++i ) {
 		auto& mesh = meshes.emplace_back();
-		if( !GetVertices( mesh.vertices, i ) || !GetFaces( mesh.triangles, i ) ) return false;
-		if( mesh.vertices.empty() || mesh.triangles.empty() ) {
+		if( !GetVertices( mesh.vertices, i ) ) return false;
+		if( mesh.vertices.empty() ) {
+			meshes.pop_back();
+			continue;
+		}
+		if( !GetFaces( mesh.triangles, i ) ) return false;
+		if( mesh.triangles.empty() ) {
 			meshes.pop_back();
 			continue;
 		}

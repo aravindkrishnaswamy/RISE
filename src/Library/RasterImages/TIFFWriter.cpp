@@ -14,6 +14,8 @@
 
 #include "pch.h"
 #include "TIFFWriter.h"
+#include <memory>
+#include <stdexcept>
 #include <limits>
 #include <new>
 #include "../Interfaces/ILog.h"
@@ -117,29 +119,32 @@ void TIFFWriter::EndWrite( )
 {
 	if( pBuffer ) {
 
-		TIFF* tiff = TIFFClientOpen( "", "w", (thandle_t)&pWriteBuffer, TIFFReadDummy, TIFFWrite, TIFFSeekWriter, TIFFClose, TIFFSizeWriter, TIFFMapFile, TIFFUnmapFile );
+		std::unique_ptr<TIFF, decltype(&::TIFFClose)> tiff(
+			TIFFClientOpen( "", "w", (thandle_t)&pWriteBuffer, TIFFReadDummy, TIFFWrite,
+				TIFFSeekWriter, TIFFClose, TIFFSizeWriter, TIFFMapFile, TIFFUnmapFile ), &::TIFFClose );
 
 		if( !tiff ) {
-			GlobalLog()->PrintSourceError( "TIFFWriter::EndWrite:: Failed to create TIFF object", __FILE__, __LINE__ );
-			return;
+			throw std::runtime_error("TIFF output header write failed");
 		}
 
-		TIFFSetField( tiff, TIFFTAG_IMAGEWIDTH, bufW );
-		TIFFSetField( tiff, TIFFTAG_IMAGELENGTH, bufH );
-		TIFFSetField( tiff, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT );
-		TIFFSetField( tiff, TIFFTAG_SAMPLESPERPIXEL, 4 );
-		TIFFSetField( tiff, TIFFTAG_BITSPERSAMPLE, 8 );
-		TIFFSetField( tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG );
-		TIFFSetField( tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB );
 		uint16_t alpha = EXTRASAMPLE_UNASSALPHA;
-		TIFFSetField( tiff, TIFFTAG_EXTRASAMPLES, 1, &alpha );
-		TIFFSetField( tiff, TIFFTAG_COMPRESSION, COMPRESSION_ADOBE_DEFLATE );
+		if( !TIFFSetField(tiff.get(), TIFFTAG_IMAGEWIDTH, bufW) ||
+			!TIFFSetField(tiff.get(), TIFFTAG_IMAGELENGTH, bufH) ||
+			!TIFFSetField(tiff.get(), TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT) ||
+			!TIFFSetField(tiff.get(), TIFFTAG_SAMPLESPERPIXEL, 4) ||
+			!TIFFSetField(tiff.get(), TIFFTAG_BITSPERSAMPLE, 8) ||
+			!TIFFSetField(tiff.get(), TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG) ||
+			!TIFFSetField(tiff.get(), TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB) ||
+			!TIFFSetField(tiff.get(), TIFFTAG_EXTRASAMPLES, 1, &alpha) ||
+			!TIFFSetField(tiff.get(), TIFFTAG_COMPRESSION, COMPRESSION_ADOBE_DEFLATE) )
+			throw std::runtime_error("TIFF output metadata setup failed");
 
 		for( unsigned int y=0; y<bufH; y++ ) {
-			TIFFWriteScanline( tiff, &pBuffer[y*bufW*4], y, 0 );
+			if( TIFFWriteScanline(tiff.get(), &pBuffer[static_cast<size_t>(y)*bufW*4], y, 0) < 0 )
+				throw std::runtime_error("TIFF output scanline write failed");
 		}
 
-		TIFFClose( tiff );
+		if( !::TIFFFlush(tiff.get()) ) throw std::runtime_error("TIFF output directory write failed");
 
 	} else {
 		GlobalLog()->PrintSourceError( "TIFFWriter::EndWrite:: no MemBuffer or no local buffer", __FILE__, __LINE__ );

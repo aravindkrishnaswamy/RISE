@@ -18,6 +18,7 @@
 #include "../Interfaces/ILog.h"
 #include <string.h>
 #include <limits>
+#include <algorithm>
 #include <cstdint>
 #ifdef _WIN32
 #include <io.h>
@@ -46,14 +47,13 @@ DiskFileReadBuffer::DiskFileReadBuffer( const char * file_name ) : nSize( 0 )
 	struct stat fileStats{};
 	const bool regular = fstat( fileno(hFile.get()), &fileStats ) == 0 && S_ISREG( fileStats.st_mode );
 #endif
-	if( !regular || fileStats.st_size < 0 ||
-		static_cast<std::uintmax_t>(fileStats.st_size) > std::numeric_limits<unsigned int>::max() ) {
+	if( !regular || fileStats.st_size < 0 ) {
 		hFile.reset();
 		GlobalLog()->PrintEx( eLog_Warning, "DiskFileReadBuffer:: Unsupported file or size '%s'", file_name );
 		return;
 	}
-	nSize = static_cast<unsigned int>(fileStats.st_size);
-	GlobalLog()->PrintEx( eLog_Info, "DiskFileReadBuffer:: Opened file '%s' of size %u bytes for reading", file_name, nSize );
+	nSize = static_cast<std::uint64_t>(fileStats.st_size);
+	GlobalLog()->PrintEx( eLog_Info, "DiskFileReadBuffer:: Opened file '%s' of size %llu bytes for reading", file_name, static_cast<unsigned long long>(nSize) );
 }
 
 DiskFileReadBuffer::~DiskFileReadBuffer() = default;
@@ -68,7 +68,7 @@ char DiskFileReadBuffer::getChar()
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
 	// the buffer end otherwise partial-reads into the local (a
 	// truncated file yields a corrupt value).  Return 0 on exhaustion.
-	if( getCurPos() >= nSize ) {
+	if( getCurPos64() >= nSize ) {
 	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
 	#endif
@@ -90,7 +90,7 @@ unsigned char DiskFileReadBuffer::getUChar()
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a read past
 	// the buffer end otherwise partial-reads into the local (a
 	// truncated file yields a corrupt value).  Return 0 on exhaustion.
-	if( getCurPos() >= nSize ) {
+	if( getCurPos64() >= nSize ) {
 	#ifdef _DEBUG
 		GlobalLog()->PrintSourceError( "DiskFileReadBuffer::getUChar:: Attempted read past end of buffer", __FILE__, __LINE__ );
 	#endif
@@ -107,7 +107,7 @@ short DiskFileReadBuffer::getWord()
 {
 	unsigned char bytes[sizeof(std::uint16_t)];
 	if( !hFile ) return 0;
-	const unsigned int cursor = getCurPos();
+	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
 		return 0;
@@ -121,7 +121,7 @@ unsigned short DiskFileReadBuffer::getUWord()
 {
 	unsigned char bytes[sizeof(std::uint16_t)];
 	if( !hFile ) return 0;
-	const unsigned int cursor = getCurPos();
+	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
 		return 0;
@@ -134,7 +134,7 @@ int DiskFileReadBuffer::getInt()
 {
 	unsigned char bytes[sizeof(std::uint32_t)];
 	if( !hFile ) return 0;
-	const unsigned int cursor = getCurPos();
+	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
 		return 0;
@@ -147,7 +147,7 @@ unsigned int DiskFileReadBuffer::getUInt()
 {
 	unsigned char bytes[sizeof(std::uint32_t)];
 	if( !hFile ) return 0;
-	const unsigned int cursor = getCurPos();
+	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
 		return 0;
@@ -160,7 +160,7 @@ float DiskFileReadBuffer::getFloat()
 {
 	unsigned char bytes[sizeof(std::uint32_t)];
 	if( !hFile ) return 0;
-	const unsigned int cursor = getCurPos();
+	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
 		return 0;
@@ -173,7 +173,7 @@ double DiskFileReadBuffer::getDouble()
 {
 	unsigned char bytes[sizeof(std::uint64_t)];
 	if( !hFile ) return 0;
-	const unsigned int cursor = getCurPos();
+	const auto cursor = getCurPos64();
 	if( cursor > nSize || sizeof(bytes) > nSize - cursor ) {
 		seek( IBuffer::END, 0 );
 		return 0;
@@ -192,9 +192,9 @@ bool DiskFileReadBuffer::getBytes( void* pDest, unsigned int amount )
 	// count: a truncated file must not leave the caller's buffer tail
 	// uninitialised.  getCurPos() <= nSize is the invariant, so the
 	// subtraction cannot underflow.
-	const unsigned int cur    = getCurPos();
-	const unsigned int avail  = ( cur <= nSize ) ? ( nSize - cur ) : 0;
-	const unsigned int toRead = ( amount <= avail ) ? amount : avail;
+	const auto cur = getCurPos64();
+	const auto available = cur <= nSize ? nSize - cur : 0;
+	const auto toRead = static_cast<unsigned int>(std::min<std::uint64_t>(amount, available));
 
 	size_t got = 0;
 	if( toRead ) {
@@ -203,7 +203,8 @@ bool DiskFileReadBuffer::getBytes( void* pDest, unsigned int amount )
 	if( got < amount ) {
 		// Short read (truncation / EOF): zero the tail and signal failure.
 		memset( static_cast<char*>(pDest) + got, 0, amount - got );
-		GlobalLog()->PrintEx( eLog_Error, "DiskFileReadBuffer::getBytes:: short read (want %u at cursor %u of %u, got %u); rest zeroed", amount, cur, nSize, static_cast<unsigned>(got) );
+		GlobalLog()->PrintEx( eLog_Error, "DiskFileReadBuffer::getBytes:: short read (want %u at cursor %llu of %llu, got %u); rest zeroed", amount,
+			static_cast<unsigned long long>(cur), static_cast<unsigned long long>(nSize), static_cast<unsigned>(got) );
 		return false;
 	}
 	return true;
@@ -216,7 +217,7 @@ int DiskFileReadBuffer::getLine( char* pDest, unsigned int max )
 	}
 
 	unsigned int numRead = 0;
-	unsigned int cursor = getCurPos();
+	auto cursor = getCurPos64();
 	while( cursor < nSize && numRead < max ) {
 		const int byte = fgetc( hFile.get() );
 		if( byte == EOF ) break;

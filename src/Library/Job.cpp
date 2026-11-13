@@ -11318,13 +11318,11 @@ namespace
 {
 	bool SavePhotonMap( const ISerializable& map, const char* filename )
 	{
-		const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
-		std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer( new DiskFileWriteBuffer( filename ), release );
-		if( !buffer->ReadyToWrite() ) {
-			return false;
-		}
-		map.Serialize( *buffer );
-		return buffer->Finish();
+		if( !filename ) return false;
+		return DiskFileWriteBuffer::WriteAtomically( filename, [&map]( DiskFileWriteBuffer& buffer ) {
+			map.Serialize( buffer );
+			return true;
+		} );
 	}
 }
 

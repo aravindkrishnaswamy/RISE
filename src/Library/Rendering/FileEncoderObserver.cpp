@@ -82,21 +82,21 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 	}
 	std::string filename = pattern_ + suffix + frameNumber + "." + ext;
 
-	// Stage each frame beside its destination so an encoder error cannot
-	// truncate an existing image. Keep the emergency path for an unavailable
-	// destination, including a failure to publish the staged file.
+	// Stage each frame beside its destination. If staging is unavailable,
+	// allow the historical direct-write path for writable destinations.
+	// Failed direct writes and publication failures use the emergency path.
 	const auto encode = [&]( DiskFileWriteBuffer& buffer ) {
 		encoder_->Encode( *store_, buffer, opts_ );
 		return true;
 	};
-	if( !DiskFileWriteBuffer::WriteAtomically( filename, encode ) ) {
+	if( !DiskFileWriteBuffer::WriteAtomically( filename, encode, DiskFileWriteBuffer::StagingPolicy::AllowInPlace ) ) {
 		const std::string emergency = "fro_temp_" +
 			std::to_string( reinterpret_cast<uintptr_t>( this ) ) + suffix +
 			(bMultiple_ ? "_" : "") + frameNumber + "." + ext;
 		GlobalLog()->PrintEx( eLog_Warning,
 			"Could not publish '%s', trying emergency file '%s'",
 			filename.c_str(), emergency.c_str() );
-		if( !DiskFileWriteBuffer::WriteAtomically( emergency, encode ) ) {
+		if( !DiskFileWriteBuffer::WriteAtomically( emergency, encode, DiskFileWriteBuffer::StagingPolicy::AllowInPlace ) ) {
 			GlobalLog()->PrintEasyError( "FileEncoderObserver: Could not write the emergency file" );
 			return;
 		}

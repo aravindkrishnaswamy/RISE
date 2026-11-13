@@ -28,6 +28,7 @@
 #include "DiskFileWriteBuffer.h"
 #include "LittleEndian.h"
 #include <cstdint>
+#include <exception>
 #include "../Interfaces/ILog.h"
 #include "MediaPathLocator.h"
 
@@ -109,12 +110,12 @@ bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
 		writeFailed = true;
 		return false;
 	}
-	if( amount > std::numeric_limits<unsigned int>::max() - cursor ) {
+	if( amount > std::numeric_limits<std::uint64_t>::max() - cursor ) {
 		writeFailed = true;
 		return false;
 	}
 	const size_t written = fwrite( pSource, 1, amount, hFile.get() );
-	cursor += static_cast<unsigned int>(written);
+	cursor += written;
 	logicalSize = std::max( logicalSize, cursor );
 	hasWritten |= written != 0;
 	writeFailed |= written != amount;
@@ -123,20 +124,32 @@ bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
 
 unsigned int DiskFileWriteBuffer::Size() const
 {
-	return logicalSize;
+	return static_cast<unsigned int>(std::min<std::uint64_t>(logicalSize, std::numeric_limits<unsigned int>::max()));
 }
 
 unsigned int DiskFileWriteBuffer::getCurPos() const
 {
-	return cursor;
+	return static_cast<unsigned int>(std::min<std::uint64_t>(cursor, std::numeric_limits<unsigned int>::max()));
 }
 
 bool DiskFileWriteBuffer::seek( eSeek type, int amount )
 {
-	const bool moved = DiskBuffer::seek( type, amount );
-	writeFailed |= !moved;
-	if( moved ) cursor = DiskBuffer::getCurPos();
-	return moved;
+	return seek64( type, amount );
+}
+
+bool DiskFileWriteBuffer::seek64( eSeek type, std::int64_t amount )
+{
+	if( !DiskBuffer::seek64( type, amount ) ) {
+		writeFailed = true;
+		return false;
+	}
+	const auto position = DiskBuffer::getCurPos64();
+	if( position == std::numeric_limits<std::uint64_t>::max() ) {
+		writeFailed = true;
+		return false;
+	}
+	cursor = static_cast<std::uint64_t>(position);
+	return true;
 }
 
 void DiskFileWriteBuffer::Clear( )
@@ -179,7 +192,27 @@ bool DiskFileWriteBuffer::Finish( bool requireOutput )
 bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	const std::function<bool(DiskFileWriteBuffer&)>& write )
 {
+	return WriteAtomically( path, write, StagingPolicy::Required );
+}
+
+bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
+	const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy )
+{
 	namespace fs = std::filesystem;
+	const auto writeFile = [&]( const fs::path& file ) {
+		const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
+		std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer(
+			new DiskFileWriteBuffer( file.string().c_str() ), release );
+		GlobalLog()->PrintNew( buffer.get(), __FILE__, __LINE__, "disk file write buffer" );
+		if( !buffer->ReadyToWrite() ) return false;
+		bool encoded = false;
+		try {
+			encoded = write( *buffer );
+		} catch( const std::exception& failure ) {
+			GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Encoding `%s` failed: %s", file.string().c_str(), failure.what() );
+		}
+		return buffer->Finish( true ) && encoded;
+	};
 	static std::atomic<unsigned long long> nextId{ 0 };
 #ifdef _WIN32
 	const auto pid = ::_getpid();
@@ -192,7 +225,10 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	if( error && error != std::errc::no_such_file_or_directory ) return false;
 	if( fs::is_symlink( link ) ) {
 		target = fs::canonical( target, error );
-		if( error ) return false;
+		if( error ) {
+			return error == std::errc::no_such_file_or_directory &&
+				policy == StagingPolicy::AllowInPlace && writeFile( fs::path(path) );
+		}
 	}
 	const auto previous = fs::status( target, error );
 	if( error && error != std::errc::no_such_file_or_directory ) return false;
@@ -212,7 +248,7 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		directory.clear();
 		if( error && error != std::errc::file_exists ) break;
 	}
-	if( directory.empty() ) return false;
+	if( directory.empty() ) return policy == StagingPolicy::AllowInPlace && writeFile( target );
 
 	const fs::path staging = directory / "output";
 	struct Cleanup {
@@ -224,12 +260,7 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 			fs::remove( directory, ignored );
 		}
 	} cleanup{ staging, directory };
-	const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
-	std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer(
-		new DiskFileWriteBuffer( staging.string().c_str() ), release );
-	if( !buffer->ReadyToWrite() ) return false;
-	const bool encoded = write( *buffer );
-	if( !buffer->Finish( true ) || !encoded ) return false;
+	if( !writeFile( staging ) ) return false;
 	if( replacing ) {
 		fs::permissions( staging, previous.permissions(), error );
 		if( error ) return false;

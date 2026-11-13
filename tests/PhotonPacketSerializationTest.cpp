@@ -5,9 +5,14 @@
 #include <filesystem>
 #include <type_traits>
 #include <limits>
+#include <fstream>
+#include <iterator>
+#include "TestTempDir.h"
 #include "../src/Library/Job.h"
 #include "../src/Library/Scene.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/DiskFileReadBuffer.h"
+#include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/PhotonMapping/GlobalPelPhotonMap.h"
 #include "../src/Library/PhotonMapping/CausticPelPhotonMap.h"
 #include "../src/Library/PhotonMapping/GlobalSpectralPhotonMap.h"
@@ -58,6 +63,51 @@ void TestSaveFailure()
 #endif
  job->release();
 }
+void TestStagedSave()
+{
+ class FailingMap final : public GlobalPelPhotonMap {
+ public:
+  FailingMap() : GlobalPelPhotonMap(0, nullptr) {}
+  void Serialize(IWriteBuffer& buffer) const override {
+   buffer.setBytes("partial", 7);
+   buffer.setBytes(nullptr, 1);
+  }
+ };
+ const auto path = RISE::TestSupport::ScratchPath("rise_failed_photon_" +
+  std::to_string(RISE::TestSupport::CurrentProcessId()));
+ std::ofstream(path) << "previous photon map";
+ auto* job = new Job();
+ auto* failing = new FailingMap();
+ job->GetScene()->SetGlobalPelMap(failing);
+ failing->release();
+ Check(!job->SaveGlobalPelPhotonmap(path.c_str()), "failed photon serialization reports failure");
+ std::ifstream file(path);
+ const std::string actual(std::istreambuf_iterator<char>(file), {});
+ Check(actual == "previous photon map", "failed Job photon save preserves the previous file");
+ file.close();
+ job->release();
+ std::filesystem::remove(path);
+#ifndef _WIN32
+ class LargeMap final : public GlobalPelPhotonMap {
+ public:
+  LargeMap() : GlobalPelPhotonMap(0, nullptr) {}
+  void Serialize(IWriteBuffer& buffer) const override {
+   if(buffer.seek(IBuffer::START, std::numeric_limits<int>::max()) &&
+      buffer.seek(IBuffer::CUR, std::numeric_limits<int>::max())) buffer.setUInt(0x12345678);
+  }
+ };
+ job = new Job();
+ auto* large = new LargeMap();
+ job->GetScene()->SetGlobalPelMap(large);
+ large->release();
+ Check(job->SaveGlobalPelPhotonmap(path.c_str()) && std::filesystem::file_size(path) ==
+  static_cast<std::uint64_t>(std::numeric_limits<unsigned int>::max()) + 3,
+  "Job staged photon save supports output beyond 4 GiB");
+ job->release();
+ std::filesystem::remove(path);
+#endif
+}
+
 template<class Base>void Run(const char* name){
  std::printf("FAMILY %s\n",name);Probe<Base> source(3);const Vector3 wi(.3,.4,std::sqrt(.75));
  if constexpr(Spectral<Base>())Check(source.ConfigureWavelengthSampling(400,700,160),"source configured");
@@ -114,7 +164,30 @@ template<class Base>void Run(const char* name){
  auto* job=new Job();auto* installed=new Base(0,nullptr);Install<Base>(*job,installed);
  Check(!Load<Base>(*job,path.string().c_str())&&Installed<Base>(*job)==installed,"legacy Job load fails and retains installed map");
  auto* valid=new MemoryBuffer();source.Serialize(*valid);Check(valid->DumpToFileToCursor(path.string().c_str()),"exact fixture written");Check(Load<Base>(*job,path.string().c_str())&&Installed<Base>(*job)!=installed&&Installed<Base>(*job)->NumStored()==1,"exact Job load installs valid map");
+#ifndef _WIN32
+ // Read a real packet whose header/records cross 4 GiB in a sparse file.
+ auto* disk = new DiskFileWriteBuffer(path.string().c_str());
+ const auto start = static_cast<std::int64_t>(std::numeric_limits<unsigned int>::max()) - 50;
+ Check(disk->seek64(IBuffer::START, start) && disk->setBytes(valid->Pointer(), valid->getCurPos()) && disk->Finish(),
+  "write a valid packet across the large-file boundary");
+ disk->release();
+ auto* reader = new DiskFileReadBuffer(path.string().c_str());
+ Check(reader->seek64(IBuffer::START, start) && BufferBytesAvailable(*reader) == valid->getCurPos(),
+  "large reader reports the exact remaining packet length");
+ Probe<Base> across(0);
+ Check(across.DeserializeChecked(*reader) && across.NumStored()==1 && reader->EndOfBuffer(),
+  "real packet deserialization crosses 4 GiB");
+ reader->release();
+ // A normal Job load also accepts a file whose sparse trailer exceeds 4 GiB.
+ disk = new DiskFileWriteBuffer(path.string().c_str());
+ Check(disk->setBytes(valid->Pointer(), valid->getCurPos()) && disk->seek64(IBuffer::START, start + 2000) &&
+  disk->setChar(0) && disk->Finish(), "write a valid large-file Job fixture");
+ disk->release();
+ Check(Load<Base>(*job,path.string().c_str()) && Installed<Base>(*job)->NumStored()==1,
+  "normal Job photon loading accepts a file larger than 4 GiB");
+#endif
+
  std::filesystem::remove(path);valid->release();job->release();installed->release();legacy->release();buffer->release();
 }
 }
-int main(){Run<GlobalPelPhotonMap>("globalPel");Run<CausticPelPhotonMap>("causticPel");Run<GlobalSpectralPhotonMap>("globalNM");Run<CausticSpectralPhotonMap>("causticNM");TestSaveFailure();std::printf("PhotonPacketSerializationTest checks=%u failures=%u\n",checks,failures);return failures?1:0;}
+int main(){Run<GlobalPelPhotonMap>("globalPel");Run<CausticPelPhotonMap>("causticPel");Run<GlobalSpectralPhotonMap>("globalNM");Run<CausticSpectralPhotonMap>("causticNM");TestSaveFailure();TestStagedSave();std::printf("PhotonPacketSerializationTest checks=%u failures=%u\n",checks,failures);return failures?1:0;}

@@ -35,7 +35,7 @@ EXRReader::EXRReader( IReadBuffer& buffer, const COLOR_SPACE color_space_ ) :
   color_space( color_space_ )
 {
 	pReadBuffer.addref();
-	buffer_start_pos = pReadBuffer.getCurPos();
+	buffer_start_pos = BufferPosition(pReadBuffer);
 #ifndef NO_EXR_SUPPORT
 	img_width = 0;
 	img_height = 0;
@@ -50,7 +50,8 @@ EXRReader::~EXRReader( )
 bool EXRReader::BeginRead( unsigned int& width, unsigned int& height )
 {
 #ifndef NO_EXR_SUPPORT
-	pReadBuffer.seek( IBuffer::START, buffer_start_pos );
+	if( buffer_start_pos > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+		!BufferSeek(pReadBuffer, IBuffer::START, static_cast<std::int64_t>(buffer_start_pos)) ) return false;
 
 	IStreamWrapper inbuf( pReadBuffer );
 	// General InputFile + FLOAT framebuffer slices (NOT RgbaInputFile,

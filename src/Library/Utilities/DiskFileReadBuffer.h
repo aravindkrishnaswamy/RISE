@@ -33,7 +33,8 @@ namespace RISE
 
 			// This is the only constructor
 			DiskFileReadBuffer( const char * file_name );
-			unsigned int Size() const override { return nSize; }
+			unsigned int Size() const override { return DiskBuffer::Size(); }
+			std::uint64_t Size64() const override { return nSize; }
 
 			//
 			// This is for the IReadBuffer interface
@@ -59,7 +60,7 @@ namespace RISE
 			// Default destructor
 			virtual ~DiskFileReadBuffer( );
 
-			unsigned int	nSize;		///< Size of the file we are reading from
+			std::uint64_t	nSize;		///< Size of the file we are reading from
 		};
 	}
 }

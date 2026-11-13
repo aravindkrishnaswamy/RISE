@@ -49,6 +49,17 @@
 #include "../src/Library/Geometry/TriangleMeshLoader3DS.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "TestTempDir.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include <iterator>
+#include <stdexcept>
+#ifndef NO_TIFF_SUPPORT
+#include <tiffio.h>
+#include "../src/Library/RasterImages/TIFFCommon.h"
+#endif
+#ifndef NO_EXR_SUPPORT
+#include "../src/Library/RasterImages/EXRReader.h"
+#include "../src/Library/RasterImages/EXRWriter.h"
+#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -552,7 +563,7 @@ namespace
 		return bytes;
 	}
 
-	Bytes3DS Make3DSObject( bool emptyVertices, bool emptyFaces, bool invalidIndex = false )
+	Bytes3DS Make3DSObject( bool emptyVertices, bool emptyFaces, bool invalidIndex = false, bool omitFaces = false )
 	{
 		Bytes3DS vertices;
 		Append3DSWord( vertices, emptyVertices ? 0 : 3 );
@@ -569,7 +580,7 @@ namespace
 			for( unsigned int value : { 0U, 1U, invalidIndex ? 3U : 2U, 0U } ) Append3DSWord( faces, value );
 		}
 		Bytes3DS mesh = Make3DSChunk( 0x4110, vertices );
-		Append3DSBytes( mesh, Make3DSChunk( 0x4120, faces ) );
+		if( !omitFaces ) Append3DSBytes( mesh, Make3DSChunk( 0x4120, faces ) );
 		Bytes3DS object = { 'm', 0 };
 		Append3DSBytes( object, Make3DSChunk( 0x4100, mesh ) );
 		return Make3DSChunk( 0x4000, object );
@@ -614,6 +625,9 @@ static void Test3DSCompatibility()
 			}
 		}
 	}
+	Bytes3DS emptyWithoutFaces = Make3DSObject(true, true, false, true);
+	Append3DSBytes( emptyWithoutFaces, Make3DSObject(false, false) );
+	Check3DSLoad( Make3DSChunk(0x4d4d, Make3DSChunk(0x3d3d, emptyWithoutFaces)), -1, true, 3 );
 	const auto edit = Make3DSChunk( 0x3d3d, Make3DSObject( false, false ) );
 	auto truncatedTail = Make3DSChunk( 0x4d4d, edit );
 	truncatedTail[2] += 100;
@@ -625,8 +639,201 @@ static void Test3DSCompatibility()
 		Make3DSObject(false, false, true) ) ), -1, false, 0 );
 }
 
+static void TestLargeDiskWrites()
+{
+#ifndef _WIN32
+	// POSIX filesystems leave unwritten gaps sparse, keeping this fixture small.
+	const auto path = RISE::TestSupport::ScratchPath( "rise_large_buffer_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) );
+	auto* buffer = new DiskFileWriteBuffer( path.c_str() );
+	const auto boundary = static_cast<std::uint64_t>(std::numeric_limits<unsigned int>::max());
+	Check( buffer->seek(IBuffer::START, std::numeric_limits<int>::max()) &&
+		buffer->seek(IBuffer::CUR, std::numeric_limits<int>::max()) && buffer->setUInt(0x12345678),
+		"disk scalar write crosses the 4 GiB boundary" );
+	Check( buffer->getCurPos64() == boundary + 3 && buffer->Size64() == boundary + 3 &&
+		buffer->getCurPos() == std::numeric_limits<unsigned int>::max() &&
+		buffer->Size() == std::numeric_limits<unsigned int>::max(),
+		"large disk position and size retain 64 bits while legacy queries saturate" );
+	Check( buffer->seek(IBuffer::CUR, -2) && buffer->getCurPos64() == boundary + 1 &&
+		buffer->HowFarToEnd() == 2 && !buffer->EndOfBuffer() && buffer->setUWord(0xabcd) && buffer->Finish(),
+		"large backward seek and overwrite preserve the 64-bit cursor" );
+	buffer->release();
+	Check( std::filesystem::file_size(path) == boundary + 3, "large disk output has the complete sparse-file length" );
+	std::ifstream file( path, std::ios::binary );
+	file.seekg( static_cast<std::streamoff>(boundary - 1) );
+	unsigned char bytes[4] = {};
+	file.read( reinterpret_cast<char*>(bytes), sizeof(bytes) );
+	const unsigned char expected[] = { 0x78, 0x56, 0xcd, 0xab };
+	Check( file && std::memcmp(bytes, expected, sizeof(bytes)) == 0,
+		"bytes on both sides of 4 GiB match independent little-endian expectations" );
+	file.close();
+	auto* reader = new DiskFileReadBuffer( path.c_str() );
+	Check( reader->Size64() == boundary + 3 && reader->seek64(IBuffer::START, boundary - 1) &&
+		reader->getUInt() == 0xabcd5678 && reader->EndOfBuffer(),
+		"disk scalar read crosses 4 GiB and reaches the actual end" );
+	reader->release();
+	std::filesystem::remove( path );
+#endif
+}
+
+static void TestLargeCodecOffsets()
+{
+#if !defined(_WIN32) && (!defined(NO_EXR_SUPPORT) || !defined(NO_TIFF_SUPPORT))
+	const auto path = RISE::TestSupport::ScratchPath( "rise_codec_offsets_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) );
+	const std::uint64_t offset = static_cast<std::uint64_t>(std::numeric_limits<unsigned int>::max()) + 16;
+	auto* writer = new DiskFileWriteBuffer(path.c_str());
+#ifndef NO_EXR_SUPPORT
+	OStreamWrapper output(*writer);
+	output.seekp(offset);
+	output.write("EXR!", 4);
+	Check( output.tellp() == offset + 4, "EXR output wrapper preserves a large offset" );
+#endif
+#ifndef NO_TIFF_SUPPORT
+	auto* writeInterface = static_cast<IWriteBuffer*>(writer);
+	char markerWrite = 'T';
+	Check( TIFFSeekWriter(writeInterface, offset + 32, SEEK_SET) == offset + 32 &&
+		TIFFWrite(writeInterface, &markerWrite, 1) == 1 &&
+		TIFFSizeWriter(writeInterface) == offset + 33, "TIFF output callbacks preserve large offsets and sizes" );
+#endif
+	Check( writer->Finish(), "large codec callback file closes successfully" );
+	writer->release();
+	auto* reader = new DiskFileReadBuffer(path.c_str());
+#ifndef NO_EXR_SUPPORT
+	IStreamWrapper input(*reader);
+	input.seekg(offset);
+	char marker[4]{};
+	Check( input.read(marker, 4) && std::memcmp(marker, "EXR!", 4) == 0 && input.tellg() == offset + 4,
+		"EXR input wrapper reads at the complete large offset" );
+#endif
+#ifndef NO_TIFF_SUPPORT
+	auto* readInterface = static_cast<IReadBuffer*>(reader);
+	char markerTIFF = 0;
+	Check( TIFFSeekReader(readInterface, offset + 32, SEEK_SET) == offset + 32 &&
+		TIFFRead(readInterface, &markerTIFF, 1) == 1 && markerTIFF == 'T' &&
+		TIFFSizeReader(readInterface) == offset + 33, "TIFF input callbacks preserve large offsets and sizes" );
+	Check( TIFFSeekReader(readInterface, static_cast<toff_t>(-1), SEEK_END) == offset + 32 &&
+		TIFFRead(readInterface, &markerTIFF, 1) == 1 && markerTIFF == 'T' &&
+		TIFFSeekReader(readInterface, static_cast<toff_t>(-1), SEEK_CUR) == offset + 32,
+		"TIFF callbacks handle negative relative offsets without losing the large base" );
+#endif
+	reader->release();
+	std::filesystem::remove(path);
+#endif
+#ifndef NO_EXR_SUPPORT
+	char byte = 'x';
+	auto* borrowed = new MemoryBuffer(&byte, 1, false);
+	OStreamWrapper outputSmall(*borrowed);
+	bool refused = false;
+	try { outputSmall.write("xx", 2); }
+	catch( const std::exception& ) { refused = true; }
+	Check( refused && byte == 'x', "EXR output wrapper reports a failed write without overrunning borrowed storage" );
+	refused = false;
+	try { outputSmall.seekp(static_cast<std::uint64_t>(std::numeric_limits<int>::max()) + 1); }
+	catch( const std::exception& ) { refused = true; }
+	Check( refused && borrowed->getCurPos() == 0, "EXR output wrapper reports an unrepresentable legacy-buffer seek" );
+	borrowed->release();
+#endif
+#ifndef NO_TIFF_SUPPORT
+	class RejectingSeekBuffer final : public MemoryBuffer {
+	public:
+		unsigned int writes = 0;
+		RejectingSeekBuffer() : MemoryBuffer(1) {}
+		bool setBytes(const void*, unsigned int) override { ++writes; return false; }
+	};
+	auto* limited = new RejectingSeekBuffer();
+	Check( TIFFSeekWriter(static_cast<IWriteBuffer*>(limited),
+		static_cast<toff_t>(std::numeric_limits<int>::max()) + 1, SEEK_SET) == static_cast<toff_t>(-1) &&
+		limited->writes == 0 && limited->getCurPos() == 0,
+		"TIFF refuses an unsupported legacy-buffer seek before filling any gap" );
+	limited->release();
+#endif
+}
+
+static void TestStagedOutputFallback()
+{
+	namespace fs = std::filesystem;
+	const fs::path root = RISE::TestSupport::ScratchTestRoot( "rise_staged_output_" );
+	fs::create_directory( root );
+	const auto path = root / "image.bin";
+	const auto read = []( const fs::path& input ) {
+		std::ifstream file( input, std::ios::binary );
+		return std::string( std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() );
+	};
+	std::ofstream( path ) << "original";
+	Check( !DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer ) {
+		buffer.setBytes("partial", 7);
+		return buffer.setBytes(nullptr, 1);
+	}) && read(path) == "original", "failed staged write preserves the previous file" );
+	Check( !DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer ) -> bool {
+		buffer.setBytes("partial", 7);
+		throw std::runtime_error("encoder fixture failure");
+	}) && read(path) == "original", "encoder exceptions preserve the previous file and report failure" );
+	Check( !DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& ) { return true; }) &&
+		read(path) == "original", "empty staged output preserves the previous file" );
+	Check( std::distance(fs::directory_iterator(root), fs::directory_iterator()) == 1,
+		"failed staged write removes its temporary file and directory" );
+	Check( DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer ) {
+		return buffer.setBytes("complete", 8);
+	}) && read(path) == "complete", "successful staged write replaces the file" );
+#ifndef _WIN32
+	fs::permissions( root, fs::perms::owner_read | fs::perms::owner_exec );
+	std::error_code permissionError;
+	const bool restricted = !fs::create_directory( root / "permission-probe", permissionError );
+	if( restricted ) {
+		bool invoked = false;
+		const bool refused = !DiskFileWriteBuffer::WriteAtomically(path.string(), [&]( DiskFileWriteBuffer& ) {
+			invoked = true;
+			return true;
+		});
+		const bool fallback = DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer ) {
+			return buffer.setBytes("direct", 6);
+		}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace);
+		fs::permissions( root, fs::perms::owner_all );
+		Check( refused && !invoked && fallback && read(path) == "direct",
+			"restricted parent preserves required staging and permits explicit in-place output" );
+	} else {
+		fs::permissions( root, fs::perms::owner_all );
+		fs::remove( root / "permission-probe" );
+		std::cout << "SKIP: process can create files in the restricted staging parent" << std::endl;
+	}
+	const auto target = root / "created.bin";
+	const auto link = root / "broken-link.bin";
+	fs::create_symlink( target.filename(), link );
+	Check( DiskFileWriteBuffer::WriteAtomically(link.string(), []( DiskFileWriteBuffer& buffer ) {
+		return buffer.setBytes("linked", 6);
+	}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace) && fs::is_symlink(link) && read(target) == "linked",
+		"in-place fallback writes through a dangling symlink and preserves the link" );
+#endif
+	fs::remove_all( root );
+}
+
+static const std::string& LateLogPath()
+{
+	static const auto path = RISE::TestSupport::ScratchPath( "rise_late_log_" +
+		std::to_string(RISE::TestSupport::CurrentProcessId()) + std::string(80, 'l') + ".txt" );
+	return path;
+}
+
+static void CheckLateLogRecreation()
+{
+	GlobalLogCleanupAndShutdown();
+	GlobalLog()->Print( eLog_Event, "late static-destruction log fixture" );
+	GlobalLogCleanupAndShutdown();
+	std::ifstream file( LateLogPath() );
+	const std::string contents( std::istreambuf_iterator<char>(file), {} );
+	if( contents.find("late static-destruction log fixture") == std::string::npos ) std::abort();
+	file.close();
+	std::remove( LateLogPath().c_str() );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
+	// Register before constructing the logger's filename storage. Its former
+	// static-string destructor ran before this callback, which ASan detects.
+	LateLogPath();
+	std::atexit( CheckLateLogRecreation );
+	SetGlobalLogFileName( LateLogPath().c_str() );
 	std::cout << "VolumeShortReadTest — missing/truncated binary reads zero, never uninitialised"
 		<< std::endl;
 
@@ -641,6 +848,9 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestLittleEndianScalars();
 	TestMediaSearchRoots();
 	Test3DSCompatibility();
+	TestLargeDiskWrites();
+	TestLargeCodecOffsets();
+	TestStagedOutputFallback();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

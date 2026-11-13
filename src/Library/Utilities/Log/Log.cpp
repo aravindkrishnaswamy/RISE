@@ -169,8 +169,9 @@ namespace RISE
 	static Log*	global_log = 0;
 	static std::string& GlobalLogFileName()
 	{
-		static std::string filename = "RISELog.txt";
-		return filename;
+		// Logging can be recreated by another static object's destructor.
+		static auto* filename = new std::string( "RISELog.txt" );
+		return *filename;
 	}
 
 	void CreateGlobalLog( )
