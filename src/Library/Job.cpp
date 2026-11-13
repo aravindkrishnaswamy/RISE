@@ -7278,6 +7278,7 @@ bool Job::AddPiecewiseLinearFunction2D(
 		IFunction1D* pFunc = pFunc1DManager->GetItem( y[i] );
 		if( !pFunc ) {
 			GlobalLog()->PrintEx( eLog_Error, "Job::AddPiecewiseLinearFunction2D:: Failed to find function '%s'", y[i] );
+			safe_release( pFunction );
 			return false;
 		}
 		pFunction->addControlPoint( x[i], pFunc );

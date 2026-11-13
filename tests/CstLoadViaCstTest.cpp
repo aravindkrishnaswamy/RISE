@@ -32,6 +32,8 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include "../src/Library/Interfaces/IShaderManager.h"
+#include "../src/Library/Utilities/PiecewiseLinearFunction.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -220,9 +222,16 @@ int main()
 		const std::string header = "RISE ASCII SCENE 7\n";
 		const std::string shader = "advanced_shader\n{\nname tuple_shader\n";
 		const std::string sphere = "sphere_geometry\n{\nname tuple_sphere\nradius 1\n}\n";
-		Case( "advanced shader shorthand", scenePath.c_str(),
-			header + shader + "shaderop DefaultEmission\n}\n" + sphere );
-		Case( "advanced shader with no entries", scenePath.c_str(), header + shader + "}\n" + sphere );
+		for( const char* entries : { "shaderop DefaultEmission\n", "" } ) {
+			Check( WriteTmp( scenePath.c_str(), header + shader + entries + "}\n" + sphere ),
+				"write advanced shader tuple fixture" );
+			auto* job = new Job();
+			Check( job->LoadAsciiSceneViaCst( scenePath.c_str() ) &&
+				job->GetShaders()->GetItem( "tuple_shader" ) != nullptr,
+				*entries ? "advanced shader shorthand registers" : "empty advanced shader registers" );
+			job->release();
+			std::remove( scenePath.c_str() );
+		}
 		RefuseCase( "invalid optional depth", scenePath.c_str(),
 			header + shader + "shaderop DefaultEmission invalid\n}\n" );
 		RefuseCase( "long shader-op name", scenePath.c_str(),
@@ -234,7 +243,47 @@ int main()
 		Case( "valid RAW triangle", scenePath.c_str(), rawScene );
 		Check( WriteTmp( rawPath.c_str(), "tri 0 0 0 1 0 0 0 1 0\ntri 0 0\n" ), "write incomplete RAW fixture" );
 		RefuseCase( "incomplete RAW record after a valid triangle", scenePath.c_str(), rawScene );
+		const std::string raw2Scene = header + "rawmesh2_geometry\n{\nname raw2_records\nfile " + rawPath + "\n}\n";
+		const std::string raw2Vertices =
+			"3 1\nv 0 0 0 0 0 1 0 0\nv 1 0 0 0 0 1 1 0\nv 0 1 0 0 0 1 0 1\n";
+		Check( WriteTmp( rawPath.c_str(), raw2Vertices + "t 0 1 2\n" ), "write valid RAW2 fixture" );
+		Case( "valid RAW2 triangle", scenePath.c_str(), raw2Scene );
+		Check( WriteTmp( rawPath.c_str(), raw2Vertices + "t 0 1\n" ), "write incomplete RAW2 fixture" );
+		RefuseCase( "incomplete RAW2 face", scenePath.c_str(), raw2Scene );
+		Check( WriteTmp( rawPath.c_str(), "" ), "write empty RAW2 fixture" );
+		RefuseCase( "missing RAW2 header", scenePath.c_str(), raw2Scene );
 		std::remove( rawPath.c_str() );
+	}
+
+	{
+		auto* row = new PiecewiseLinearFunction1D();
+		{
+			PiecewiseLinearFunction2D grid;
+			grid.addControlPoint( 0, row );
+			grid.addControlPoint( 1, row );
+			Check( row->refcount() == 3, "2D function retains each row occurrence" );
+			PiecewiseLinearFunction2D copy( grid );
+			Check( row->refcount() == 5, "copied 2D function owns its row references" );
+			grid.clearControlPoints();
+			Check( row->refcount() == 3, "clearing 2D function releases only its own row references" );
+		}
+		Check( row->refcount() == 1, "destroying the 2D function releases its remaining row references" );
+		row->release();
+
+		IShaderOp* op = nullptr;
+		if( RISE_API_CreateEmissionShaderOp( &op ) && op ) {
+			IShader* standard = nullptr;
+			IShader* advanced = nullptr;
+			const bool madeStandard = RISE_API_CreateStandardShader( &standard, { op } );
+			const bool madeAdvanced = RISE_API_CreateAdvancedShader( &advanced, { op }, { 0 }, { 1 }, "+" );
+			Check( madeStandard && madeAdvanced && op->refcount() == 3, "both shader chains retain their shader op" );
+			safe_release( standard );
+			safe_release( advanced );
+			Check( op->refcount() == 1, "destroying shader chains releases their shader-op references" );
+			op->release();
+		} else {
+			Check( false, "create shader op for shader ownership test" );
+		}
 	}
 
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
