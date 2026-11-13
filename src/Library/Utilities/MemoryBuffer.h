@@ -142,7 +142,7 @@ namespace RISE
 			bool				bIOwnMemory;	///< Does the object own its pBuffer its using?
 		private:
 			void ReplaceStorage( std::unique_ptr<char[]> replacement, unsigned int capacity );
-			unsigned int GrowthCapacity( unsigned int required ) const;
+			std::unique_ptr<char[]> AllocateGrowth( unsigned int required, unsigned int& allocated ) const;
 
 			std::unique_ptr<char[]> ownedStorage;
 			unsigned int capacity = 0;

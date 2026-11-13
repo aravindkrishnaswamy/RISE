@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <new>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -152,11 +153,17 @@ void MemoryBuffer::ReplaceStorage( std::unique_ptr<char[]> replacement, unsigned
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 }
 
-unsigned int MemoryBuffer::GrowthCapacity( unsigned int required ) const
+std::unique_ptr<char[]> MemoryBuffer::AllocateGrowth( unsigned int required, unsigned int& allocated ) const
 {
 	const auto grown = std::uint64_t(capacity) + std::max( 1U, capacity / 2 );
-	return static_cast<unsigned int>(std::max( std::uint64_t(required),
+	allocated = static_cast<unsigned int>(std::max( std::uint64_t(required),
 		std::min( grown, std::uint64_t(std::numeric_limits<unsigned int>::max()) ) ));
+	if( allocated > required ) {
+		std::unique_ptr<char[]> spare( new (std::nothrow) char[allocated] );
+		if( spare ) return spare;
+	}
+	allocated = required;
+	return std::unique_ptr<char[]>( new char[required] );
 }
 
 void MemoryBuffer::Clear( )
@@ -174,8 +181,10 @@ bool MemoryBuffer::Resize( unsigned int new_size, bool bForce )
 
 	// Keep explicit shrink behavior and grow spare storage only as needed.
 	if( new_size < nSize || new_size > capacity ) {
-		const unsigned int newCapacity = new_size < nSize ? new_size : GrowthCapacity( new_size );
-		std::unique_ptr<char[]> replacement( new char[newCapacity] );
+		unsigned int newCapacity = new_size;
+		auto replacement = new_size < nSize
+			? std::unique_ptr<char[]>( new char[new_size] )
+			: AllocateGrowth( new_size, newCapacity );
 		const auto preserved = std::min( new_size, nSize );
 		if( preserved ) memcpy( replacement.get(), pBuffer, preserved );
 		ReplaceStorage( std::move(replacement), newCapacity );
@@ -592,8 +601,8 @@ bool MemoryBuffer::setBytes( const void* pSource, unsigned int amount )
 
 	if( end > nSize && end > capacity ) {
 		// An input span can alias this buffer. Copy it before replacing storage.
-		const unsigned int newCapacity = GrowthCapacity( end );
-		std::unique_ptr<char[]> replacement( new char[newCapacity] );
+		unsigned int newCapacity;
+		auto replacement = AllocateGrowth( end, newCapacity );
 		if( nSize ) memcpy( replacement.get(), pBuffer, nSize );
 		memcpy( replacement.get() + nCursor, pSource, amount );
 		ReplaceStorage( std::move(replacement), newCapacity );

@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 
@@ -397,10 +398,14 @@ static void TestBufferWriteFailures()
 
 	auto* growing = new MemoryBuffer();
 	bool validGrowth = true;
+	unsigned int relocations = 0;
 	for( unsigned int i = 0; i < 64; ++i ) {
+		const auto before = reinterpret_cast<std::uintptr_t>(growing->Pointer());
 		validGrowth &= growing->setUInt( i ) && growing->Size() == (i+1)*4 &&
 			growing->getCurPos() == growing->Size();
+		if( before != reinterpret_cast<std::uintptr_t>(growing->Pointer()) ) ++relocations;
 	}
+	Check( relocations < 32, "H: sequential appends reuse backing storage" );
 	auto* clone = new MemoryBuffer( *growing );
 	validGrowth &= clone->Pointer() != growing->Pointer() && clone->seek( IBuffer::START, 0 );
 	for( unsigned int i = 0; i < 64; ++i ) validGrowth &= clone->getUInt() == i;
