@@ -328,7 +328,7 @@ bool MeshSignalBakeCache::Invalidate()
 	// then clearing a geometry-owned normal array with no lock at all --
 	// leaves a window in which a concurrent find-or-build reads the array
 	// mid-clear.
-	std::lock_guard<RMutex> guard( m_mutex );
+	std::lock_guard<std::mutex> guard( m_mutex );
 
 	bool bDroppedSomething = m_vertexNormalsBuilt;
 	for( int k = 0; k < MeshSignalBake::eKindCount; ++k ) {
@@ -368,7 +368,7 @@ MeshSignalBakeCache::TableRef MeshSignalBakeCache::FindOrBuild(
 	// including a bad_alloc out of the build -- the SSS discipline, and for
 	// the same reason: an unlocked pre-check would race with the insert
 	// below on a std::vector that can reallocate under it.
-	std::lock_guard<RMutex> guard( m_mutex );
+	std::lock_guard<std::mutex> guard( m_mutex );
 
 	std::vector<Entry>& entries = m_entries[kind];
 	for( size_t i = 0; i < entries.size(); ++i ) {
@@ -395,8 +395,8 @@ MeshSignalBakeCache::TableRef MeshSignalBakeCache::FindOrBuild(
 	// normals it needs are cache-owned and built at most once per
 	// generation, so the SECOND radius on this mesh reuses them.
 	if( !m_vertexNormalsBuilt ) {
-		m_vertexNormalsBuilt = true;
 		src.BuildVertexNormals( m_vertexNormals );
+		m_vertexNormalsBuilt = true;
 	}
 
 	MeshSignalBake::Input in;

@@ -127,7 +127,7 @@ namespace RISE
 	//!   * PURE (the SDF family) -- a `const` function of the geometry's
 	//!     immutable state and the arguments; no locks, no caches, no rays.
 	//!   * LAZILY BAKED (the indexed-mesh family) -- a `mutable` cache
-	//!     behind an `RMutex`, find-or-build serialized, the built table
+	//!     behind a mutex, find-or-build serialized, the built table
 	//!     immutable from then on.  This is the sanctioned
 	//!     ARCHITECTURE.md §Known Exceptions pattern (the SSS point-set
 	//!     precedent), adopted here for the same structural reason: a mesh
