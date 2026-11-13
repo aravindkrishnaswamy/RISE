@@ -48,6 +48,7 @@
 #include "../Materials/DonnerJensenSkinBSSRDFMaterial.h"
 #include "../Materials/GenericHumanTissueMaterial.h"
 #include "../Utilities/RString.h"
+#include <string_view>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -751,198 +752,199 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 MaterialSlotRef MaterialIntrospection::GetSlot(
 	const IMaterial& material, const String& slotName )
 {
+	const std::string_view slot( slotName.c_str(), slotName.empty() ? 0 : slotName.size() - 1 );
 	MaterialSlotRef out;
 
 	if( const LambertianMaterial* lam = dynamic_cast<const LambertianMaterial*>( &material ) ) {
-		if( slotName == String( "reflectance" ) ) {
+		if( slot == "reflectance" ) {
 			out.kind    = MaterialSlotRef::Painter;
 			out.painter = &lam->GetReflectance();
 			return out;
 		}
 	}
 	else if( const PerfectReflectorMaterial* pr = dynamic_cast<const PerfectReflectorMaterial*>( &material ) ) {
-		if( slotName == String( "reflectance" ) ) {
+		if( slot == "reflectance" ) {
 			out.kind    = MaterialSlotRef::Painter;
 			out.painter = &pr->GetReflectance();
 			return out;
 		}
 	}
 	else if( const PerfectRefractorMaterial* pf = dynamic_cast<const PerfectRefractorMaterial*>( &material ) ) {
-		if( slotName == String( "refractance" ) ) {
+		if( slot == "refractance" ) {
 			out.kind    = MaterialSlotRef::Painter;
 			out.painter = &pf->GetRefractivity();
 			return out;
 		}
-		if( slotName == String( "ior" ) ) {
+		if( slot == "ior" ) {
 			out.kind          = MaterialSlotRef::ScalarPainter;
 			out.scalarPainter = &pf->GetIOR();
 			return out;
 		}
 	}
 	else if( const PolishedMaterial* pol = dynamic_cast<const PolishedMaterial*>( &material ) ) {
-		if( slotName == String( "reflectance" ) ) {
+		if( slot == "reflectance" ) {
 			out.kind = MaterialSlotRef::Painter; out.painter = &pol->GetDiffuseReflectance(); return out;
 		}
-		if( slotName == String( "tau" ) ) {
+		if( slot == "tau" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &pol->GetTransmittance(); return out;
 		}
-		if( slotName == String( "ior" ) ) {
+		if( slot == "ior" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &pol->GetIOR(); return out;
 		}
-		if( slotName == String( "scattering" ) ) {
+		if( slot == "scattering" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &pol->GetScattering(); return out;
 		}
 	}
 	else if( const CoatedMaterial* coat = dynamic_cast<const CoatedMaterial*>( &material ) ) {
-		if( slotName == String( "coat_weight" ) ) {
+		if( slot == "coat_weight" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &coat->GetCoatWeight(); return out;
 		}
-		if( slotName == String( "coat_ior" ) ) {
+		if( slot == "coat_ior" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &coat->GetCoatIOR(); return out;
 		}
-		if( slotName == String( "coat_roughness" ) ) {
+		if( slot == "coat_roughness" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &coat->GetCoatRoughness(); return out;
 		}
-		if( slotName == String( "coat_thickness" ) ) {
+		if( slot == "coat_thickness" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &coat->GetCoatThickness(); return out;
 		}
-		if( slotName == String( "coat_absorption" ) ) {
+		if( slot == "coat_absorption" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &coat->GetCoatAbsorption(); return out;
 		}
-		if( slotName == String( "coat_tint" ) ) {
+		if( slot == "coat_tint" ) {
 			out.kind = MaterialSlotRef::Painter; out.painter = &coat->GetCoatTint(); return out;
 		}
 	}
 	else if( const FabricMaterial* fab = dynamic_cast<const FabricMaterial*>( &material ) ) {
-		if( slotName == String( "sheen_color" ) ) {
+		if( slot == "sheen_color" ) {
 			out.kind = MaterialSlotRef::Painter; out.painter = &fab->GetSheenColor(); return out;
 		}
-		if( slotName == String( "sheen_roughness" ) ) {
+		if( slot == "sheen_roughness" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &fab->GetSheenRoughness(); return out;
 		}
-		if( slotName == String( "weave_rotation" ) ) {
+		if( slot == "weave_rotation" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &fab->GetWeaveRotation(); return out;
 		}
 	}
 	else if( const WeaveMaterial* wv = dynamic_cast<const WeaveMaterial*>( &material ) ) {
-		if( slotName == String( "weave_scale" ) )    { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeaveScale();    return out; }
-		if( slotName == String( "weave_rotation" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeaveRotation(); return out; }
-		if( slotName == String( "weft_skew" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftSkew();      return out; }
-		if( slotName == String( "coverage" ) ) {
+		if( slot == "weave_scale" )    { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeaveScale();    return out; }
+		if( slot == "weave_rotation" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeaveRotation(); return out; }
+		if( slot == "weft_skew" )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftSkew();      return out; }
+		if( slot == "coverage" ) {
 			// Only resolvable when the `custom` draft actually bound one.
 			if( const IScalarPainter* cov = wv->GetCoverage() ) {
 				out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = cov; return out;
 			}
 			return out;
 		}
-		if( slotName == String( "gap" ) )            { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetGap();           return out; }
-		if( slotName == String( "warp_color" ) )     { out.kind = MaterialSlotRef::Painter;       out.painter       = &wv->GetWarpColor();     return out; }
-		if( slotName == String( "weft_color" ) )     { out.kind = MaterialSlotRef::Painter;       out.painter       = &wv->GetWeftColor();     return out; }
-		if( slotName == String( "warp_ior" ) )       { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpIOR();       return out; }
-		if( slotName == String( "weft_ior" ) )       { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftIOR();       return out; }
-		if( slotName == String( "warp_width" ) )     { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpWidth();     return out; }
-		if( slotName == String( "weft_width" ) )     { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftWidth();     return out; }
-		if( slotName == String( "warp_azimuth" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpAzimuth();   return out; }
-		if( slotName == String( "weft_azimuth" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftAzimuth();   return out; }
-		if( slotName == String( "warp_kd" ) )        { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpKd();        return out; }
-		if( slotName == String( "weft_kd" ) )        { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftKd();        return out; }
-		if( slotName == String( "warp_tilt" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpTilt();      return out; }
-		if( slotName == String( "weft_tilt" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftTilt();      return out; }
-		if( slotName == String( "warp_transmit" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpTransmit(); return out; }
-		if( slotName == String( "weft_transmit" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftTransmit(); return out; }
+		if( slot == "gap" )            { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetGap();           return out; }
+		if( slot == "warp_color" )     { out.kind = MaterialSlotRef::Painter;       out.painter       = &wv->GetWarpColor();     return out; }
+		if( slot == "weft_color" )     { out.kind = MaterialSlotRef::Painter;       out.painter       = &wv->GetWeftColor();     return out; }
+		if( slot == "warp_ior" )       { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpIOR();       return out; }
+		if( slot == "weft_ior" )       { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftIOR();       return out; }
+		if( slot == "warp_width" )     { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpWidth();     return out; }
+		if( slot == "weft_width" )     { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftWidth();     return out; }
+		if( slot == "warp_azimuth" )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpAzimuth();   return out; }
+		if( slot == "weft_azimuth" )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftAzimuth();   return out; }
+		if( slot == "warp_kd" )        { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpKd();        return out; }
+		if( slot == "weft_kd" )        { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftKd();        return out; }
+		if( slot == "warp_tilt" )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpTilt();      return out; }
+		if( slot == "weft_tilt" )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftTilt();      return out; }
+		if( slot == "warp_transmit" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpTransmit(); return out; }
+		if( slot == "weft_transmit" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftTransmit(); return out; }
 	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
-		if( slotName == String( "tau" ) ) {
+		if( slot == "tau" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetTransmittance(); return out;
 		}
-		if( slotName == String( "ior" ) ) {
+		if( slot == "ior" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetIOR(); return out;
 		}
-		if( slotName == String( "scattering" ) ) {
+		if( slot == "scattering" ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetScattering(); return out;
 		}
 	}
 	else if( const GGXMaterial* ggx = dynamic_cast<const GGXMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &ggx->GetDiffuse();    return out; }
-		if( slotName == String( "rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &ggx->GetSpecular();   return out; }
-		if( slotName == String( "alphax" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetAlphaX();     return out; }
-		if( slotName == String( "alphay" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetAlphaY();     return out; }
-		if( slotName == String( "ior" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetIOR();        return out; }
-		if( slotName == String( "extinction" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetExtinction(); return out; }
+		if( slot == "rd" )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &ggx->GetDiffuse();    return out; }
+		if( slot == "rs" ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &ggx->GetSpecular();   return out; }
+		if( slot == "alphax" )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetAlphaX();     return out; }
+		if( slot == "alphay" )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetAlphaY();     return out; }
+		if( slot == "ior" )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetIOR();        return out; }
+		if( slot == "extinction" )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetExtinction(); return out; }
 		// Thin-film FILM slots (NULLABLE pointers).  Only resolve the
 		// ref when the slot is actually bound -- a null pointer with
 		// kind=ScalarPainter would be a malformed ref; leaving kind=None
 		// (the fall-through) correctly reports "unknown slot".
-		if( slotName == String( "film_ior" ) )        { if( const IScalarPainter* p = ggx->GetFilmIOR() )        { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = p; } return out; }
-		if( slotName == String( "film_extinction" ) ) { if( const IScalarPainter* p = ggx->GetFilmExtinction() ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = p; } return out; }
-		if( slotName == String( "film_thickness" ) )  { if( const IScalarPainter* p = ggx->GetFilmThickness() )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = p; } return out; }
+		if( slot == "film_ior" )        { if( const IScalarPainter* p = ggx->GetFilmIOR() )        { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = p; } return out; }
+		if( slot == "film_extinction" ) { if( const IScalarPainter* p = ggx->GetFilmExtinction() ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = p; } return out; }
+		if( slot == "film_thickness" )  { if( const IScalarPainter* p = ggx->GetFilmThickness() )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = p; } return out; }
 	}
 	else if( const IsotropicPhongMaterial* iph = dynamic_cast<const IsotropicPhongMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )       { out.kind = MaterialSlotRef::Painter;       out.painter       = &iph->GetRd();       return out; }
-		if( slotName == String( "rs" ) )       { out.kind = MaterialSlotRef::Painter;       out.painter       = &iph->GetRs();       return out; }
-		if( slotName == String( "N" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &iph->GetExponent(); return out; }
+		if( slot == "rd" )       { out.kind = MaterialSlotRef::Painter;       out.painter       = &iph->GetRd();       return out; }
+		if( slot == "rs" )       { out.kind = MaterialSlotRef::Painter;       out.painter       = &iph->GetRs();       return out; }
+		if( slot == "N" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &iph->GetExponent(); return out; }
 	}
 	else if( const OrenNayarMaterial* on = dynamic_cast<const OrenNayarMaterial*>( &material ) ) {
-		if( slotName == String( "reflectance" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &on->GetReflectance(); return out; }
-		if( slotName == String( "roughness" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &on->GetRoughness();   return out; }
+		if( slot == "reflectance" ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &on->GetReflectance(); return out; }
+		if( slot == "roughness" )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &on->GetRoughness();   return out; }
 	}
 	else if( const SchlickMaterial* sch = dynamic_cast<const SchlickMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )   { out.kind = MaterialSlotRef::Painter;       out.painter       = &sch->GetDiffuse();   return out; }
-		if( slotName == String( "rs" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &sch->GetSpecular();  return out; }
-		if( slotName == String( "roughness" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sch->GetRoughness(); return out; }
-		if( slotName == String( "isotropy" ) )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sch->GetIsotropy();  return out; }
+		if( slot == "rd" )   { out.kind = MaterialSlotRef::Painter;       out.painter       = &sch->GetDiffuse();   return out; }
+		if( slot == "rs" )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &sch->GetSpecular();  return out; }
+		if( slot == "roughness" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sch->GetRoughness(); return out; }
+		if( slot == "isotropy" )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sch->GetIsotropy();  return out; }
 	}
 	else if( const SheenMaterial* sh = dynamic_cast<const SheenMaterial*>( &material ) ) {
-		if( slotName == String( "sheen_color" ) )     { out.kind = MaterialSlotRef::Painter;       out.painter       = &sh->GetColor();     return out; }
-		if( slotName == String( "sheen_roughness" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sh->GetRoughness(); return out; }
+		if( slot == "sheen_color" )     { out.kind = MaterialSlotRef::Painter;       out.painter       = &sh->GetColor();     return out; }
+		if( slot == "sheen_roughness" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sh->GetRoughness(); return out; }
 	}
 	else if( const AshikminShirleyAnisotropicPhongMaterial* as = dynamic_cast<const AshikminShirleyAnisotropicPhongMaterial*>( &material ) ) {
-		if( slotName == String( "nu" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &as->GetNu(); return out; }
-		if( slotName == String( "nv" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &as->GetNv(); return out; }
-		if( slotName == String( "rd" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &as->GetRd(); return out; }
-		if( slotName == String( "rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &as->GetRs(); return out; }
+		if( slot == "nu" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &as->GetNu(); return out; }
+		if( slot == "nv" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &as->GetNv(); return out; }
+		if( slot == "rd" ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &as->GetRd(); return out; }
+		if( slot == "rs" ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &as->GetRs(); return out; }
 	}
 	else if( const CookTorranceMaterial* ct = dynamic_cast<const CookTorranceMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &ct->GetDiffuse();    return out; }
-		if( slotName == String( "rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &ct->GetSpecular();   return out; }
-		if( slotName == String( "facets" ) )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetMasking();    return out; }
-		if( slotName == String( "ior" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetIOR();        return out; }
-		if( slotName == String( "extinction" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetExtinction(); return out; }
+		if( slot == "rd" )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &ct->GetDiffuse();    return out; }
+		if( slot == "rs" ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &ct->GetSpecular();   return out; }
+		if( slot == "facets" )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetMasking();    return out; }
+		if( slot == "ior" )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetIOR();        return out; }
+		if( slot == "extinction" )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetExtinction(); return out; }
 	}
 	else if( const WardIsotropicGaussianMaterial* wi = dynamic_cast<const WardIsotropicGaussianMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &wi->GetDiffuse();  return out; }
-		if( slotName == String( "rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &wi->GetSpecular(); return out; }
-		if( slotName == String( "alpha" ) )    { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wi->GetAlpha();    return out; }
+		if( slot == "rd" )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &wi->GetDiffuse();  return out; }
+		if( slot == "rs" ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &wi->GetSpecular(); return out; }
+		if( slot == "alpha" )    { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wi->GetAlpha();    return out; }
 	}
 	else if( const WardAnisotropicEllipticalGaussianMaterial* wa = dynamic_cast<const WardAnisotropicEllipticalGaussianMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &wa->GetDiffuse();  return out; }
-		if( slotName == String( "rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &wa->GetSpecular(); return out; }
-		if( slotName == String( "alphax" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wa->GetAlphaX();   return out; }
-		if( slotName == String( "alphay" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wa->GetAlphaY();   return out; }
+		if( slot == "rd" )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &wa->GetDiffuse();  return out; }
+		if( slot == "rs" ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &wa->GetSpecular(); return out; }
+		if( slot == "alphax" )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wa->GetAlphaX();   return out; }
+		if( slot == "alphay" )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wa->GetAlphaY();   return out; }
 	}
 	else if( const TranslucentMaterial* tl = dynamic_cast<const TranslucentMaterial*>( &material ) ) {
-		if( slotName == String( "ref" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &tl->GetRefFront();   return out; }
-		if( slotName == String( "tau" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &tl->GetTrans();      return out; }
-		if( slotName == String( "ext" ) )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetExtinction(); return out; }
-		if( slotName == String( "N" ) )    { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetN();          return out; }
-		if( slotName == String( "scattering" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetScat();       return out; }
+		if( slot == "ref" )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &tl->GetRefFront();   return out; }
+		if( slot == "tau" )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &tl->GetTrans();      return out; }
+		if( slot == "ext" )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetExtinction(); return out; }
+		if( slot == "N" )    { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetN();          return out; }
+		if( slot == "scattering" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetScat();       return out; }
 	}
 	else if( const GenericHumanTissueMaterial* ght = dynamic_cast<const GenericHumanTissueMaterial*>( &material ) ) {
-		if( slotName == String( "sca" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ght->GetSca(); return out; }
-		if( slotName == String( "g" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ght->GetG();   return out; }
+		if( slot == "sca" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ght->GetSca(); return out; }
+		if( slot == "g" )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ght->GetG();   return out; }
 	}
 	else if( const SubSurfaceScatteringMaterial* sss = dynamic_cast<const SubSurfaceScatteringMaterial*>( &material ) ) {
-		if( slotName == String( "ior" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sss->GetIOR(); return out; }
+		if( slot == "ior" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sss->GetIOR(); return out; }
 	}
 	else if( const RandomWalkSSSMaterial* rwm = dynamic_cast<const RandomWalkSSSMaterial*>( &material ) ) {
-		if( slotName == String( "ior" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &rwm->GetIOR(); return out; }
+		if( slot == "ior" ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &rwm->GetIOR(); return out; }
 	}
 	else if( const LambertianLuminaireMaterial* llm = dynamic_cast<const LambertianLuminaireMaterial*>( &material ) ) {
-		if( slotName == String( "exitance" ) ) { out.kind = MaterialSlotRef::Painter; out.painter = &llm->GetRadEx(); return out; }
+		if( slot == "exitance" ) { out.kind = MaterialSlotRef::Painter; out.painter = &llm->GetRadEx(); return out; }
 	}
 	else if( const PhongLuminaireMaterial* plm = dynamic_cast<const PhongLuminaireMaterial*>( &material ) ) {
-		if( slotName == String( "exitance" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &plm->GetRadEx(); return out; }
-		if( slotName == String( "N" ) )     { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &plm->GetN();     return out; }
+		if( slot == "exitance" ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &plm->GetRadEx(); return out; }
+		if( slot == "N" )     { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &plm->GetN();     return out; }
 	}
 
 	// Unknown slot for this material type — out.kind stays None.
@@ -953,8 +955,9 @@ bool MaterialIntrospection::SetSlot(
 	IMaterial& material, const String& slotName,
 	const IPainter* painter, const IScalarPainter* scalarPainter )
 {
+	const std::string_view slot( slotName.c_str(), slotName.empty() ? 0 : slotName.size() - 1 );
 	if( LambertianMaterial* lam = dynamic_cast<LambertianMaterial*>( &material ) ) {
-		if( slotName == String( "reflectance" ) ) {
+		if( slot == "reflectance" ) {
 			if( !painter ) return false;
 			lam->SetReflectance( *painter );
 			return true;
@@ -962,7 +965,7 @@ bool MaterialIntrospection::SetSlot(
 		return false;
 	}
 	if( PerfectReflectorMaterial* pr = dynamic_cast<PerfectReflectorMaterial*>( &material ) ) {
-		if( slotName == String( "reflectance" ) ) {
+		if( slot == "reflectance" ) {
 			if( !painter ) return false;
 			pr->SetReflectance( *painter );
 			return true;
@@ -970,12 +973,12 @@ bool MaterialIntrospection::SetSlot(
 		return false;
 	}
 	if( PerfectRefractorMaterial* pf = dynamic_cast<PerfectRefractorMaterial*>( &material ) ) {
-		if( slotName == String( "refractance" ) ) {
+		if( slot == "refractance" ) {
 			if( !painter ) return false;
 			pf->SetRefractivity( *painter );
 			return true;
 		}
-		if( slotName == String( "ior" ) ) {
+		if( slot == "ior" ) {
 			if( !scalarPainter ) return false;
 			pf->SetIOR( *scalarPainter );
 			return true;
@@ -983,22 +986,22 @@ bool MaterialIntrospection::SetSlot(
 		return false;
 	}
 	if( PolishedMaterial* pol = dynamic_cast<PolishedMaterial*>( &material ) ) {
-		if( slotName == String( "reflectance" ) ) {
+		if( slot == "reflectance" ) {
 			if( !painter ) return false;
 			pol->SetDiffuseReflectance( *painter );
 			return true;
 		}
-		if( slotName == String( "tau" ) ) {
+		if( slot == "tau" ) {
 			if( !scalarPainter ) return false;
 			pol->SetTransmittance( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "ior" ) ) {
+		if( slot == "ior" ) {
 			if( !scalarPainter ) return false;
 			pol->SetIOR( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "scattering" ) ) {
+		if( slot == "scattering" ) {
 			if( !scalarPainter ) return false;
 			pol->SetScattering( *scalarPainter );
 			return true;
@@ -1008,32 +1011,32 @@ bool MaterialIntrospection::SetSlot(
 	if( CoatedMaterial* coat = dynamic_cast<CoatedMaterial*>( &material ) ) {
 		// Only the BRDF is rebound; CoatedSPF reads these back through
 		// it, so there is no second copy to keep in lockstep.
-		if( slotName == String( "coat_weight" ) ) {
+		if( slot == "coat_weight" ) {
 			if( !scalarPainter ) return false;
 			coat->SetCoatWeight( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "coat_ior" ) ) {
+		if( slot == "coat_ior" ) {
 			if( !scalarPainter ) return false;
 			coat->SetCoatIOR( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "coat_roughness" ) ) {
+		if( slot == "coat_roughness" ) {
 			if( !scalarPainter ) return false;
 			coat->SetCoatRoughness( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "coat_thickness" ) ) {
+		if( slot == "coat_thickness" ) {
 			if( !scalarPainter ) return false;
 			coat->SetCoatThickness( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "coat_absorption" ) ) {
+		if( slot == "coat_absorption" ) {
 			if( !scalarPainter ) return false;
 			coat->SetCoatAbsorption( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "coat_tint" ) ) {
+		if( slot == "coat_tint" ) {
 			if( !painter ) return false;
 			coat->SetCoatTint( *painter );
 			return true;
@@ -1045,17 +1048,17 @@ bool MaterialIntrospection::SetSlot(
 		// parameter back through it, so there is no second copy to keep
 		// in lockstep (contrast SheenMaterial, which must forward to
 		// BOTH its BRDF and its SPF).
-		if( slotName == String( "sheen_color" ) ) {
+		if( slot == "sheen_color" ) {
 			if( !painter ) return false;
 			fab->SetSheenColor( *painter );
 			return true;
 		}
-		if( slotName == String( "sheen_roughness" ) ) {
+		if( slot == "sheen_roughness" ) {
 			if( !scalarPainter ) return false;
 			fab->SetSheenRoughness( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "weave_rotation" ) ) {
+		if( slot == "weave_rotation" ) {
 			if( !scalarPainter ) return false;
 			fab->SetWeaveRotation( *scalarPainter );
 			return true;
@@ -1065,21 +1068,21 @@ bool MaterialIntrospection::SetSlot(
 	if( WeaveMaterial* wv = dynamic_cast<WeaveMaterial*>( &material ) ) {
 		// Only the BRDF is rebound; WeaveSPF reads every parameter back
 		// through it, so there is no second copy to keep in lockstep.
-		if( slotName == String( "warp_color" ) ) {
+		if( slot == "warp_color" ) {
 			if( !painter ) return false;
 			wv->SetWarpColor( *painter );
 			return true;
 		}
-		if( slotName == String( "weft_color" ) ) {
+		if( slot == "weft_color" ) {
 			if( !painter ) return false;
 			wv->SetWeftColor( *painter );
 			return true;
 		}
 		if( !scalarPainter ) return false;
-		if( slotName == String( "weave_scale" ) )    { wv->SetWeaveScale( *scalarPainter );    return true; }
-		if( slotName == String( "weave_rotation" ) ) { wv->SetWeaveRotation( *scalarPainter ); return true; }
-		if( slotName == String( "weft_skew" ) )      { wv->SetWeftSkew( *scalarPainter );      return true; }
-		if( slotName == String( "coverage" ) ) {
+		if( slot == "weave_scale" )    { wv->SetWeaveScale( *scalarPainter );    return true; }
+		if( slot == "weave_rotation" ) { wv->SetWeaveRotation( *scalarPainter ); return true; }
+		if( slot == "weft_skew" )      { wv->SetWeftSkew( *scalarPainter );      return true; }
+		if( slot == "coverage" ) {
 			// Rebinding `coverage` on a built-in draft is permitted and
 			// simply not read until the draft is `custom`; refusing would
 			// make the editor's writable slot set depend on an enum it
@@ -1087,33 +1090,33 @@ bool MaterialIntrospection::SetSlot(
 			wv->SetCoverage( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "gap" ) )            { wv->SetGap( *scalarPainter );           return true; }
-		if( slotName == String( "warp_ior" ) )       { wv->SetWarpIOR( *scalarPainter );       return true; }
-		if( slotName == String( "weft_ior" ) )       { wv->SetWeftIOR( *scalarPainter );       return true; }
-		if( slotName == String( "warp_width" ) )     { wv->SetWarpWidth( *scalarPainter );     return true; }
-		if( slotName == String( "weft_width" ) )     { wv->SetWeftWidth( *scalarPainter );     return true; }
-		if( slotName == String( "warp_azimuth" ) )   { wv->SetWarpAzimuth( *scalarPainter );   return true; }
-		if( slotName == String( "weft_azimuth" ) )   { wv->SetWeftAzimuth( *scalarPainter );   return true; }
-		if( slotName == String( "warp_kd" ) )        { wv->SetWarpKd( *scalarPainter );        return true; }
-		if( slotName == String( "weft_kd" ) )        { wv->SetWeftKd( *scalarPainter );        return true; }
-		if( slotName == String( "warp_tilt" ) )      { wv->SetWarpTilt( *scalarPainter );      return true; }
-		if( slotName == String( "weft_tilt" ) )      { wv->SetWeftTilt( *scalarPainter );      return true; }
-		if( slotName == String( "warp_transmit" ) ) { wv->SetWarpTransmit( *scalarPainter ); return true; }
-		if( slotName == String( "weft_transmit" ) ) { wv->SetWeftTransmit( *scalarPainter ); return true; }
+		if( slot == "gap" )            { wv->SetGap( *scalarPainter );           return true; }
+		if( slot == "warp_ior" )       { wv->SetWarpIOR( *scalarPainter );       return true; }
+		if( slot == "weft_ior" )       { wv->SetWeftIOR( *scalarPainter );       return true; }
+		if( slot == "warp_width" )     { wv->SetWarpWidth( *scalarPainter );     return true; }
+		if( slot == "weft_width" )     { wv->SetWeftWidth( *scalarPainter );     return true; }
+		if( slot == "warp_azimuth" )   { wv->SetWarpAzimuth( *scalarPainter );   return true; }
+		if( slot == "weft_azimuth" )   { wv->SetWeftAzimuth( *scalarPainter );   return true; }
+		if( slot == "warp_kd" )        { wv->SetWarpKd( *scalarPainter );        return true; }
+		if( slot == "weft_kd" )        { wv->SetWeftKd( *scalarPainter );        return true; }
+		if( slot == "warp_tilt" )      { wv->SetWarpTilt( *scalarPainter );      return true; }
+		if( slot == "weft_tilt" )      { wv->SetWeftTilt( *scalarPainter );      return true; }
+		if( slot == "warp_transmit" ) { wv->SetWarpTransmit( *scalarPainter ); return true; }
+		if( slot == "weft_transmit" ) { wv->SetWeftTransmit( *scalarPainter ); return true; }
 		return false;		// `weave` is an enum, not a rebindable painter slot
 	}
 	if( DielectricMaterial* die = dynamic_cast<DielectricMaterial*>( &material ) ) {
-		if( slotName == String( "tau" ) ) {
+		if( slot == "tau" ) {
 			if( !scalarPainter ) return false;
 			die->SetTransmittance( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "ior" ) ) {
+		if( slot == "ior" ) {
 			if( !scalarPainter ) return false;
 			die->SetIOR( *scalarPainter );
 			return true;
 		}
-		if( slotName == String( "scattering" ) ) {
+		if( slot == "scattering" ) {
 			if( !scalarPainter ) return false;
 			die->SetScattering( *scalarPainter );
 			return true;
@@ -1121,100 +1124,100 @@ bool MaterialIntrospection::SetSlot(
 		return false;
 	}
 	if( GGXMaterial* ggx = dynamic_cast<GGXMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )  { if( !painter ) return false; ggx->SetDiffuse( *painter );  return true; }
-		if( slotName == String( "rs" ) ) { if( !painter ) return false; ggx->SetSpecular( *painter ); return true; }
-		if( slotName == String( "alphax" ) )   { if( !scalarPainter ) return false; ggx->SetAlphaX( *scalarPainter );     return true; }
-		if( slotName == String( "alphay" ) )   { if( !scalarPainter ) return false; ggx->SetAlphaY( *scalarPainter );     return true; }
-		if( slotName == String( "ior" ) )      { if( !scalarPainter ) return false; ggx->SetIOR( *scalarPainter );        return true; }
-		if( slotName == String( "extinction" ) )      { if( !scalarPainter ) return false; ggx->SetExtinction( *scalarPainter ); return true; }
+		if( slot == "rd" )  { if( !painter ) return false; ggx->SetDiffuse( *painter );  return true; }
+		if( slot == "rs" ) { if( !painter ) return false; ggx->SetSpecular( *painter ); return true; }
+		if( slot == "alphax" )   { if( !scalarPainter ) return false; ggx->SetAlphaX( *scalarPainter );     return true; }
+		if( slot == "alphay" )   { if( !scalarPainter ) return false; ggx->SetAlphaY( *scalarPainter );     return true; }
+		if( slot == "ior" )      { if( !scalarPainter ) return false; ggx->SetIOR( *scalarPainter );        return true; }
+		if( slot == "extinction" )      { if( !scalarPainter ) return false; ggx->SetExtinction( *scalarPainter ); return true; }
 		// Thin-film FILM slots.  SetFilm* rebinds BOTH the BRDF and the
 		// SPF in lockstep (GGXMaterial forwards to both) so the shaded
 		// value and the sampled distribution never diverge.  Reject a
 		// null / wrong-pipe binding like every other scalar slot.
-		if( slotName == String( "film_ior" ) )        { if( !scalarPainter ) return false; ggx->SetFilmIOR( *scalarPainter );        return true; }
-		if( slotName == String( "film_extinction" ) ) { if( !scalarPainter ) return false; ggx->SetFilmExtinction( *scalarPainter ); return true; }
-		if( slotName == String( "film_thickness" ) )  { if( !scalarPainter ) return false; ggx->SetFilmThickness( *scalarPainter );  return true; }
+		if( slot == "film_ior" )        { if( !scalarPainter ) return false; ggx->SetFilmIOR( *scalarPainter );        return true; }
+		if( slot == "film_extinction" ) { if( !scalarPainter ) return false; ggx->SetFilmExtinction( *scalarPainter ); return true; }
+		if( slot == "film_thickness" )  { if( !scalarPainter ) return false; ggx->SetFilmThickness( *scalarPainter );  return true; }
 		return false;
 	}
 	if( IsotropicPhongMaterial* iph = dynamic_cast<IsotropicPhongMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )       { if( !painter ) return false; iph->SetRd( *painter ); return true; }
-		if( slotName == String( "rs" ) )       { if( !painter ) return false; iph->SetRs( *painter ); return true; }
-		if( slotName == String( "N" ) ) { if( !scalarPainter ) return false; iph->SetExponent( *scalarPainter ); return true; }
+		if( slot == "rd" )       { if( !painter ) return false; iph->SetRd( *painter ); return true; }
+		if( slot == "rs" )       { if( !painter ) return false; iph->SetRs( *painter ); return true; }
+		if( slot == "N" ) { if( !scalarPainter ) return false; iph->SetExponent( *scalarPainter ); return true; }
 		return false;
 	}
 	if( OrenNayarMaterial* on = dynamic_cast<OrenNayarMaterial*>( &material ) ) {
-		if( slotName == String( "reflectance" ) ) { if( !painter ) return false; on->SetReflectance( *painter ); return true; }
-		if( slotName == String( "roughness" ) )   { if( !scalarPainter ) return false; on->SetRoughness( *scalarPainter ); return true; }
+		if( slot == "reflectance" ) { if( !painter ) return false; on->SetReflectance( *painter ); return true; }
+		if( slot == "roughness" )   { if( !scalarPainter ) return false; on->SetRoughness( *scalarPainter ); return true; }
 		return false;
 	}
 	if( SchlickMaterial* sch = dynamic_cast<SchlickMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )   { if( !painter ) return false; sch->SetDiffuse( *painter );  return true; }
-		if( slotName == String( "rs" ) )  { if( !painter ) return false; sch->SetSpecular( *painter ); return true; }
-		if( slotName == String( "roughness" ) ) { if( !scalarPainter ) return false; sch->SetRoughness( *scalarPainter ); return true; }
-		if( slotName == String( "isotropy" ) )  { if( !scalarPainter ) return false; sch->SetIsotropy( *scalarPainter );  return true; }
+		if( slot == "rd" )   { if( !painter ) return false; sch->SetDiffuse( *painter );  return true; }
+		if( slot == "rs" )  { if( !painter ) return false; sch->SetSpecular( *painter ); return true; }
+		if( slot == "roughness" ) { if( !scalarPainter ) return false; sch->SetRoughness( *scalarPainter ); return true; }
+		if( slot == "isotropy" )  { if( !scalarPainter ) return false; sch->SetIsotropy( *scalarPainter );  return true; }
 		return false;
 	}
 	if( SheenMaterial* sh = dynamic_cast<SheenMaterial*>( &material ) ) {
-		if( slotName == String( "sheen_color" ) )     { if( !painter ) return false; sh->SetColor( *painter ); return true; }
-		if( slotName == String( "sheen_roughness" ) ) { if( !scalarPainter ) return false; sh->SetRoughness( *scalarPainter ); return true; }
+		if( slot == "sheen_color" )     { if( !painter ) return false; sh->SetColor( *painter ); return true; }
+		if( slot == "sheen_roughness" ) { if( !scalarPainter ) return false; sh->SetRoughness( *scalarPainter ); return true; }
 		return false;
 	}
 	if( AshikminShirleyAnisotropicPhongMaterial* as = dynamic_cast<AshikminShirleyAnisotropicPhongMaterial*>( &material ) ) {
-		if( slotName == String( "nu" ) ) { if( !scalarPainter ) return false; as->SetNu( *scalarPainter ); return true; }
-		if( slotName == String( "nv" ) ) { if( !scalarPainter ) return false; as->SetNv( *scalarPainter ); return true; }
-		if( slotName == String( "rd" ) ) { if( !painter ) return false; as->SetRd( *painter ); return true; }
-		if( slotName == String( "rs" ) ) { if( !painter ) return false; as->SetRs( *painter ); return true; }
+		if( slot == "nu" ) { if( !scalarPainter ) return false; as->SetNu( *scalarPainter ); return true; }
+		if( slot == "nv" ) { if( !scalarPainter ) return false; as->SetNv( *scalarPainter ); return true; }
+		if( slot == "rd" ) { if( !painter ) return false; as->SetRd( *painter ); return true; }
+		if( slot == "rs" ) { if( !painter ) return false; as->SetRs( *painter ); return true; }
 		return false;
 	}
 	if( CookTorranceMaterial* ct = dynamic_cast<CookTorranceMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )  { if( !painter ) return false; ct->SetDiffuse( *painter );  return true; }
-		if( slotName == String( "rs" ) ) { if( !painter ) return false; ct->SetSpecular( *painter ); return true; }
-		if( slotName == String( "facets" ) )  { if( !scalarPainter ) return false; ct->SetMasking( *scalarPainter );    return true; }
-		if( slotName == String( "ior" ) )      { if( !scalarPainter ) return false; ct->SetIOR( *scalarPainter );        return true; }
-		if( slotName == String( "extinction" ) )      { if( !scalarPainter ) return false; ct->SetExtinction( *scalarPainter ); return true; }
+		if( slot == "rd" )  { if( !painter ) return false; ct->SetDiffuse( *painter );  return true; }
+		if( slot == "rs" ) { if( !painter ) return false; ct->SetSpecular( *painter ); return true; }
+		if( slot == "facets" )  { if( !scalarPainter ) return false; ct->SetMasking( *scalarPainter );    return true; }
+		if( slot == "ior" )      { if( !scalarPainter ) return false; ct->SetIOR( *scalarPainter );        return true; }
+		if( slot == "extinction" )      { if( !scalarPainter ) return false; ct->SetExtinction( *scalarPainter ); return true; }
 		return false;
 	}
 	if( WardIsotropicGaussianMaterial* wi = dynamic_cast<WardIsotropicGaussianMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )  { if( !painter ) return false; wi->SetDiffuse( *painter );  return true; }
-		if( slotName == String( "rs" ) ) { if( !painter ) return false; wi->SetSpecular( *painter ); return true; }
-		if( slotName == String( "alpha" ) )    { if( !scalarPainter ) return false; wi->SetAlpha( *scalarPainter ); return true; }
+		if( slot == "rd" )  { if( !painter ) return false; wi->SetDiffuse( *painter );  return true; }
+		if( slot == "rs" ) { if( !painter ) return false; wi->SetSpecular( *painter ); return true; }
+		if( slot == "alpha" )    { if( !scalarPainter ) return false; wi->SetAlpha( *scalarPainter ); return true; }
 		return false;
 	}
 	if( WardAnisotropicEllipticalGaussianMaterial* wa = dynamic_cast<WardAnisotropicEllipticalGaussianMaterial*>( &material ) ) {
-		if( slotName == String( "rd" ) )  { if( !painter ) return false; wa->SetDiffuse( *painter );  return true; }
-		if( slotName == String( "rs" ) ) { if( !painter ) return false; wa->SetSpecular( *painter ); return true; }
-		if( slotName == String( "alphax" ) )   { if( !scalarPainter ) return false; wa->SetAlphaX( *scalarPainter ); return true; }
-		if( slotName == String( "alphay" ) )   { if( !scalarPainter ) return false; wa->SetAlphaY( *scalarPainter ); return true; }
+		if( slot == "rd" )  { if( !painter ) return false; wa->SetDiffuse( *painter );  return true; }
+		if( slot == "rs" ) { if( !painter ) return false; wa->SetSpecular( *painter ); return true; }
+		if( slot == "alphax" )   { if( !scalarPainter ) return false; wa->SetAlphaX( *scalarPainter ); return true; }
+		if( slot == "alphay" )   { if( !scalarPainter ) return false; wa->SetAlphaY( *scalarPainter ); return true; }
 		return false;
 	}
 	if( TranslucentMaterial* tl = dynamic_cast<TranslucentMaterial*>( &material ) ) {
-		if( slotName == String( "ref" ) )  { if( !painter ) return false; tl->SetRefFront( *painter ); return true; }
-		if( slotName == String( "tau" ) )  { if( !painter ) return false; tl->SetTrans( *painter );    return true; }
-		if( slotName == String( "ext" ) )  { if( !scalarPainter ) return false; tl->SetExtinction( *scalarPainter ); return true; }
-		if( slotName == String( "N" ) )    { if( !scalarPainter ) return false; tl->SetN( *scalarPainter );          return true; }
-		if( slotName == String( "scattering" ) ) { if( !scalarPainter ) return false; tl->SetScat( *scalarPainter );       return true; }
+		if( slot == "ref" )  { if( !painter ) return false; tl->SetRefFront( *painter ); return true; }
+		if( slot == "tau" )  { if( !painter ) return false; tl->SetTrans( *painter );    return true; }
+		if( slot == "ext" )  { if( !scalarPainter ) return false; tl->SetExtinction( *scalarPainter ); return true; }
+		if( slot == "N" )    { if( !scalarPainter ) return false; tl->SetN( *scalarPainter );          return true; }
+		if( slot == "scattering" ) { if( !scalarPainter ) return false; tl->SetScat( *scalarPainter );       return true; }
 		return false;
 	}
 	if( GenericHumanTissueMaterial* ght = dynamic_cast<GenericHumanTissueMaterial*>( &material ) ) {
-		if( slotName == String( "sca" ) ) { if( !scalarPainter ) return false; ght->SetSca( *scalarPainter ); return true; }
-		if( slotName == String( "g" ) )   { if( !scalarPainter ) return false; ght->SetG( *scalarPainter );   return true; }
+		if( slot == "sca" ) { if( !scalarPainter ) return false; ght->SetSca( *scalarPainter ); return true; }
+		if( slot == "g" )   { if( !scalarPainter ) return false; ght->SetG( *scalarPainter );   return true; }
 		return false;
 	}
 	if( SubSurfaceScatteringMaterial* sss = dynamic_cast<SubSurfaceScatteringMaterial*>( &material ) ) {
-		if( slotName == String( "ior" ) ) { if( !scalarPainter ) return false; sss->SetIOR( *scalarPainter ); return true; }
+		if( slot == "ior" ) { if( !scalarPainter ) return false; sss->SetIOR( *scalarPainter ); return true; }
 		return false;
 	}
 	if( RandomWalkSSSMaterial* rwm = dynamic_cast<RandomWalkSSSMaterial*>( &material ) ) {
-		if( slotName == String( "ior" ) ) { if( !scalarPainter ) return false; rwm->SetIOR( *scalarPainter ); return true; }
+		if( slot == "ior" ) { if( !scalarPainter ) return false; rwm->SetIOR( *scalarPainter ); return true; }
 		return false;
 	}
 	if( LambertianLuminaireMaterial* llm = dynamic_cast<LambertianLuminaireMaterial*>( &material ) ) {
-		if( slotName == String( "exitance" ) ) { if( !painter ) return false; llm->SetRadEx( *painter ); return true; }
+		if( slot == "exitance" ) { if( !painter ) return false; llm->SetRadEx( *painter ); return true; }
 		return false;
 	}
 	if( PhongLuminaireMaterial* plm = dynamic_cast<PhongLuminaireMaterial*>( &material ) ) {
-		if( slotName == String( "exitance" ) ) { if( !painter ) return false; plm->SetRadEx( *painter ); return true; }
-		if( slotName == String( "N" ) )     { if( !scalarPainter ) return false; plm->SetN( *scalarPainter ); return true; }
+		if( slot == "exitance" ) { if( !painter ) return false; plm->SetRadEx( *painter ); return true; }
+		if( slot == "N" )     { if( !scalarPainter ) return false; plm->SetN( *scalarPainter ); return true; }
 		return false;
 	}
 
