@@ -120,18 +120,6 @@ static bool ReadDataFileLines( const String& filename, std::vector<std::string>&
 	return !file.bad();
 }
 
-inline bool string_split( const String& s, String& first, String& second, const char ch )
-{
-	String::const_iterator it = std::find( s.begin(), s.end(), ch );
-	if( it==s.end() ) {
-		return false;
-	}
-
-	first = String( s.begin(), it );
-	second = String( it+1, s.end() );
-	return true;
-}
-
 // Phase 6.2 helper (docs/ROUND_TRIP_SAVE_PLAN.md §8.10): compose a
 // column-major 4×4 from translation, glTF-style quaternion (xyzw),
 // and per-axis stretch.  Extracted from the inline body of
@@ -818,16 +806,16 @@ namespace RISE
 				ParseStateBag&         bag,
 				const IAsciiChunkParser::ParamsList& params )
 			{
-				for( IAsciiChunkParser::ParamsList::const_iterator i = params.begin(); i != params.end(); ++i ) {
-					String pname;
-					String pvalue;
-					if( !string_split( *i, pname, pvalue, ' ' ) ) {
-						return false;
-					}
+				for( const auto& parameter : params ) {
+					const std::string_view line( parameter.c_str() );
+					const auto separator = line.find( ' ' );
+					if( separator == std::string_view::npos ) return false;
+					const std::string_view name = line.substr( 0, separator );
+					const char* value = line.data() + separator + 1;
 
 					const ParameterDescriptor* found = 0;
 					for( std::vector<ParameterDescriptor>::const_iterator p = desc.parameters.begin(); p != desc.parameters.end(); ++p ) {
-						if( p->name == std::string(pname.c_str()) ) {
+						if( p->name == name ) {
 							found = &(*p);
 							break;
 						}
@@ -836,7 +824,7 @@ namespace RISE
 					if( !found ) {
 						GlobalLog()->PrintEx( eLog_Error,
 							kUndeclaredParameterFmt,
-							pname.c_str(),
+							std::string(name).c_str(),
 							desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str() );
 						return false;
 					}
@@ -848,12 +836,12 @@ namespace RISE
 					case ValueKind::DoubleVec4:
 					case ValueKind::DoubleMat4:
 					case ValueKind::UInt:
-						if( !AllTokensAreFiniteNumbers( pvalue.c_str() ) ) {
+						if( !AllTokensAreFiniteNumbers( value ) ) {
 							GlobalLog()->PrintEx( eLog_Error,
 								"ChunkParser:: parameter `%s` in `%s` expects finite numeric value(s); got `%s` (nan/inf and non-numeric tokens are rejected)",
-								pname.c_str(),
+								std::string(name).c_str(),
 								desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str(),
-								pvalue.c_str() );
+								value );
 							return false;
 						}
 						break;
@@ -862,9 +850,9 @@ namespace RISE
 					}
 
 					if( found->repeatable ) {
-						bag.AppendRepeatable( found->name, std::string(pvalue.c_str()) );
+						bag.AppendRepeatable( found->name, std::string(value) );
 					} else {
-						bag.SetSingle( found->name, std::string(pvalue.c_str()) );
+						bag.SetSingle( found->name, std::string(value) );
 					}
 				}
 				return true;
@@ -2848,7 +2836,7 @@ namespace RISE
 						else if( t == "box" )      type = 1;
 						else if( t == "torus" )    type = 2;
 						else if( t == "cylinder" ) type = 3;
-						else                       type = String( t.c_str() ).toUInt();
+						else if( !ParseStateBag::ReadUnsigned( t, type ) ) return false;
 					}
 
 					return pJob.AddSDF3DPainter( name.c_str(), type, param1, param2, param3, shell_thickness, noise_amplitude, noise_frequency, colora.c_str(), colorb.c_str(), scale, shift );
@@ -2997,7 +2985,7 @@ namespace RISE
 						if(      m == "euclidean" ) metric = 0;
 						else if( m == "manhattan" ) metric = 1;
 						else if( m == "chebyshev" ) metric = 2;
-						else                        metric = String( m.c_str() ).toUInt();
+						else if( !ParseStateBag::ReadUnsigned( m, metric ) ) return false;
 					}
 					unsigned int output = 0;	// 0=F1, 1=F2, 2=F2-F1
 					if( bag.Has( "output" ) ) {
@@ -3005,7 +2993,7 @@ namespace RISE
 						if(      o == "f1" )    output = 0;
 						else if( o == "f2" )    output = 1;
 						else if( o == "f2-f1" ) output = 2;
-						else                    output = String( o.c_str() ).toUInt();
+						else if( !ParseStateBag::ReadUnsigned( o, output ) ) return false;
 					}
 
 					return pJob.AddWorley3DPainter( name.c_str(), jitter, metric, output, colora.c_str(), colorb.c_str(), scale, shift );
@@ -13685,7 +13673,8 @@ namespace RISE
 					const std::vector<std::string>& iparams = bag.GetRepeatable( "interpolator_params" );
 
 					for( size_t i = 0; i < values.size(); ++i ) {
-						double time = (i < times.size()) ? RISE::String(times[i].c_str()).toDouble() : 0.0;
+						double time = 0.0;
+						if( i < times.size() && !ParseStateBag::ReadScalar( times[i], time ) ) return false;
 						const char* interp_c  = interps.empty() ? 0 :
 							(interps[std::min(i, interps.size()-1)] == "none" ? 0 : interps[std::min(i, interps.size()-1)].c_str());
 						const char* iparams_c = iparams.empty() ? 0 :

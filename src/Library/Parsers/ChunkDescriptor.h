@@ -32,6 +32,11 @@
 #include <string>
 #include <vector>
 
+#include <cerrno>
+#include <cctype>
+#include <cstdlib>
+#include <limits>
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/OidnConfig.h"
 #include "../Utilities/RString.h"
 #include "../Interfaces/ILog.h"
@@ -373,29 +378,68 @@ namespace RISE
 			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return def;
-			return RISE::String( it->second.c_str() ).toDouble();
+			double value;
+			if( ReadScalar( it->second, value ) ) return value;
+			ReportScalarError( key, it->second );
+			return def;
 		}
 		unsigned int GetUInt( const std::string& key, unsigned int def = 0u ) const
 		{
 			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return def;
-			return RISE::String( it->second.c_str() ).toUInt();
+			unsigned int value;
+			if( ReadUnsigned( it->second, value ) ) return value;
+			ReportScalarError( key, it->second );
+			return def;
 		}
 		int GetInt( const std::string& key, int def = 0 ) const
 		{
 			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return def;
-			return atoi( it->second.c_str() );
+			const char* start = it->second.c_str();
+			char* end = nullptr;
+			errno = 0;
+			const auto value = std::strtoll( start, &end, 10 );
+			if( start != end && errno != ERANGE && value >= std::numeric_limits<int>::min() &&
+				value <= std::numeric_limits<int>::max() ) return static_cast<int>(value);
+			ReportScalarError( key, it->second );
+			return def;
 		}
 		bool GetBool( const std::string& key, bool def = false ) const
 		{
 			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return def;
-			return RISE::String( it->second.c_str() ).toBoolean();
+			return std::toupper( static_cast<unsigned char>(it->second.c_str()[0]) ) == 'T';
 		}
+		// Keep the leading numeric conversion and unsigned negative sentinels
+		// accepted by the legacy accessors. Dispatch checks numeric field syntax.
+		static bool ReadScalar( const std::string& raw, double& value )
+		{
+			const char* start = raw.c_str();
+			char* end = nullptr;
+			value = std::strtod( start, &end );
+			return start != end && IsFiniteDouble( value );
+		}
+
+		static bool ReadUnsigned( const std::string& raw, unsigned int& value )
+		{
+			const char* start = raw.c_str();
+			while( std::isspace( static_cast<unsigned char>(*start) ) ) ++start;
+			const bool negative = *start == '-';
+			if( negative || *start == '+' ) ++start;
+			if( !std::isdigit( static_cast<unsigned char>(*start) ) ) return false;
+			char* end = nullptr;
+			errno = 0;
+			const auto magnitude = std::strtoull( start, &end, 10 );
+			if( errno == ERANGE || magnitude > std::numeric_limits<unsigned int>::max() ) return false;
+			value = static_cast<unsigned int>(magnitude);
+			if( negative ) value = 0U - value;
+			return true;
+		}
+
 		// Reads two space-separated doubles into out[2] (a genuinely
 		// 2-component field -- a UV pair, a (theta,phi)/(width,height)
 		// pair -- NOT a DoubleVec3 a caller only reads two components of).
@@ -571,6 +615,7 @@ namespace RISE
 		// out-of-line below (mirroring ValidateAccess) because
 		// `ChunkDescriptor` is only forward-declared at this point in the
 		// file -- `mDescriptor->keyword` needs the complete type.
+		void ReportScalarError( const std::string& key, const std::string& raw ) const;
 		void ReportVectorArity( const std::string& key, int expected, int actual, const std::string& raw ) const;
 
 		std::map<std::string, std::string>              mSingles;
@@ -721,6 +766,15 @@ namespace RISE
 			fprintf(stderr, "ChunkParser Bug: Finalize() requested undeclared parameter `%s` in chunk `%s`\n",
 				key.c_str(), mDescriptor->keyword.empty() ? "(unknown)" : mDescriptor->keyword.c_str());
 		}
+	}
+
+	inline void ParseStateBag::ReportScalarError( const std::string& key, const std::string& raw ) const
+	{
+		mHardError = true;
+		const std::string chunk = mDescriptor && !mDescriptor->keyword.empty() ? mDescriptor->keyword : "(unknown)";
+		const std::string message = "Invalid scalar for parameter `" + key + "` in `" + chunk + "`: " + raw;
+		GlobalLog()->Print( eLog_Error, message.c_str() );
+		SetFinalizeDiagIfEmpty( message );
 	}
 
 	inline void ParseStateBag::ReportVectorArity( const std::string& key, int expected, int actual, const std::string& raw ) const
