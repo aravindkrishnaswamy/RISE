@@ -288,6 +288,10 @@ static void TestSetActiveRasterizerRadianceScale()
     Check( pJob != nullptr, "scene parsed" );
     if( !pJob ) return;
 
+    unsigned int estimate = 123;
+    Check( !pJob->PredictRasterizationTime( 0, &estimate, nullptr ) && estimate == 123,
+        "zero-sample prediction fails with a configured rasterizer" );
+
     // The scene authored radiance_scale 2.0, so the map starts at 2.0.
     const IRadianceMap* pRm = pJob->GetScene()->GetGlobalRadianceMap();
     Check( pRm != nullptr, "global radiance map installed" );

@@ -256,6 +256,10 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 
 	ISampling2D::SamplesList2D samples;
 	pSampling.GenerateSamplePoints(rc.random, samples);
+	if( samples.empty() ) {
+		GlobalLog()->PrintEasyError( "Render time prediction needs at least one sample" );
+		return std::numeric_limits<unsigned int>::max();
+	}
 
 	ISampling2D::SamplesList2D::const_iterator		m, n;
 
@@ -282,12 +286,13 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 		num_subsamples = Scalar(this->pSampling->GetNumSamples());
 	}
 
-	if( pActualTime ) {
-		*pActualTime = ElapsedMilliseconds(tStart, tEnd);
-	}
-
-	int threads = HowManyThreadsToSpawn();
-	return (unsigned int)((Scalar(ElapsedMilliseconds(tStart, tEnd))/Scalar(samples.size())) * width*height*num_subsamples / threads);
+	const auto elapsed = ElapsedMilliseconds( tStart, tEnd );
+	if( pActualTime ) *pActualTime = elapsed;
+	const auto threads = std::max( 1, HowManyThreadsToSpawn() );
+	const auto estimate = (Scalar(elapsed) / Scalar(samples.size())) * width * height * num_subsamples / threads;
+	// Reserve UINT_MAX for prediction failure.
+	constexpr auto largestEstimate = std::numeric_limits<unsigned int>::max() - 1;
+	return static_cast<unsigned int>(std::min( estimate, Scalar(largestEstimate) ));
 }
 
 void PixelBasedRasterizerHelper::DrawToggles( IRasterImage& image, const Rect& rc_region, const RISEColor& toggle_color, const double toggle_size ) const

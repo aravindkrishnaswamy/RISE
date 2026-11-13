@@ -11771,7 +11771,7 @@ bool Job::PredictRasterizationTime(
 	unsigned int* actual							///< [out] Actual time it took to do the predicted kernel
 	)
 {
-	if( !pRasterizer ) {
+	if( !pRasterizer || num == 0 ) {
 		return false;
 	}
 
@@ -11786,7 +11786,7 @@ bool Job::PredictRasterizationTime(
 	}
 
 	safe_release( pSampling );
-	return true;
+	return nMs != std::numeric_limits<unsigned int>::max();
 }
 
 static IRasterizeSequence* RasterizeSequenceFromOptions()
