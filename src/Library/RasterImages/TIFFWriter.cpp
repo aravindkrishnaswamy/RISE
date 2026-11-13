@@ -80,9 +80,9 @@ void TIFFWriter::WriteColor( const RISEColor& c, const unsigned int x, const uns
 		}
 
 		const unsigned int idx = y*bufW*4+x*4;
-		pBuffer[idx] = p.b;
+		pBuffer[idx] = p.r;
 		pBuffer[idx+1] = p.g;
-		pBuffer[idx+2] = p.r;
+		pBuffer[idx+2] = p.b;
 		pBuffer[idx+3] = p.a;
 	}
 }
@@ -114,7 +114,9 @@ void TIFFWriter::EndWrite( )
 		TIFFSetField( tiff, TIFFTAG_BITSPERSAMPLE, 8 );
 		TIFFSetField( tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG );
 		TIFFSetField( tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB );
-		TIFFSetField( tiff, TIFFTAG_COMPRESSION, COMPRESSION_DEFLATE );
+		uint16_t alpha = EXTRASAMPLE_UNASSALPHA;
+		TIFFSetField( tiff, TIFFTAG_EXTRASAMPLES, 1, &alpha );
+		TIFFSetField( tiff, TIFFTAG_COMPRESSION, COMPRESSION_ADOBE_DEFLATE );
 
 		for( unsigned int y=0; y<bufH; y++ ) {
 			TIFFWriteScanline( tiff, &pBuffer[y*bufW*4], y, 0 );

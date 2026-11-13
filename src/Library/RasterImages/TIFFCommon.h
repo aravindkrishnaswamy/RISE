@@ -17,6 +17,8 @@
 
 #ifndef NO_TIFF_SUPPORT
 
+#include <limits>
+
 namespace RISE
 {
 	namespace Implementation
@@ -32,79 +34,42 @@ namespace RISE
 		{
 			IReadBuffer* pBuffer = (IReadBuffer*)v;
 
-			if( pBuffer && pBuffer->getBytes( ptr, static_cast<unsigned int>(amount) ) ) {
+			if( pBuffer && amount >= 0 &&
+				static_cast<toff_t>(amount) <= std::numeric_limits<unsigned int>::max() &&
+				pBuffer->getBytes( ptr, static_cast<unsigned int>(amount) ) ) {
 				return amount;
 			}
 
 			return 0;
 		}
 
-		__attribute__((unused))
-		static toff_t TIFFSeekReader( thandle_t v, toff_t off, int whence )
+		static inline toff_t TIFFSeek( IBuffer* buffer, toff_t offset, int whence )
 		{
-			// libtiff uses this as a special code, so avoid accepting it
-			if( off == 0xFFFFFFFF ) {
-				return 0xFFFFFFFF;
+			constexpr toff_t failure = static_cast<toff_t>(-1);
+			if( !buffer || offset > static_cast<toff_t>(std::numeric_limits<int>::max()) )
+				return failure;
+			switch( whence ) {
+			case SEEK_CUR: offset += buffer->getCurPos(); break;
+			case SEEK_END: offset += buffer->Size(); break;
+			case SEEK_SET: break;
+			default: return failure;
 			}
-
-			IReadBuffer* pBuffer = (IReadBuffer*)v;
-			IBuffer::eSeek sk;
-
-			switch(whence)
-			{
-			case 0:			// SEEK_SET
-				sk = IBuffer::START;
-				break;
-			case 1:			// SEEK_CUR
-				sk = IBuffer::CUR;
-				break;
-			case 2:			/// SEEK_END
-				sk = IBuffer::END;
-				break;
-			default:
-				sk = IBuffer::START;
-				break;
-			}
-
-			if( pBuffer && pBuffer->seek( sk, static_cast<int>(off) ) ) {
-				return off;
-			}
-
-			return 0;
+			if( offset > static_cast<toff_t>(std::numeric_limits<int>::max()) )
+				return failure;
+			if( offset != buffer->getCurPos() &&
+				!buffer->seek( IBuffer::START, static_cast<int>(offset) ) )
+				return failure;
+			return buffer->getCurPos();
 		}
 
-		__attribute__((unused))
-		static toff_t TIFFSeekWriter( thandle_t v, toff_t off, int whence )
+		[[maybe_unused]] static toff_t TIFFSeekReader( thandle_t handle, toff_t offset, int whence )
 		{
-			// libtiff uses this as a special code, so avoid accepting it
-			if( off == 0xFFFFFFFF ) {
-				return 0xFFFFFFFF;
-			}
+			return TIFFSeek( static_cast<IReadBuffer*>(handle), offset, whence );
+		}
 
-			IWriteBuffer* pBuffer = (IWriteBuffer*)v;
-			IBuffer::eSeek sk;
-
-			switch(whence)
-			{
-			case 0:			// SEEK_SET
-				sk = IBuffer::START;
-				break;
-			case 1:			// SEEK_CUR
-				sk = IBuffer::CUR;
-				break;
-			case 2:			/// SEEK_END
-				sk = IBuffer::END;
-				break;
-			default:
-				sk = IBuffer::START;
-				break;
-			}
-
-			if( pBuffer && pBuffer->seek( sk, static_cast<int>(off) ) ) {
-				return off;
-			}
-
-			return 0;
+		[[maybe_unused]] static toff_t TIFFSeekWriter( thandle_t handle, toff_t offset, int whence )
+		{
+			return TIFFSeek( static_cast<IWriteBuffer*>(handle), offset, whence );
 		}
 
 		__attribute__((unused))
@@ -112,7 +77,9 @@ namespace RISE
 		{
 			IWriteBuffer* pBuffer = (IWriteBuffer*)v;
 
-			if( pBuffer && pBuffer->setBytes( ptr, static_cast<unsigned int>(amount) ) ) {
+			if( pBuffer && amount >= 0 &&
+				static_cast<toff_t>(amount) <= std::numeric_limits<unsigned int>::max() &&
+				pBuffer->setBytes( ptr, static_cast<unsigned int>(amount) ) ) {
 				return amount;
 			}
 

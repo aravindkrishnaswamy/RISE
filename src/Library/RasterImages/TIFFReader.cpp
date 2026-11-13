@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "TIFFReader.h"
+#include <cstring>
 #include "../Interfaces/ILog.h"
 
 #ifndef NO_TIFF_SUPPORT
@@ -68,9 +69,12 @@ bool TIFFReader::BeginRead( unsigned int& width, unsigned int& height )
 	}
 
 	{
-		uint32_t w, h;
-		TIFFGetField( tiff, TIFFTAG_IMAGEWIDTH, &w );
-		TIFFGetField( tiff, TIFFTAG_IMAGELENGTH, &h );
+		uint32_t w = 0, h = 0;
+		if( !TIFFGetField( tiff, TIFFTAG_IMAGEWIDTH, &w ) ||
+			!TIFFGetField( tiff, TIFFTAG_IMAGELENGTH, &h ) ) {
+			TIFFClose( tiff );
+			return false;
+		}
 
 		width = w;
 		height = h;
@@ -90,22 +94,23 @@ bool TIFFReader::BeginRead( unsigned int& width, unsigned int& height )
 		return false;
 	}
 	static const unsigned long long kMaxImageBytes = 2ULL * 1024 * 1024 * 1024; // 2 GiB ceiling
-	const unsigned long long nBytes64 = (unsigned long long)width * (unsigned long long)height * 4ULL;
-	if( nBytes64 > kMaxImageBytes ) {
+	if( width > kMaxImageBytes / 4 / height ) {
 		GlobalLog()->Print( eLog_Error, "TIFFReader: Image dimensions too large" );
 		TIFFClose( tiff );
 		return false;
 	}
+	const unsigned long long nBytes64 = static_cast<unsigned long long>(width) * height * 4;
 	const size_t nBytes = (size_t)nBytes64;
 
 	pBuffer = new unsigned char[nBytes];
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 	memset( pBuffer, 0, nBytes );
 
-	TIFFReadRGBAImage( tiff, width, height, (uint32_t*)pBuffer, 0 );
+	const bool read = TIFFReadRGBAImageOriented( tiff, width, height,
+		reinterpret_cast<uint32_t*>(pBuffer), ORIENTATION_TOPLEFT, 1 ) != 0;
 	TIFFClose( tiff );
-
-	return true;
+	if( !read ) EndRead();
+	return read;
 }
 
 #endif
@@ -115,10 +120,14 @@ void TIFFReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned i
 	if( pBuffer ) {
 		RGBA8 p = {0};
 		const unsigned int idx = y*bufW*4+x*4;
-		p.a = pBuffer[idx];
-		p.b = pBuffer[idx+1];
-		p.g = pBuffer[idx+2];
-		p.r = pBuffer[idx+3];
+		uint32_t pixel = 0;
+		std::memcpy( &pixel, pBuffer + idx, sizeof(pixel) );
+#ifndef NO_TIFF_SUPPORT
+		p.r = TIFFGetR( pixel );
+		p.g = TIFFGetG( pixel );
+		p.b = TIFFGetB( pixel );
+		p.a = TIFFGetA( pixel );
+#endif
 
 		switch( color_space )
 		{
