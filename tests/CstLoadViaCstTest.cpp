@@ -113,6 +113,29 @@ int main()
 {
 	std::printf( "=== CstLoadViaCstTest (P5 Slice 1: load via the canonical CST) ===\n" );
 
+	{
+		const std::string path = RISE::TestSupport::ScratchPath( "load_ascii.RISEscript" );
+		auto script = [&]( const std::string& contents, bool expected, const char* label ) {
+			if( !WriteTmp( path.c_str(), contents ) ) {
+				Check( false, "write ASCII script fixture" );
+				return;
+			}
+			auto* job = new Job();
+			Check( job->RunAsciiScript( path.c_str() ) == expected, label );
+			job->release();
+			std::remove( path.c_str() );
+		};
+		script( "bad marker\nclearall\n", false, "script rejects missing marker" );
+		script( "RISE ASCII SCRIPT 9999999999999999999999\n", false, "script rejects an out-of-range version" );
+		script( "RISE ASCII SCRIPT +3 # annotation\nclearall", true, "script accepts legacy version spelling" );
+		script( "RISE ASCII SCRIPT 3\nunknown_command", false, "script processes its final unterminated line" );
+		script( "RISE ASCII SCRIPT 3\n#" + std::string( 10000, 'a' ) + "\nunknown_command\n",
+			false, "script keeps reading after a long comment" );
+		script( std::string( "RISE ASCII SCRIPT 3\nclearall" ) + '\0' + "unknown\n",
+			false, "script rejects embedded NUL" );
+		script( "RISE ASCII SCRIPT 3\n\"\"\n", false, "script rejects an empty quoted command" );
+	}
+
 	// Slice 6e header-bump back-compat pair: the reader accepts BOTH the post-cutover `7` header and the
 	// transitional `6` header (the CST is version-agnostic).  Prove both load so a re-header can't break
 	// un-migrated user scenes, and so a re-headered corpus scene keeps loading.

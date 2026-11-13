@@ -136,7 +136,7 @@ bool AsciiCommandParser::ParseCommand( const char * szLine, IJob& pJob )
 	if( strlen(szLine) == 0 ) {
 		bSuccess = true;
 	} else if( numTokens ) {
-		if( token[0] == RISE_COMMENT ) {
+		if( token.c_str()[0] == RISE_COMMENT ) {
 			bSuccess = true;
 		}
 	}
