@@ -37,6 +37,7 @@
 #include "../src/Library/Utilities/PiecewiseLinearFunction.h"
 #include "../src/Library/Utilities/MediaPathLocator.h"
 #include "../src/Library/Parsers/AsciiCommandParser.h"
+#include "../src/Library/Options.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -115,6 +116,24 @@ namespace
 int main()
 {
 	std::printf( "=== CstLoadViaCstTest (P5 Slice 1: load via the canonical CST) ===\n" );
+
+	{
+		const std::string path = RISE::TestSupport::ScratchPath( "console_numeric.options" );
+		Check( WriteTmp( path.c_str(),
+			"count +27units\ncount 5\ninvalid invalid\nlarge 9999999999999999999999\n"
+			"tiny 1e-309\nnonfinite 1e999\ntext str \"one two\" three" ), "write options fixture" );
+		auto* options = new Options( path.c_str() );
+		Check( options->ReadInt( "count", 99 ) == 27 && options->ReadInt( "invalid", 99 ) == 0 &&
+			options->ReadInt( "large", 99 ) == 99 && options->ReadInt( "missing", 99 ) == 99,
+			"integer options preserve prefixes and first definition and fall back on overflow" );
+		Check( options->ReadDouble( "tiny", 99 ) > 0.0 && options->ReadDouble( "tiny", 99 ) < 1e-308 &&
+			options->ReadDouble( "nonfinite", 99 ) == 99 && options->ReadDouble( "invalid", 99 ) == 0,
+			"floating options accept finite subnormals and reject overflow" );
+		Check( options->ReadString( "text", String() ) == " one two three",
+			"options preserve quoted spaces and an unterminated final line" );
+		options->release();
+		std::remove( path.c_str() );
+	}
 
 	{
 		const std::string path = RISE::TestSupport::ScratchPath( "load_ascii.RISEscript" );
