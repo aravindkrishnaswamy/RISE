@@ -113,7 +113,7 @@ namespace RISE
 				}
 			}
 
-			explicit RasterImage_Template( RasterImage_Template* source )
+			RasterImage_Template( RasterImage_Template* source )
 			{
 				if( !source ) return;
 				RetainBacking( source );
