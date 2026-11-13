@@ -42,9 +42,8 @@ void StreamPrinter::Print( const LogEvent& event )
 	if( eTypes & event.eType ) {
 		if( pStream ) {
 
-			mutexPrint.lock();
+			const std::lock_guard<std::mutex> lock( mutexPrint );
 			(*pStream) << event.szMessage << std::endl;
-			mutexPrint.unlock();
 
 			if( bFlushAlways ) {
 				pStream->flush();
@@ -55,9 +54,8 @@ void StreamPrinter::Print( const LogEvent& event )
 
 void StreamPrinter::Flush( )
 {
-	mutexPrint.lock();
+	const std::lock_guard<std::mutex> lock( mutexPrint );
 	if( pStream ) {
 		pStream->flush();
 	}
-	mutexPrint.unlock();
 }
