@@ -29,6 +29,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "CstRenderEquivalence.h"
+#include "../src/Library/Managers/GenericManager.h"
 #include "../src/Library/Cst/Cst.h"
 
 using namespace RISE;
@@ -66,6 +67,37 @@ static void ParserRejectsDup( const std::string& dupBody, const std::string& uni
 int main()
 {
 	std::printf( "DuplicateNameRejectionTest -- Job::Add* honors AddItem's bool (no silent first-win)\n" );
+
+	{
+		struct Item final : Implementation::Reference {};
+		struct Names final : IEnumCallback<const char*> {
+			std::vector<std::string> names;
+			bool operator()( const char* const& name ) override { names.emplace_back( name ); return true; }
+		} actual;
+		auto* manager = new GenericManager<Item>();
+		auto* item = new Item();
+		const std::vector<std::string> authored = { "", "a", "ab", "a\xc3\xa9", "\xc3\xa9" };
+		std::vector<String> legacy;
+		for( const auto& name : authored ) {
+			legacy.emplace_back( name.c_str() );
+			Check( manager->AddItem( item, name.c_str() ) && manager->GetItem( name.c_str() ) == item,
+				"manager matches empty, prefix-related and non-ASCII names" );
+		}
+		std::sort( legacy.begin(), legacy.end() );
+		std::vector<std::string> expected;
+		for( const auto& name : legacy ) expected.emplace_back( name.c_str() );
+		manager->EnumerateItemNames( actual );
+		Check( actual.names == expected, "manager retains vector<char> name ordering" );
+		String concatenated( "a" );
+		concatenated.concatenate( "b" );
+		Check( manager->GetItem( concatenated.c_str() ) == item, "manager keys use the C-string boundary" );
+		const auto serial = manager->GetItemSerial( "ab" );
+		Check( serial != 0 && manager->RemoveItem( "ab" ) && manager->GetItemSerial( "ab" ) == 0 &&
+			manager->AddItem( item, "ab" ) && manager->GetItemSerial( "ab" ) > serial,
+			"removing and restoring a name changes its registration serial" );
+		manager->release();
+		item->release();
+	}
 
 	//----------------------------------------------------------------------
 	std::printf( "[A] Job API: a second Add* under an existing name returns false; first wins\n" );

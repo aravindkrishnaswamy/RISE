@@ -23,6 +23,8 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <string_view>
+#include <algorithm>
 
 namespace RISE
 {
@@ -86,6 +88,22 @@ namespace RISE
 		if( g_cstFinalizeDiagSink && g_cstFinalizeDiagSink->empty() ) *g_cstFinalizeDiagSink = msg;
 	}
 
+	// Preserve the old vector<char> ordering, including its terminating NUL.
+	struct ManagerNameLess
+	{
+		using is_transparent = void;
+
+		bool operator()( std::string_view left, std::string_view right ) const
+		{
+			const auto common = std::min( left.size(), right.size() );
+			for( size_t i = 0; i < common; ++i ) {
+				if( left[i] != right[i] ) return left[i] < right[i];
+			}
+			if( left.size() == right.size() ) return false;
+			return left.size() < right.size() ? char(0) < right[common] : left[common] < char(0);
+		}
+	};
+
 	template< class T >
 	class GenericManager : public virtual Implementation::Reference, public virtual IManager<T>
 	{
@@ -114,14 +132,14 @@ namespace RISE
 
 		typedef std::vector<ITEMREFERENCES>				ReferencesListType;
 		typedef std::pair<T*,ReferencesListType>		ItemType;
-		typedef std::map<String,ItemType>				ItemListType;
+		typedef std::map<std::string,ItemType,ManagerNameLess>				ItemListType;
 
 		ItemListType		items;
 
 		// P1: parallel per-name registration serial, bumped on every AddItem, so a
 		// remove+re-add under the same name yields a NEW serial (identity change).
 		unsigned long long							m_nNextSerial;
-		std::map<String,unsigned long long>			m_serials;
+		std::map<std::string,unsigned long long,ManagerNameLess>			m_serials;
 
 		virtual ~GenericManager( )
 		{
@@ -146,12 +164,16 @@ namespace RISE
 				return false;
 			}
 
-			// Now add it
+			std::string name( szName );
+			const auto inserted = items.try_emplace( name, pItem, ReferencesListType() );
+			try {
+				m_serials.emplace( std::move(name), m_nNextSerial + 1 );
+			} catch( ... ) {
+				items.erase( inserted.first );
+				throw;
+			}
+			++m_nNextSerial;
 			pItem->addref();
-
-			String vecName( szName );
-			items[vecName] = std::pair<T*,ReferencesListType>( pItem, ReferencesListType() );
-			m_serials[vecName] = ++m_nNextSerial;   // P1: identity serial
 			if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pItem ) );   // D35: PRODUCED entity
 			return true;
 		}
@@ -163,13 +185,13 @@ namespace RISE
 				return false;
 			}
 
-			String vecName( szName );
-			typename ItemListType::iterator	elem = items.find( vecName );
+			typename ItemListType::iterator	elem = items.find( std::string_view(szName) );
 
 			if( elem == items.end() ) {
 				GlobalLog()->PrintEx( eLog_Warning, "GenericManager::RemoveItem:: '%s' not found", szName );
 				return false;
 			}
+			const auto serial = m_serials.find( elem->first );
 
 			typename ReferencesListType::iterator	m, n;
 			for( m=elem->second.second.begin(), n=elem->second.second.end(); m!=n; m++ ) {
@@ -187,7 +209,7 @@ namespace RISE
 			// safe_release covers them on teardown.
 			safe_release( elem->second.first );
 			items.erase( elem );
-			m_serials.erase( vecName );   // P1: drop identity serial (a re-add gets a fresh one)
+			if( serial != m_serials.end() ) m_serials.erase( serial );   // P1: drop identity serial (a re-add gets a fresh one)
 			return true;
 		}
 
@@ -198,8 +220,7 @@ namespace RISE
 				return 0;
 			}
 
-			String vecName( szName );
-			typename ItemListType::const_iterator	elem = items.find( vecName );
+			typename ItemListType::const_iterator	elem = items.find( std::string_view(szName) );
 
 			if( elem == items.end() ) {
 				return 0;
@@ -213,8 +234,7 @@ namespace RISE
 		unsigned long long	GetItemSerial( const char* szName ) const
 		{
 			if( !szName ) return 0;
-			String vecName( szName );
-			typename std::map<String,unsigned long long>::const_iterator it = m_serials.find( vecName );
+			typename std::map<std::string,unsigned long long,ManagerNameLess>::const_iterator it = m_serials.find( std::string_view(szName) );
 			return ( it == m_serials.end() ) ? 0 : it->second;
 		}
 
@@ -226,8 +246,7 @@ namespace RISE
 				return 0;
 			}
 
-			String vecName( szName );
-			typename ItemListType::iterator	elem = items.find( vecName );
+			typename ItemListType::iterator	elem = items.find( std::string_view(szName) );
 
 			if( elem == items.end() ) {
 				GlobalLog()->PrintEx( eLog_Warning, "GenericManager::RequestItemUse:: '%s' not found", szName );

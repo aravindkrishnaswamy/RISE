@@ -547,7 +547,7 @@ void ObjectManager::BuildRecomposeList() const
 		std::set<String> seen;
 		while( seen.insert( cur ).second ) {
 			const std::map<String,String>::const_iterator link = parentByName.find( cur );
-			if( link == parentByName.end() || items.find( link->second ) == items.end() ) {
+			if( link == parentByName.end() || items.find( std::string_view(link->second.c_str()) ) == items.end() ) {
 				break;
 			}
 			cur = link->second;
@@ -561,7 +561,7 @@ void ObjectManager::BuildRecomposeList() const
 	// Children in registration-serial order, as RebakeHierarchy walks them.
 	std::map<String, std::vector<std::pair<unsigned long long, String> > > childrenOf;
 	for( std::map<String,String>::const_iterator it = parentByName.begin(); it != parentByName.end(); ++it ) {
-		if( items.find( it->first ) == items.end() || items.find( it->second ) == items.end() ) {
+		if( items.find( std::string_view(it->first.c_str()) ) == items.end() || items.find( std::string_view(it->second.c_str()) ) == items.end() ) {
 			continue;
 		}
 		childrenOf[it->second].push_back( std::make_pair( GetItemSerial( it->first.c_str() ), it->first ) );
@@ -577,12 +577,12 @@ void ObjectManager::BuildRecomposeList() const
 		const String name = stack.back();
 		stack.pop_back();
 		if( !visited.insert( name ).second ) continue;
-		const GenericManager<IObjectPriv>::ItemListType::const_iterator ni = items.find( name );
+		const GenericManager<IObjectPriv>::ItemListType::const_iterator ni = items.find( std::string_view(name.c_str()) );
 		if( ni == items.end() || !ni->second.first ) continue;
 		IObjectPriv* parent = 0;
 		const std::map<String,String>::const_iterator link = parentByName.find( name );
 		if( link != parentByName.end() ) {
-			const GenericManager<IObjectPriv>::ItemListType::const_iterator pi = items.find( link->second );
+			const GenericManager<IObjectPriv>::ItemListType::const_iterator pi = items.find( std::string_view(link->second.c_str()) );
 			if( pi != items.end() ) parent = pi->second.first;
 		}
 		recomposeList.push_back( std::make_pair( ni->second.first, parent ) );
@@ -2315,9 +2315,9 @@ bool ObjectManager::RebakeHierarchy( std::set<String>* pChangedNames ) const
 	std::map<String, IObjectPriv*> members;
 
 	for( std::map<String,String>::const_iterator it = parentByName.begin(); it != parentByName.end(); ++it ) {
-		const GenericManager<IObjectPriv>::ItemListType::const_iterator ci = items.find( it->first );
+		const GenericManager<IObjectPriv>::ItemListType::const_iterator ci = items.find( std::string_view(it->first.c_str()) );
 		if( ci == items.end() ) continue;   // the child itself is gone; the structural path owns that
-		const GenericManager<IObjectPriv>::ItemListType::const_iterator pi = items.find( it->second );
+		const GenericManager<IObjectPriv>::ItemListType::const_iterator pi = items.find( std::string_view(it->second.c_str()) );
 		if( pi == items.end() ) {
 			// Dangling parent.  Warned once per name -- the same dedupe the full
 			// walk uses, and for the same reason: this runs every frame.
@@ -2372,7 +2372,7 @@ bool ObjectManager::RebakeHierarchy( std::set<String>* pChangedNames ) const
 		Matrix4 parentWorld = Matrix4Ops::Identity();
 		const std::map<String,String>::const_iterator link = parentByName.find( name );
 		if( link != parentByName.end() ) {
-			const GenericManager<IObjectPriv>::ItemListType::const_iterator p = items.find( link->second );
+			const GenericManager<IObjectPriv>::ItemListType::const_iterator p = items.find( std::string_view(link->second.c_str()) );
 			if( p != items.end() ) parentWorld = p->second.first->GetFinalTransformMatrix();
 		}
 
@@ -2457,18 +2457,19 @@ bool ObjectManager::ComposeWorldTransforms() const
 	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
 	for( i=items.begin(), e=items.end(); i!=e; ++i ) {
 		IObjectPriv* obj = i->second.first;
-		nameOf[obj] = i->first;
-		const std::map<String,String>::const_iterator link = parentByName.find( i->first );
+		const String name( i->first.c_str() );
+		nameOf[obj] = name;
+		const std::map<String,String>::const_iterator link = parentByName.find( name );
 		if( link == parentByName.end() ) {
 			roots.push_back( obj );
 			continue;
 		}
-		if( items.find( link->second ) == items.end() ) {
+		if( items.find( std::string_view(link->second.c_str()) ) == items.end() ) {
 			// The recorded parent is gone (removed from the manager after the
 			// link was made).  Treat the child as a root rather than dropping
 			// it from the render list -- it is still a real object -- and warn
 			// once per name so a per-frame compose cannot flood the log.
-			if( danglingParentWarned.insert( i->first ).second ) {
+			if( danglingParentWarned.insert( name ).second ) {
 				GlobalLog()->PrintEx( eLog_Warning,
 					"ObjectManager::ComposeWorldTransforms:: object `%s` names parent `%s`, which is "
 					"no longer a registered object; treating `%s` as a root",
@@ -2507,7 +2508,7 @@ bool ObjectManager::ComposeWorldTransforms() const
 			( nm == nameOf.end() ) ? parentByName.end() : parentByName.find( nm->second );
 		Matrix4 parentWorld = Matrix4Ops::Identity();
 		if( link != parentByName.end() ) {
-			const GenericManager<IObjectPriv>::ItemListType::const_iterator p = items.find( link->second );
+			const GenericManager<IObjectPriv>::ItemListType::const_iterator p = items.find( std::string_view(link->second.c_str()) );
 			if( p != items.end() ) parentWorld = p->second.first->GetFinalTransformMatrix();
 		}
 		// EXACT comparison, deliberately: the caller uses this to decide
