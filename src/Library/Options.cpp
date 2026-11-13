@@ -15,6 +15,10 @@
 #include "Options.h"
 #include "Parsers/AsciiCommandParser.h"
 #include <fstream>
+#include <cerrno>
+#include <cstdlib>
+#include <limits>
+#include "Utilities/FiniteMath.h"
 #include <string_view>
 
 using namespace RISE;
@@ -82,7 +86,13 @@ int Options::ReadInt( const char* name, int default_value )
 	const auto it = name ? options.find( std::string_view(name) ) : options.end();
 
 	if( it != options.end() ) {
-		return atoi(it->second.c_str());
+		const char* start = it->second.c_str();
+		char* end = nullptr;
+		errno = 0;
+		const auto value = std::strtoll( start, &end, 10 );
+		if( start == end ) return 0;
+		if( errno != ERANGE && value >= std::numeric_limits<int>::min() &&
+			value <= std::numeric_limits<int>::max() ) return static_cast<int>(value);
 	}
 
 	return default_value;
@@ -93,7 +103,8 @@ double Options::ReadDouble( const char* name, double default_value )
 	const auto it = name ? options.find( std::string_view(name) ) : options.end();
 
 	if( it != options.end() ) {
-		return atof(it->second.c_str());
+		const double value = std::strtod( it->second.c_str(), nullptr );
+		if( IsFiniteDouble( value ) ) return value;
 	}
 
 	return default_value;
