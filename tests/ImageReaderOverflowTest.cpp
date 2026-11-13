@@ -124,9 +124,7 @@ static bool RunHDR( std::vector<char>& bytes, unsigned int& w, unsigned int& h,
 {
 	w = h = 0;
 	MemoryBuffer* mb = new MemoryBuffer( bytes.data(), static_cast<unsigned int>( bytes.size() ), false );
-	mb->addref();
 	HDRReader* reader = new HDRReader( *mb );
-	reader->addref();
 	const bool ok = reader->BeginRead( w, h );
 	if( ok && px0 && w >= 1 )        reader->ReadColor( *px0,   0,   0 );
 	if( ok && pxLast && w >= 1 )     reader->ReadColor( *pxLast, w-1, 0 );
@@ -232,6 +230,17 @@ static void TestHDRNewRLE()
 	// Overflow dimensions rejected before allocation.
 	std::vector<char> over = MakeHDRHeader( "-Y 100000 +X 100000\n" );
 	Check( !RunHDR( over, w, h ), "B: overflow-dimension HDR returns false" );
+
+	std::vector<char> wrapped = MakeHDRHeader( "-Y 2147483648 +X 2147483648\n" );
+	Check( !RunHDR( wrapped, w, h ), "B: HDR rejects dimensions whose byte count wraps 64 bits" );
+
+	std::vector<char> missingAxis = MakeHDRHeader( "-Y 1\n" );
+	Check( !RunHDR( missingAxis, w, h ), "B: HDR rejects a resolution line without an X axis" );
+
+	std::vector<char> wrongAxis = MakeHDRHeader( "-Y 1 AX 1\n" );
+	AppendByte( wrongAxis, 10 ); AppendByte( wrongAxis, 20 );
+	AppendByte( wrongAxis, 30 ); AppendByte( wrongAxis, 130 );
+	Check( !RunHDR( wrongAxis, w, h ), "B: HDR rejects an invalid X axis even with a complete pixel" );
 
 	// Over-long RLE run (num=200 -> length 72) into a 4-wide scanline.
 	std::vector<char> run = MakeHDRHeader( "-Y 2 +X 4\n" );

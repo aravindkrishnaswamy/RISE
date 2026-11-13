@@ -12,7 +12,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include <stdio.h>					// for sscanf
+#include <charconv>
+#include <sstream>
 #include <string.h>					// for strlen and strncmp
 #include "HDRReader.h"
 #include "../Interfaces/ILog.h"
@@ -87,33 +88,20 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 		return false;
 	}
 
-	bool bFlippedY = false;
-	if( strncmp( buf, "+Y", 2 ) == 0 ) {
-		bFlippedY = true;
-	}
-
-	// Find the X
-	bool bFlippedX = false;
-	{
-		int cnt=0;
-		while( buf[cnt] != 'X' ) {
-			cnt++;
-		}
-
-		if( buf[cnt-1] == '-' ) {
-			// Flip the X
-			bFlippedX = true;
-		}
-	}
-
-	// Read the dimensions
-	char dummy[32] = {0};
-	sscanf( buf, "%s %u %s %u", dummy, &height, dummy, &width );
-
-	if( !width || !height ) {
+	std::istringstream resolution( std::string( buf, numRead ) );
+	std::string yAxis, heightToken, xAxis, widthToken, trailing;
+	const auto readDimension = []( const std::string& token, unsigned int& value ) {
+		const char* end = token.data() + token.size();
+		const auto parsed = std::from_chars( token.data(), end, value );
+		return parsed.ec == std::errc{} && parsed.ptr == end && value != 0;
+	};
+	if( !(resolution >> yAxis >> heightToken >> xAxis >> widthToken) || (resolution >> trailing) ||
+		(yAxis != "-Y" && yAxis != "+Y") || (xAxis != "-X" && xAxis != "+X") ||
+		!readDimension( heightToken, height ) || !readDimension( widthToken, width ) ) {
 		GlobalLog()->Print( eLog_Error, "HDRReader: Something is wrong with image dimensions" );
 		return false;
 	}
+	const bool bFlippedY = yAxis == "+Y";
 
 	// The -X (horizontally flipped) scanline order walks the write cursor
 	// backwards off the row (start is at the row's left edge with step -1);
@@ -121,23 +109,19 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 	// with a clear message -- the pre-fix code decoded it into out-of-bounds
 	// indices, and the bounds guards below would otherwise reject it with a
 	// misleading "malformed data" error.
-	if( bFlippedX ) {
+	if( xAxis == "-X" ) {
 		GlobalLog()->Print( eLog_Error, "HDRReader: -X (horizontally flipped) scanline order is not supported" );
 		return false;
 	}
 
-	// Guard the destination-buffer sizing against a header-driven integer
-	// overflow.  width and height come from an unbounded sscanf %u, so the
-	// historical 32-bit product `width*height*4` can wrap to a tiny
-	// allocation that the RLE decode loop below then writes past (heap OOB
-	// write).  Compute the size in 64-bit and cap at a sane ceiling.
+	// Cap the pixel count before multiplying by the four bytes per pixel.
 	static const unsigned long long kMaxImageBytes = 2ULL * 1024 * 1024 * 1024; // 2 GiB ceiling
-	const unsigned long long nBytes64 = (unsigned long long)width * (unsigned long long)height * 4ULL;
-	if( nBytes64 > kMaxImageBytes ) {
+	const auto pixels = static_cast<unsigned long long>( width ) * height;
+	if( pixels > kMaxImageBytes / 4 ) {
 		GlobalLog()->Print( eLog_Error, "HDRReader: Image dimensions too large" );
 		return false;
 	}
-	const size_t nBytes = (size_t)nBytes64;
+	const size_t nBytes = static_cast<size_t>( pixels * 4 );
 
 	pBuffer = new unsigned char[nBytes];
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
@@ -166,7 +150,7 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 		int start = bFlippedY ? (height-y-1)*width : y*width;
 		// step is always +1 here (bFlippedX / -X order was rejected above);
 		// the `idx < 0` / `pos-step < 0` guards below are defensive only.
-		int step = bFlippedX ? -1 : 1;
+		const int step = 1;
 
 		// Start by reading the first four bytes of every scanline
 		pReadBuffer.getBytes( col, 4 );
