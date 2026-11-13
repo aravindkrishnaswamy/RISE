@@ -591,64 +591,34 @@ bool AsciiCommandParser::ParseRemove( const std::string* tokens, unsigned int nu
 	return false;
 }
 
-bool AsciiCommandParser::ParsePredictRasterizationTime( const std::string*, unsigned int, IJob& pJob, AsciiCommandParser* )
+static void LogRasterizationTime( const char* label, unsigned int milliseconds )
 {
-	unsigned int		predicted = 0;
-	bool ret = pJob.PredictRasterizationTime( 4096, &predicted, 0 );
+	using namespace std::chrono;
+	auto remaining = std::chrono::milliseconds( milliseconds );
+	std::string message = label;
+	const auto append = [&]( auto unit, const char* name ) {
+		const auto count = duration_cast<decltype(unit)>(remaining);
+		remaining -= count;
+		if( count.count() == 0 ) return;
+		message += std::to_string( count.count() );
+		message += name;
+	};
+	using Days = duration<int, std::ratio<86400>>;
+	append( Days(1), " days " );
+	append( hours(1), " hours " );
+	append( minutes(1), " minutes " );
+	append( seconds(1), " seconds " );
+	append( std::chrono::milliseconds(1), " ms" );
+	message += '\n';
+	GlobalLog()->Print( eLog_Benign, message.c_str() );
+}
 
-	if( ret ) {
-		unsigned int		duration = predicted;
-		unsigned int		days = duration/1000/60/60/24;
-		duration -= days*1000*60*60*24;
-		unsigned int		hours = duration/1000/60/60;
-		duration -= hours*1000*60*60;
-		unsigned int		mins = duration/1000/60;
-		duration -= mins*1000*60;
-		unsigned int		secs = duration/1000;
-		unsigned int		ms = duration % 1000;
-
-		static const int MAX_BUFFER_SIZE = 1024;
-		char buf[MAX_BUFFER_SIZE] = {0};
-		strcat( buf, "Predicted Rasterization Time: " );
-
-		static const int MAX_BUFFER_SIZE_SMALL = 32;
-		char daybuf[MAX_BUFFER_SIZE_SMALL] = {0};
-		snprintf( daybuf, MAX_BUFFER_SIZE_SMALL, "%d days ", days );
-		char hourbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-		snprintf( hourbuf, MAX_BUFFER_SIZE_SMALL, "%d hours ", hours );
-		char minbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-		snprintf( minbuf, MAX_BUFFER_SIZE_SMALL, "%d minutes ", mins );
-		char secbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-		snprintf( secbuf, MAX_BUFFER_SIZE_SMALL, "%d seconds ", secs );
-		char msbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-		snprintf( msbuf, MAX_BUFFER_SIZE_SMALL, "%d ms", ms );
-
-		if( days ) {
-			strcat( buf, daybuf );
-		}
-
-		if( hours ) {
-			strcat( buf, hourbuf );
-		}
-
-		if( mins ) {
-			strcat( buf, minbuf );
-		}
-
-		if( secs ) {
-			strcat( buf, secbuf );
-		}
-
-		if( ms ) {
-			strcat( buf, msbuf );
-		}
-
-		strcat( buf, "\n" );
-
-		GlobalLog()->Print( eLog_Benign, buf );
-	}
-
-	return ret;
+bool AsciiCommandParser::ParsePredictRasterizationTime( const std::string*, unsigned int, IJob& job, AsciiCommandParser* )
+{
+	unsigned int predicted = 0;
+	if( !job.PredictRasterizationTime( 4096, &predicted, nullptr ) ) return false;
+	LogRasterizationTime( "Predicted Rasterization Time: ", predicted );
+	return true;
 }
 
 bool AsciiCommandParser::ParseRasterize( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
@@ -657,7 +627,7 @@ bool AsciiCommandParser::ParseRasterize( const std::string* tokens, unsigned int
 		GlobalLog()->PrintEasyError( "Usage: render [left right top bottom]" );
 		return false;
 	}
-	unsigned int left, right, top, bottom;
+	unsigned int left = 0, right = 0, top = 0, bottom = 0;
 	if( num_tokens >= 4 && (!ReadUnsigned( tokens[0], left ) || !ReadUnsigned( tokens[1], right ) ||
 		!ReadUnsigned( tokens[2], top ) || !ReadUnsigned( tokens[3], bottom )) ) return false;
 
@@ -684,55 +654,7 @@ bool AsciiCommandParser::ParseRasterize( const std::string* tokens, unsigned int
 
 	pJob.SetProgress( 0 );
 
-	unsigned int		duration = ElapsedMilliseconds(tStart, tEnd);
-	unsigned int		days = duration/1000/60/60/24;
-	duration -= days*1000*60*60*24;
-	unsigned int		hours = duration/1000/60/60;
-	duration -= hours*1000*60*60;
-	unsigned int		mins = duration/1000/60;
-	duration -= mins*1000*60;
-	unsigned int		secs = duration/1000;
-	unsigned int		ms = duration % 1000;
-
-	static const int MAX_BUFFER_SIZE = 1024;
-	char buf[MAX_BUFFER_SIZE] = {0};
-	strcat( buf, "Total Rasterization Time: " );
-
-	static const int MAX_BUFFER_SIZE_SMALL = 32;
-	char daybuf[MAX_BUFFER_SIZE_SMALL] = {0};
-	snprintf( daybuf, MAX_BUFFER_SIZE_SMALL, "%d days ", days );
-	char hourbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-	snprintf( hourbuf, MAX_BUFFER_SIZE_SMALL, "%d hours ", hours );
-	char minbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-	snprintf( minbuf, MAX_BUFFER_SIZE_SMALL, "%d minutes ", mins );
-	char secbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-	snprintf( secbuf, MAX_BUFFER_SIZE_SMALL, "%d seconds ", secs );
-	char msbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-	snprintf( msbuf, MAX_BUFFER_SIZE_SMALL, "%d ms", ms );
-
-	if( days ) {
-		strcat( buf, daybuf );
-	}
-
-	if( hours ) {
-		strcat( buf, hourbuf );
-	}
-
-	if( mins ) {
-		strcat( buf, minbuf );
-	}
-
-	if( secs ) {
-		strcat( buf, secbuf );
-	}
-
-	if( ms ) {
-		strcat( buf, msbuf );
-	}
-
-	strcat( buf, "\n" );
-
-	GlobalLog()->Print( eLog_Benign, buf );
+	LogRasterizationTime( "Total Rasterization Time: ", ElapsedMilliseconds( tStart, tEnd ) );
 
 	return bRet;
 }
@@ -771,55 +693,7 @@ bool AsciiCommandParser::ParseRasterizeAnimation( const std::string* tokens, uns
 
 	pJob.SetProgress( 0 );
 
-	unsigned int		duration = ElapsedMilliseconds(tStart, tEnd);
-	unsigned int		days = duration/1000/60/60/24;
-	duration -= days*1000*60*60*24;
-	unsigned int		hours = duration/1000/60/60;
-	duration -= hours*1000*60*60;
-	unsigned int		mins = duration/1000/60;
-	duration -= mins*1000*60;
-	unsigned int		secs = duration/1000;
-	unsigned int		ms = duration % 1000;
-
-	static const int MAX_BUFFER_SIZE = 1024;
-	char buf[MAX_BUFFER_SIZE] = {0};
-	strcat( buf, "Total Rasterization Time: " );
-
-	static const int MAX_BUFFER_SIZE_SMALL = 32;
-	char daybuf[MAX_BUFFER_SIZE_SMALL] = {0};
-	snprintf( daybuf, MAX_BUFFER_SIZE_SMALL, "%d days ", days );
-	char hourbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-	snprintf( hourbuf, MAX_BUFFER_SIZE_SMALL, "%d hours ", hours );
-	char minbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-	snprintf( minbuf, MAX_BUFFER_SIZE_SMALL, "%d minutes ", mins );
-	char secbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-	snprintf( secbuf, MAX_BUFFER_SIZE_SMALL, "%d seconds ", secs );
-	char msbuf[MAX_BUFFER_SIZE_SMALL] = {0};
-	snprintf( msbuf, MAX_BUFFER_SIZE_SMALL, "%d ms", ms );
-	
-	if( days ) {
-		strcat( buf, daybuf );
-	}
-
-	if( hours ) {
-		strcat( buf, hourbuf );
-	}
-
-	if( mins ) {
-		strcat( buf, minbuf );
-	}
-
-	if( secs ) {
-		strcat( buf, secbuf );
-	}
-
-	if( ms ) {
-		strcat( buf, msbuf );
-	}
-
-	strcat( buf, "\n" );
-
-	GlobalLog()->Print( eLog_Benign, buf );
+	LogRasterizationTime( "Total Rasterization Time: ", ElapsedMilliseconds( tStart, tEnd ) );
 
 	return bRet;
 }
