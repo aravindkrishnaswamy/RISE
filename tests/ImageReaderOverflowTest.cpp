@@ -242,36 +242,37 @@ static void TestHDRNewRLE()
 	AppendByte( wrongAxis, 30 ); AppendByte( wrongAxis, 130 );
 	Check( !RunHDR( wrongAxis, w, h ), "B: HDR rejects an invalid X axis even with a complete pixel" );
 
-	// Over-long RLE run (num=200 -> length 72) into a 4-wide scanline.
-	std::vector<char> run = MakeHDRHeader( "-Y 2 +X 4\n" );
-	AppendByte( run, 2 ); AppendByte( run, 2 ); AppendByte( run, 0 ); AppendByte( run, 4 );
+	// Over-long RLE run (num=200 -> length 72) into a 8-wide scanline.
+	std::vector<char> run = MakeHDRHeader( "-Y 2 +X 8\n" );
+	AppendByte( run, 2 ); AppendByte( run, 2 ); AppendByte( run, 0 ); AppendByte( run, 8 );
 	AppendByte( run, 200 ); AppendByte( run, 0xAB );
 	Check( !RunHDR( run, w, h ), "B: over-long-RLE HDR returns false" );
 
 	// Truncated scanline (col header, no run codes) -> zero-length run -> reject.
-	std::vector<char> trunc = MakeHDRHeader( "-Y 2 +X 4\n" );
-	AppendByte( trunc, 2 ); AppendByte( trunc, 2 ); AppendByte( trunc, 0 ); AppendByte( trunc, 4 );
+	std::vector<char> trunc = MakeHDRHeader( "-Y 2 +X 8\n" );
+	AppendByte( trunc, 2 ); AppendByte( trunc, 2 ); AppendByte( trunc, 0 ); AppendByte( trunc, 8 );
 	Check( !RunHDR( trunc, w, h ), "B: truncated-scanline HDR returns false" );
 
-	// Valid 4x1 new-RLE: four raw runs of 4 values; R<G<B so we can assert
+	// Valid 8x1 new-RLE: four raw runs of 8 values; R<G<B so we can assert
 	// the decode order wasn't transposed.
-	std::vector<char> good = MakeHDRHeader( "-Y 1 +X 4\n" );
-	AppendByte( good, 2 ); AppendByte( good, 2 ); AppendByte( good, 0 ); AppendByte( good, 4 );
-	const unsigned char comp[4][4] = {
-		{ 10, 20, 30, 40 }, { 11, 21, 31, 41 }, { 12, 22, 32, 42 }, { 130, 130, 130, 130 }
+	std::vector<char> good = MakeHDRHeader( "-Y 1 +X 8\n" );
+	AppendByte( good, 2 ); AppendByte( good, 2 ); AppendByte( good, 0 ); AppendByte( good, 8 );
+	const unsigned char comp[4][8] = {
+		{ 10, 20, 30, 40, 50, 60, 70, 80 }, { 11, 21, 31, 41, 51, 61, 71, 81 },
+		{ 12, 22, 32, 42, 52, 62, 72, 82 }, { 130, 130, 130, 130, 130, 130, 130, 130 }
 	};
 	for( int c = 0; c < 4; ++c ) {
-		AppendByte( good, 4 );
-		for( int p = 0; p < 4; ++p ) AppendByte( good, comp[c][p] );
+		AppendByte( good, 8 );
+		for( int p = 0; p < 8; ++p ) AppendByte( good, comp[c][p] );
 	}
 	RISEColor px0;
 	const bool ok = RunHDR( good, w, h, &px0 );
-	Check( ok && w == 4 && h == 1, "B: valid 4x1 new-RLE HDR decodes" );
+	Check( ok && w == 8 && h == 1, "B: valid 8x1 new-RLE HDR decodes" );
 	Check( ok && px0.a == 1.0, "B: decoded pixel alpha == 1.0" );
 	Check( ok && px0.base.r > 0.0 && px0.base.r < px0.base.g && px0.base.g < px0.base.b,
 		"B: pixel channels decode in R<G<B order (no transposition)" );
 	auto wrongWidth = good;
-	wrongWidth[MakeHDRHeader( "-Y 1 +X 4\n" ).size()+3] = 5;
+	wrongWidth[MakeHDRHeader( "-Y 1 +X 8\n" ).size()+3] = 5;
 	Check( !RunHDR( wrongWidth, w, h ), "B: HDR rejects an RLE scanline with the wrong encoded width" );
 	good.pop_back();
 	Check( !RunHDR( good, w, h ), "B: HDR rejects a missing final RLE literal" );
@@ -290,9 +291,17 @@ static void TestHDROldRLE()
 	longComment.insert( longComment.end(), 1023, ' ' );
 	AppendStr( longComment, "-Y 1 +X 2\n-Y 1 +X 1\n" );
 	AppendByte( longComment, 2 ); AppendByte( longComment, 2 );
-	AppendByte( longComment, 128 ); AppendByte( longComment, 130 );
+	AppendByte( longComment, 1 ); AppendByte( longComment, 130 );
 	Check( RunHDR( longComment, w, h ) && w == 1 && h == 1,
-		"C: HDR skips long comment continuations and accepts a flat pixel with a high-bit blue sample" );
+		"C: HDR skips long comment continuations and accepts a flat pixel with an RLE-like prefix" );
+
+	std::vector<char> highBitBlue = MakeHDRHeader( "-Y 1 +X 8\n" );
+	for( int i=0; i<8; ++i ) {
+		AppendByte( highBitBlue, 2 ); AppendByte( highBitBlue, 2 );
+		AppendByte( highBitBlue, 128 ); AppendByte( highBitBlue, 130 );
+	}
+	Check( RunHDR( highBitBlue, w, h ) && w == 8 && h == 1,
+		"C: HDR accepts a flat scanline with a high-bit blue sample" );
 
 	std::vector<char> xyze;
 	AppendStr( xyze, "#?RADIANCE\nFORMAT=32-bit_rle_xyze\n-Y 1 +X 1\n" );

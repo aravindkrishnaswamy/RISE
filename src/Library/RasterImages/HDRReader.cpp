@@ -162,7 +162,9 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 
 		// This is Radiance's new RLE scheme
 		// Header of 0x2, 0x2 is RLE encoding
-		if( col[0] == 2 && col[1] == 2 && (static_cast<unsigned char>( col[2] ) & 0x80u) == 0 ) {
+		// Radiance's per-channel RLE is defined for this scanline width range.
+		if( width >= 8 && width <= 32767 && col[0] == 2 && col[1] == 2 &&
+			(static_cast<unsigned char>( col[2] ) & 0x80u) == 0 ) {
 			const auto scanlineWidth = (static_cast<unsigned int>( col[2] ) << 8) |
 				static_cast<unsigned char>( col[3] );
 			if( scanlineWidth != width ) {
