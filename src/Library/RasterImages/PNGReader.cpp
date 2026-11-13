@@ -222,28 +222,14 @@ void PNGReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned in
 
 				const unsigned int idx = bAlphaInfo?(y*bufW*8+x*8):(y*bufW*6+x*6);
 
-#ifdef RISE_BIG_ENDIAN
-				p.b = *((unsigned short*)(&pBuffer[idx]));
-				p.g = *((unsigned short*)(&pBuffer[idx+2]));
-				p.r = *((unsigned short*)(&pBuffer[idx+4]));
-
-				if( bAlphaInfo ) {
-					p.a = *((unsigned short*)(&pBuffer[idx+6]));
-				} else {
-					p.a = 0xFFFF;
-				}
-#else
-				// Byte order in PNG is flipped!  Its little endian!
-				p.b = ((pBuffer[idx]&0xFF) | ((pBuffer[idx+1]<<8)&0xFF00));
-				p.g = ((pBuffer[idx+2]&0xFF) | ((pBuffer[idx+3]<<8)&0xFF00));
-				p.r = ((pBuffer[idx+4]&0xFF) | ((pBuffer[idx+5]<<8)&0xFF00));
-
-				if( bAlphaInfo ) {
-					p.a = ((pBuffer[idx+6]&0xFF) | ((pBuffer[idx+7]<<8)&0xFF00));
-				} else {
-					p.a = 0xFFFF;
-				}
-#endif
+				// libpng leaves 16-bit samples in PNG's network byte order.
+				const auto readSample = [this]( unsigned int offset ) {
+					return static_cast<unsigned short>( (pBuffer[offset] << 8) | pBuffer[offset+1] );
+				};
+				p.b = readSample( idx );
+				p.g = readSample( idx+2 );
+				p.r = readSample( idx+4 );
+				p.a = bAlphaInfo ? readSample( idx+6 ) : 0xFFFF;
 				switch( color_space )
 				{
 				case eColorSpace_Rec709RGB_Linear:

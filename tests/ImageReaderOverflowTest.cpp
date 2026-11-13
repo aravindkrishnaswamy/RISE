@@ -134,14 +134,13 @@ static bool RunHDR( std::vector<char>& bytes, unsigned int& w, unsigned int& h,
 }
 
 #ifndef NO_PNG_SUPPORT
-static bool RunPNG( std::vector<char>& bytes, unsigned int& w, unsigned int& h )
+static bool RunPNG( std::vector<char>& bytes, unsigned int& w, unsigned int& h, RISEColor* pixel = nullptr )
 {
 	w = h = 0;
 	MemoryBuffer* mb = new MemoryBuffer( bytes.data(), static_cast<unsigned int>( bytes.size() ), false );
-	mb->addref();
 	PNGReader* reader = new PNGReader( *mb, eColorSpace_Rec709RGB_Linear );
-	reader->addref();
 	const bool ok = reader->BeginRead( w, h );
+	if( ok && pixel ) reader->ReadColor( *pixel, 0, 0 );
 	reader->release();
 	mb->release();
 	return ok;
@@ -398,6 +397,29 @@ static void TestPNG()
 
 	unsigned int w, h;
 	Check( !RunPNG( png, w, h ), "D: overflow-dimension PNG returns false (no OOB alloc)" );
+
+	std::vector<char> rgba16;
+	for( unsigned char byte : sig ) AppendByte( rgba16, byte );
+	AppendPNGChunk( rgba16, "IHDR", { 0,0,0,1, 0,0,0,1, 16,6,0,0,0 } );
+	const unsigned char row[] = { 0, 0x12,0x34, 0x56,0x78, 0x9a,0xbc, 0xde,0xf0 };
+	std::vector<unsigned char> compressed( compressBound( sizeof(row) ) );
+	uLongf length = static_cast<uLongf>( compressed.size() );
+	const int compressedOk = compress( compressed.data(), &length, row, sizeof(row) );
+	Check( compressedOk == Z_OK, "D: create an independent 16-bit PNG scanline fixture" );
+	if( compressedOk == Z_OK ) {
+		compressed.resize( length );
+		AppendPNGChunk( rgba16, "IDAT", compressed );
+		AppendPNGChunk( rgba16, "IEND", {} );
+		RISEColor pixel;
+		const bool ok = RunPNG( rgba16, w, h, &pixel );
+		const RISEColor expected( RISEPel( Rec709RGBPel( 0x1234 / 65535.0,
+			0x5678 / 65535.0, 0x9abc / 65535.0 ) ), 0xdef0 / 65535.0 );
+		Check( ok && w == 1 && h == 1 && std::fabs( pixel.a - expected.a ) < 1e-12 &&
+			std::fabs( pixel.base.r - expected.base.r ) < 1e-12 &&
+			std::fabs( pixel.base.g - expected.base.g ) < 1e-12 &&
+			std::fabs( pixel.base.b - expected.base.b ) < 1e-12,
+			"D: 16-bit PNG decodes independently specified network-order RGBA samples" );
+	}
 }
 #endif
 
