@@ -71,31 +71,35 @@
 #include <memory>
 #include "../Cameras/CameraUtilities.h"
 
+// CPP-only lifetime witness shared with the RGB implementation.
+namespace RISE { namespace Implementation { namespace MLTResourceTestHooks
+{
+	void Observe( IReference* resource, bool isFilm );
+}}}
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
 namespace
 {
-	// Owns a RISE ref-counted image through a raw reference slot. Binding
-	// the guard before RenderFrameOfMLTSpectral also covers an exception
-	// after that function has populated its out-parameter.
-	class RasterImageGuard
+	// Owns the initial RISE reference through its raw slot. Existing
+	// normal-path releases/ownership transfers null the slot; exceptional
+	// exits release whatever ownership remains.
+	template <typename T>
+	class ReferenceSlotGuard
 	{
 	public:
-		explicit RasterImageGuard( IRasterImage*& image_ ) : image( image_ ) {}
-		~RasterImageGuard()
-		{
-			if( image ) {
-				image->release();
-				image = 0;
-			}
-		}
+		explicit ReferenceSlotGuard( T*& resource_ ) : resource( resource_ ) {}
+		~ReferenceSlotGuard() { safe_release( resource ); }
+
+		ReferenceSlotGuard( const ReferenceSlotGuard& ) = delete;
+		ReferenceSlotGuard& operator=( const ReferenceSlotGuard& ) = delete;
 
 	private:
-		RasterImageGuard( const RasterImageGuard& );
-		RasterImageGuard& operator=( const RasterImageGuard& );
-		IRasterImage*& image;
+		T*& resource;
 	};
+
+	using RasterImageGuard = ReferenceSlotGuard<IRasterImage>;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -677,6 +681,18 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	IRasterImage*& pImageOut
 	) const
 {
+	return RenderFrameOfMLTSpectral( pScene, pCamera, width, height, pImageOut, pProgressFunc );
+}
+
+bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
+	const IScene& pScene,
+	const ICamera& pCamera,
+	const unsigned int width,
+	const unsigned int height,
+	IRasterImage*& pImageOut,
+	IProgressCallback* progress
+	) const
+{
 	pImageOut = 0;
 
 	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Starting spectral PSSMLT render (%ux%u)", width, height );
@@ -689,8 +705,8 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	// Phase 1: Bootstrap (spectral)
 	//////////////////////////////////////////////////////////////////
 
-	if( pProgressFunc ) {
-		pProgressFunc->SetTitle( "MLT Spectral Bootstrap: " );
+	if( progress ) {
+		progress->SetTitle( "MLT Spectral Bootstrap: " );
 	}
 
 	std::vector<BootstrapSample> bootstrapSamples( nBootstrap );
@@ -705,6 +721,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	for( unsigned int i = 0; i < nBootstrap; i++ )
 	{
 		PSSMLTSampler* pBootSampler = new PSSMLTSampler( i, largeStepProb );
+		ReferenceSlotGuard<PSSMLTSampler> bootstrapGuard( pBootSampler );
 		pBootSampler->StartIteration();
 
 		MLTSample sample = EvaluateSampleSpectral( pScene, pCamera, *pBootSampler, width, height );
@@ -715,8 +732,8 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 
 		safe_release( pBootSampler );
 
-		if( pProgressFunc && (i % 1000 == 0) ) {
-			if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(nBootstrap) ) ) {
+		if( progress && (i % 1000 == 0) ) {
+			if( !progress->Progress( static_cast<double>(i), static_cast<double>(nBootstrap) ) ) {
 				return false;
 			}
 		}
@@ -803,12 +820,28 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Total mutations: %u, Per chain: %u, Per chain per round: %u, Rounds: %u",
 		totalMutations, mutationsPerChain, effectiveMutPerRound, numRounds );
 
-	if( pProgressFunc ) {
-		pProgressFunc->SetTitle( "MLT Spectral Init Chains: " );
+	if( progress ) {
+		progress->SetTitle( "MLT Spectral Init Chains: " );
 	}
 
 	// Initialize chains using spectral evaluation
 	std::vector<ChainState> chainStates( effectiveChains );
+	SplatFilm* pSplatFilm = nullptr;
+	// Install ownership before the first chain evaluation can throw.
+	// A partial final chain is covered as soon as its sampler is assigned.
+	// Release chains before the film, matching the normal cleanup order.
+	struct FrameResourcesGuard
+	{
+		std::vector<ChainState>& states;
+		SplatFilm*& film;
+		~FrameResourcesGuard()
+		{
+			for( ChainState& state : states ) {
+				safe_release( state.pSampler );
+			}
+			safe_release( film );
+		}
+	} frameResourcesGuard{ chainStates, pSplatFilm };
 
 	for( unsigned int c = 0; c < effectiveChains; c++ )
 	{
@@ -829,6 +862,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 		const unsigned int chainSeed    = seed.seed * 2654435761u + c;
 		const unsigned int proposalSeed = chainSeed ^ 0xA55A5AA5u;
 		chainStates[c].pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
+		MLTResourceTestHooks::Observe( chainStates[c].pSampler, false );
 		chainStates[c].chainRNG = RandomNumberGenerator( PSSMLTSamplerTestHooks::Salted( chainSeed ) );
 
 		// Phase 1: reproduce the bootstrap path
@@ -853,11 +887,8 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 			}
 		}
 
-		if( pProgressFunc && (c % 10 == 0) ) {
-			if( !pProgressFunc->Progress( static_cast<double>(c), static_cast<double>(effectiveChains) ) ) {
-				for( unsigned int j = 0; j <= c; j++ ) {
-					safe_release( chainStates[j].pSampler );
-				}
+		if( progress && (c % 10 == 0) ) {
+			if( !progress->Progress( static_cast<double>(c), static_cast<double>(effectiveChains) ) ) {
 				return false;
 			}
 		}
@@ -872,16 +903,17 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	// MLTRasterizer pattern.
 	//////////////////////////////////////////////////////////////////
 
-	SplatFilm* pSplatFilm = new SplatFilm( width, height );
+	pSplatFilm = new SplatFilm( width, height );
+	MLTResourceTestHooks::Observe( pSplatFilm, true );
 
-	if( pProgressFunc ) {
-		pProgressFunc->SetTitle( "MLT Spectral Rendering: " );
+	if( progress ) {
+		progress->SetTitle( "MLT Spectral Rendering: " );
 	}
 
 	bool cancelled = false;
 
-	if( pProgressFunc ) {
-		if( !pProgressFunc->Progress( 0, static_cast<double>(numRounds) ) ) {
+	if( progress ) {
+		if( !progress->Progress( 0, static_cast<double>(numRounds) ) ) {
 			cancelled = true;
 		}
 	}
@@ -1016,8 +1048,8 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 			}
 		}
 
-		if( pProgressFunc ) {
-			if( !pProgressFunc->Progress(
+		if( progress ) {
+			if( !progress->Progress(
 					static_cast<double>( mutationsDonePerChain ),
 					static_cast<double>( mutationsPerChain ) ) ) {
 				cancelled = true;
@@ -1045,12 +1077,6 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	} else {
 		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Rendering complete" );
 	}
-
-	for( unsigned int c = 0; c < effectiveChains; c++ ) {
-		safe_release( chainStates[c].pSampler );
-	}
-
-	safe_release( pSplatFilm );
 
 	return !cancelled;
 }
@@ -1198,23 +1224,13 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 
 		IRasterImage* pImage = 0;
 		RasterImageGuard imageGuard( pImage );
-		// Whole-animation progress: redirect the per-frame progress sink
-		// through a FrameSlotProgressCallback so MLT's phase-based 0..1
-		// reporting advances the OVERALL bar across this frame's slot
-		// [i/total_frames, (i+1)/total_frames] instead of restarting
-		// 0..100% every frame.  (i, total_frames)==(0,1) for a single
-		// specific-frame render, i.e. the identity map.  const_cast:
-		// pProgressFunc is render-scratch on the const render path (same
-		// pattern as the rasterizer's other per-render member updates);
-		// the swap happens between frames on this single driver thread and
-		// is restored before any later use.
+		// Map per-frame progress into this frame's whole-animation slot.
+		// Pass the stack adapter explicitly: the authored callback member
+		// remains valid even if rendering or a progress callback throws.
 		IProgressCallback* const savedProgress = pProgressFunc;
 		FrameSlotProgressCallback frameSlotProgress( savedProgress, i, total_frames );
-		if( savedProgress ) {
-			const_cast<MLTSpectralRasterizer*>( this )->pProgressFunc = &frameSlotProgress;
-		}
-		const bool completed = RenderFrameOfMLTSpectral( pScene, *pCamera, width, height, pImage );
-		const_cast<MLTSpectralRasterizer*>( this )->pProgressFunc = savedProgress;
+		const bool completed = RenderFrameOfMLTSpectral( pScene, *pCamera, width, height,
+			pImage, savedProgress ? &frameSlotProgress : nullptr );
 
 		if( !completed )
 		{

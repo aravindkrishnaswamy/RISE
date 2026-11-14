@@ -277,6 +277,17 @@ namespace RISE
 				IRasterImage*& pImageOut
 				) const;
 
+			/// Explicit per-call progress sink; animation supplies a stack
+			/// frame-slot adapter without changing the authored callback.
+			bool RenderFrameOfMLT(
+				const IScene& pScene,
+				const ICamera& pCamera,
+				const unsigned int width,
+				const unsigned int height,
+				IRasterImage*& pImageOut,
+				IProgressCallback* progress
+				) const;
+
 			/// Run a segment of mutations on an existing chain.  This is
 			/// the inner Metropolis-Hastings loop, identical to the old
 			/// RunChain but operating on externally-owned state so the

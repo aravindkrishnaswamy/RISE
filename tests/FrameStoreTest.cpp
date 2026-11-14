@@ -31,6 +31,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -55,6 +56,8 @@
 #include "../src/Library/Rendering/RasterizeDispatchers.h"
 #include "../src/Library/Rendering/MortonRasterizeSequence.h"
 #include "../src/Library/Rendering/BDPTRasterizerBase.h"
+#include "../src/Library/Rendering/MLTSpectralRasterizer.h"
+#include "../src/Library/Interfaces/IRadianceMap.h"
 #include "../src/Library/Utilities/ThreadPool.h"
 #include "../src/Library/Rendering/ProgressiveFilm.h"
 #include "../src/Library/Rendering/BidirectionalRasterizerBase.h"
@@ -74,6 +77,10 @@ using RISE::Implementation::PropagateAOVsToFrameStore;
 
 namespace RISE { namespace Implementation {
 	IRasterizerOutput* ForTest_CreateCallbackRasterizerOutput(IJobRasterizerOutput& receiver);
+	namespace MLTResourceTestHooks {
+		using Observer=void (*)(IReference*,bool,void*);
+		void SetObserver(Observer observer,void* context) noexcept;
+	}
 } }
 
 namespace
@@ -85,7 +92,7 @@ namespace
 	{
 		if ( cond ) {
 			++gPassCount;
-			if(label.find("tile exception:")==0 || label.find("full entry exception:")==0 || label.find("splat task exception:")==0 || label.find("film bounds:")==0 || label.find("film footprint:")==0)std::cout << "PASS: " << label << "\n";
+			if(label.find("MLT resource exception:")==0 || label.find("manual splat lifecycle:")==0 || label.find("tile exception:")==0 || label.find("full entry exception:")==0 || label.find("splat task exception:")==0 || label.find("film bounds:")==0 || label.find("film footprint:")==0)std::cout << "PASS: " << label << "\n";
 		} else {
 			++gFailCount;
 			std::cerr << "FAIL: " << label << "\n";
@@ -619,6 +626,165 @@ namespace
 			Check(result.clean && (mode<2 || mode>3 || result.onWorker),label+"same-thread catch sees no binding or pending records before film destruction");
 			Check(result.discarded && result.fresh,label+"discarded film stays black and fresh differently-sized film has exact uncontaminated batch sums");
 			Check(result.normalClean,label+"healthy retry flushes all normal splats and unbinds before task exit");
+		}
+	}
+
+	void TestManualSplatLifecycle()
+	{
+		using namespace RISE::Implementation;
+		const auto release=[](auto* p){if(p)p->release();};
+		// Owners precede the task scope: its destructor must unbind before
+		// either the manual film or its target image can be destroyed.
+		std::unique_ptr<SplatFilm,decltype(release)> film(new SplatFilm(1,1),release);
+		std::unique_ptr<RISERasterImage,decltype(release)> image(new RISERasterImage(1,1,RISEColor(0,0,0,1)),release);
+		ThreadLocalSplatBufferTaskScope task;
+		auto& tls=GetThreadLocalSplatBuffer();
+		film->Splat(0u,0u,RISEPel(.5,.25,.125));
+		film->Resolve(*image,1);
+		auto pixel=image->GetPEL(0,0);
+		Check(pixel.base.r==0 && pixel.base.g==0 && pixel.base.b==0 && pixel.a==1 &&
+			tls.Size()==1 && tls.GetBoundFilm()==film.get(),
+			"manual splat lifecycle: Resolve leaves pending caller records and binding untouched");
+		film->FlushCallingThreadBuffer();
+		film->Resolve(*image,1);
+		pixel=image->GetPEL(0,0);
+		Check(pixel.base.r==.5 && pixel.base.g==.25 && pixel.base.b==.125 && pixel.a==1 &&
+			tls.Size()==0 && tls.GetBoundFilm()==film.get(),
+			"manual splat lifecycle: explicit caller flush commits exact RGB and retains empty binding");
+		FlushCallingThreadSplatBuffer();
+		Check(tls.Size()==0 && tls.GetBoundFilm()==nullptr,
+			"manual splat lifecycle: task completion flush unbinds before film owner release");
+
+		struct Filter final : IPixelFilter,Reference {
+			double scale=1;
+			Scalar warp(const RandomNumberGenerator&,const Point2& in,Point2& out)const override{out=in;return 1;}
+			Scalar warpOnScreen(const RandomNumberGenerator&,const Point2& in,Point2& out,unsigned int,unsigned int)const override{out=in;return 1;}
+			void GetFilterSupport(Scalar& w,Scalar& h)const override{w=h=1;}
+			Scalar EvaluateFilter(Scalar x,Scalar y)const override{return scale*(2-std::abs(x))*(2-std::abs(y));}
+		};
+		const auto paint=[&](double scale) {
+			std::unique_ptr<SplatFilm,decltype(release)> filtered(new SplatFilm(3,3),release);
+			std::unique_ptr<RISERasterImage,decltype(release)> target(new RISERasterImage(3,3,RISEColor(0,0,0,1)),release);
+			Filter filter;filter.scale=scale;ThreadLocalSplatBufferTaskScope filteredTask;
+			filtered->SplatFiltered(1.5,1.5,RISEPel(.5,.25,.125),filter);
+			filtered->FlushCallingThreadBuffer();filtered->Resolve(*target,1);
+			std::vector<RISEColor> result;
+			for(unsigned int y=0;y<3;++y)for(unsigned int x=0;x<3;++x)result.push_back(target->GetPEL(x,y));
+			return result;
+		};
+		const auto unit=paint(1),twice=paint(2);bool invariant=true;
+		// Independent outer-product weights {1,2,1} x {1,2,1} sum to16.
+		// Multiplication by2 changes the continuous integral but not the
+		// normalized discrete distribution or its exact binary RGB values.
+		for(unsigned int y=0;y<3;++y)for(unsigned int x=0;x<3;++x){const auto i=y*3+x;
+			const double weight=(x==1?2:1)*(y==1?2:1);
+			invariant &= unit[i].base.r==weight/32 && unit[i].base.g==weight/64 && unit[i].base.b==weight/128 && unit[i].a==1 &&
+				twice[i].base.r==unit[i].base.r && twice[i].base.g==unit[i].base.g && twice[i].base.b==unit[i].base.b && twice[i].a==1;
+		}
+		Check(invariant,"manual splat lifecycle: positive kernel scaling preserves the independent exact nine-pixel normalized distribution");
+	}
+
+	void TestMLTResourceExceptions()
+	{
+		using namespace RISE::Implementation;
+		struct Resources {
+			std::vector<IReference*> samplers;
+			std::vector<IReference*> films;
+			~Resources(){Clear();}
+			void Clear(){for(auto* p:samplers)p->release();for(auto* p:films)p->release();samplers.clear();films.clear();}
+			static void Observe(IReference* object,bool isFilm,void* context) {
+				auto& self=*static_cast<Resources*>(context);
+				(isFilm?self.films:self.samplers).push_back(object);object->addref();
+			}
+			bool Exact(unsigned int refs)const {
+				if(samplers.size()!=2 || films.size()!=1)return false;
+				for(auto* p:samplers)if(p->refcount()!=refs)return false;
+				for(auto* p:films)if(p->refcount()!=refs)return false;
+				return true;
+			}
+		};
+		struct ObserveScope {
+			explicit ObserveScope(Resources& resources){MLTResourceTestHooks::SetObserver(Resources::Observe,&resources);}
+			~ObserveScope(){MLTResourceTestHooks::SetObserver(nullptr,nullptr);}
+		};
+		struct ProgressCallback final : IProgressCallback {
+			Resources& resources;bool fail=true,onTitle=true,rendering=false,ownedAtThrow=false;
+			unsigned int renderingTitles=0,renderingProgress=0;
+			explicit ProgressCallback(Resources& value):resources(value){}
+			void SetTitle(const char* title) override {
+				rendering=std::strcmp(title,"MLT Rendering: ")==0 || std::strcmp(title,"MLT Spectral Rendering: ")==0;
+				if(rendering){++renderingTitles;if(fail && onTitle){ownedAtThrow=resources.Exact(2);throw std::runtime_error("MLT phase-three title failure");}}
+			}
+			bool Progress(const double,const double) override {
+				if(rendering){++renderingProgress;if(fail && !onTitle){ownedAtThrow=resources.Exact(2);throw std::runtime_error("MLT phase-three progress failure");}}
+				return true;
+			}
+		};
+		struct Output final : IRasterizerOutput,Reference {
+			unsigned int intermediate=0,final=0;bool valid=true;std::vector<RISEColor> pixels;
+			void OutputIntermediateImage(const IRasterImage&,const Rect*) override{++intermediate;}
+			void OutputImage(const IRasterImage& image,const Rect*,unsigned int) override {
+				++final;valid &= image.GetWidth()==2 && image.GetHeight()==2;pixels.clear();double total=0;
+				for(unsigned int y=0;y<2;++y)for(unsigned int x=0;x<2;++x){const auto p=image.GetPEL(x,y);pixels.push_back(p);
+					valid &= std::isfinite(p.base.r) && std::isfinite(p.base.g) && std::isfinite(p.base.b) && p.a==1;
+					total+=p.base.r+p.base.g+p.base.b;}
+				valid &= total>0;
+			}
+		};
+		const auto release=[](auto* p){if(p)p->release();};
+		std::unique_ptr<Job,decltype(release)> job(new Job(),release);
+		const double location[]={0,0,2},lookAt[]={0,0,0},up[]={0,1,0},orientation[]={0,0,0},target[]={0,0};
+		std::unique_ptr<StandardShader,decltype(release)> shader(new StandardShader(std::vector<IShaderOp*>()),release);
+		IRayCaster* rawCaster=nullptr;RISE_API_CreateRayCaster(&rawCaster,true,3,*shader,true);
+		std::unique_ptr<IRayCaster,decltype(release)> caster(rawCaster,release);
+		IPainter* rawPainter=nullptr;RISE_API_CreateUniformColorPainter(&rawPainter,RISEPel(1,1,1),eSpectrumKind_Illuminant);
+		std::unique_ptr<IPainter,decltype(release)> painter(rawPainter,release);
+		IRadianceMap* rawMap=nullptr;if(painter)RISE_API_CreateRadianceMap(&rawMap,*painter,1);
+		std::unique_ptr<IRadianceMap,decltype(release)> map(rawMap,release);
+		// BDPT needs finite scene bounds for its synthetic environment endpoint.
+		// This sphere lies entirely behind every camera ray; its bounding
+		// sphere encloses the camera, while its actual surface does not.
+		const double behindCamera[]={0,0,3.25},unitScale[]={1,1,1};
+		const bool setup=caster && map && job->SetFilm(2,2,1) &&
+			job->AddPinholeCamera("MLT-resource-exception",location,lookAt,up,1,0,0,0,orientation,target) &&
+			job->AddSphereGeometry("MLT-resource-bound",1) &&
+			job->AddObject("MLT-resource-bound","MLT-resource-bound","none",nullptr,nullptr,RadianceMapConfig(),
+				behindCamera,orientation,unitScale,true,true) && job->SetGlobalRadianceMap(map.get());
+		Check(setup,"MLT resource exception: actual four-pixel scene has a positive constant environment");
+		if(!setup)return;
+		for(unsigned int family=0;family<3;++family)for(bool animation:{false,true})for(bool onTitle:{true,false}) {
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(2,2,2),release);
+			// At least twenty mutations per chain keep the existing timed-round
+			// fallback bounded even when bootstrap finishes within one clock tick.
+			std::unique_ptr<MLTRasterizer,decltype(release)> rasterizer(family==0?
+				new MLTRasterizer(caster.get(),3,3,8,2,16,.3,store.get()):
+				new MLTSpectralRasterizer(caster.get(),3,3,8,2,16,.3,380,780,1,family==2,store.get()),release);
+			Resources resources;ObserveScope observe(resources);ProgressCallback progress(resources);progress.onTitle=onTitle;
+			Output output;rasterizer->AddRasterizerOutput(&output);rasterizer->SetProgressCallback(&progress);
+			const auto run=[&](){
+				if(animation)rasterizer->RasterizeSceneAnimation(*job->GetScene(),0,0,1,false,false,nullptr,nullptr,nullptr);
+				else rasterizer->RasterizeScene(*job->GetScene(),nullptr,nullptr);
+			};
+			std::string error;try{run();}catch(const std::exception& e){error=e.what();}
+			const std::string label=std::string("MLT resource exception: ")+(family==0?"RGB ":family==1?"spectral NM ":"spectral HWSS ")+(animation?"animation ":"still ")+(onTitle?"title ":"progress ");
+			Check(error==(onTitle?"MLT phase-three title failure":"MLT phase-three progress failure") &&
+				progress.renderingTitles==1 && progress.renderingProgress==(onTitle?0u:1u),label+"propagates phase-three callback failure before mutation work");
+			Check(progress.ownedAtThrow && resources.Exact(1),label+"releases both actual chain samplers and film leaving only tester references");
+			Check(output.final==0 && output.intermediate==0 && GetThreadLocalSplatBuffer().Size()==0 &&
+				GetThreadLocalSplatBuffer().GetBoundFilm()==nullptr,label+"publishes no image and leaves caller TLS unbound on early failure");
+			// Retry without reinstalling the callback: an animation must not
+			// leave its borrowed stack frame-progress adapter in authored state.
+			resources.Clear();progress.fail=false;error.clear();try{run();}catch(const std::exception& e){error=e.what();}
+			Check(error.empty() && resources.Exact(1) && progress.renderingTitles==2 && progress.renderingProgress>0,
+				label+"healthy retry completes with exactly balanced new chain and film references");
+			Check(output.final==1 && output.valid && output.pixels.size()==4,label+"healthy retry publishes one finite positive four-pixel opaque image");
+			const auto expected=output.pixels;resources.Clear();error.clear();try{run();}catch(const std::exception& e){error=e.what();}
+			bool same=expected.size()==4 && output.pixels.size()==4;
+			if(same)for(std::size_t i=0;i<4;++i){const auto& a=expected[i];const auto& b=output.pixels[i];
+				same &= ApproxEq(a.base.r,b.base.r,1e-10) && ApproxEq(a.base.g,b.base.g,1e-10) && ApproxEq(a.base.b,b.base.b,1e-10) && a.a==b.a;}
+			Check(error.empty() && resources.Exact(1) && output.final==2 && output.valid && same,
+				label+"second healthy render preserves the deterministic image and exact ownership balance");
+			rasterizer->SetProgressCallback(nullptr);rasterizer->FreeRasterizerOutputs();
 		}
 	}
 
@@ -1870,6 +2036,11 @@ namespace
 
 int main(int argc,char** argv)
 {
+	if(argc==2 && std::strcmp(argv[1],"--mlt-resource-only")==0) {
+		TestManualSplatLifecycle();TestMLTResourceExceptions();
+		std::cout << "MLT resource exceptions: passed " << gPassCount << ", failed " << gFailCount << "\n";
+		return gFailCount==0?0:1;
+	}
 	if(argc==2 && std::strcmp(argv[1],"--film-bounds-only")==0) {
 		TestFilmBoundsAndFootprints();
 		std::cout << "Film bounds: passed " << gPassCount << ", failed " << gFailCount << "\n";
@@ -1889,6 +2060,8 @@ int main(int argc,char** argv)
 	TestFullEntryExceptions();
 	TestSplatTaskExceptions();
 	TestFilmBoundsAndFootprints();
+	TestManualSplatLifecycle();
+	TestMLTResourceExceptions();
 	TestConstructionAndGeometry();
 	TestAOVChannels();
 	TestPlannedAOVBridge();

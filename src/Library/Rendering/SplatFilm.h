@@ -134,12 +134,10 @@ namespace RISE
 			//! truncated to an integer pixel and the image shows
 			//! aliasing / hard edges.
 			//!
-			//! Correctness requires the filter kernel to integrate to
-			//! approximately 1 over its support; SplatFilm::Resolve
-			//! divides by total sample count (not per-pixel weight),
-			//! so an unnormalised kernel would bias the result.
-			//! Mitchell–Netravali, Catmull-Rom, windowed sincs, and
-			//! the built-in box filter all satisfy this.
+			//! Wide-footprint weights are normalized by their actual discrete sum;
+			//! continuous unit-integral scaling is not required. Evaluations and
+			//! the positive sum must be finite. Nonpositive sums are dropped;
+			//! the legacy nonpositive-centre check falls back to a point splat.
 			//!
 			//! Degenerates to a point splat when the filter's
 			//! half-width is ≤ 0.501 (box case) to avoid unnecessary

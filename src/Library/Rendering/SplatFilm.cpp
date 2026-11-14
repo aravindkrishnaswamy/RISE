@@ -102,14 +102,10 @@ void SplatFilm::SplatFiltered(
 		return;
 	}
 
-	// Defensive fallback.  IPixelFilter::EvaluateFilter has a base
-	// implementation that returns 0, so a filter that advertises a
-	// support ≥ 0.5 via GetFilterSupport but forgot to override
-	// EvaluateFilter would silently drop every splat.  We detect
-	// this at the filter's own centre (where it should be strongly
-	// non-zero for any unit-integral kernel) and fall back to a
-	// single-pixel point splat if the filter looks broken.  Logs
-	// once per process so the scene author sees the problem.
+	// Preserve the centre-value heuristic for existing reconstruction
+	// filters: the base EvaluateFilter implementation returns zero, so a
+	// missing override would otherwise drop every splat. Nonpositive-centre
+	// kernels use the legacy point fallback, with one warning per process.
 	if( filter.EvaluateFilter( 0, 0 ) <= 0 )
 	{
 		static std::atomic<bool> warned{ false };
