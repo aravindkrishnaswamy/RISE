@@ -141,3 +141,8 @@ same_20
 same_34
 
 [exited with code 0]
+
+# test suite 2026-11-14 (preflight line 117 skipped; working tree with all opt-ins)
+Run: 243 passed, 25 failed, 0 skipped (of 247 run)
+baseline (patch line removed), four failing programs: Calibration 13 / Solver 12 / Sequence / SimulationSolver 1 failures, lists identical to patched (Solver patched on idle machine: 12)
+res_t6_lc_zone12_f: 129 frames, all checkpoint files cmp-identical to res_t6_lc_zone12_d
