@@ -40,6 +40,7 @@ source assets with the corrected build.
   and metadata. Residual staging paths are reported when cleanup is denied.
   Other staging errors remain failures. In-place copying or direct encoding
   can leave a partial image; failed copying retains its completed stage.
+  Callers must serialize in-place writes to the same file or hardlink alias.
 - Spectral and piecewise-function tables accept their leading finite
   columns, skip file headers and malformed rows, and ignore extra columns.
   Inline control points require two whitespace-separated values: replace
@@ -65,6 +66,19 @@ source assets with the corrected build.
   unused color maps are skipped; indexed-color decoding and extended TGA 2.0
   metadata interpretation remain unsupported. Alpha and orientation can
   therefore differ from the former shifted-header decode.
+- Normalized integer output saturates RGBA before casting, including
+  out-of-range/nonfinite alpha, while preserving truncation for valid samples.
+  Floating EXR values and the raw scaling helper are unchanged.
+- HDR/RGBEA shared-exponent output bounds converted channels before packing,
+  preventing nonfinite casts and exponent wrap. Negative/NaN channels become
+  zero; positive infinity and values beyond the format ceiling saturate.
+  RGBEA preserves independently normalized alpha on black pixels. Exact
+  power-of-two mantissa scaling also corrects HDR's legacy rounding factor,
+  which dimmed power-of-two samples and could make raw pixels look like an
+  RLE header. Finite HDR sample bytes can change.
+- 16-bit PNG gamma metadata now follows the selected sample encoding, using
+  the same approximate `gAMA` values as 8-bit output. Full color-profile
+  tagging is unchanged.
 - JPEG, TGA, HDR, PNG, TIFF, and EXR reader reloads clear previous active
   images, publish dimensions only after success, and check pixel coordinates.
   EXR data errors, including swallowed final-chunk short reads, return failure

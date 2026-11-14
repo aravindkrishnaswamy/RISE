@@ -83,6 +83,8 @@ namespace RISE
 				const std::function<bool(DiskFileWriteBuffer&)>& write );
 			// AllowInPlace copies completed staging bytes into existing files,
 			// preserving their inode, hardlinks and metadata. New files use rename.
+			// Callers must serialize writes to the same destination (including
+			// hardlink aliases); in-place writes are not atomic or mutually locked.
 			// Helper destination opens validate a regular file before truncating;
 			// a concurrent FIFO replacement cannot block POSIX publication.
 			// Permission-denied staging creation/open permits direct encoding.

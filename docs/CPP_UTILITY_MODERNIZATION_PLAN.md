@@ -532,6 +532,101 @@ finalization-failure and independent TGA checks also remain green. Prior
 platform/privilege/sparse-fixture exclusions remain unchanged.
 
 
+### Normalized integer output and PNG transfer metadata
+
+The following fresh round found no P1 and two confirmed writer-boundary P2s.
+`Integerize` clipped RGB but cast alpha without normalization, so preserved
+EXR alpha outside `[0,1]` could wrap or invoke undefined floating-to-integer
+conversion. Normalized integer export now saturates each converted RGBA
+channel before casting: NaN/negative infinity/nonpositive values become zero,
+positive infinity/values at least one become the requested maximum. Finite
+interior values retain legacy truncation. The requested maximum must remain
+finite, nonnegative and representable in the destination type. Floating
+EXR data is unchanged; the separate raw scaling helper retains its
+representable-products precondition and existing behavior.
+
+PNG writing previously labeled every 16-bit output linear even when samples
+used sRGB or ProPhoto encoding. Both bit depths now use the selected space's
+existing approximate `gAMA` convention: one for linear709/linearROMM, 1/2.2
+for sRGB, and 1/1.8 for ProPhoto. Eight-bit metadata is unchanged. This is the
+legacy gamma approximation, not complete ICC/chromaticity or exact piecewise
+transfer profiling. Independent libpng decoding checks actual raw samples,
+network byte order and quantized gamma for both bit depths/all four spaces,
+without reader gamma transforms or the RISE reader.
+
+Runtime nonfinite inputs follow the existing `FiniteMathTest` convention;
+they are test data, not forbidden control-flow sentinels. Direct 8/16-bit
+oracles and EXR-to-PNG/TGA conversions cover clipped alpha and finite RGB.
+A shadow header tree keeps old template definitions consistent with the old
+archive for RED proof: eight image assertions and two nonlinear 16-bit gamma
+assertions fail normally against the preceding code. The corrected targeted
+suites pass 272 image and 180 frame-encoder checks.
+
+`AllowInPlace` retains unsynchronized in-place semantics. Callers must
+serialize writes to the same destination, including hardlink aliases; the
+helper does not promise atomic visibility or multi-writer isolation there.
+Required whole-file rename publication retains last-successful-rename wins.
+The automatic thumbnail cache has its own cooperative writer lock because
+its shared name is managed by the library rather than selected by callers.
+
+
+A sibling audit found the same unchecked casts in RGBEA alpha and the two
+shared-exponent writers. RGBEA alpha now uses the normalized conversion
+independently of RGB, so opaque black retains its opacity. After selected
+color-space conversion (and HDR compositing), HDR/RGBEA clamp channels to
+their representable nonnegative range before packing: NaN/negative values
+become zero; positive infinity and larger finite values saturate. For an
+N-bit mantissa the ceiling is `(2^N - 1) * 2^(127 - N)`, with N=8 for HDR
+and N=16 for RGBEA. This derives from the format's largest stored exponent,
+255, with bias 128. It prevents undefined casts and exponent wrapping.
+The existing `<1e-32` zero floor remains. These are bounded shared-exponent
+formats, unlike floating EXR. Mantissa scaling uses the exact power of two
+described below, including the exact upper endpoint.
+Twenty-nine independent writer cases check raw bytes plus wire-only decode
+bounds, including ROMM conversion and alpha independence. Before the final
+HDR scaling correction below, 15 of these assertions failed normally
+(exit 1) against the preceding immutable library; the ordinary finite
+fixtures matched at that checkpoint. The earlier normalized-integer
+and gamma RED runs above used matching old template headers; this focused
+shared-exponent RED run keeps the already-corrected normalized policy and
+uses the preceding immutable library for compiled writer implementations.
+The preliminary bounded-packing gate passed 301 image checks and 180
+frame-encoder checks. Eighteen selected executables, four CLI finalization-failure
+probes, and clean make plus Xcode Deployment/Opto builds pass. Runtime
+codec verification links the actual Opto EXR reader/writer and PNG, TGA,
+PPM, HDR and RGBEA writer objects with full LTO; 301 image and 180 frame
+checks pass with their fast-math settings. Other linked library objects use
+the canonical make archive; this is not a full GUI runtime test.
+
+### HDR wire-format closure
+
+The final sibling audit confirmed a legacy scaling defect. Multiplying the
+`frexp` fraction by 255.9999 can produce an RGBE peak mantissa of 127. A
+width-eight raw row beginning with color `(.02,.02,1)` then starts with
+`{2,2,127,129}`, which Radiance readers interpret as an RLE header instead
+of pixel data. Shared-exponent scaling now uses the exact binary factor
+`2^(N - e)` for both formats. RGBE's nonzero peak is at least 128, avoiding
+that ambiguous prefix; it also fixes the former power-of-two dimming
+(`1.0` encodes as 128 at exponent 129, rather than 127). Finite HDR bytes can
+therefore change. RGBEA uses the same exact formula without the redundant
+division. Mantissas still truncate, and the existing zero floor remains.
+The added width-eight regression checks raw `{2,2,128,129}` bytes and decoded
+pixels independently; it is separate from the nonfinite/overflow guards.
+Against the preceding bounded-packing library, the final test fails five
+assertions normally (exit 1), including that width-eight decode and four
+updated exact-scale byte expectations.
+
+After the exact-scale correction, clean make and Xcode Deployment/Opto
+builds pass without compiler warnings, apart from the expected AppIntents
+notice. The five affected codec/finite-math/include-order executables pass,
+including 302 image and 180 frame checks; both codec suites pass ASan/UBSan.
+Their actual-Opto-object reruns pass the same 302/180 checks under full LTO
+and fast-math. The Blender native clean LTO link also passes. The broader
+18-executable/six-sanitizer gate immediately before this final formula change
+remains a separate checkpoint, not a claim that every suite was repeated.
+Native Windows/Android and the previously disclosed privileged ownership
+and sparse-file exclusions remain outside the executed host verification.
+
 ### Host measurements and decisions
 
 - A 50,000-scalar append probe reduced backing allocations from 50,000 to 28, with identical logical size, cursor and checksum. Four warm host trials measured 75.33 ± 3.26 ms for exact-growth storage and 0.2245 ± 0.0065 ms for geometric capacity. These are append-probe measurements. A sanitizer differential review also exercised 192,000 buffer operations against a shadow model.
