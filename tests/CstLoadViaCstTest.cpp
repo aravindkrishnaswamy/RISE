@@ -38,6 +38,7 @@
 #include "../src/Library/Utilities/MediaPathLocator.h"
 #include "../src/Library/Parsers/AsciiCommandParser.h"
 #include "../src/Library/Options.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -48,6 +49,27 @@ namespace
 {
 	int s_pass = 0, s_fail = 0;
 	void Check( bool ok, const std::string& what ) { if( ok ) ++s_pass; else { ++s_fail; std::printf( "  FAIL: %s\n", what.c_str() ); } }
+
+	void CheckRegression( bool ok, const std::string& what )
+	{
+		Check( ok, what );
+		if( ok ) std::printf( "  ok: %s\n", what.c_str() );
+	}
+
+	class CapturedLog final : public ILogPrinter, public Reference
+	{
+	public:
+		std::vector<std::string> messages;
+		void Print( const LogEvent& event ) override { messages.emplace_back( event.szMessage ); }
+		void Flush() override {}
+		bool Contains( const std::string& text ) const
+		{
+			for( const auto& message : messages ) {
+				if( message.find(text) != std::string::npos ) return true;
+			}
+			return false;
+		}
+	};
 
 	// DumpJob of a fresh, empty Job -- the "derived nothing" sentinel.  A successful
 	// native-v7 load must produce a dump that differs from this.
@@ -116,12 +138,14 @@ namespace
 int main()
 {
 	std::printf( "=== CstLoadViaCstTest (P5 Slice 1: load via the canonical CST) ===\n" );
+	auto* capturedLog = new CapturedLog();
+	GlobalLogPriv()->AddPrinter( capturedLog );
 
 	{
 		const std::string path = RISE::TestSupport::ScratchPath( "console_numeric.options" );
 		Check( WriteTmp( path.c_str(),
 			"count +27units\ncount 5\ninvalid invalid\nlarge 9999999999999999999999\n"
-			"tiny 1e-309\nnonfinite 1e999\ntext str \"one two\" three" ), "write options fixture" );
+			"tiny 1e-309\nnonfinite 1e999\ntitle str Foo #1\ntext str \"one two\" three" ), "write options fixture" );
 		auto* options = new Options( path.c_str() );
 		Check( options->ReadInt( "count", 99 ) == 27 && options->ReadInt( "invalid", 99 ) == 0 &&
 			options->ReadInt( "large", 99 ) == 99 && options->ReadInt( "missing", 99 ) == 99,
@@ -131,6 +155,8 @@ int main()
 			"floating options accept finite subnormals and reject overflow" );
 		Check( options->ReadString( "text", String() ) == " one two three",
 			"options preserve quoted spaces and an unterminated final line" );
+		CheckRegression( options->ReadString( "title", String() ) == " Foo #1",
+			"literal hash compatibility: options retain a hash-prefixed word" );
 		options->release();
 		std::remove( path.c_str() );
 	}
@@ -163,6 +189,11 @@ int main()
 		struct CommandJob final : Job {
 			unsigned int calls = 0;
 			unsigned int renderCalls = 0;
+			unsigned int uvCalls = 0;
+			char uvAxis = 0;
+			double uvRadius = 0, uvSize = 0;
+			bool SetObjectUVToCylindrical( const char*, double radius, char axis, double size ) override
+			{ ++uvCalls; uvRadius = radius; uvAxis = axis; uvSize = size; return true; }
 			bool Rasterize() override { ++calls; ++renderCalls; return true; }
 			bool RasterizeRegion( unsigned int, unsigned int, unsigned int, unsigned int ) override { ++calls; return true; }
 			bool RasterizeAnimationUsingOptions( unsigned int ) override { ++calls; return true; }
@@ -180,13 +211,40 @@ int main()
 			commandJob->calls == 1, "valid photon map command dispatches once" );
 		Check( parser->ParseCommand( "render # trailing comment", *commandJob ) &&
 			commandJob->renderCalls == 1, "render ignores a trailing comment and dispatches once" );
+		CheckRegression( parser->ParseCommand( "render #", *commandJob ) && commandJob->renderCalls == 2,
+			"literal hash compatibility: a standalone final hash starts a console comment" );
 		const auto callsAfterRender = commandJob->calls;
 		Check( parser->ParseCommand( "  # full comment", *commandJob ) &&
 			parser->ParseCommand( "   ", *commandJob ) && commandJob->calls == callsAfterRender,
 			"comments and whitespace are successful no-op commands" );
 		const auto commented = AsciiCommandParser::Tokenize( "echo \"# quoted\" file#tag # ignored" );
-		Check( commented == std::vector<std::string>({ "echo", "# quoted", "file#tag" }),
-			"console preserves quoted and embedded hashes while dropping trailing comments" );
+		CheckRegression( commented == std::vector<std::string>({ "echo", "# quoted", "file#tag", "#", "ignored" }),
+			"literal hash compatibility: raw tokenization retains every hash token" );
+		String legacyTokens[4];
+		CheckRegression( AsciiCommandParser::TokenizeString( "value #1 # tail", legacyTokens, 4 ) == 4 &&
+			legacyTokens[1] == "#1" && legacyTokens[2] == "#" && legacyTokens[3] == "tail",
+			"literal hash compatibility: legacy raw tokenization retains hash tokens" );
+		capturedLog->messages.clear();
+		CheckRegression( parser->ParseCommand( "echo info Rendering #3", *commandJob ) &&
+			capturedLog->Contains("Rendering #3"),
+			"literal hash compatibility: console echo retains a hash-prefixed word" );
+		capturedLog->messages.clear();
+		CheckRegression( parser->ParseCommand( "echo info \"# quoted\" file#tag # ignored", *commandJob ) &&
+			capturedLog->Contains("# quoted file#tag") && !capturedLog->Contains("ignored"),
+			"literal hash compatibility: console comments preserve quoted and embedded hashes" );
+		CheckRegression( parser->ParseCommand( "#full-line-comment", *commandJob ),
+			"literal hash compatibility: full-line comments need no space after hash" );
+		capturedLog->messages.clear();
+		CheckRegression( !parser->ParseCommand( "modify object uv cylindrical object 2 X 9", *commandJob ) &&
+			!parser->ParseCommand( "modify object uv cylindrical object 2 xy 9", *commandJob ) &&
+			commandJob->uvCalls == 0 && capturedLog->Contains("expected lowercase axis x, y, or z"),
+			"cylindrical axis diagnostic rejects unsupported axes before mutation" );
+		for( const char axis : { 'x', 'y', 'z' } ) {
+			const std::string command = std::string("modify object uv cylindrical object 2 ") + axis + " 9";
+			CheckRegression( parser->ParseCommand(command.c_str(), *commandJob) &&
+				commandJob->uvAxis == axis && commandJob->uvRadius == 2 && commandJob->uvSize == 9,
+				"cylindrical axis diagnostic preserves supported axes and the size argument" );
+		}
 		parser->release();
 		commandJob->release();
 		script( "RISE ASCII SCRIPT 3\nrun \"" + path + "\"", false, "script rejects a recursive run" );
@@ -195,13 +253,13 @@ int main()
 		script( "RISE ASCII SCRIPT 3\nrun \"" + child + "\"\nrun \"" + child + "\"", true,
 			"script can run a child again after it returns" );
 		std::remove( child.c_str() );
-		const auto media = std::filesystem::path( RISE::TestSupport::ScratchPath( "script media root" ) );
+		const auto media = std::filesystem::path( RISE::TestSupport::ScratchPath( "script media #Dir" ) );
 		std::filesystem::create_directory( media );
 		const std::string filename = "rise_script_media_fixture.txt";
 		const std::string found = (media / filename).string();
 		Check( WriteTmp( found.c_str(), "fixture" ), "write script media lookup fixture" );
-		script( "RISE ASCII SCRIPT 3\nmediapath add \"" + media.string() + "\"", true,
-			"script adds a quoted media root" );
+		script( "RISE ASCII SCRIPT 3\nmediapath add " + media.string(), true,
+			"script adds an unquoted media root containing a hash-prefixed word" );
 		Check( std::filesystem::path(GlobalMediaPathLocator().Find( filename.c_str() ).c_str()) == media / filename,
 			"script media root resolves a real file without a trailing space" );
 		script( "RISE ASCII SCRIPT 3\nmediapath remove \"" + media.string() + "\"", true,
@@ -404,6 +462,26 @@ int main()
 				head + "cp 380 0.5 0.7\ncp 780 0.8 0.9\n}\n" );
 			RefuseCase( "inline table sample requires both columns", scene.c_str(), head + "cp 380\n}\n" );
 			RefuseCase( "inline table sample requires finite values", scene.c_str(), head + "cp 380 nan\n}\n" );
+			RefuseCase( "inline table sample rejects the old comma form", scene.c_str(), head + "cp 550,1.0\n}\n" );
+		}
+		for( const char* keyword : { "spectral_painter", "piecewise_linear_function" } ) {
+			for( const char* field : { "file", "nmfile", "ampfile" } ) {
+				if( std::string(keyword) == "piecewise_linear_function" && std::string(field) != "file" ) continue;
+				const std::string contents = std::string("RISE ASCII SCENE 7\n") + keyword +
+					"\n{\nname table\n" + field + " " + data + "\n}\n";
+				const char nulRows[] = "380 0.5\n780 0.8\0extra\n";
+				Check( WriteTmp(data.c_str(), std::string(nulRows, sizeof(nulRows)-1)), "write table NUL diagnostic fixture" );
+				capturedLog->messages.clear();
+				RefuseCase( "embedded NUL table refused", scene.c_str(), contents );
+				CheckRegression( capturedLog->Contains("Embedded NUL in file `" + data + "` at line 2") &&
+					!capturedLog->Contains("Failed to open file"),
+					std::string("table diagnostic: embedded NUL has filename and physical line for ") + keyword + " " + field );
+				std::remove( data.c_str() );
+				capturedLog->messages.clear();
+				RefuseCase( "missing table refused", scene.c_str(), contents );
+				CheckRegression( capturedLog->Contains("Failed to open file `" + data + "`"),
+					std::string("table diagnostic: missing file reports open failure for ") + keyword + " " + field );
+			}
 		}
 		std::remove( data.c_str() );
 	}
@@ -439,6 +517,7 @@ int main()
 		}
 	}
 
+	capturedLog->release();
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
 	return s_fail == 0 ? 0 : 1;
 }

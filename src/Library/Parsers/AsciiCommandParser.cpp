@@ -40,14 +40,17 @@ AsciiCommandParser::~AsciiCommandParser() = default;
 namespace
 {
 	template<class Consumer>
-	unsigned int ReadCommandTokens( std::string_view line, unsigned int limit, Consumer consume )
+	unsigned int ReadCommandTokens( std::string_view line, unsigned int limit, Consumer consume, bool comments = false )
 	{
 		unsigned int count = 0;
 		while( count < limit ) {
 			const auto first = line.find_first_not_of( " \t\r" );
 			if( first == std::string_view::npos ) break;
 			line.remove_prefix( first );
-			if( line.front() == RISE_COMMENT ) break;
+			// Comments belong to command syntax; raw tokenization also serves options.
+			// After the command starts, only a standalone '#' introduces a comment.
+			if( comments && line.front() == RISE_COMMENT &&
+				(count == 0 || line.size() == 1 || std::isspace(static_cast<unsigned char>(line[1]))) ) break;
 			if( line.front() == '"' ) {
 				const auto close = line.find( '"', 1 );
 				if( close != std::string_view::npos ) {
@@ -150,7 +153,9 @@ bool AsciiCommandParser::ParseCommand( const char* line, IJob& job )
 {
 	if( !line ) return false;
 	if( !*line ) return true;
-	const auto tokens = Tokenize( line );
+	std::vector<std::string> tokens;
+	ReadCommandTokens( line, RISE_MAX_TOKENS_PER_LINE,
+		[&tokens]( std::string_view token ) { tokens.emplace_back( token ); }, true );
 	if( tokens.empty() ) return true;
 	return DispatchCommand( tokens.data(), static_cast<unsigned int>(tokens.size()), job, this );
 }
@@ -301,7 +306,11 @@ bool ParseModifyObject_UV_Cylindrical( const std::string* tokens, unsigned int n
 	}
 
 	const char axis = tokens[2].c_str()[0];
-	if( tokens[2].size() != 1 || (axis != 'x' && axis != 'y' && axis != 'z') ) return false;
+	if( tokens[2].size() != 1 || (axis != 'x' && axis != 'y' && axis != 'z') ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"AsciiCommandParser::ParseModifyObject_UV_Cylindrical: expected lowercase axis x, y, or z, got '%s'", tokens[2].c_str() );
+		return false;
+	}
 	double radius, size;
 	if( !ReadDouble( tokens[1], radius ) || !ReadDouble( tokens[3], size ) ) return false;
 

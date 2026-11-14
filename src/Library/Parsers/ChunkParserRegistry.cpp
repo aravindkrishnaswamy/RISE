@@ -109,16 +109,28 @@ using namespace RISE::Implementation;
 static bool ReadDataFileLines( const String& filename, std::vector<std::string>& outLines )
 {
 	std::ifstream file( GlobalMediaPathLocator().Find( filename ).c_str() );
-	if( !file ) return false;
+	if( !file ) {
+		GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
+		return false;
+	}
 	std::string line;
+	size_t lineNumber = 0;
 	while( std::getline( file, line ) ) {
-		if( line.find( '\0' ) != std::string::npos ) return false;
+		++lineNumber;
+		if( line.find( '\0' ) != std::string::npos ) {
+			GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Embedded NUL in file `%s` at line %zu", filename.c_str(), lineNumber );
+			return false;
+		}
 		const auto start = line.find_first_not_of( " \t\r" );
 		if( start != std::string::npos && line[start] != '#' ) {
 			outLines.push_back( line );
 		}
 	}
-	return !file.bad();
+	if( file.bad() ) {
+		GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to read file `%s` after line %zu", filename.c_str(), lineNumber );
+		return false;
+	}
+	return true;
 }
 
 // Table readers consume the leading required finite columns. Extra columns
@@ -1329,8 +1341,13 @@ namespace RISE
 						}
 						const std::string_view kind( field );
 						std::string row;
+						size_t lineNumber = 0;
 						while( std::getline( input, row ) ) {
-							if( row.find( '\0' ) != std::string::npos ) return false;
+							++lineNumber;
+							if( row.find( '\0' ) != std::string::npos ) {
+								GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: Embedded NUL in file `%s` at line %zu", name.c_str(), filename.c_str(), lineNumber );
+								return false;
+							}
 							const auto first = row.find_first_not_of( " \t\r\f\v" );
 							if( first == std::string::npos || row[first] == '#' ) continue;
 							double sample = 0;
@@ -1343,7 +1360,10 @@ namespace RISE
 								(kind == "nmfile" ? wavelengths : amplitudes).push_back( sample );
 							}
 						}
-						if( input.bad() ) return false;
+						if( input.bad() ) {
+							GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: Failed to read file `%s` after line %zu", name.c_str(), filename.c_str(), lineNumber );
+							return false;
+						}
 					}
 
 					if( amplitudes.empty() || wavelengths.empty() ) {
@@ -3417,10 +3437,7 @@ namespace RISE
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
 						std::vector<std::string> fileLines;
-						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
-							return false;
-						}
+						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) return false;
 						for( const std::string& ln : fileLines ) {
 							double pair[2];
 							if( ReadSampleColumns( ln, pair, 2 ) ) {

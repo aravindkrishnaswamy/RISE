@@ -54,9 +54,10 @@ rows. `nmfile` and `ampfile` consume the first finite value on each physical
 row. Empty results, embedded NUL bytes, file I/O failures, and mismatched
 wavelength/amplitude counts are errors.
 
-Console commands and ASCII scripts recognize `#` at the start of an unquoted
-token as a comment through the end of the line. Quoted hashes and hashes
-within a token remain literal. Malformed numeric command arguments,
+Console commands and ASCII scripts recognize a standalone unquoted `#`
+token as a trailing comment and any leading `#` token as a full-line comment.
+Quoted hashes, embedded hashes, and value tokens such as `#3` and `#Dir`
+remain literal. Options and the public tokenizer APIs do not strip comments. Malformed numeric command arguments,
 incomplete render rectangles, and unknown `mediapath` subcommands are hard
 errors. A plain `render # comment` renders the current frame.
 
