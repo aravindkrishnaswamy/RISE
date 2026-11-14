@@ -793,6 +793,37 @@ namespace
 			return complete;
 		};
 		std::ofstream(sentinel, std::ios::binary) << "sentinel";
+		for( unsigned int kind = 0; kind < 4; ++kind ) {
+			if( kind == 1 ) fs::create_symlink(sentinel, automatic);
+			else if( kind == 2 ) fs::create_hard_link(sentinel, automatic);
+			else if( kind == 3 ) std::ofstream(automatic, std::ios::binary) << "sentinel";
+			const auto entriesBefore = std::distance(fs::directory_iterator(scratch), fs::directory_iterator());
+			encoder.calls = 0;
+			DiskFileWriteBuffer::WriteDiagnostics adoption;
+			bool saved = true;
+			{
+				struct RestoreAdoptionFailure {
+					bool previous = ForTest_SetRecoveryStreamAdoptionFailure(true);
+					~RestoreAdoptionFailure() { ForTest_SetRecoveryStreamAdoptionFailure(previous); }
+				} restoreFailure;
+				saved = DiskFileWriteBuffer::WriteNewFile(automatic.string(), [&](DiskFileWriteBuffer& buffer) {
+					encoder.Encode(*store, buffer, opts);
+					return true;
+				}, &adoption);
+			}
+			std::vector<unsigned char> untouched, candidate;
+			const bool originalPreserved = kind == 0 ? !fs::exists(automatic) :
+				(ReadFileAllBytes(automatic.string(), candidate) && candidate == expectedSentinel &&
+				 (kind != 1 || fs::is_symlink(automatic)) && (kind != 2 || fs::equivalent(automatic, sentinel)));
+			Check(!saved && encoder.calls == 0 && adoption.error == std::errc::not_enough_memory &&
+				adoption.operation == "adopt automatic output stream" && adoption.recoveryPath.empty() &&
+				adoption.cleanupPath.empty() && !adoption.cleanupError && originalPreserved && additionalFiles().empty() &&
+				ReadFileAllBytes(sentinel.string(), untouched) && untouched == expectedSentinel &&
+				std::distance(fs::directory_iterator(scratch), fs::directory_iterator()) == entriesBefore,
+				"automatic stream-adoption failure removes only its newly created candidate after optional existing-name collision");
+			fs::remove(automatic);
+			for( const auto& path : additionalFiles() ) fs::remove(path);
+		}
 		for( unsigned int kind = 0; kind < 3; ++kind ) {
 			if( kind == 0 ) fs::create_symlink(sentinel, automatic);
 			else if( kind == 1 ) fs::create_hard_link(sentinel, automatic);

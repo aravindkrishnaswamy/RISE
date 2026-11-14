@@ -27,6 +27,10 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		// Thread-local fault hook for recovery-file FILE adoption regressions.
+		// Returns the prior value for scoped restoration.
+		bool ForTest_SetRecoveryStreamAdoptionFailure( bool enabled );
+
 		class DiskFileWriteBuffer : public virtual IWriteBuffer, public virtual DiskBuffer
 		{
 		public:
@@ -113,7 +117,7 @@ namespace RISE
 
 		private:
 			enum class OpenPolicy { Direct, ExclusiveStaging, ExclusiveRecovery, RegularOutput };
-			DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, OpenPolicy policy );
+			DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, OpenPolicy policy, bool* created = nullptr );
 			bool hasWritten = false;
 			bool writeFailed = false;
 			std::error_code writeError;

@@ -41,6 +41,18 @@
 
 using namespace RISE::Implementation;
 
+namespace
+{
+	thread_local bool failRecoveryStreamAdoption = false;
+}
+
+bool RISE::Implementation::ForTest_SetRecoveryStreamAdoptionFailure( bool enabled )
+{
+	const bool previous = failRecoveryStreamAdoption;
+	failRecoveryStreamAdoption = enabled;
+	return previous;
+}
+
 #ifdef _WIN32
 namespace
 {
@@ -161,9 +173,10 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name ) :
 {
 }
 
-DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, OpenPolicy policy )
+DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, OpenPolicy policy, bool* created )
 {
 	if( openFailure ) openFailure->clear();
+	if( created ) *created = false;
 	if( !file_name ) return;
 	filename = file_name;
 	int openError = 0;
@@ -178,14 +191,18 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code
 			(exclusive ? _O_EXCL : 0);
 		const int descriptor = ::_open(filename.c_str(), flags, _S_IREAD | _S_IWRITE);
 		if( descriptor >= 0 ) {
+			if( created && exclusive ) *created = true;
 			if( policy == OpenPolicy::RegularOutput ) {
 				NativeFileStatus info{};
 				if( ::_fstat64(descriptor, &info) != 0 ) openError = errno;
 				else if( (info.st_mode & _S_IFMT) != _S_IFREG ) openError = EINVAL;
 			}
 			if( !openError ) {
-				hFile.reset(::_fdopen(descriptor, "wb"));
-				if( !hFile ) openError = errno;
+				if( policy == OpenPolicy::ExclusiveRecovery && failRecoveryStreamAdoption ) openError = ENOMEM;
+				else {
+					hFile.reset(::_fdopen(descriptor, "wb"));
+					if( !hFile ) openError = errno;
+				}
 			}
 			if( !hFile ) ::_close(descriptor);
 			else if( policy == OpenPolicy::RegularOutput ) {
@@ -204,14 +221,18 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code
 			(exclusive ? O_EXCL | O_NOFOLLOW : O_NONBLOCK);
 		const int descriptor = ::open(filename.c_str(), flags, policy == OpenPolicy::ExclusiveRecovery ? 0600 : 0666);
 		if( descriptor >= 0 ) {
+			if( created && exclusive ) *created = true;
 			if( policy == OpenPolicy::RegularOutput ) {
 				struct stat info{};
 				if( ::fstat(descriptor, &info) != 0 ) openError = errno;
 				else if( !S_ISREG(info.st_mode) ) openError = EINVAL;
 			}
 			if( !openError ) {
-				hFile.reset(::fdopen(descriptor, "wb"));
-				if( !hFile ) openError = errno;
+				if( policy == OpenPolicy::ExclusiveRecovery && failRecoveryStreamAdoption ) openError = ENOMEM;
+				else {
+					hFile.reset(::fdopen(descriptor, "wb"));
+					if( !hFile ) openError = errno;
+				}
 			}
 			if( !hFile ) ::close(descriptor);
 			else if( policy == OpenPolicy::RegularOutput && ::ftruncate(descriptor, 0) != 0 ) {
@@ -426,12 +447,28 @@ bool DiskFileWriteBuffer::WriteNewFile( const std::string& path,
 	std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer(nullptr, release);
 	const fs::path requested = target;
 	static std::atomic<unsigned long long> nextRecoveryId{0};
+	const auto removeCreatedOutput = [&] {
+		fs::remove(target, error);
+		if( error ) {
+			result.cleanupPath = target.string();
+			result.cleanupError = error;
+			GlobalLog()->PrintEx(eLog_Warning, "DiskFileWriteBuffer:: Could not remove partial automatic output '%s': %s (%d)",
+				result.cleanupPath.c_str(), error.message().c_str(), error.value());
+		}
+	};
 	for( unsigned int attempt = 0; attempt < 16; ++attempt ) {
 		if( attempt ) target = requested.parent_path() / (requested.stem().string() + "-" +
 			std::to_string(nextRecoveryId.fetch_add(1, std::memory_order_relaxed) + 1) + requested.extension().string());
-		buffer.reset(new DiskFileWriteBuffer(target.string().c_str(), nullptr, OpenPolicy::ExclusiveRecovery));
+		bool created = false;
+		buffer.reset(new DiskFileWriteBuffer(target.string().c_str(), nullptr, OpenPolicy::ExclusiveRecovery, &created));
 		GlobalLog()->PrintNew(buffer.get(), __FILE__, __LINE__, "automatic recovery write buffer");
 		if( buffer->ReadyToWrite() ) break;
+		if( created ) {
+			// Exclusive OS creation succeeded, but adopting that descriptor as
+			// a FILE failed. Only this newly created candidate belongs to us.
+			removeCreatedOutput();
+			return fail("adopt automatic output stream", buffer->writeError);
+		}
 		if( buffer->writeError != std::errc::file_exists || attempt == 15 )
 			return fail("create automatic output exclusively", buffer->writeError);
 	}
@@ -447,13 +484,7 @@ bool DiskFileWriteBuffer::WriteNewFile( const std::string& path,
 		fail(finished ? "encode automatic output" : "finish automatic output", buffer->writeError);
 		// This call created the leaf (beneath trusted parents on POSIX). An
 		// open failure returns above, so old candidates are never removed.
-		fs::remove(target, error);
-		if( error ) {
-			result.cleanupPath = target.string();
-			result.cleanupError = error;
-			GlobalLog()->PrintEx(eLog_Warning, "DiskFileWriteBuffer:: Could not remove partial automatic output '%s': %s (%d)",
-				result.cleanupPath.c_str(), error.message().c_str(), error.value());
-		}
+		removeCreatedOutput();
 		return false;
 	}
 	result.recoveryPath = target.string();
