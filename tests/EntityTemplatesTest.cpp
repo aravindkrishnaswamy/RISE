@@ -40,6 +40,7 @@
 #include <fstream>
 #include <filesystem>
 #include <iterator>
+#include <new>
 
 #ifndef _WIN32
 #include <sys/resource.h>
@@ -67,6 +68,30 @@
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Parsers/IAsciiChunkParser.h"
 #include "TestTempDir.h"
+
+namespace {
+	thread_local bool rejectThumbnailPixels = false;
+	thread_local bool rejectedThumbnailPixels = false;
+}
+
+// Inject one recoverable failure into the 4x4 RGBA PNG pixel allocation.
+// Delegate healthy allocations to ordinary new[] so sanitizer allocation
+// families remain paired with the normal delete[].
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept
+{
+	if( size == 4 * 4 * 4 && rejectThumbnailPixels ) {
+		rejectThumbnailPixels = false;
+		rejectedThumbnailPixels = true;
+		return nullptr;
+	}
+	try { return ::operator new[](size); }
+	catch( ... ) { return nullptr; }
+}
+
+void operator delete[](void* pointer, const std::nothrow_t&) noexcept
+{
+	::operator delete[](pointer);
+}
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -117,8 +142,13 @@ namespace
 			std::ifstream input( target, std::ios::binary );
 			return std::vector<char>( std::istreambuf_iterator<char>( input ), std::istreambuf_iterator<char>() );
 		};
+		rejectThumbnailPixels = true;
+		const bool firstFailed = EntityTemplates::EnsureDefaultTextureFile().empty();
+		rejectThumbnailPixels = false;
+		Check( firstFailed && rejectedThumbnailPixels,
+			"thumbnail encode retry: initial PNG allocation failure is diagnosed" );
 		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string(),
-			"thumbnail cache: initial default texture generated" );
+			"thumbnail encode retry: recovered allocator generates the default texture" );
 		const auto complete = readBytes();
 		Check( complete.size() > 16 && static_cast<unsigned char>(complete.front()) == 0x89,
 			"thumbnail cache: generated payload has a PNG signature and exceeds the failure limit" );

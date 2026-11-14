@@ -16,6 +16,7 @@
 #include "ChunkDescriptorRegistry.h"
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IRasterImageWriter.h"
+#include "../Interfaces/ILog.h"
 #include "../Utilities/DiskFileWriteBuffer.h"
 #include "../Utilities/Color/Color.h"
 
@@ -26,6 +27,7 @@
 #include <memory>
 #include <algorithm>
 #include <array>
+#include <stdexcept>
 
 namespace RISE
 {
@@ -1117,15 +1119,10 @@ std::string EntityTemplates::DefaultLambertianChunkText( const std::string& name
 	return s;
 }
 
-std::string EntityTemplates::EnsureDefaultTextureFile()
+namespace
 {
-	const char* tmpEnv = std::getenv( "TMPDIR" );
-	if( !tmpEnv || !tmpEnv[0] ) tmpEnv = std::getenv( "TEMP" );
-	if( !tmpEnv || !tmpEnv[0] ) tmpEnv = std::getenv( "TMP" );
-	std::string dir = ( tmpEnv && tmpEnv[0] ) ? tmpEnv : "/tmp";
-	if( dir.back() != '/' && dir.back() != '\\' ) dir += '/';
-	const std::string path = dir + "rise_entity_template_default_texture.png";
-
+const std::vector<unsigned char>& DefaultTextureBytes()
+{
 	// Encode the known thumbnail once. Cache validation compares only this
 	// bounded payload, so partial or unrelated files are never reused.
 	static const std::vector<unsigned char> encoded = [] {
@@ -1136,11 +1133,11 @@ std::string EntityTemplates::EnsureDefaultTextureFile()
 		IMemoryBuffer* rawBuffer = nullptr;
 		RISE_API_CreateMemoryBuffer( &rawBuffer );
 		std::unique_ptr<IMemoryBuffer, decltype(release)> buffer( rawBuffer, release );
-		if( !image || !buffer ) return std::vector<unsigned char>{};
+		if( !image || !buffer ) throw std::runtime_error("Could not create default PNG storage");
 		IRasterImageWriter* rawWriter = nullptr;
 		RISE_API_CreatePNGWriter( &rawWriter, *buffer, 8, eColorSpace_Rec709RGB_Linear );
 		std::unique_ptr<IRasterImageWriter, decltype(release)> writer( rawWriter, release );
-		if( !writer ) return std::vector<unsigned char>{};
+		if( !writer ) throw std::runtime_error("Could not create default PNG writer");
 		image->DumpImage( writer.get() );
 		// PNGWriter's void API can report allocation/write failure by
 		// returning early; a complete PNG must contain its final IEND chunk.
@@ -1151,10 +1148,31 @@ std::string EntityTemplates::EnsureDefaultTextureFile()
 		const auto* bytes = reinterpret_cast<const unsigned char*>( buffer->Pointer() );
 		if( size < endChunk.size() ||
 			!std::equal( endChunk.begin(), endChunk.end(), bytes + size - endChunk.size() ) )
-			return std::vector<unsigned char>{};
+			throw std::runtime_error("Default PNG encoding did not complete");
 		return std::vector<unsigned char>( bytes, bytes + size );
 	}();
-	if( encoded.empty() ) return std::string();
+	return encoded;
+}
+}
+
+std::string EntityTemplates::EnsureDefaultTextureFile()
+{
+	const char* tmpEnv = std::getenv( "TMPDIR" );
+	if( !tmpEnv || !tmpEnv[0] ) tmpEnv = std::getenv( "TEMP" );
+	if( !tmpEnv || !tmpEnv[0] ) tmpEnv = std::getenv( "TMP" );
+	std::string dir = ( tmpEnv && tmpEnv[0] ) ? tmpEnv : "/tmp";
+	if( dir.back() != '/' && dir.back() != '\\' ) dir += '/';
+	const std::string path = dir + "rise_entity_template_default_texture.png";
+
+	const std::vector<unsigned char>* encodedPointer = nullptr;
+	try {
+		// A throwing static initializer retries after a transient encoding failure.
+		encodedPointer = &DefaultTextureBytes();
+	} catch( const std::exception& failure ) {
+		GlobalLog()->PrintEx(eLog_Warning, "EntityTemplates: default PNG encoding failed: %s", failure.what());
+		return std::string();
+	}
+	const auto& encoded = *encodedPointer;
 
 	std::error_code error;
 	if( std::filesystem::is_regular_file( path, error ) && !error &&
@@ -1166,8 +1184,8 @@ std::string EntityTemplates::EnsureDefaultTextureFile()
 	}
 
 	const bool written = Implementation::DiskFileWriteBuffer::WriteAtomically( path,
-		[]( Implementation::DiskFileWriteBuffer& buffer ) {
-			return buffer.setBytes( encoded.data(), static_cast<unsigned int>( encoded.size() ) );
+		[encodedPointer]( Implementation::DiskFileWriteBuffer& buffer ) {
+			return buffer.setBytes( encodedPointer->data(), static_cast<unsigned int>( encodedPointer->size() ) );
 		}, Implementation::DiskFileWriteBuffer::StagingPolicy::AllowInPlace );
 	return written ? path : std::string();
 
