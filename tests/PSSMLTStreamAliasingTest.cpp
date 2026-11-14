@@ -76,6 +76,7 @@
 #include <vector>
 #include <fstream>
 #include <string>
+#include <cstdint>
 
 #include "../src/Library/Utilities/PSSMLTSampler.h"
 #include "../src/Library/Cameras/CameraUtilities.h"
@@ -137,6 +138,24 @@ public:
 	size_t MaterializedBytes() const
 	{
 		return MaterializedSlotCount() * sizeof( PrimarySample );
+	}
+};
+
+
+// Seeds a fresh sampler's iteration counters to an arbitrary base before
+// any sample exists, so two samplers with the same seed hold the same
+// RELATIVE history at different absolute iteration numbers (test I).
+class IterationSeedProbe : public PSSMLTSampler
+{
+public:
+	IterationSeedProbe( unsigned int seed, Scalar largeStepProb )
+		: PSSMLTSampler( seed, largeStepProb )
+	{
+	}
+	void SeedIterationBase( std::uint64_t base )
+	{
+		currentIteration = static_cast<decltype( currentIteration )>( base );
+		lastLargeStepIteration = static_cast<decltype( lastLargeStepIteration )>( base );
 	}
 };
 
@@ -1323,9 +1342,11 @@ static void TestDeepEyeWalkAliasing()
 // sampleIndex`, lazily grown by `while (idx >= X.size()) push_back`),
 // touching stream 2048 for its first 6 samples requires materialising
 // EVERY slot up to `idx = 2048 + 4096*5 = 22528` -- 22529 PrimarySample
-// entries (~528 KB; sizeof(PrimarySample) == 24 on this platform,
+// entries (~528 KB at the 24-byte sizeof(PrimarySample) of that commit,
 // independently confirmed by building a throwaway probe against the
-// unfixed library at commit 8080cd2a: "Slots=22529 Bytes=540696").
+// unfixed library at commit 8080cd2a: "Slots=22529 Bytes=540696";
+// PrimarySample has been 32 bytes since its iteration stamps were widened
+// to 64 bits on 2026-11-14, so the same slot count would now be ~704 KB).
 // MLTRasterizer.cpp's bootstrap phase constructs and destroys ONE
 // PSSMLTSampler PER bootstrap sample (100,000 by default on
 // scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene, the MLT original of
@@ -1366,7 +1387,7 @@ static void TestStorageCostRedProof()
 	std::cout << "  After 6 draws on reserved stream " << kFilmStream
 		<< ": " << slots << " PrimarySample slots (" << bytes
 		<< " bytes) across " << extraStreams << " extra-tier stream(s)"
-		<< " (pre-storage-fix: 22529 slots / 540696 bytes)\n";
+		<< " (pre-storage-fix: 22529 slots / 540696 bytes at 24-byte slots)\n";
 
 	if( slots != 6 )
 	{
@@ -1547,6 +1568,84 @@ static void TestLegacyLayoutDeterminism()
 	std::cout << "  Passed!\n";
 }
 
+
+// ================================================================
+// Test I: iteration counters past 2^32 (2026-11-14)
+//
+// The per-chain mutation budget is 64-bit (MLTMutationSchedule), so a
+// chain can run more than UINT_MAX iterations.  The lazy catch-up in
+// Get1D() compares a sample's last-modified stamp with the last large
+// step and subtracts it from the current iteration; with 32-bit stamps
+// both break at the wrap.  A sampler seeded just below 2^32 must produce
+// EXACTLY the draws of an identically seeded sampler whose identical
+// relative history starts at a small base, across a deterministic mix of
+// small/large steps, accepts and rejects, and lanes (legacy, legacy
+// rarely-touched, extra-tier) last modified many iterations earlier.
+// ================================================================
+
+static void TestIterationCounterRollover()
+{
+	std::cout << "\nTest I: iteration counters across 2^32\n";
+
+	const std::uint64_t wrapBase = ( std::uint64_t( 1 ) << 32 ) - 40;
+	const std::uint64_t refBase = 1000;
+	const unsigned int kIterations = 120;
+
+	auto run = [&]( std::uint64_t base, std::vector<Scalar>& draws, std::uint64_t& endIteration )
+	{
+		IterationSeedProbe* sampler = new IterationSeedProbe( 0xC0FFEEu, 0.3 );
+		sampler->SeedIterationBase( base );
+		for( unsigned int i = 0; i < kIterations; i++ )
+		{
+			sampler->StartIteration();
+			const unsigned int n = 1 + ( i * 7u ) % 5u;
+			for( unsigned int k = 0; k < n; k++ ) draws.push_back( sampler->Get1D() );
+			if( i % 13u == 0 ) {			// rarely touched legacy lane
+				sampler->StartStream( 3 );
+				draws.push_back( sampler->Get1D() );
+				draws.push_back( sampler->Get1D() );
+			}
+			if( i % 17u == 0 || i == 41u || i == 43u ) {	// extra tier, long gaps
+				sampler->StartStream( BDPTCameraUtilities::kPSSMLTFilmLensApertureStream );
+				for( unsigned int k = 0; k < 3; k++ ) draws.push_back( sampler->Get1D() );
+			}
+			if( ( i * 5u ) % 3u != 0u ) sampler->Accept(); else sampler->Reject();
+		}
+		endIteration = static_cast<std::uint64_t>( sampler->GetCurrentIteration() );
+		sampler->release();
+	};
+
+	std::vector<Scalar> wrapped, reference;
+	std::uint64_t wrappedEnd = 0, referenceEnd = 0;
+	run( wrapBase, wrapped, wrappedEnd );
+	run( refBase, reference, referenceEnd );
+
+	size_t mismatches = 0, firstMismatch = 0;
+	for( size_t i = 0; i < wrapped.size() && i < reference.size(); i++ ) {
+		if( wrapped[i] != reference[i] ) {
+			if( mismatches == 0 ) firstMismatch = i;
+			mismatches++;
+		}
+	}
+	if( wrapped.size() != reference.size() || mismatches > 0 )
+	{
+		std::cerr << "  FAIL: " << mismatches << "/" << reference.size()
+			<< " draws differ between a sampler seeded at 2^32-40 and its non-wrapped twin"
+			<< " (first at draw " << firstMismatch << ")\n";
+		exit( 1 );
+	}
+	if( wrappedEnd - wrapBase != kIterations || referenceEnd - refBase != kIterations
+		|| wrappedEnd <= ( std::uint64_t( 1 ) << 32 ) )
+	{
+		std::cerr << "  FAIL: iteration counter did not advance past 2^32 (end "
+			<< wrappedEnd << ", expected " << wrapBase + kIterations << ")\n";
+		exit( 1 );
+	}
+	std::cout << "  " << reference.size() << "/" << reference.size()
+		<< " draws bit-identical across the 2^32 boundary; counter reached "
+		<< wrappedEnd << ".\n  Passed!\n";
+}
+
 // ================================================================
 // main
 // ================================================================
@@ -1563,6 +1662,7 @@ int main( int /*argc*/, char** /*argv*/ )
 	TestDeepEyeWalkAliasing();
 	TestStorageCostRedProof();
 	TestLegacyLayoutDeterminism();
+	TestIterationCounterRollover();
 
 	std::cout << "\nAll PSSMLT stream aliasing tests passed!\n";
 	return 0;

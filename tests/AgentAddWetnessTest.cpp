@@ -1213,7 +1213,7 @@ static void TestRefusals()
 				body += Lambertian( kNames[i], "pnt_bb" );
 			}
 			else if( i == 1 ) {
-				body += "spectral_painter\n{\n\tname pnt_spec2\n\tcp 550,1.0\n}\n\n";
+				body += "spectral_painter\n{\n\tname pnt_spec2\n\tcp 550 1.0\n}\n\n";
 				body += Lambertian( kNames[i], "pnt_spec2" );
 			}
 			else {

@@ -15,6 +15,9 @@
 #include "pch.h"
 #include "PNGWriter.h"
 #include "../Interfaces/ILog.h"
+#include <limits>
+#include <new>
+#include <stdexcept>
 #ifndef NO_PNG_SUPPORT
 	#include <png.h>
 	#include <zlib.h>
@@ -23,9 +26,28 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	thread_local bool failPNGWriteAfterHeader = false;
+}
+
+bool RISE::Implementation::ForTest_SetPNGWriteFailureAfterHeader( bool enabled )
+{
+	const bool previous = failPNGWriteAfterHeader;
+	failPNGWriteAfterHeader = enabled;
+	return previous;
+}
+
+bool RISE::Implementation::ForTest_PNGWriteFailureAfterHeader()
+{
+	return failPNGWriteAfterHeader;
+}
+
 PNGWriter::PNGWriter( IWriteBuffer& buffer, const unsigned char bpp_, const COLOR_SPACE color_space_ ) :
   pWriteBuffer( buffer ),
   pBuffer( 0 ),
+  bufW( 0 ),
+  bufH( 0 ),
   bpp( bpp_ ),
   color_space( color_space_ )
 {
@@ -50,16 +72,29 @@ PNGWriter::~PNGWriter( )
 
 void PNGWriter::BeginWrite( const unsigned int width, const unsigned int height )
 {
-	// Setup the buffer
+	if( pBuffer ) {
+		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
+		delete [] pBuffer;
+		pBuffer = nullptr;
+	}
+	bufW = bufH = 0;
+	const size_t pixelBytes = 4 * (bpp >> 3);
+	if( width == 0 || height == 0 || width > 0x7fffffffU || height > 0x7fffffffU ||
+		width > std::numeric_limits<size_t>::max() / pixelBytes / height ) {
+		throw std::runtime_error( "PNGWriter: Invalid image dimensions" );
+	}
+	pBuffer = new (std::nothrow) unsigned char[static_cast<size_t>(width) * height * pixelBytes];
+	if( !pBuffer ) {
+		throw std::bad_alloc();
+	}
+	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 	bufW = width;
 	bufH = height;
-	pBuffer = new unsigned char[width*height*4*(bpp>>3)];
-	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 }
 
 void PNGWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y )
 {
-	if( pBuffer ) {
+	if( pBuffer && x < bufW && y < bufH ) {
 		switch( bpp ) {
 		case 8:
 			{
@@ -86,7 +121,7 @@ void PNGWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsi
 					} break;
 				}
 
-				const unsigned int idx = y*bufW*4+x*4;
+				const size_t idx = (static_cast<size_t>(y)*bufW+x)*4;
 
 				pBuffer[idx] = p.b;
 				pBuffer[idx+1] = p.g;
@@ -119,28 +154,14 @@ void PNGWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsi
 					} break;
 				}
 
-				const unsigned int idx = y*bufW*8+x*8;
+				const size_t idx = (static_cast<size_t>(y)*bufW+x)*8;
 
-#ifdef RISE_BIG_ENDIAN
-				*((unsigned short*)(&pBuffer[idx])) = p.b;
-				*((unsigned short*)(&pBuffer[idx+2])) = p.g;
-				*((unsigned short*)(&pBuffer[idx+4])) = p.r;
-				*((unsigned short*)(&pBuffer[idx+6])) = p.a;
-#else
-				// Byte order in PNG is flipped!  Its little endian!
-				unsigned short tempB = (unsigned short)(p.b);
-				pBuffer[idx] = ((tempB>>8)&0xFF);
-				pBuffer[idx+1] = (tempB&0xFF);
-				unsigned short tempG = (unsigned short)(p.g);
-				pBuffer[idx+2] = ((tempG>>8)&0xFF);
-				pBuffer[idx+3] = (tempG&0xFF);
-				unsigned short tempR = (unsigned short)(p.r);
-				pBuffer[idx+4] = ((tempR>>8)&0xFF);
-				pBuffer[idx+5] = (tempR&0xFF);
-				unsigned short tempA = (unsigned short)(p.a);
-				pBuffer[idx+6] = ((tempA>>8)&0xFF);
-				pBuffer[idx+7] = (tempA&0xFF);
-#endif
+				// PNG stores 16-bit samples most significant byte first.
+				const unsigned short samples[] = { p.b, p.g, p.r, p.a };
+				for( unsigned int i = 0; i < 4; ++i ) {
+					pBuffer[idx + i*2] = static_cast<unsigned char>(samples[i] >> 8);
+					pBuffer[idx + i*2 + 1] = static_cast<unsigned char>(samples[i]);
+				}
 			}
 			break;
 		};
@@ -152,6 +173,7 @@ void PNGWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsi
 void PNGWriter::EndWrite( )
 {
 	GlobalLog()->PrintSourceError( "PNGWriter::EndWrite NO PNG SUPPORT was compiled!  No output will be written", __FILE__, __LINE__ );
+	throw std::runtime_error( "PNG encoding is unavailable: NO_PNG_SUPPORT" );
 }
 
 #else
@@ -161,11 +183,14 @@ png_write_data(png_structp png_ptr, png_bytep data, png_size_t length)
 {
 	IWriteBuffer*	pBuffer = (IWriteBuffer*)png_get_io_ptr(png_ptr);
 
-	if( pBuffer ) {
-		pBuffer->setBytes( data, static_cast<unsigned int>(length) );
-	} else {
-		GlobalLog()->PrintSourceError( "png_write_data (callback func):: bad MemoryBuffer", __FILE__, __LINE__ );
+	bool written = false;
+	try {
+		written = pBuffer && length <= std::numeric_limits<unsigned int>::max() &&
+			pBuffer->setBytes( data, static_cast<unsigned int>(length) );
+	} catch( ... ) {
+		// Leave the catch before invoking libpng's longjmp cleanup path.
 	}
+	if( !written ) png_error( png_ptr, "PNG output write failed" );
 }
 
 static void
@@ -182,21 +207,20 @@ void PNGWriter::EndWrite( )
 		png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 
 		if( !png_ptr ) {
-			GlobalLog()->PrintSourceError( "PNGWriter:: Could not allocate structure", __FILE__, __LINE__ );
+			throw std::runtime_error( "PNGWriter: Could not allocate PNG structure" );
 		}
 
 		png_infop info_ptr = png_create_info_struct(png_ptr);
 
 		if( !info_ptr ) {
 			png_destroy_write_struct(&png_ptr, NULL);
-			GlobalLog()->PrintSourceError( "PNGWriter:: Could not create info structure", __FILE__, __LINE__ );
+			throw std::runtime_error( "PNGWriter: Could not allocate PNG info structure" );
 		}
 
-//		if( setjmp( png_ptr->jumpbuf ) )
-//		{
-//			png_destroy_write_struct(&png_ptr, info_ptr);
-//			GlobalLog()->PrintSourceError( "PNGWriter:: Could not setjmp", __FILE__, __LINE__ );
-//		}
+		if( setjmp( png_jmpbuf(png_ptr) ) ) {
+			png_destroy_write_struct( &png_ptr, &info_ptr );
+			throw std::runtime_error( "PNGWriter: libpng encoding failed" );
+		}
 
 		// Set a write function to write to our buffer rather than a file
 		png_set_write_fn( png_ptr, (void*)&pWriteBuffer, png_write_data, png_flush );
@@ -205,25 +229,20 @@ void PNGWriter::EndWrite( )
 		png_set_compression_level(png_ptr, Z_BEST_COMPRESSION);
 		png_set_bgr(png_ptr);
 
-		if( bpp == 16 ) {
+		// WriteColor applies the selected transfer function at either depth.
+		// Preserve the existing approximate gAMA convention for that space.
+		switch( color_space )
+		{
+		case eColorSpace_ROMMRGB_Linear:
+		case eColorSpace_Rec709RGB_Linear:
 			png_set_gAMA(png_ptr, info_ptr, 1.0);
-		} else {
-			switch( color_space )
-			{
-			case eColorSpace_ROMMRGB_Linear:
-			case eColorSpace_Rec709RGB_Linear:
-				{
-					png_set_gAMA(png_ptr, info_ptr, 1.0);
-				} break;
-			case eColorSpace_sRGB:
-				{
-					png_set_gAMA(png_ptr, info_ptr, 1.0/2.2);
-				} break;
-			case eColorSpace_ProPhotoRGB:
-				{
-					png_set_gAMA(png_ptr, info_ptr, 1.0/1.8);
-				} break;
-			}
+			break;
+		case eColorSpace_sRGB:
+			png_set_gAMA(png_ptr, info_ptr, 1.0/2.2);
+			break;
+		case eColorSpace_ProPhotoRGB:
+			png_set_gAMA(png_ptr, info_ptr, 1.0/1.8);
+			break;
 		}
 
 		png_set_IHDR(png_ptr, info_ptr,
@@ -235,8 +254,10 @@ void PNGWriter::EndWrite( )
 		   PNG_FILTER_TYPE_DEFAULT);
 
 		png_write_info( png_ptr, info_ptr );
+		if( ForTest_PNGWriteFailureAfterHeader() )
+			png_error( png_ptr, "injected PNG codec failure after header" );
 		for( unsigned int y=0; y<bufH; y++ ) {
-			png_write_row(png_ptr, &pBuffer[y*bufW*4*(bpp>>3)]);
+			png_write_row(png_ptr, &pBuffer[static_cast<size_t>(y)*bufW*4*(bpp>>3)]);
 		}
 
 		// Free stuff

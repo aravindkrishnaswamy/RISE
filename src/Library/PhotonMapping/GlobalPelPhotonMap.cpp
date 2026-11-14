@@ -41,12 +41,9 @@ namespace
   return IsFiniteDouble(n.x) && IsFiniteDouble(n.y) && IsFiniteDouble(n.z)
    && Vector3Ops::SquaredModulus(n)>0;
  }
- unsigned int AvailableBytes( const IReadBuffer& buffer )
+ std::uint64_t AvailableBytes( const IReadBuffer& buffer )
  {
-  // MemoryBuffer::HowFarToEnd is a legacy last-index distance, not the
-  // number of readable bytes. Bounds checks use the actual size/cursor.
-  const unsigned int cursor=buffer.getCurPos(),size=buffer.Size();
-  return cursor<=size ? size-cursor : 0;
+  return BufferBytesAvailable(buffer);
  }
  bool LoadError( const char* message )
  {

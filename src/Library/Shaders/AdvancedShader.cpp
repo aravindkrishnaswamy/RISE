@@ -95,10 +95,26 @@ AdvancedShader::AdvancedShader(
 			break;
 		}
 	}
+	for( const SHADE_OP& op : shaderops ) {
+		op.pShaderOp->addref();
+	}
+}
+
+AdvancedShader::AdvancedShader( const AdvancedShader& other ) :
+	Reference( other ),
+	shaderops( other.shaderops ),
+	bComputeSPF( other.bComputeSPF )
+{
+	for( const SHADE_OP& op : shaderops ) {
+		op.pShaderOp->addref();
+	}
 }
 
 AdvancedShader::~AdvancedShader( )
 {
+	for( const SHADE_OP& op : shaderops ) {
+		op.pShaderOp->release();
+	}
 }
 
 void AdvancedShader::Shade(

@@ -47,6 +47,7 @@ namespace RISE
 
 		public:
 			StandardShader( const std::vector<IShaderOp*>& shaderops_ );
+			StandardShader( const StandardShader& other );
 
 			//! Tells the shader to apply shade to the given intersection point
 			void Shade(

@@ -51,6 +51,8 @@
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Interfaces/IRasterImageReader.h"
 #include "../src/Library/RasterImages/RasterImage.h"
+#include "../src/Library/RasterImages/PNGWriter.h"
+#include "../src/Library/Rendering/DisplayTransform.h"
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
@@ -79,7 +81,11 @@ using namespace RISE::Agent;
 static int g_pass = 0, g_fail = 0;
 static void Check( bool c, const std::string& w )
 {
-	if( c ) ++g_pass;
+	if( c ) {
+		++g_pass;
+		const char* marker=std::getenv("RISE_RED_PROVE_MARKER");
+		if(marker && w.find(marker)!=std::string::npos)std::printf("  PASS: %s\n",w.c_str());
+	}
 	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
 }
 
@@ -226,6 +232,50 @@ static std::string Req( double id, const std::string& method, const JsonValue& p
 	r.set( "method", JsonValue::MakeString( method ) );
 	r.set( "params", params );
 	return JsonSerialize( r );
+}
+
+static void TestPNGEncodeFailureBoundaries()
+{
+#ifndef NO_PNG_SUPPORT
+	struct FailureScope {
+		bool previous;
+		explicit FailureScope(bool enabled):previous(Implementation::ForTest_SetPNGWriteFailureAfterHeader(enabled)){}
+		~FailureScope(){Implementation::ForTest_SetPNGWriteFailureAfterHeader(previous);}
+	};
+	FailureScope ordinary(false);
+	const RISEColor color(.25,.5,.75,1);
+	const std::vector<RISEColor> pixels(4,color);
+	auto* image=new RISERasterImage(2,2,color);
+	auto* sink=new InMemoryRasterizerOutput();
+	sink->SetOutputColorSpace(eColorSpace_Rec709RGB_Linear);sink->OutputImage(*image,nullptr,0);
+	const char* labels[]={"sink identity","sink display wrapper","sink downscaled","session passthrough"};
+	for(unsigned int mode=0;mode<4;++mode) {
+		sink->SetDisplayTransform(mode==1?1.0:0.0,eDisplayTransform_None);
+		const auto encode=[&]() {
+			if(mode==3)return AgentSession::ForTest_EncodeLinearPassthroughPng(pixels,2,2);
+			if(mode==2){unsigned int w=0,h=0;return sink->ToPngDownscaled(1,w,h);}
+			return sink->ToPng();
+		};
+		bool escaped=false;std::vector<unsigned char> failed;
+		{
+			FailureScope fault(true);
+			try{failed=encode();}catch(...){escaped=true;}
+		}
+		const std::string label=std::string("agent PNG failure ")+labels[mode];
+		Check(!escaped && failed.empty(),label+": codec exception is contained and partial PNG bytes are discarded");
+		std::vector<unsigned char> healthy;bool retryEscaped=false;
+		try{healthy=encode();}catch(...){retryEscaped=true;}
+		DecodedPng decoded;const bool opened=DecodePng(healthy,decoded);
+		const unsigned int edge=mode==2?1:2;
+		bool exact=!retryEscaped && opened && decoded.width==edge && decoded.height==edge && decoded.pixels.size()==edge*edge;
+		const DecodedPixel expected=mode==1?DecodedPixel{127,255,255,255}:DecodedPixel{63,127,191,255};
+		if(exact)for(const auto& pixel:decoded.pixels)exact &= pixel==expected;
+		Check(exact,label+": healthy retry preserves every independently expected RGBA pixel");
+	}
+	sink->release();image->release();
+#else
+	std::printf("SKIP: agent PNG failure boundaries require PNG support\n");
+#endif
 }
 
 static void TestPerceptionAtlasColorSpace()
@@ -457,8 +507,13 @@ static void TestBDPTPathGuidingTrainingDoesNotContaminatePerception()
 	std::remove( scenePath.c_str() );
 }
 
-int main()
+int main(int argc,char** argv)
 {
+	if(argc==2 && std::string(argv[1])=="--png-failure-only") {
+		TestPNGEncodeFailureBoundaries();
+		std::printf("=== AgentFirstSliceTest PNG failures: %d passed, %d failed ===\n",g_pass,g_fail);
+		return g_fail==0?0:1;
+	}
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
 	// construction site nobody remembered to touch gets it -- the fail-safe
 	// polarity).  This binary does not test the gate, and its fixtures insert
@@ -467,6 +522,7 @@ int main()
 	// re-enables it explicitly per session.
 	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	std::printf( "=== AgentFirstSliceTest (Facet 5 slice 0c: JSON-RPC end-to-end loop) ===\n" );
+	TestPNGEncodeFailureBoundaries();
 	TestPerceptionAtlasColorSpace();
 	TestAccurateHWSSGuideAfterPrimaryMediumScatter();
 	TestAccurateMLTFallbackGuideThroughTransparency();

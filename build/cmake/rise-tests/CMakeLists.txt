@@ -279,6 +279,11 @@ foreach(test_src ${TEST_SOURCES})
 
     add_executable(${test_name} "${test_src}")
 
+    if(test_name STREQUAL "ImageReaderOverflowTest")
+        get_filename_component(_image_test_root "${RISE_ROOT}" ABSOLUTE)
+        target_compile_definitions(${test_name} PRIVATE RISE_TEST_SOURCE_ROOT="${_image_test_root}")
+    endif()
+
     target_include_directories(${test_name} PRIVATE
         "${RISE_LIB_INCLUDE}"
         "${RISE_TESTS_DIR}"        # ProceduralTestHelpers.h, StandaloneTestReporting.h, etc.
@@ -335,6 +340,7 @@ foreach(test_src ${TEST_SOURCES})
         gdi32
         ws2_32                     # AgentLoopbackHttpServer / SocketCommunications (Winsock)
         bcrypt                     # per-launch bearer-token CSPRNG (BCryptGenRandom)
+        advapi32                   # private cache owner/SID validation
         winhttp                    # TlsTransportWin (Windows HTTPS transport)
     )
 

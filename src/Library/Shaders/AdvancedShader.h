@@ -50,6 +50,7 @@ namespace RISE
 
 		public:
 			AdvancedShader( const ShadeOpListType& shaderops_ );
+			AdvancedShader( const AdvancedShader& other );
 
 			//! Tells the shader to apply shade to the given intersection point
 			void Shade(

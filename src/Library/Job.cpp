@@ -13,6 +13,8 @@
 
 #include "pch.h"
 #include <chrono>
+#include <memory>
+#include <mutex>
 #include "PhotonMapping/GlobalPelPhotonMap.h"
 #include "PhotonMapping/GlobalSpectralPhotonMap.h"
 #include "PhotonMapping/CausticSpectralPhotonMap.h"
@@ -31,6 +33,7 @@
 #include "Materials/FabricPresets.h"	// AddFabricMaterial: the `fabric` enum's preset table
 #include "Materials/WeavePresets.h"	// AddWeaveMaterial: the `weave` draft enum + the Phase-2 `fabric` preset table
 #include "Utilities/Color/ColorUtils.h"
+#include "Utilities/DiskFileWriteBuffer.h"
 #include <cstring>
 #include <cstdint>
 #define _USE_MATH_DEFINES
@@ -450,7 +453,7 @@ Job::Job( )
 
 Job::~Job( )
 {
-	DestroyContainers();
+	DestroyContainers();	// also drops the callback-output registry
 }
 
 // L6b — lazy-allocate (or reuse) the canonical FrameStore.  The
@@ -693,6 +696,9 @@ void Job::InitializeContainers()
 
 void Job::DestroyContainers()
 {
+	// Every registered rasterizer (and with it every callback output)
+	// is released below; drop the callback-output registry first.
+	DropCallbackOutputRegistry_();
 	safe_shutdown_and_release( pScene );
 	// pRasterizer is a borrowed pointer into rasterizerRegistry; the
 	// map below owns the addrefs.  Walk the registry and release each
@@ -7273,6 +7279,8 @@ bool Job::AddPiecewiseLinearFunction2D(
 {
 	IPiecewiseFunction2D* pFunction = 0;
 	RISE_API_CreatePiecewiseLinearFunction2D( &pFunction );
+	const auto release = []( IPiecewiseFunction2D* function ) { function->release(); };
+	std::unique_ptr<IPiecewiseFunction2D, decltype(release)> function( pFunction, release );
 
 	for( unsigned int i=0; i<num; i++ ) {
 		IFunction1D* pFunc = pFunc1DManager->GetItem( y[i] );
@@ -7280,13 +7288,10 @@ bool Job::AddPiecewiseLinearFunction2D(
 			GlobalLog()->PrintEx( eLog_Error, "Job::AddPiecewiseLinearFunction2D:: Failed to find function '%s'", y[i] );
 			return false;
 		}
-		pFunction->addControlPoint( x[i], pFunc );
+		function->addControlPoint( x[i], pFunc );
 	}
 
-	const bool ok = RegisterOrDiag( pFunc2DManager, pFunction, name, "function" );
-	safe_release( pFunction );
-
-	return ok;
+	return RegisterOrDiag( pFunc2DManager, function.get(), name, "function" );
 }
 
 //
@@ -10987,30 +10992,71 @@ namespace RISE {
 			unsigned int			height;
 			bool					bPremultipliedAlpha;
 			COLOR_SPACE				color_space;
+			std::mutex				dispatchMutex;
+			// Float delivery buffer, reused across intermediate deliveries
+			// like pBuffer (both guarded by dispatchMutex, both freed after a
+			// final OutputImage and whenever a Job render entry point starts
+			// or ends, see ReleaseRenderBuffers).  The receiver contract is a FULL-FRAME
+			// array indexed (y*width+x)*4 with the valid rect passed
+			// alongside, so the buffer is frame-sized.  Outside the delivered
+			// rect it holds zeros or earlier tiles of the same render.
+			std::vector<float>		floatBuffer;
 
-			virtual ~CallbackRasterizerOutputDispatch()
+			void ClearBuffer_()
 			{
 				if( pBuffer ) {
 					GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-					// Array allocation (`new RGBA16[...]`) requires
-					// matching `delete[]`; the historical `delete pBuffer`
-					// was undefined behaviour that happened to work on
-					// trivial element types under most allocators.
 					delete[] pBuffer;
-					pBuffer = 0;
+					pBuffer = nullptr;
 				}
+				std::vector<float>().swap( floatBuffer );
+				width = height = 0;
 			}
+
+			// INVARIANT: must never call the receiver (pObj): the Job's
+			// registry may release the last reference after the host has
+			// destroyed its receiver.
+			virtual ~CallbackRasterizerOutputDispatch() { ClearBuffer_(); }
 
 		public:
 
 			CallbackRasterizerOutputDispatch( const CallbackRasterizerOutputDispatch& o ) :
-			  pObj( o.pObj ), pBuffer( 0 ), width( o.width ), height( o.height ), bPremultipliedAlpha( o.bPremultipliedAlpha ), color_space( o.color_space )
+			  pObj( o.pObj ), pBuffer( 0 ), width( 0 ), height( 0 ), bPremultipliedAlpha( false ), color_space( eColorSpace_sRGB )
 			{
+				// The copy owns a fresh mutex/cache; do not read a live adapter's
+				// mutable conversion state while its render workers may use it.
 			}
 
 			CallbackRasterizerOutputDispatch( IJobRasterizerOutput& pObj_ ) :
 			  pObj( pObj_ ), pBuffer( 0 ), width( 0 ), height( 0 ), bPremultipliedAlpha( false ), color_space( eColorSpace_sRGB )
 			{
+			}
+
+			//! Ends the render's use of the frame-sized conversion buffers.
+			//! Called by the owning Job when any render entry point starts
+			//! and when it returns or unwinds (Job::CallbackOutputRenderScope),
+			//! so a render that never reaches a final OutputImage (a throw,
+			//! a cancel, a cancelled animation) neither keeps the buffers for
+			//! the Job's lifetime nor hands its pixels to the next render.
+			//! Takes dispatchMutex, so it waits for an in-progress receiver
+			//! call rather than freeing under it; at a render's exit the
+			//! workers have joined and no delivery is in flight.
+			//! INVARIANT: must never call the receiver (pObj) -- it runs at
+			//! render entry/exit and from registry drops, possibly after the
+			//! host has torn its receiver down.
+			void ReleaseRenderBuffers()
+			{
+				std::lock_guard<std::mutex> lock(dispatchMutex);
+				ClearBuffer_();
+			}
+
+			//! Test hook: whether either conversion buffer currently owns
+			//! storage.  Unsynchronized by design (a const reader cannot take
+			//! dispatchMutex without making it mutable): call it only while no
+			//! render is delivering to this output.
+			bool HoldsRenderBuffersUnsynchronized() const
+			{
+				return pBuffer!=nullptr || floatBuffer.capacity()!=0;
 			}
 
 			//! Outputs an intermediate scanline of rasterized data
@@ -11019,148 +11065,242 @@ namespace RISE {
 				const Rect* pRegion							///< [in] Rasterized region, if its NULL then the entire image should be output
 				)
 			{
-				// Reallocate the dispatch buffer whenever the image
-				// dimensions change, not only on first call.  Without
-				// this, an output dispatcher reused across renders with
-				// different image dims would either:
-				//   - underflow pBuffer (if cached dims < current dims):
-				//     the y*width+x indexing uses cached width and the
-				//     loop iterates current dims, so writes overrun
-				//     pBuffer.
-				//   - read-OOB on GetPEL (if cached dims > current dims):
-				//     the loop iterates cached dims, but pImage is only
-				//     `current dims` big — GetPEL(x>=current_w, y>=current_h)
-				//     reads garbage, GetPEL's virtual call may dispatch
-				//     through a corrupted vtable on freed pages, and the
-				//     downstream Integerize crashes with a PAC fault on
-				//     a wild far-address (matching the production-render
-				//     crash report).
-				// The cheap path (dims match) is unchanged: no realloc,
-				// no work.
-				const unsigned int curW = pImage.GetWidth();
-				const unsigned int curH = pImage.GetHeight();
-				if( !pBuffer || curW != width || curH != height ) {
-					if( pBuffer ) {
-						GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-						delete[] pBuffer;
-						pBuffer = 0;
-					}
-					width = curW;
-					height = curH;
-					pBuffer = new RGBA16[ width*height ];
-					GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
-					bPremultipliedAlpha = pObj.PremultipliedAlpha();
-					int cp = pObj.GetColorSpace();
-					switch( cp )
-					{
-					case 0:
-						color_space = eColorSpace_Rec709RGB_Linear;
-						break;
-					case 1:
-					default:
-						color_space = eColorSpace_sRGB;
-						break;
-					case 2:
-						color_space = eColorSpace_ROMMRGB_Linear;
-						break;
-					case 3:
-						color_space = eColorSpace_ProPhotoRGB;
-						break;
-					};
-				}
-
-				// Set the appropriate bytes
-				Rect rc( 0, 0, height-1, width-1 );
-				if( pRegion ) {
-					rc.left = pRegion->left;
-					rc.top = pRegion->top;
-					rc.right = pRegion->right;
-					rc.bottom = pRegion->bottom;
-				}
-
-				// HDR-aware fast path: outputs that opt into 32-bit
-				// float receive the raw linear `RISEColor.base` values
-				// directly, skipping the Integerize quantize-to-uint16
-				// step (which would clamp any value > 1.0).  Required
-				// for the Blender bridge so Filmic + exposure can
-				// tonemap real HDR data instead of seeing a [0, 1]
-				// clipped image.  Falls through to the legacy 16-bit
-				// path for every existing consumer that doesn't
-				// override `WantsFloat32`.
-				if( pObj.WantsFloat32() ) {
-					std::vector<float> fbuf( static_cast<size_t>( width ) * height * 4, 0.0f );
-					for( unsigned int y=rc.top; y<=rc.bottom; y++ ) {
-						for( unsigned int x=rc.left; x<= rc.right; x++ ) {
-							const RISEColor c = pImage.GetPEL( x, y );
-							const size_t idx = ( static_cast<size_t>( y ) * width + x ) * 4;
-							// RISEPel == Rec709RGBPel since Stage B of
-							// the colour-space migration.  Members are
-							// `.base.r/g/b` (Chel = double), `.a`.
-							// We deliver them verbatim — the consumer
-							// (Blender bridge) declares colour space
-							// via GetColorSpace and applies any further
-							// transform downstream.
-							fbuf[idx+0] = static_cast<float>( c.base.r );
-							fbuf[idx+1] = static_cast<float>( c.base.g );
-							fbuf[idx+2] = static_cast<float>( c.base.b );
-							fbuf[idx+3] = static_cast<float>( c.a );
-							if( bPremultipliedAlpha ) {
-								const float aa = fbuf[idx+3];
-								fbuf[idx+0] *= aa;
-								fbuf[idx+1] *= aa;
-								fbuf[idx+2] *= aa;
-							}
-						}
-					}
-					pObj.OutputImageRGBA32F( fbuf.data(), width, height, rc.top, rc.left, rc.bottom, rc.right );
-					return;
-				}
-
-				for( unsigned int y=rc.top; y<=rc.bottom; y++ ) {
-					for( unsigned int x=rc.left; x<= rc.right; x++ ) {
-
-						RGBA16 conv;
-
-						switch( color_space )
-						{
-						case eColorSpace_sRGB:
-							conv = pImage.GetPEL(x,y).Integerize<sRGBPel,unsigned short>( 65535.0 );
-							break;
-						case eColorSpace_Rec709RGB_Linear:
-							conv = pImage.GetPEL(x,y).Integerize<Rec709RGBPel,unsigned short>( 65535.0 );
-							break;
-						case eColorSpace_ROMMRGB_Linear:
-							conv = pImage.GetPEL(x,y).Integerize<ROMMRGBPel,unsigned short>( 65535.0 );
-							break;
-						case eColorSpace_ProPhotoRGB:
-							conv = pImage.GetPEL(x,y).Integerize<ProPhotoRGBPel,unsigned short>( 65535.0 );
-							break;
-						};
-
-						if( bPremultipliedAlpha ) {
-							pBuffer[y*width+x] = ColorUtils::PremultiplyAlphaRGB<RGBA16,0xFFFF>( conv );
-						} else {
-							pBuffer[y*width+x] = conv;
-						}
-					}
-				}
-
-				// Send the data off
-				pObj.OutputImageRGBA16(	(unsigned short*)pBuffer, width, height, rc.top, rc.left, rc.bottom, rc.right );
+				// Rasterizer workers may deliver distinct tiles concurrently.
+				// Keep conversion storage and receiver access serialized while
+				// the caller's tile bracket (if any) continues to protect pixels.
+				std::lock_guard<std::mutex> lock(dispatchMutex);
+				Deliver_( pImage, pRegion );
 			}
 
 			//! A full rasterization was complete, and the full image should be output
 			void OutputImage(
 				const IRasterImage& pImage,					///< [in] Rasterized image
 				const Rect* pRegion,						///< [in] Rasterized region, if its NULL then the entire image should be output
-				const unsigned int frame
+				const unsigned int /*frame*/
 				)
 			{
-				OutputIntermediateImage( pImage, pRegion );
+				// A final delivery ends the render: the frame-sized conversion
+				// buffers are held only while a render is delivering tiles, and
+				// the next render starts from freshly zeroed storage, so a
+				// receiver reading the whole buffer never sees the previous
+				// render's pixels.  Freed on unwind too.
+				std::lock_guard<std::mutex> lock(dispatchMutex);
+				try {
+					Deliver_( pImage, pRegion );
+				} catch( ... ) {
+					ClearBuffer_();
+					throw;
+				}
+				ClearBuffer_();
 			}
+
+		private:
+			//! Converts the clamped region and calls the receiver.  Caller
+			//! holds dispatchMutex.  The buffers are frame-sized because the
+			//! receiver contract is a full-frame array with the valid rect
+			//! alongside; they are reused between intermediate deliveries and
+			//! zeroed whenever (re)allocated.
+			void Deliver_(
+				const IRasterImage& pImage,
+				const Rect* pRegion
+				)
+			{
+				const unsigned int curW=pImage.GetWidth(),curH=pImage.GetHeight();
+				// Legacy callback addressing cannot represent more than UINT_MAX
+				// pixels. Check counts before products, allocations, or height-1.
+				const size_t maxCount=std::min<size_t>(
+					std::numeric_limits<unsigned int>::max(),std::numeric_limits<size_t>::max());
+				if(!curW || !curH || curW>maxCount/curH) {
+					ClearBuffer_();return;
+				}
+				Rect rc(0,0,curH-1,curW-1);
+				if(pRegion) {
+					if(pRegion->left>pRegion->right || pRegion->top>pRegion->bottom ||
+						pRegion->left>=curW || pRegion->top>=curH)return;
+					rc.left=pRegion->left;rc.top=pRegion->top;
+					rc.right=std::min(pRegion->right,curW-1);
+					rc.bottom=std::min(pRegion->bottom,curH-1);
+				}
+				const bool wantsFloat=pObj.WantsFloat32();
+				const size_t pixelBytes=wantsFloat?4*sizeof(float):sizeof(RGBA16);
+				const size_t count=static_cast<size_t>(curW)*curH;
+				if(count>std::numeric_limits<size_t>::max()/pixelBytes) { ClearBuffer_();return; }
+				bPremultipliedAlpha=pObj.PremultipliedAlpha();
+				switch(pObj.GetColorSpace()) {
+				case 0: color_space=eColorSpace_Rec709RGB_Linear;break;
+				case 2: color_space=eColorSpace_ROMMRGB_Linear;break;
+				case 3: color_space=eColorSpace_ProPhotoRGB;break;
+				case 1:
+				default: color_space=eColorSpace_sRGB;break;
+				}
+				if(wantsFloat) {
+					// Float delivery owns only its chosen format, not an unused
+					// cached RGBA16 image alongside it.  Reallocate only when the
+					// format or the dimensions change (per-tile calls reuse it).
+					if(pBuffer || width!=curW || height!=curH || floatBuffer.size()!=count*4) {
+						ClearBuffer_();
+						floatBuffer.assign(count*4,0.0f);
+						width=curW;height=curH;
+					}
+					std::vector<float>& fbuf=floatBuffer;
+					for(unsigned int y=rc.top;y<=rc.bottom;++y) {
+						for(unsigned int x=rc.left;x<=rc.right;++x) {
+							const RISEColor c=pImage.GetPEL(x,y);
+							const size_t idx=(static_cast<size_t>(y)*width+x)*4;
+							// Associate at source precision before narrowing: a source
+							// RGB or alpha outside binary32 can still have a finite
+							// representable product. Alpha is delivered independently.
+							fbuf[idx]=static_cast<float>(bPremultipliedAlpha?c.base.r*c.a:c.base.r);
+							fbuf[idx+1]=static_cast<float>(bPremultipliedAlpha?c.base.g*c.a:c.base.g);
+							fbuf[idx+2]=static_cast<float>(bPremultipliedAlpha?c.base.b*c.a:c.base.b);
+							fbuf[idx+3]=static_cast<float>(c.a);
+						}
+					}
+					pObj.OutputImageRGBA32F(fbuf.data(),width,height,rc.top,rc.left,rc.bottom,rc.right);
+					return;
+				}
+				if(!pBuffer || width!=curW || height!=curH) {
+					ClearBuffer_();
+					pBuffer=new RGBA16[count]();
+					width=curW;height=curH;
+					GlobalLog()->PrintNew(pBuffer,__FILE__,__LINE__,"callback pixels");
+				}
+				for(unsigned int y=rc.top;y<=rc.bottom;++y) {
+					for(unsigned int x=rc.left;x<=rc.right;++x) {
+						const RISEColor c=pImage.GetPEL(x,y);
+						RGBA16 conv;
+						switch(color_space) {
+						case eColorSpace_sRGB: conv=c.Integerize<sRGBPel,unsigned short>(65535.0);break;
+						case eColorSpace_Rec709RGB_Linear: conv=c.Integerize<Rec709RGBPel,unsigned short>(65535.0);break;
+						case eColorSpace_ROMMRGB_Linear: conv=c.Integerize<ROMMRGBPel,unsigned short>(65535.0);break;
+						case eColorSpace_ProPhotoRGB: conv=c.Integerize<ProPhotoRGBPel,unsigned short>(65535.0);break;
+						}
+						const size_t idx=static_cast<size_t>(y)*width+x;
+						pBuffer[idx]=bPremultipliedAlpha?ColorUtils::PremultiplyAlphaRGB<RGBA16,0xFFFF>(conv):conv;
+					}
+				}
+				pObj.OutputImageRGBA16(reinterpret_cast<const unsigned short*>(pBuffer),width,height,rc.top,rc.left,rc.bottom,rc.right);
+			}
+
 		};
+
+		static IRasterizerOutput* CreateCallbackRasterizerOutputDispatch_(IJobRasterizerOutput& receiver)
+		{
+			auto* output=new CallbackRasterizerOutputDispatch(receiver);
+			GlobalLog()->PrintNew(output,__FILE__,__LINE__,"callback rasterizer output dispatch");
+			return output;
+		}
+
+		// Test-only construction seam; uses the same actual dispatcher factory
+		// as Job without exposing its cpp-local type or changing any interface.
+		IRasterizerOutput* ForTest_CreateCallbackRasterizerOutput(IJobRasterizerOutput& receiver)
+		{
+			return CreateCallbackRasterizerOutputDispatch_(receiver);
+		}
+
+		// Test-only probe: whether any callback dispatcher attached to
+		// `rasterizer` still owns a conversion buffer.  Call only between
+		// renders (see HoldsRenderBuffersUnsynchronized).
+		bool ForTest_CallbackOutputsHoldRenderBuffers(const IRasterizer& rasterizer)
+		{
+			struct Probe final : IEnumCallback<IRasterizerOutput> {
+				bool holds=false;
+				bool operator()(const IRasterizerOutput& output) override {
+					if(const auto* dispatch=dynamic_cast<const CallbackRasterizerOutputDispatch*>(&output))
+						holds = holds || dispatch->HoldsRenderBuffersUnsynchronized();
+					return true;
+				}
+			} probe;
+			rasterizer.EnumerateRasterizerOutputs(probe);
+			return probe.holds;
+		}
 	}
 }
+
+//! RAII bracket around one render of a Job entry point: releases every
+//! registered callback dispatcher's conversion buffers on entry and on
+//! every exit (return or unwind).  Entry release guarantees a render never
+//! starts with a previous render's pixels even if that render bypassed the
+//! Job entry points (see Job.h's mCallbackOutputs comment).
+class Job::CallbackOutputRenderScope
+{
+public:
+	explicit CallbackOutputRenderScope( Job& job ) : mJob( job ) { mJob.ReleaseCallbackOutputRenderBuffers_(); }
+	~CallbackOutputRenderScope() { mJob.ReleaseCallbackOutputRenderBuffers_(); }
+	CallbackOutputRenderScope( const CallbackOutputRenderScope& ) = delete;
+	CallbackOutputRenderScope& operator=( const CallbackOutputRenderScope& ) = delete;
+private:
+	Job& mJob;
+};
+
+namespace
+{
+	//! Releases a render entry point's raster sequence on every exit.
+	//! Declared BEFORE the CallbackOutputRenderScope so the sequence is
+	//! released after that scope ends.
+	struct ScopedRasterizeSequenceRelease
+	{
+		IRasterizeSequence*& seq;
+		~ScopedRasterizeSequenceRelease() { safe_release( seq ); }
+	};
+}
+
+void Job::ReleaseCallbackOutputRenderBuffers_() noexcept
+{
+	try {
+		std::lock_guard<std::mutex> lock( mCallbackOutputsMutex );
+		for( const CallbackOutputEntry& entry : mCallbackOutputs ) {
+			entry.dispatch->ReleaseRenderBuffers();
+		}
+	} catch( ... ) {
+		// std::mutex::lock can only fail with a system_error on a
+		// resource-deadlock/OS error; a release is best-effort (the
+		// dispatcher still frees after its next final delivery and in
+		// its destructor) and must not escape a destructor.
+		GlobalLog()->PrintEasyError( "Job: failed to release callback output render buffers" );
+	}
+}
+
+void Job::DropCallbackOutputRegistry_( const IRasterizer* owner ) noexcept
+{
+	// Partition in place (no allocation, cannot throw once locked); the
+	// dropped references are released after the registry lock is gone.
+	std::vector<CallbackOutputEntry> dropped;
+	try {
+		std::lock_guard<std::mutex> lock( mCallbackOutputsMutex );
+		if( !owner ) {
+			dropped.swap( mCallbackOutputs );
+		} else {
+			const auto keepEnd = std::stable_partition( mCallbackOutputs.begin(), mCallbackOutputs.end(),
+				[owner]( const CallbackOutputEntry& e ) { return e.owner != owner; } );
+			dropped.assign( keepEnd, mCallbackOutputs.end() );
+			mCallbackOutputs.erase( keepEnd, mCallbackOutputs.end() );
+		}
+	} catch( ... ) {
+		GlobalLog()->PrintEasyError( "Job: failed to drop the callback output registry" );
+		return;
+	}
+	for( CallbackOutputEntry& entry : dropped ) {
+		entry.dispatch->ReleaseRenderBuffers();
+		safe_release( entry.dispatch );
+	}
+}
+
+size_t Job::ForTest_CallbackOutputRegistrySize()
+{
+	std::lock_guard<std::mutex> lock( mCallbackOutputsMutex );
+	return mCallbackOutputs.size();
+}
+
+namespace RISE { namespace Implementation {
+	// Test-only: the callback-output registry size of a Job, or SIZE_MAX if
+	// `job` is not a Job.
+	size_t ForTest_JobCallbackOutputRegistrySize( IJob& job )
+	{
+		Job* concrete = dynamic_cast<Job*>( &job );
+		return concrete ? concrete->ForTest_CallbackOutputRegistrySize() : static_cast<size_t>( -1 );
+	}
+} }
 
 //! Creates a user callback rasterizer output
 //! This should be called after a rasterizer has been set
@@ -11174,11 +11314,23 @@ bool Job::AddCallbackRasterizerOutput(
 		return false;
 	}
 
-	IRasterizerOutput* pRo = new CallbackRasterizerOutputDispatch( *pObj );
+	// Reserve the registry slot first so the registration below cannot
+	// fail after the rasterizer already owns the dispatcher.
+	std::lock_guard<std::mutex> registryLock( mCallbackOutputsMutex );
+	mCallbackOutputs.reserve( mCallbackOutputs.size()+1 );
+
+	Implementation::CallbackRasterizerOutputDispatch* pRo =
+		new Implementation::CallbackRasterizerOutputDispatch( *pObj );
 	GlobalLog()->PrintNew( pRo, __FILE__, __LINE__, "callback rasterizer output dispatch" );
 
-	pRasterizer->AddRasterizerOutput( pRo );
-	safe_release( pRo );
+	try {
+		pRasterizer->AddRasterizerOutput( pRo );
+	} catch( ... ) {
+		safe_release( pRo );
+		throw;
+	}
+	// The creation reference becomes the registry's reference.
+	mCallbackOutputs.push_back( CallbackOutputEntry{ pRo, pRasterizer } );
 
 	return true;
 }
@@ -11313,6 +11465,18 @@ bool Job::SetIrradianceCacheParameters(
 	return true;
 }
 
+namespace
+{
+	bool SavePhotonMap( const ISerializable& map, const char* filename )
+	{
+		if( !filename ) return false;
+		return DiskFileWriteBuffer::WriteAtomically( filename, [&map]( DiskFileWriteBuffer& buffer ) {
+			map.Serialize( buffer );
+			return true;
+		} );
+	}
+}
+
 //! Saves the caustic pel photon map to disk
 bool Job::SaveCausticPelPhotonmap(
 	const char* file_name							///< [in] Name of the file to save it to
@@ -11322,8 +11486,6 @@ bool Job::SaveCausticPelPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IPhotonMap* pMap = pScene->GetCausticPelMapMutable();
 
@@ -11332,10 +11494,7 @@ bool Job::SaveCausticPelPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the global pel photon map to disk
@@ -11347,8 +11506,6 @@ bool Job::SaveGlobalPelPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IPhotonMap* pMap = pScene->GetGlobalPelMapMutable();
 
@@ -11357,10 +11514,7 @@ bool Job::SaveGlobalPelPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the translucent pel photon map to disk
@@ -11372,8 +11526,6 @@ bool Job::SaveTranslucentPelPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IPhotonMap* pMap = pScene->GetTranslucentPelMapMutable();
 
@@ -11382,10 +11534,7 @@ bool Job::SaveTranslucentPelPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the caustic spectral photon map to disk
@@ -11397,8 +11546,6 @@ bool Job::SaveCausticSpectralPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	const ISpectralPhotonMap* pMap = pScene->GetCausticSpectralMap();
 
@@ -11407,10 +11554,7 @@ bool Job::SaveCausticSpectralPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the global spectral photon map to disk
@@ -11422,8 +11566,6 @@ bool Job::SaveGlobalSpectralPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	const ISpectralPhotonMap* pMap = pScene->GetGlobalSpectralMap();
 
@@ -11432,10 +11574,7 @@ bool Job::SaveGlobalSpectralPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Loads the shadow photon map to disk
@@ -11447,8 +11586,6 @@ bool Job::SaveShadowPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IShadowPhotonMap* pMap = pScene->GetShadowMapMutable();
 
@@ -11457,10 +11594,7 @@ bool Job::SaveShadowPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 
@@ -11786,7 +11920,7 @@ bool Job::PredictRasterizationTime(
 	unsigned int* actual							///< [out] Actual time it took to do the predicted kernel
 	)
 {
-	if( !pRasterizer ) {
+	if( !pRasterizer || num == 0 ) {
 		return false;
 	}
 
@@ -11801,7 +11935,7 @@ bool Job::PredictRasterizationTime(
 	}
 
 	safe_release( pSampling );
-	return true;
+	return nMs != std::numeric_limits<unsigned int>::max();
 }
 
 static IRasterizeSequence* RasterizeSequenceFromOptions()
@@ -11904,17 +12038,12 @@ bool Job::Rasterize(
 	// propagated up through RasterizeScene (ThreadPool::ParallelFor has
 	// surfaced such exceptions to the caller since commit 2692d1af,
 	// instead of std::terminate'ing) -- otherwise a throw here leaks the
-	// refcounted sequence object.  Release-and-rethrow keeps the success
-	// path's release at the exact same point (right after RasterizeScene
-	// returns) as before this fix.
-	try {
-		pRasterizer->RasterizeScene( *pScene, 0, pSeq );
-	}
-	catch( ... ) {
-		safe_release( pSeq );
-		throw;
-	}
-	safe_release( pSeq );
+	// refcounted sequence object.  The scoped release (declared before the
+	// callback-output scope) frees it after RasterizeScene returns or
+	// unwinds, once the callback-output scope has ended.
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };
+	CallbackOutputRenderScope callbackOutputs( *this );
+	pRasterizer->RasterizeScene( *pScene, 0, pSeq );
 
 	return true;
 }
@@ -11953,6 +12082,8 @@ bool Job::RasterizeAnimation(
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };	// was never released (pre-existing leak)
+	CallbackOutputRenderScope callbackOutputs( *this );
 	pRasterizer->RasterizeSceneAnimation( *pScene, time_start, time_end, num_frames, do_fields, invert_fields, 0, 0, pSeq );
 
 	return true;
@@ -12011,14 +12142,9 @@ bool Job::RasterizeRegion(
 	// on every exit, including a worker exception propagated up through
 	// RasterizeScene since ThreadPool::ParallelFor stopped
 	// std::terminate'ing on those (commit 2692d1af).
-	try {
-		pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
-	}
-	catch( ... ) {
-		safe_release( pSeq );
-		throw;
-	}
-	safe_release( pSeq );
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };
+	CallbackOutputRenderScope callbackOutputs( *this );
+	pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
 
 	return true;
 }
@@ -12180,10 +12306,11 @@ bool Job::SetObjectUVToSpherical(
 		return false;
 	}
 
-	IUVGenerator* pUV = 0;
-	RISE_API_CreateSphericalUVGenerator( &pUV, radius );
-
-	return pObj->SetUVGenerator( *pUV );
+	IUVGenerator* pUV = nullptr;
+	if( !RISE_API_CreateSphericalUVGenerator( &pUV, radius ) ) return false;
+	const auto release = []( IUVGenerator* generator ) { generator->release(); };
+	const std::unique_ptr<IUVGenerator, decltype(release)> owned( pUV, release );
+	return pObj->SetUVGenerator( *owned );
 }
 
 //! Sets the UV generator for an object
@@ -12201,10 +12328,11 @@ bool Job::SetObjectUVToBox(
 		return false;
 	}
 
-	IUVGenerator* pUV = 0;
-	RISE_API_CreateBoxUVGenerator( &pUV, width, height, depth );
-
-	return pObj->SetUVGenerator( *pUV );
+	IUVGenerator* pUV = nullptr;
+	if( !RISE_API_CreateBoxUVGenerator( &pUV, width, height, depth ) ) return false;
+	const auto release = []( IUVGenerator* generator ) { generator->release(); };
+	const std::unique_ptr<IUVGenerator, decltype(release)> owned( pUV, release );
+	return pObj->SetUVGenerator( *owned );
 }
 
 //! Sets the UV generator for an object
@@ -12222,10 +12350,11 @@ bool Job::SetObjectUVToCylindrical(
 		return false;
 	}
 
-	IUVGenerator* pUV = 0;
-	RISE_API_CreateCylindricalUVGenerator( &pUV, radius, axis, size );
-
-	return pObj->SetUVGenerator( *pUV );
+	IUVGenerator* pUV = nullptr;
+	if( !RISE_API_CreateCylindricalUVGenerator( &pUV, radius, axis, size ) ) return false;
+	const auto release = []( IUVGenerator* generator ) { generator->release(); };
+	const std::unique_ptr<IUVGenerator, decltype(release)> owned( pUV, release );
+	return pObj->SetUVGenerator( *owned );
 }
 
 //! Sets the object's surface intersection threshold
@@ -12608,6 +12737,10 @@ bool Job::RemoveRasterizerOutputs(
 			"Job::RemoveRasterizerOutputs:: no rasterizer is set, nothing to remove" );
 		return false;
 	}
+	// Only the active rasterizer's outputs are freed, so only the
+	// dispatchers attached to it leave the registry; those on other
+	// registered rasterizers stay attached and keep their entries.
+	DropCallbackOutputRegistry_( pRasterizer );
 	pRasterizer->FreeRasterizerOutputs();
 	return true;
 }
@@ -15852,6 +15985,8 @@ bool Job::RasterizeAnimationUsingOptions(
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
 
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };	// was never released (pre-existing leak)
+	CallbackOutputRenderScope callbackOutputs( *this );
 	pRasterizer->RasterizeSceneAnimation( *pScene,
 		aTs, aTe, aNf, aDf, aInvf, 0, 0, pSeq );
 
@@ -15888,6 +16023,8 @@ bool Job::RasterizeAnimationUsingOptions(
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
 
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };	// was never released (pre-existing leak)
+	CallbackOutputRenderScope callbackOutputs( *this );
 	pRasterizer->RasterizeSceneAnimation( *pScene,
 		aTs, aTe, aNf, aDf, aInvf, 0, &frame, pSeq );
 
@@ -15968,6 +16105,9 @@ void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* p
 		if( pRasterizer == it->second.instance ) {
 			pRasterizer = 0;   // breaks the dangling-borrow
 		}
+		// Outputs are not replayed onto the replacement; drop the
+		// callback dispatchers attached to the instance being released.
+		DropCallbackOutputRegistry_( it->second.instance );
 		safe_release( it->second.instance );
 		it->second.instance = pRaster;
 		it->second.params   = params;

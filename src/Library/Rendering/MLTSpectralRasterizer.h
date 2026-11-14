@@ -135,6 +135,17 @@ namespace RISE
 				IRasterImage*& pImageOut
 				) const;
 
+			/// Explicit per-call progress sink; animation supplies a stack
+			/// frame-slot adapter without changing the authored callback.
+			bool RenderFrameOfMLTSpectral(
+				const IScene& pScene,
+				const ICamera& pCamera,
+				const unsigned int width,
+				const unsigned int height,
+				IRasterImage*& pImageOut,
+				IProgressCallback* progress
+				) const;
+
 		public:
 #ifdef RISE_ENABLE_OIDN
 			double EstimateDenoiseWorkPerMegapixel() const { return nMutationsPerPixel * 1.6; }

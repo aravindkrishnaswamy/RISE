@@ -20,6 +20,7 @@
 
 #include "../Interfaces/ITriangleMeshLoader.h"
 #include "../Utilities/Reference.h"
+#include <string>
 
 namespace RISE
 {
@@ -30,7 +31,7 @@ namespace RISE
 		protected:
 			virtual ~TriangleMeshLoaderRAW2();
 
-			char				szFilename[256];	// The name of the file we are to read from
+			std::string filename;
 
 		public:
 			TriangleMeshLoaderRAW2( const char* szFile );

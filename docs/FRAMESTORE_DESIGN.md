@@ -251,7 +251,12 @@ public:
 
     // Bulk path for Phase 1 FrameSink.
     void CopyTileFromRasterImage(size_t tileX, size_t tileY,
-                                 const IRasterImage& src, const Rect& srcRect);
+                                 const IRasterImage& src, const Rect& srcRect,
+                                 const Rect* dstClip = nullptr);
+    // dstClip (optional, INCLUSIVE): only destination pixels inside it are copied
+    // and the source is not read elsewhere; the tile's other pixels keep their
+    // previous content. Used by the unbound ViewportFrameStore path so a tile
+    // overlapping the delivered region does not read source pixels outside it.
 
     // Final-frame signal (separate from per-tile so observers know the render is complete).
     void MarkFrameComplete(unsigned frame);

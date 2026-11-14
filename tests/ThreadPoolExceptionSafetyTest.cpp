@@ -36,12 +36,51 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
+#include <new>
+#include <thread>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 using namespace RISE::Implementation;
+
+// Deterministic allocation-failure injection for T5.  The global
+// operator new consults a thread_local countdown that is armed ONLY on the
+// calling thread around one ParallelFor submission: the k-th allocation that
+// thread makes while armed throws std::bad_alloc.  Every other thread (pool
+// workers) and every unarmed allocation is untouched.
+static thread_local long t_allocCountdown = 0;     // 0 = disarmed
+static thread_local bool t_allocFired = false;
+
+void* operator new( std::size_t bytes )
+{
+	if( t_allocCountdown > 0 && --t_allocCountdown == 0 ) {
+		t_allocFired = true;
+		throw std::bad_alloc();
+	}
+	if( void* p = std::malloc( bytes ? bytes : 1 ) ) {
+		return p;
+	}
+	throw std::bad_alloc();
+}
+void* operator new[]( std::size_t bytes ) { return ::operator new( bytes ); }
+void operator delete( void* p ) noexcept { std::free( p ); }
+void operator delete[]( void* p ) noexcept { std::free( p ); }
+void operator delete( void* p, std::size_t ) noexcept { std::free( p ); }
+void operator delete[]( void* p, std::size_t ) noexcept { std::free( p ); }
+
+namespace
+{
+	struct AllocFailureArm
+	{
+		explicit AllocFailureArm( long k ) { t_allocFired = false; t_allocCountdown = k; }
+		~AllocFailureArm() { t_allocCountdown = 0; }
+		AllocFailureArm( const AllocFailureArm& ) = delete;
+		AllocFailureArm& operator=( const AllocFailureArm& ) = delete;
+	};
+}
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -228,6 +267,124 @@ static void TestSubmitThrowDoesNotHangLatchWaiter()
 	Check( sum.load() == 1225, "pool still schedules work after a throwing Submit (not wedged)" );
 }
 
+//! ParallelFor's enqueue must be transactional: if the k-th allocation of
+//! the submission throws (std::function heap storage or deque block growth),
+//! NO task of that call may stay queued (each captures the caller's `body`
+//! by reference -- a leaked one runs a dangling closure).  Sweep k over every
+//! allocation the submission makes, from the first push through mid-loop
+//! pushes and deque block growth, until a call completes unfailed.
+static void TestSubmissionAllocationFailureIsTransactional()
+{
+	std::printf( "T5: allocation failure mid-submission leaves no task queued...\n" );
+
+	const unsigned int n = 300;
+	unsigned int throws = 0;
+	unsigned int completes = 0;
+	bool allZeroOnThrow = true;
+	bool allFullOnComplete = true;
+	bool healthyOk = true;
+	bool unrelatedOk = true;
+	bool wrongException = false;
+	bool terminated = false;
+	long lastK = 0;
+
+	for( long k = 1; k < 4000; ++k ) {
+		lastK = k;
+		// A fresh pool per k: its task deque starts with no spare blocks, so
+		// the sweep also crosses every deque block / map growth allocation
+		// (a long-lived pool's deque keeps spare blocks and never grows).
+		ThreadPool pool( 4, {} );
+		// An unrelated task queued before the failing call must still run.
+		std::atomic<int> unrelatedRan( 0 );
+		pool.Submit( [&unrelatedRan] { unrelatedRan.fetch_add( 1 ); } );
+
+		std::atomic<unsigned int> bodyRuns( 0 );
+		bool threw = false;
+		bool fired = false;
+		{
+			// `body` is constructed before arming so only the submission's
+			// own allocations are counted.
+			std::function<void( unsigned int )> body = [&bodyRuns]( unsigned int ) {
+				// Disarm on first execution: the enqueue loop has finished
+				// once any task runs on this thread, so a leftover countdown
+				// must not fire inside task execution instead.
+				t_allocCountdown = 0;
+				bodyRuns.fetch_add( 1 );
+			};
+			try {
+				AllocFailureArm arm( k );
+				pool.ParallelFor( n, std::move( body ) );
+				fired = t_allocFired;
+			}
+			catch( const std::bad_alloc& ) {
+				threw = true;
+				fired = t_allocFired;
+			}
+			catch( ... ) {
+				threw = true;
+				wrongException = true;
+			}
+		}
+
+		if( threw ) {
+			++throws;
+			// Short settle: any leaked task would run on a worker now.
+			std::this_thread::sleep_for( std::chrono::milliseconds( 2 ) );
+			if( bodyRuns.load() != 0 ) {
+				allZeroOnThrow = false;
+			}
+		} else {
+			++completes;
+			if( bodyRuns.load() != n ) {
+				allFullOnComplete = false;
+			}
+		}
+
+		// A following healthy call on the same pool runs every index
+		// exactly once (and does not hang on a leftover latch).
+		std::vector<std::atomic<int>> ran( n );
+		for( unsigned int i = 0; i < n; ++i ) ran[i].store( 0 );
+		pool.ParallelFor( n, [&ran]( unsigned int i ) { ran[i].fetch_add( 1 ); } );
+		for( unsigned int i = 0; i < n; ++i ) {
+			if( ran[i].load() != 1 ) {
+				healthyOk = false;
+			}
+		}
+		if( threw && bodyRuns.load() != 0 ) {
+			allZeroOnThrow = false;
+		}
+
+		// The unrelated task must have run (bounded wait).
+		for( int w = 0; w < 5000 && unrelatedRan.load() == 0; ++w ) {
+			std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+		}
+		if( unrelatedRan.load() != 1 ) {
+			unrelatedOk = false;
+		}
+
+		// Done once the countdown outlived the whole submission.
+		if( !threw && !fired ) {
+			terminated = true;
+			break;
+		}
+	}
+
+	std::printf( "  swept k=1..%ld: %u submissions threw, %u completed\n",
+		lastK, throws, completes );
+	Check( !wrongException, "a failed submission surfaces std::bad_alloc, not another type" );
+	// How many allocations a submission makes is library-specific
+	// (std::function's small-buffer size, deque block size), so the number
+	// of failure points is observed, not assumed: the sweep must hit at
+	// least one, every one of them is held to the checks below, and the
+	// sweep must reach a k past the submission's last allocation.
+	Check( throws >= 1, "the sweep reached at least one failing allocation inside the submission" );
+	Check( terminated && completes >= 1, "the sweep terminated with an unfailed, uninjected submission" );
+	Check( allZeroOnThrow, "no task of a failed submission ever ran (after settle and after a healthy call)" );
+	Check( allFullOnComplete, "an unfailed submission ran all n bodies" );
+	Check( healthyOk, "a healthy ParallelFor after each failure ran every index exactly once" );
+	Check( unrelatedOk, "an unrelated task queued before the failing call still ran exactly once" );
+}
+
 int main()
 {
 	std::printf( "=== ThreadPoolExceptionSafetyTest ===\n" );
@@ -236,6 +393,7 @@ int main()
 	TestPoolUsableAfterThrow();
 	TestManyThrowsOneCaught();
 	TestSubmitThrowDoesNotHangLatchWaiter();
+	TestSubmissionAllocationFailureIsTransactional();
 
 	std::printf( "=== ThreadPoolExceptionSafetyTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

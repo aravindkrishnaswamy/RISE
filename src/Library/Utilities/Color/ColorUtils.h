@@ -18,12 +18,46 @@
 #include "../../Interfaces/IFunction1D.h"
 #include "../../Interfaces/IWriteBuffer.h"
 #include "../../Interfaces/IReadBuffer.h"
+#include "../FiniteMath.h"
+#include <cmath>
+#include <cstdint>
+#include <type_traits>
 
 
 namespace RISE
 {
 	namespace ColorUtils
 	{
+		// RGBE/RGBEA share an 8-bit exponent biased by 128. The largest
+		// channel is (2^bits-1)*2^(255-128-bits). Clamp before frexp/casts;
+		// retain the established low floor and truncate exact binary-scaled mantissas.
+		template< unsigned int bits, class Pel >
+		inline void PackSharedExponentRGB( const Pel& p, unsigned int (&samples)[3], unsigned char& exponent )
+		{
+			static_assert(bits==8 || bits==16,"shared-exponent mantissas must have 8 or 16 bits");
+			constexpr unsigned int maxSample=(1u<<bits)-1u;
+			const double ceiling=std::ldexp(double(maxSample),127-int(bits));
+			const auto clip=[ceiling](double value) {
+				if(!IsFiniteDouble(value))return IsPositiveInfinityDouble(value)?ceiling:0.0;
+				if(value<=0)return 0.0;
+				return value>ceiling?ceiling:value;
+			};
+			const double channels[]={clip(p.r),clip(p.g),clip(p.b)};
+			double peak=channels[0];
+			for(unsigned int i=1;i<3;++i)if(channels[i]>peak)peak=channels[i];
+			samples[0]=samples[1]=samples[2]=0;exponent=0;
+			if(peak<1e-32)return;
+			int power=0;
+			std::frexp(peak,&power);
+			// A power-of-two scale avoids cancellation and ensures the peak
+			// mantissa has its high bit set, disambiguating raw RGBE from RLE.
+			const double scale=std::ldexp(1.0,int(bits)-power);
+			for(unsigned int i=0;i<3;++i) {
+				const double scaled=channels[i]*scale;
+				samples[i]=scaled>=maxSample?maxSample:static_cast<unsigned int>(scaled);
+			}
+			exponent=static_cast<unsigned char>(power+128);
+		}
 
 		//! Applies the SRGB non-linearization transfer function
 		/// \return SRGB result
@@ -148,13 +182,36 @@ namespace RISE
 			);
 
 		//! Premultiplies RGB Pel
+		//! Integral RGB/alpha inputs must be in [0,max_val]. Floating RGB
+		//! must be finite and alpha in [0,max_val]; RGB may retain HDR range.
+		//! Alpha is preserved. The positive normalization maximum is explicit.
 		template< class T, int max_val >
 		T PremultiplyAlphaRGB( const T& rgba )
 		{
+			static_assert(max_val>0,"alpha normalization maximum must be positive");
+			using Channel=decltype(rgba.r);
 			T ret;
-			ret.r = rgba.r * max_val / rgba.a;
-			ret.g = rgba.g * max_val / rgba.a;
-			ret.b = rgba.b * max_val / rgba.a;
+			if constexpr(std::is_integral<Channel>::value) {
+				const auto multiply=[&rgba](Channel value) {
+					return static_cast<Channel>((static_cast<std::uint64_t>(value)*static_cast<std::uint64_t>(rgba.a))/
+						static_cast<std::uint64_t>(max_val));
+				};
+				ret.r=multiply(rgba.r);ret.g=multiply(rgba.g);ret.b=multiply(rgba.b);
+			} else {
+				// Normalize bounded mantissas, then restore the combined exponent.
+				// Forming alpha/max first can erase a tiny alpha; multiplying RGB
+				// by alpha first can overflow despite a representable final result.
+				int alphaPower=0;
+				const long double alphaMantissa=std::frexp(static_cast<long double>(rgba.a),&alphaPower);
+				const long double normalizedAlpha=alphaMantissa/static_cast<long double>(max_val);
+				const auto multiply=[normalizedAlpha,alphaPower](Channel value) {
+					int rgbPower=0;
+					const long double rgbMantissa=std::frexp(static_cast<long double>(value),&rgbPower);
+					return static_cast<Channel>(std::ldexp(rgbMantissa*normalizedAlpha,rgbPower+alphaPower));
+				};
+				ret.r=multiply(rgba.r);ret.g=multiply(rgba.g);ret.b=multiply(rgba.b);
+			}
+			ret.a=rgba.a;
 			return ret;
 		}
 	}

@@ -20,6 +20,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <memory>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -97,20 +98,18 @@ void WaveletNoise3D::GenerateTile()
 	const int n = (int)nTileSize;
 	const int n3 = n * n * n;
 
-	pTile = new Scalar[n3];
-	GlobalLog()->PrintNew( pTile, __FILE__, __LINE__, "wavelet tile" );
-
-	Scalar* temp1 = new Scalar[n3];
-	Scalar* temp2 = new Scalar[n3];
+	std::unique_ptr<Scalar[]> tile( new Scalar[n3] );
+	std::unique_ptr<Scalar[]> temp1( new Scalar[n3] );
+	std::unique_ptr<Scalar[]> temp2( new Scalar[n3] );
 
 	// Step 1: Fill with random noise
 	SeedWavelet( 42 );
 	for( int i = 0; i < n3; i++ ) {
-		pTile[i] = RandWavelet();
+		tile[i] = RandWavelet();
 	}
 
 	// Step 2: For each axis, downsample then upsample to get low-pass
-	memcpy( temp1, pTile, n3 * sizeof(Scalar) );
+	memcpy( temp1.get(), tile.get(), n3 * sizeof(Scalar) );
 
 	// X-axis pass
 	for( int z = 0; z < n; z++ ) {
@@ -121,7 +120,7 @@ void WaveletNoise3D::GenerateTile()
 	}
 
 	// Y-axis pass (stride = n for Y axis)
-	memcpy( temp1, temp2, n3 * sizeof(Scalar) );
+	memcpy( temp1.get(), temp2.get(), n3 * sizeof(Scalar) );
 	for( int z = 0; z < n; z++ ) {
 		for( int x = 0; x < n; x++ ) {
 			Downsample( &temp1[z*n*n + x], &temp2[z*n*n + x], n, n );
@@ -130,7 +129,7 @@ void WaveletNoise3D::GenerateTile()
 	}
 
 	// Z-axis pass (stride = n*n for Z axis)
-	memcpy( temp1, temp2, n3 * sizeof(Scalar) );
+	memcpy( temp1.get(), temp2.get(), n3 * sizeof(Scalar) );
 	for( int y = 0; y < n; y++ ) {
 		for( int x = 0; x < n; x++ ) {
 			Downsample( &temp1[y*n + x], &temp2[y*n + x], n, n*n );
@@ -140,11 +139,11 @@ void WaveletNoise3D::GenerateTile()
 
 	// Step 3: Subtract low-pass from original to get band-pass
 	for( int i = 0; i < n3; i++ ) {
-		pTile[i] = pTile[i] - temp2[i];
+		tile[i] = tile[i] - temp2[i];
 	}
 
-	delete [] temp1;
-	delete [] temp2;
+	pTile = tile.release();
+	GlobalLog()->PrintNew( pTile, __FILE__, __LINE__, "wavelet tile" );
 }
 
 Scalar WaveletNoise3D::EvaluateTile( Scalar x, Scalar y, Scalar z ) const

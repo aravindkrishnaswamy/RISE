@@ -22,6 +22,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <memory>
 #include "HairFileLoader.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/FiniteMath.h"
@@ -266,7 +267,8 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 	// so the fopen below produces the ordinary "cannot open" diagnostic.
 	const String resolved = GlobalMediaPathLocator().Find( filename );
 
-	FILE* f = fopen( resolved.c_str(), "rb" );
+	const std::unique_ptr<FILE, decltype(&fclose)> file( fopen( resolved.c_str(), "rb" ), fclose );
+	FILE* const f = file.get();
 	if( !f ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: cannot open the file (looked at `%s`; unqualified names resolve against $RISE_MEDIA_PATH)",
@@ -279,21 +281,18 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: could not determine file length (seek/tell failed)",
 			label.c_str() );
-		fclose( f );
 		return false;
 	}
 	if( fileLen < (long long)kHeaderBytes ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: not a .hair file -- %lld bytes is shorter than the format's 128-byte header",
 			label.c_str(), fileLen );
-		fclose( f );
 		return false;
 	}
 
 	unsigned char hdr[kHeaderBytes];
 	if( fread( hdr, 1, kHeaderBytes, f ) != kHeaderBytes ) {
 		GlobalLog()->PrintEx( eLog_Error, "%s: failed to read the 128-byte header", label.c_str() );
-		fclose( f );
 		return false;
 	}
 
@@ -301,7 +300,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: bad magic -- the first four bytes must be `HAIR` (got 0x%02X 0x%02X 0x%02X 0x%02X)",
 			label.c_str(), (unsigned)hdr[0], (unsigned)hdr[1], (unsigned)hdr[2], (unsigned)hdr[3] );
-		fclose( f );
 		return false;
 	}
 
@@ -335,7 +333,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: the header declares no POINTS array (flag bit 1 clear) -- a .hair file without points carries no geometry",
 			label.c_str() );
-		fclose( f );
 		return false;
 	}
 	if( ( out.arrayFlags & ~kFlagKnownMask ) != 0 ) {
@@ -347,14 +344,12 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 			"%s: the header sets reserved flag bits (flags 0x%08X, known mask 0x%08X) -- this file uses an "
 			"array this loader does not know, so the layout of everything after it is unknowable",
 			label.c_str(), out.arrayFlags, kFlagKnownMask );
-		fclose( f );
 		return false;
 	}
 	if( out.numStrands == 0 || out.numPoints == 0 ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: the header declares %u strands and %u points -- both must be non-zero",
 			label.c_str(), out.numStrands, out.numPoints );
-		fclose( f );
 		return false;
 	}
 	if( out.numStrands > kMaxHairFileStrands ) {
@@ -362,14 +357,12 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 			"%s: %u strands exceeds the %u cap (a groom that large is gigabytes of control points; "
 			"if the file is genuinely this big, split it)",
 			label.c_str(), out.numStrands, kMaxHairFileStrands );
-		fclose( f );
 		return false;
 	}
 	if( out.numPoints > kMaxHairFilePoints ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: %u points exceeds the %u cap",
 			label.c_str(), out.numPoints, kMaxHairFilePoints );
-		fclose( f );
 		return false;
 	}
 	if( !RISE::IsFiniteDouble( (double)out.defaultThickness ) ) {
@@ -379,7 +372,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: the header's default thickness is not finite (%g)",
 			label.c_str(), (double)out.defaultThickness );
-		fclose( f );
 		return false;
 	}
 
@@ -402,7 +394,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: TRUNCATED -- the header describes %llu bytes of header + arrays but the file is only %lld bytes",
 			label.c_str(), need, fileLen );
-		fclose( f );
 		return false;
 	}
 	if( (unsigned long long)fileLen > need ) {
@@ -426,7 +417,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 		if( fread( &segs[0], 2, out.numStrands, f ) != out.numStrands ) {
 			GlobalLog()->PrintEx( eLog_Error,
 				"%s: failed to read the %u-entry segments array", label.c_str(), out.numStrands );
-			fclose( f );
 			return false;
 		}
 		if( !HostIsLittleEndian() ) {
@@ -453,7 +443,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 			GlobalLog()->PrintEx( eLog_Error,
 				"%s: the segments array accounts for %llu points but the header declares %u -- corrupt file",
 				label.c_str(), total, out.numPoints );
-			fclose( f );
 			return false;
 		}
 		if( nZeroSegmentStrands > 0 ) {
@@ -468,7 +457,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 				"%s: no segments array and the header's default segment count is 0 -- there is no way to know "
 				"where one strand ends and the next begins",
 				label.c_str() );
-			fclose( f );
 			return false;
 		}
 		const unsigned long long perStrand = (unsigned long long)out.defaultSegments + 1ull;
@@ -477,7 +465,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 				"%s: no segments array, so every strand carries the header's default %u segments (%llu points), "
 				"but %u strands x %llu != the declared %u points -- corrupt file",
 				label.c_str(), out.defaultSegments, perStrand, out.numStrands, perStrand, out.numPoints );
-			fclose( f );
 			return false;
 		}
 		// The segments-ARRAY path is safe from this by construction (a
@@ -495,7 +482,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 				"per strand), which exceeds the %u-control-point-per-strand cap (HairSegmentRef::span is a "
 				"16-bit index)",
 				label.c_str(), out.defaultSegments, perStrand, HairGeometry::kMaxControlPointsPerStrand );
-			fclose( f );
 			return false;
 		}
 		for( unsigned int i = 0; i < out.numStrands; ++i ) {
@@ -508,7 +494,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 	if( fread( &out.points[0], 4, (size_t)nP * 3, f ) != (size_t)nP * 3 ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"%s: failed to read the %u-point positions array", label.c_str(), out.numPoints );
-		fclose( f );
 		return false;
 	}
 	if( !HostIsLittleEndian() ) {
@@ -521,7 +506,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 		if( fread( &out.thickness[0], 4, (size_t)nP, f ) != (size_t)nP ) {
 			GlobalLog()->PrintEx( eLog_Error,
 				"%s: failed to read the %u-entry thickness array", label.c_str(), out.numPoints );
-			fclose( f );
 			return false;
 		}
 		if( !HostIsLittleEndian() ) {
@@ -545,7 +529,6 @@ bool LoadHairFile( const char* filename, HairFileData& out, const char* who )
 			out.hasColorArray ? "colours" : "" );
 	}
 
-	fclose( f );
 
 	GlobalLog()->PrintEx( eLog_Info,
 		"%s: loaded %u strands / %u points (segments array %s, thickness array %s)%s%s",

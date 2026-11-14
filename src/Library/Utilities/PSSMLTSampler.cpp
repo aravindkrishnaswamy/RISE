@@ -260,9 +260,9 @@ Scalar PSSMLTSampler::Get1D()
 		// sample was skipped.  If nSmall > 1, the sample wasn't
 		// consumed for nSmall-1 prior iterations and needs catch-up
 		// mutations to maintain the correct stationary distribution.
-		const unsigned int nSmall = currentIteration - sample.lastModIteration;
-		const unsigned int nMutations = nSmall > 0 ? nSmall : 1;
-		for( unsigned int i = 0; i < nMutations; i++ )
+		const std::uint64_t nSmall = currentIteration - sample.lastModIteration;
+		const std::uint64_t nMutations = nSmall > 0 ? nSmall : 1;
+		for( std::uint64_t i = 0; i < nMutations; i++ )
 		{
 			sample.value = Mutate( sample.value );
 		}

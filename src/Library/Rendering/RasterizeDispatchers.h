@@ -183,6 +183,7 @@ namespace RISE
 
 			void DoWork()
 			{
+				ThreadLocalSplatBufferTaskScope splatTask;
 				const unsigned int height = image.GetHeight();
 
 				// Create a runtime context for this thread
@@ -243,6 +244,7 @@ namespace RISE
 
 			void DoAnimWork()
 			{
+				ThreadLocalSplatBufferTaskScope splatTask;
 				const unsigned int height = image.GetHeight();
 
 				// DL-465: this worker's clones of the moving elements, posed

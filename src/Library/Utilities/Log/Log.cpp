@@ -15,7 +15,7 @@
 #include "pch.h"
 #include "Log.h"
 #include <stdarg.h>
-#include <stdio.h>
+#include <cstdio>
 #include <cstring>
 
 #include "StreamPrinter.h"
@@ -75,8 +75,8 @@ void Log::RemoveAllPrinters( )
 void Log::Print( LOG_ENUM eType, const char * szMessage ) const
 {
 	// Construct a LogEvent and pass it to all the printers
-	LogEvent		le;
-	strncpy( le.szMessage, szMessage, MAX_STR_SIZE );
+	LogEvent		le{};
+	std::snprintf( le.szMessage, sizeof(le.szMessage), "%s", szMessage );
 	le.eType = eType;
 
 	// Hold mutexPrinters across the iteration: AddPrinter /
@@ -97,15 +97,12 @@ void Log::PrintEx( LOG_ENUM eType, const char * szFormat, ... ) const
 {
 	// Construct a LogEvent and pass it to all the printers
 	va_list			list;
-	LogEvent		le;
+	LogEvent		le{};
 
 	va_start( list, szFormat );
-#ifdef _WIN32
-	_vsnprintf( le.szMessage, MAX_STR_SIZE, szFormat, list );
-#else
-	vsnprintf( le.szMessage, MAX_STR_SIZE, szFormat, list );
-#endif
+	std::vsnprintf( le.szMessage, sizeof(le.szMessage), szFormat, list );
 	va_end(list);
+	le.szMessage[sizeof(le.szMessage)-1] = '\0';
 	le.eType = eType;
 
 	// See Print() above for why the iteration is locked.
@@ -170,7 +167,12 @@ void Log::PrintDelete( const IReference* ptr, const char * szFile, const int nLi
 namespace RISE
 {
 	static Log*	global_log = 0;
-	static char szGlobalLogFileName[1024] = "RISELog.txt";
+	static std::string& GlobalLogFileName()
+	{
+		// Logging can be recreated by another static object's destructor.
+		static auto* filename = new std::string( "RISELog.txt" );
+		return *filename;
+	}
 
 	void CreateGlobalLog( )
 	{
@@ -180,7 +182,7 @@ namespace RISE
 		global_log->PrintNew( pA, __FILE__, __LINE__, "stdout stream printer" );
 		global_log->AddPrinter( pA );
 
-		std::ofstream*		fs = new std::ofstream( szGlobalLogFileName );
+		std::ofstream*		fs = new std::ofstream( GlobalLogFileName() );
 		StreamPrinter*	pB = new StreamPrinter( fs, true, true );
 		global_log->PrintNew( pB, __FILE__, __LINE__, "file stream printer" );
 		global_log->AddPrinter( pB );
@@ -191,7 +193,7 @@ namespace RISE
 
 	void SetGlobalLogFileName( const char * name )
 	{
-		strncpy( szGlobalLogFileName, name, 1024 );
+		GlobalLogFileName() = name ? name : "";
 	}
 
 	ILog* GlobalLog( )

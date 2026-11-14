@@ -45,10 +45,28 @@ StandardShader::StandardShader(
 			bHasBsdfContinuationOp = true;
 		}
 	}
+	for( IShaderOp* op : shaderops ) {
+		op->addref();
+	}
+}
+
+StandardShader::StandardShader( const StandardShader& other ) :
+	Reference( other ),
+	shaderops( other.shaderops ),
+	bComputeSPF( other.bComputeSPF ),
+	bHasDirectLightingOp( other.bHasDirectLightingOp ),
+	bHasBsdfContinuationOp( other.bHasBsdfContinuationOp )
+{
+	for( IShaderOp* op : shaderops ) {
+		op->addref();
+	}
 }
 
 StandardShader::~StandardShader( )
 {
+	for( IShaderOp* op : shaderops ) {
+		op->release();
+	}
 }
 
 void StandardShader::Shade( 

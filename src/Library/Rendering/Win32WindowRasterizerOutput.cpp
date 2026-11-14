@@ -189,17 +189,30 @@ void Win32WindowRasterizerOutput::OutputIntermediateImage( const IRasterImage& p
 {
 	if( hWnd ) {
 		// Set the appropriate bytes
+		// Clamp the (inclusive) region to both the image and this window's
+		// own pixel buffer, as CallbackRasterizerOutputDispatch does: an
+		// empty, inverted or wholly outside region writes nothing, and a
+		// partially outside one is intersected.
+		const unsigned int clampW = width < pImage.GetWidth() ? width : pImage.GetWidth();
+		const unsigned int clampH = height < pImage.GetHeight() ? height : pImage.GetHeight();
+		if( clampW == 0 || clampH == 0 ) {
+			return;
+		}
 		RECT rc;
 		if( pRegion ) {
+			if( pRegion->left > pRegion->right || pRegion->top > pRegion->bottom ||
+				pRegion->left >= clampW || pRegion->top >= clampH ) {
+				return;
+			}
 			rc.left = pRegion->left;
 			rc.top = pRegion->top;
-			rc.right = pRegion->right+1;
-			rc.bottom = pRegion->bottom+1;
+			rc.right = pRegion->right < clampW ? pRegion->right+1 : clampW;
+			rc.bottom = pRegion->bottom < clampH ? pRegion->bottom+1 : clampH;
 		} else {
 			rc.left = 0;
 			rc.top = 0;
-			rc.right = width;
-			rc.bottom = height;
+			rc.right = clampW;
+			rc.bottom = clampH;
 		}
 
 		static const unsigned int pelsize = 4;

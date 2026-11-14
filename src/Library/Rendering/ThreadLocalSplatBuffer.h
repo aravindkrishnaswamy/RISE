@@ -11,15 +11,16 @@
 //
 //    This buffer sits in `thread_local` storage owned by the worker
 //    and collects (x, y, color) records with zero synchronization.
-//    At end-of-tile the worker calls FlushInto(film), which sorts
+//    On normal task/pass completion, FlushInto(film) sorts
 //    the records by row and acquires each row's mutex exactly once
 //    to batch-commit its splats — contention drops from O(splats)
 //    to O(unique rows touched).
 //
-//    Memory cost is bounded: for a 32×32 tile with up to ~50 splats
-//    per pixel (VCM worst case), worst-case buffer is ~50K records
-//    × 40 bytes = ~2 MB per thread.  Typical use is far smaller
-//    (BDPT: 2–5 splats/pixel).
+//    Auto-flush begins at 65,536 buffered records. Vector capacity is
+//    retained between tasks and is implementation-dependent; this is
+//    a record-count threshold, not a fixed allocation byte budget.
+//    Exceptional task exit discards pending records and the binding
+//    without accessing a possibly destroyed film.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 16, 2026
@@ -68,8 +69,7 @@ namespace RISE
 
 			/// Append a splat record.  No synchronization — the buffer
 			/// is owned by a single worker thread.  If the record
-			/// count exceeds `flushThreshold`, auto-flushes into the
-			/// bound film so buffer memory stays bounded.
+			/// count reaches 65,536, auto-flushes into the bound film.
 			void Splat( unsigned int x, unsigned int y, const RISEPel& c )
 			{
 				if( x >= width || y >= height || !pBoundFilm ) {
@@ -87,7 +87,7 @@ namespace RISE
 			/// Batch-commit all buffered records into the shared
 			/// SplatFilm.  Sorts by pixelIndex so rows group together,
 			/// then acquires each unique row-mutex exactly once.
-			/// After this call the buffer is empty.
+			/// After a successful call the buffer is empty.
 			void FlushInto( SplatFilm& film );
 
 			/// Flush into the currently-bound film (if any).  Called
@@ -108,16 +108,29 @@ namespace RISE
 			/// and the custom MLT task bodies).
 			void FlushAndUnbind()
 			{
-				FlushBound();
-				pBoundFilm = 0;
-				width      = 0;
-				height     = 0;
+				try {
+					FlushBound();
+				} catch( ... ) {
+					DiscardAndUnbind();
+					throw;
+				}
+				DiscardAndUnbind();
+			}
+
+			/// Failure cleanup: discard pending records AND forget the film.
+			/// Never flush, allocate, lock, or dereference the bound film.
+			/// Retains vector capacity for reuse by this worker.
+			void DiscardAndUnbind() noexcept
+			{
+				records.clear();
+				pBoundFilm = nullptr;
+				width = height = 0;
 			}
 
 			SplatFilm* GetBoundFilm() const { return pBoundFilm; }
 
-			/// Drop all pending records without committing.  Used at
-			/// end-of-pass if the worker is torn down mid-flight.
+			/// Drop only pending records, retaining the current binding.
+			/// Failed task cleanup must use DiscardAndUnbind() instead.
 			void Clear()
 			{
 				records.clear();
@@ -132,11 +145,24 @@ namespace RISE
 			std::vector<Record>	records;
 		};
 
-		//! Return the current thread's buffer.  Lazy-initialises to
-		//! the given dimensions on first call per thread.  Call
-		//! Init() explicitly on subsequent renders if the image size
-		//! may differ.
+		//! Return the current thread's buffer. Bind() supplies its current
+		//! film and dimensions; storage capacity persists across tasks.
 		ThreadLocalSplatBuffer& GetThreadLocalSplatBuffer();
+
+		//! Task/pass lifetime guard. Normal paths keep their explicit flush;
+		//! this guard discards and unbinds on every exit, including flush failure.
+		//! Cost is one TLS lookup at construction and record cleanup at task end;
+		//! Splat() and its batching threshold are unchanged.
+		class ThreadLocalSplatBufferTaskScope
+		{
+		public:
+			ThreadLocalSplatBufferTaskScope();
+			~ThreadLocalSplatBufferTaskScope() noexcept;
+			ThreadLocalSplatBufferTaskScope(const ThreadLocalSplatBufferTaskScope&) = delete;
+			ThreadLocalSplatBufferTaskScope& operator=(const ThreadLocalSplatBufferTaskScope&) = delete;
+		private:
+			ThreadLocalSplatBuffer& buffer_;
+		};
 
 		//! Flush the calling thread's splat buffer into whatever
 		//! film it's currently bound to, if any.  Free function so

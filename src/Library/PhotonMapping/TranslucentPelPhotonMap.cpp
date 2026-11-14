@@ -28,10 +28,9 @@ using namespace RISE::Implementation;
 
 namespace
 {
- unsigned int AvailableBytes( const IReadBuffer& buffer )
+ std::uint64_t AvailableBytes( const IReadBuffer& buffer )
  {
-  const unsigned int cursor=buffer.getCurPos(),size=buffer.Size();
-  return cursor<=size ? size-cursor : 0;
+  return BufferBytesAvailable(buffer);
  }
  bool LoadError( const char* message )
  {

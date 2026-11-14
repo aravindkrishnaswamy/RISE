@@ -70,8 +70,8 @@ the hotspot that shows up in the profile.
 
 Profiling options for RISE:
 
-- Instrumented timing around suspected blocks using `Timer` from
-  `src/Library/Utilities/RTime.h`.
+- Instrumented timing around suspected blocks using `std::chrono::steady_clock`. Use
+  `ElapsedMilliseconds` from `src/Library/Utilities/RTime.h` at unsigned millisecond boundaries.
 - macOS `sample` command against a running render, or Xcode
   Instruments Time Profiler.
 - Linux `perf record` / `perf report`.

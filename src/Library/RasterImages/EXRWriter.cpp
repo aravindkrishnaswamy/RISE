@@ -43,7 +43,7 @@ EXRWriter::EXRWriter(
 	const EXR_COMPRESSION compression_,
 	const bool            with_alpha_,
 	const bool            write_float_ ) :
-  out( buffer_ ),
+  out( buffer_, BufferPosition(buffer_) ),
   exrout( 0 ),
   exrout_float( 0 ),
   buffer( buffer_ ),
@@ -71,6 +71,7 @@ EXRWriter::EXRWriter(
   horzpixels( 0 ),
   scanlines( 0 )
 {
+	buffer.addref();
 }
 #endif
 
@@ -78,7 +79,7 @@ EXRWriter::~EXRWriter( )
 {
 #ifndef NO_EXR_SUPPORT
 	delete exrout_float;
-	exrout_float = 0;
+	delete exrout;
 #endif
 	buffer.release();
 }
@@ -86,6 +87,16 @@ EXRWriter::~EXRWriter( )
 void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height )
 {
 #ifndef NO_EXR_SUPPORT
+	delete exrout;
+	exrout = nullptr;
+	delete exrout_float;
+	exrout_float = nullptr;
+	out.ResetFailure();
+	// Each BeginWrite starts a standalone EXR at the current output cursor.
+	// Store chunk offsets relative to that header even inside a larger buffer.
+	out.SetOrigin( BufferPosition(buffer) );
+	horzpixels = 0;
+	scanlines = 0;
 	// OpenEXR's RgbaOutputFile constructor accepts (1, 1) and larger
 	// but rejects 0 dimensions inconsistently across versions.  Reject
 	// here so we don't drag the OpenEXR error into the writer's call
@@ -98,15 +109,6 @@ void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 		// WriteColor will be a no-op because exrbuffer is empty, and EndWrite
 		// will skip the write because exrout is null.
 		return;
-	}
-
-	if( exrout ) {
-		// this would be bad
-		GlobalLog()->PrintEasyError( "exrout object already exists!" );
-		delete exrout;
-		exrout = 0;	// reset before re-construction so a throwing
-					// RgbaOutputFile ctor doesn't leave us with a
-					// dangling pointer the next call would re-delete
 	}
 
 	// Map our compression enum to OpenEXR's.  Anything outside the
@@ -192,9 +194,6 @@ void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 	// with_alpha controls the channel set: RGBA vs RGB only (smaller
 	// files; appropriate for outputs where alpha carries no meaningful
 	// information).
-	horzpixels = width;
-	scanlines = height;
-
 	if( write_float ) {
 		// 32-bit FLOAT path.  `Imf::Rgba` is half-only (FP16, max 65504),
 		// which silently clamps legitimate bright HDR pixels to +Inf on
@@ -218,12 +217,15 @@ void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 		// Note this is flipped around becase of an oddity in the EXR Array class...
 		exrbuffer.resizeErase( height, width );
 	}
+	horzpixels = width;
+	scanlines = height;
 #endif
 }
 
 void EXRWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y )
 {
 #ifndef NO_EXR_SUPPORT
+	if( x >= horzpixels || y >= scanlines ) return;
 	switch( color_space )
 	{
 	case eColorSpace_Rec709RGB_Linear:
@@ -250,6 +252,7 @@ void EXRWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsi
 void EXRWriter::EndWrite( )
 {
 #ifndef NO_EXR_SUPPORT
+	if( !horzpixels || !scanlines ) return;
 	// Write out the data to the memory buffer.  Skip when BeginWrite
 	// rejected a zero-size image (both output files left null) or when
 	// the caller never called BeginWrite at all.
@@ -271,7 +274,8 @@ void EXRWriter::EndWrite( )
 		exrout_float->setFrameBuffer( fb );
 		exrout_float->writePixels( scanlines );
 		delete exrout_float;
-		exrout_float = 0;
+		exrout_float = nullptr;
+		if( out.Failed() ) throw std::runtime_error("EXR output finalization failed");
 		return;
 	}
 
@@ -283,6 +287,7 @@ void EXRWriter::EndWrite( )
 	exrout->writePixels( scanlines );
 
 	delete exrout;
-	exrout = 0;
+	exrout = nullptr;
+	if( out.Failed() ) throw std::runtime_error("EXR output finalization failed");
 #endif
 }

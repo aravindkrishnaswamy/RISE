@@ -194,6 +194,8 @@ build-test/% : $(PATHTESTDEST)%
 # Compile and link split into two rules so a library-only change relinks
 # WITHOUT recompiling every test translation unit (the .d dependency files
 # emitted by $(CXXFLAGS_DEPS) keep the .o rebuilds header-accurate).
+$(PATHTESTS)ImageReaderOverflowTest.o: CPPFLAGS += -DRISE_TEST_SOURCE_ROOT='"$(abspath ../../..)"'
+
 $(PATHTESTS)%.o : $(PATHTESTS)%.cpp
 	@echo Compiling: $<
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@

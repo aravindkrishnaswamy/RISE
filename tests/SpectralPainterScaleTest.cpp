@@ -37,6 +37,7 @@
 
 #include "SMSRenderTestSupport.h"
 #include <sstream>
+#include <string_view>
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Painters/Painter.h"
 #include "../src/Library/Painters/BlackBodyPainter.h"
@@ -86,6 +87,142 @@ static IPainter* MakeSpectral( double (*F)( double ), double scale )
 	RISE_API_CreateSpectralColorPainter( &p, sp, scale );
 	safe_release( pFunc );
 	return p;
+}
+
+static void TestPacketAssignment()
+{
+	SpectralPacket source( 400, 800, 4 );
+	for( unsigned int bin = 0; bin < source.NumBins(); ++bin ) {
+		source.SetAtIndex( bin, bin + 1 );
+	}
+
+	SpectralPacket sameCount( 400, 600, 4 );
+	sameCount = source;
+	Check( sameCount.minLambda() == 400 && sameCount.maxLambda() == 800 &&
+		sameCount.deltaLambda() == 100 && sameCount.ValueAtNM( 525 ) == 2,
+		"packet assignment updates wavelength mapping for an equal bin count" );
+
+	SpectralPacket differentCount;
+	differentCount = source;
+	Check( differentCount.NumBins() == 4 && differentCount.deltaLambda() == 100,
+		"packet assignment copies metadata when the count changes" );
+	Check( differentCount.ValueAtNM( 450 ) == 1 && differentCount.ValueAtNM( 525 ) == 2 &&
+		differentCount.ValueAtNM( 650 ) == 3 && differentCount.ValueAtNM( 750 ) == 4,
+		"packet assignment copies every bin when the count changes" );
+	source.SetAtIndex( 1, 9 );
+	Check( differentCount.ValueAtNM( 525 ) == 2,
+		"packet assignment owns an independent copy of the bins" );
+}
+
+static void TestPacketEndpoints()
+{
+	SpectralPacket empty( 400, 700, 0 );
+	const auto xyz = empty.GetXYZ();
+	Check( empty.ValueAtNM( 500 ) == 0 && xyz.X == 0 && xyz.Y == 0 && xyz.Z == 0,
+		"empty spectrum looks up and projects to zero" );
+
+	SpectralPacket collapsed( 500, 500, 2 );
+	collapsed.SetAtIndex( 0, 1 );
+	collapsed.SetAtIndex( 1, 2 );
+	Check( collapsed.ValueAtNM( 500 ) == 2 && collapsed.ValueAtNM( 501 ) == 0,
+		"coincident endpoints select the last bin at the endpoint only" );
+
+	VisibleSpectralPacket visible;
+	visible.SetIndex( 39, 3 );
+	Check( visible.ValueAtNM( 770 ) == 3 && visible.ValueAtNM( 780 ) == 3 &&
+		visible.ValueAtNM( 781 ) == 0,
+		"fixed visible spectrum includes 780 nm in the final bin" );
+	SpectralPacket_Template<Scalar, 380, 780, 1> singleBin( 2 );
+	Check( singleBin.ValueAtNM( 500 ) == 2 && singleBin.ValueAtNM( 780 ) == 2 &&
+		singleBin.ValueAtNM( 781 ) == 0, "one fixed bin covers its entire wavelength range" );
+
+	SpectralPacket outsidePDFBand( 730, 780, 5 );
+	IProbabilityDensityFunction* pdf = nullptr;
+	if( RISE_API_CreatePDF_SpectralPacket( &pdf, outsidePDFBand ) && pdf ) {
+		Scalar lookupWeight = 1;
+		Scalar directWeight = 1;
+		Check( pdf->warp( 0.5, lookupWeight, true ) == 0 && lookupWeight == 0 &&
+			pdf->warp( 0.5, directWeight, false ) == 0 && directWeight == 0,
+			"empty spectral density produces zero weight in both lookup modes" );
+		safe_release( pdf );
+	} else {
+		Check( false, "empty spectral density is representable through the PDF factory" );
+	}
+
+	SpectralPacket lastBinOnly( 400, 700, 11 );
+	lastBinOnly.SetAtIndex( 10, 1 );
+	if( RISE_API_CreatePDF_SpectralPacket( &pdf, lastBinOnly ) && pdf ) {
+		Scalar lookupWeight = 0;
+		Scalar directWeight = 0;
+		const Scalar lookup = pdf->warp( 0.5, lookupWeight, true );
+		const Scalar direct = pdf->warp( 0.5, directWeight, false );
+		Check( lookup == direct && direct >= 672 && direct <= 673 &&
+			lookupWeight == directWeight && directWeight > 0,
+			"spectral density includes the final bin on a fractional wavelength grid" );
+		safe_release( pdf );
+	} else {
+		Check( false, "fractional-grid spectral density is constructible" );
+	}
+
+	SpectralPacket visibleBoundary( 380, 754, 33 );
+	visibleBoundary.SetAtIndex( 30, 1 );
+	SpectralPacket positiveSingleBin( 400, 700, 1 );
+	positiveSingleBin.SetAtIndex( 0, 1 );
+	const auto checkDensity = [&]( const SpectralPacket& packet, Scalar wavelength, const char* label ) {
+		const bool created = RISE_API_CreatePDF_SpectralPacket( &pdf, packet );
+		Scalar lookupWeight = 0;
+		Scalar directWeight = 0;
+		Check( created && pdf && pdf->warp( 0.5, lookupWeight, true ) == wavelength &&
+			pdf->warp( 0.5, directWeight, false ) == wavelength && lookupWeight > 0 &&
+			lookupWeight == directWeight, label );
+		safe_release( pdf );
+	};
+	checkDensity( visibleBoundary, 720, "spectral density includes the 720 nm boundary bin" );
+	checkDensity( positiveSingleBin, 400, "positive one-bin spectral density samples its authored wavelength" );
+}
+
+static void TestSpectralFileCounts()
+{
+	const std::string stem = "rise_spectral_counts_" + std::to_string( ::getpid() );
+	const std::string scene = TestTempPath( stem + ".RISEscene" );
+	const std::string wavelengths = TestTempPath( stem + "_nm.txt" );
+	const std::string amplitudes = TestTempPath( stem + "_amp.txt" );
+	if( scene.empty() || wavelengths.empty() || amplitudes.empty() ) {
+		Check( false, "spectral file count fixture has a temporary directory" );
+		return;
+	}
+
+	std::ofstream( scene ) << "RISE ASCII SCENE 7\n\nspectral_painter\n{\n"
+		<< "  name file_spectrum\n  nmfile " << wavelengths
+		<< "\n  ampfile " << amplitudes << "\n}\n";
+	std::ofstream( amplitudes ) << "0.2\n0.4\n";
+
+	const auto loadWithWavelengths = [&]( const std::string& samples ) {
+		std::ofstream( wavelengths ) << samples;
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job ) {
+			Check( false, "spectral file count fixture creates a Job" );
+			return false;
+		}
+		const bool loaded = job->LoadAsciiSceneViaCst( scene.c_str() );
+		safe_release( job );
+		return loaded;
+	};
+	const bool accepted = loadWithWavelengths( "400\n500\n" );
+	Check( accepted, "spectral painter loads matching amplitude and wavelength files" );
+	if( accepted ) {
+		Check( !loadWithWavelengths( "400\n" ), "spectral painter rejects unequal file sample counts" );
+		Check( !loadWithWavelengths( "400\nnan\n" ), "spectral painter rejects a nonfinite wavelength" );
+		Check( loadWithWavelengths( "wavelength column\n400 7\n500 junk\n" ), "spectral painter skips headers and reads the first table column" );
+		const std::string splitRecord = "400" + std::string( 8188, ' ' ) + "500\n";
+		Check( !loadWithWavelengths( splitRecord ), "spectral painter treats a long physical row as one record" );
+		const char embeddedNull[] = "400\n500\0junk\n";
+		Check( !loadWithWavelengths( std::string( embeddedNull, sizeof(embeddedNull)-1 ) ),
+			"spectral painter rejects an embedded NUL in a sample record" );
+	}
+	std::remove( scene.c_str() );
+	std::remove( wavelengths.c_str() );
+	std::remove( amplitudes.c_str() );
 }
 
 static void TestPainterLevel()
@@ -273,10 +410,15 @@ static void TestRenders()
 
 int main( int argc, char** argv )
 {
-	(void)argc; (void)argv;
+	const bool packetOnly = argc == 2 && std::string_view( argv[1] ) == "--packet-only";
 	std::cout << "SpectralPainterScaleTest (DL-464)" << std::endl;
-	TestPainterLevel();
-	TestRenders();
+	TestPacketAssignment();
+	TestPacketEndpoints();
+	TestSpectralFileCounts();
+	if( !packetOnly ) {
+		TestPainterLevel();
+		TestRenders();
+	}
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;
 }

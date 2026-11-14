@@ -327,7 +327,6 @@
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiCommandParser.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp" />
     <ClCompile Include="..\..\..\src\Library\pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
@@ -473,7 +472,6 @@
     <ClCompile Include="..\..\..\src\Library\Shaders\TranslucentPelPhotonMapShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\TransparencyShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Utilities\BitField.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\Color.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\ColorUtils.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable.cpp" />
@@ -490,11 +488,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\RenderParallelScope.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Utilities\DynamicProperties.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\GeometricUtilities.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\BSSRDFSampling.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\CompletePathGuide.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Utilities\LoadLibraryWin32.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Log\Log.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Log\MemoryTracker.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Log\StreamPrinter.cpp" />
@@ -876,7 +872,6 @@
     <ClInclude Include="..\..\..\src\Library\Parsers\ChunkDescriptor.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\IAsciiChunkParser.h" />
-    <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h" />
     <ClInclude Include="..\..\..\src\Library\pch.h" />
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\CausticPelPhotonMap.h" />
@@ -1021,7 +1016,6 @@
     <ClInclude Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShaderWiring.h" />
     <ClInclude Include="..\..\..\src\Library\TreeElementProcessor.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\BitField.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\BoundingBox.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\CIE_xyY.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\CIE_XYZ.h" />
@@ -1046,11 +1040,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\AP1RGB.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ScaleColorOperator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ShiftColorOperator.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\Color\SmartColor.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SpectralPacket.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SpectralPacket_Template.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\sRGB.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\Color\WardToneMappingOperator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Communications\ClientSocketCommunicator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Communications\Message.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Communications\ServerSocketCommunicator.h" />
@@ -1059,17 +1051,17 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\CPU.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\CubicInterpolator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskBuffer.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\LittleEndian.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RenderParallelScope.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h" />
 	<ClInclude Include="..\..\..\src\Library\Utilities\FiniteMath.h" />
+	<ClInclude Include="..\..\..\src\Library\Utilities\CheckedSize.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\GeometricUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\HermiteInterpolator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStack.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStackSeeding.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\GradedIndexMedium.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\LoadLibrary.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Log\Log.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Log\LogEvent.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Log\MemoryTracker.h" />
@@ -1090,7 +1082,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MediaPathLocator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MemoryBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MersenneTwister.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\MRUCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.hpp" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.h" />
@@ -1111,8 +1102,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\RTime.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RuntimeContext.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\SimpleInterpolators.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\SimpleNotification.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\stl_utils.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Threads\Threads.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Transformable.h" />
     <ClInclude Include="..\..\..\src\Library\Version.h" />
@@ -1243,7 +1232,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGB.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SampledWavelengths.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\CompletePathGuide.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\CoreUtils.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\EquiangularSampler.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\HankelTransform.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ISampler.h" />
@@ -1259,7 +1247,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetUtils.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ThinFilm.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MortonCode.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\NullScatteringTracker.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OidnConfig.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OptimalMISAccumulator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PSSMLTSampler.h" />

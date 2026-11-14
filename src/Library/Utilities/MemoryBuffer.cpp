@@ -15,7 +15,12 @@
 
 #include "pch.h"
 #include "MemoryBuffer.h"
+#include "LittleEndian.h"
 #include <memory.h>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <new>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -33,32 +38,25 @@ MemoryBuffer::MemoryBuffer( ) :
 {
 }
 
-  /*
-MemoryBuffer::MemoryBuffer( const MemoryBuffer* mb ) :
-  nSize( mb->nSize ),
-  pBuffer( mb->pBuffer ),
-  nCursor( mb->nCursor ),
-  bIOwnMemory( false )
-{
-}
-*/
-
 MemoryBuffer::MemoryBuffer( const unsigned int size ) :
   nSize( size ),
   pBuffer( 0 ),
   nCursor( 0 ),
   bIOwnMemory( true )
 {
-	pBuffer = new char[ nSize ];
-	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+	ReplaceStorage( std::unique_ptr<char[]>(new char[nSize]), nSize );
 }
 
 MemoryBuffer::MemoryBuffer( char * pMemory, const unsigned int size, bool bTakeOwnership ) :
-  nSize( size ),
+  nSize( pMemory ? size : 0 ),
   pBuffer( pMemory ),
   nCursor( 0 ),
   bIOwnMemory( bTakeOwnership )
 {
+	if( bIOwnMemory ) {
+		ownedStorage.reset( pMemory );
+		capacity = nSize;
+	}
 }
 
 MemoryBuffer::MemoryBuffer( const MemoryBuffer& mb ) :
@@ -68,10 +66,9 @@ MemoryBuffer::MemoryBuffer( const MemoryBuffer& mb ) :
   bIOwnMemory( mb.bIOwnMemory )
 {
 	if( bIOwnMemory ) {
-		pBuffer = new char[ nSize ];
-		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+		ReplaceStorage( std::unique_ptr<char[]>(new char[nSize]), nSize );
 
-		memcpy( pBuffer, mb.pBuffer, nSize );
+		if( nSize ) memcpy( pBuffer, mb.pBuffer, nSize );
 	} else {
 		pBuffer = mb.pBuffer;
 	}
@@ -79,18 +76,20 @@ MemoryBuffer::MemoryBuffer( const MemoryBuffer& mb ) :
 }
 
 MemoryBuffer::MemoryBuffer( IMemoryBuffer& mb ) :
-  nSize( mb.Size() ),
+  nSize( 0 ),
   pBuffer( 0 ),
   nCursor( mb.getCurPos() ),
   bIOwnMemory( mb.DoOwnMemory() )
 {
+	char* const source = mb.Pointer();
+	nSize = source ? mb.Size() : 0;
+	nCursor = std::min( nCursor, nSize );
 	if( bIOwnMemory ) {
-		pBuffer = new char[ nSize ];
-		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+		ReplaceStorage( std::unique_ptr<char[]>(new char[nSize]), nSize );
 
-		memcpy( pBuffer, mb.Pointer(), nSize );
+		if( nSize ) memcpy( pBuffer, source, nSize );
 	} else {
-		pBuffer = mb.Pointer();
+		pBuffer = source;
 	}
 
 }
@@ -106,29 +105,33 @@ MemoryBuffer::MemoryBuffer( const char * szFileName ) :
 		String s = GlobalMediaPathLocator().Find( szFileName );
 
 		struct stat file_stats = {0};
-		if( stat( s.c_str(), &file_stats ) != 0 ) {
+		if( stat( s.c_str(), &file_stats ) != 0 || file_stats.st_size < 0 ||
+			static_cast<uintmax_t>(file_stats.st_size) > std::numeric_limits<unsigned int>::max() ) {
 			// Cannot size the file — leave the buffer empty (nSize/pBuffer
 			// stay 0 from the init list) rather than proceeding with a
 			// bogus size.
 			GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Failed to stat file: %s", szFileName );
 			return;
 		}
-		nSize = static_cast<unsigned int>(file_stats.st_size);
-		pBuffer = new char[ nSize ];
-		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
-
-		FILE* f = fopen( s.c_str(), "rb" );
+		std::unique_ptr<FILE, decltype(&fclose)> f( fopen( s.c_str(), "rb" ), fclose );
 		if( f ) {
+			const auto size = static_cast<unsigned int>(file_stats.st_size);
+			std::unique_ptr<char[]> storage( new char[size] );
 			// Read byte-granular and CHECK the count: a short read (file
 			// truncated, or the size changed after stat) must not leave the
 			// tail uninitialised.
-			const size_t bytesRead = fread( pBuffer, 1, nSize, f );
-			fclose( f );
+			const size_t bytesRead = fread( storage.get(), 1, size, f.get() );
+			if( ferror( f.get() ) ) {
+				GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Failed to read file: %s", szFileName );
+				return;
+			}
+			ReplaceStorage( std::move(storage), size );
+			nSize = size;
 			if( bytesRead < nSize ) {
 				memset( pBuffer + bytesRead, 0, nSize - bytesRead );
 				GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Short read on \'%s\': got %u of %u bytes (tail zeroed)", szFileName, static_cast<unsigned>(bytesRead), nSize );
 			} else {
-				GlobalLog()->PrintEx( eLog_Info, "MemoryBuffer:: Read file \'%s\' of size %d bytes", szFileName, nSize );
+				GlobalLog()->PrintEx( eLog_Info, "MemoryBuffer:: Read file \'%s\' of size %u bytes", szFileName, nSize );
 			}
 		} else {
 			GlobalLog()->PrintEx( eLog_Error, "MemoryBuffer:: Failed to open file: %s", szFileName );
@@ -136,21 +139,36 @@ MemoryBuffer::MemoryBuffer( const char * szFileName ) :
 	}
 }
 
-MemoryBuffer::~MemoryBuffer( )
+MemoryBuffer::~MemoryBuffer()
 {
-	if( bIOwnMemory && pBuffer ) {
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;		
-	}
+	if( ownedStorage ) GlobalLog()->PrintDelete( ownedStorage.get(), __FILE__, __LINE__ );
+}
 
-	pBuffer = 0;
-	nSize = 0;
-	nCursor = 0;
+void MemoryBuffer::ReplaceStorage( std::unique_ptr<char[]> replacement, unsigned int newCapacity )
+{
+	if( ownedStorage ) GlobalLog()->PrintDelete( ownedStorage.get(), __FILE__, __LINE__ );
+	ownedStorage = std::move(replacement);
+	pBuffer = ownedStorage.get();
+	capacity = newCapacity;
+	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+}
+
+std::unique_ptr<char[]> MemoryBuffer::AllocateGrowth( unsigned int required, unsigned int& allocated ) const
+{
+	const auto grown = std::uint64_t(capacity) + std::max( 1U, capacity / 2 );
+	allocated = static_cast<unsigned int>(std::max( std::uint64_t(required),
+		std::min( grown, std::uint64_t(std::numeric_limits<unsigned int>::max()) ) ));
+	if( allocated > required ) {
+		std::unique_ptr<char[]> spare( new (std::nothrow) char[allocated] );
+		if( spare ) return spare;
+	}
+	allocated = required;
+	return std::unique_ptr<char[]>( new char[required] );
 }
 
 void MemoryBuffer::Clear( )
 {
-	memset( pBuffer, 0, nSize );
+	if( nSize ) memset( pBuffer, 0, nSize );
 }
 
 bool MemoryBuffer::Resize( unsigned int new_size, bool bForce )
@@ -161,16 +179,16 @@ bool MemoryBuffer::Resize( unsigned int new_size, bool bForce )
 		return false;
 	}
 
-	// Do the resizng
-	char * pTempBuffer = new char[ new_size ];
-	GlobalLog()->PrintNew( pTempBuffer, __FILE__, __LINE__, "temp buffer" );
-
-	if( pBuffer ) {
-		memcpy( pTempBuffer, pBuffer, r_min(new_size,nSize) );
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;
+	// Keep explicit shrink behavior and grow spare storage only as needed.
+	if( new_size < nSize || new_size > capacity ) {
+		unsigned int newCapacity = new_size;
+		auto replacement = new_size < nSize
+			? std::unique_ptr<char[]>( new char[new_size] )
+			: AllocateGrowth( new_size, newCapacity );
+		const auto preserved = std::min( new_size, nSize );
+		if( preserved ) memcpy( replacement.get(), pBuffer, preserved );
+		ReplaceStorage( std::move(replacement), newCapacity );
 	}
-	pBuffer = pTempBuffer;
 	nSize = new_size;
 
 	if( nCursor >= nSize ) {
@@ -182,12 +200,15 @@ bool MemoryBuffer::Resize( unsigned int new_size, bool bForce )
 
 bool MemoryBuffer::ResizeForMore( unsigned int more_bytes )
 {
+	if( more_bytes > std::numeric_limits<unsigned int>::max() - nCursor ) {
+		return false;
+	}
 	return Resize( more_bytes+nCursor );
 }
 
 unsigned int MemoryBuffer::HowFarToEnd( ) const
 {
-	return (nSize-nCursor-1);
+	return nCursor < nSize ? nSize-nCursor-1 : 0;
 }
 
 unsigned int MemoryBuffer::Size( ) const
@@ -207,12 +228,12 @@ const char * MemoryBuffer::Pointer( ) const
 
 char * MemoryBuffer::PointerAtCursor( )
 {
-	return &pBuffer[nCursor];
+	return pBuffer && nCursor <= nSize ? pBuffer+nCursor : nullptr;
 }
 
 const char * MemoryBuffer::PointerAtCursor( ) const
 {
-	return &pBuffer[nCursor];
+	return pBuffer && nCursor <= nSize ? pBuffer+nCursor : nullptr;
 }
 
 bool MemoryBuffer::EndOfBuffer( ) const
@@ -222,32 +243,24 @@ bool MemoryBuffer::EndOfBuffer( ) const
 
 bool MemoryBuffer::seek( const eSeek type, const int amount )
 {
-	switch( type )
-	{
+	std::int64_t position = amount;
+	switch( type ) {
 	case START:
-		if( amount >= int(nSize) ) {
-			return false;
-		}
-		nCursor = amount;	
 		break;
-
 	case CUR:
-		{
-			unsigned int newpos = nCursor + amount;
-			if( newpos >= nSize ) {
-				return false;
-			}
-			nCursor = newpos;
-		}
+		position += nCursor;
 		break;
 	case END:
-		if( amount >= int(nSize) ) {
-			return false;
-		}
-		nCursor = nSize-amount-1;
+		if( amount < 0 ) return false;
+		position = static_cast<std::int64_t>( nSize ) - 1 - amount;
 		break;
+	default:
+		return false;
 	}
-
+	if( position < 0 || position > nSize ) {
+		return false;
+	}
+	nCursor = static_cast<unsigned int>( position );
 	return true;
 }
 
@@ -256,9 +269,9 @@ bool MemoryBuffer::DumpToFile( const char * szFileName )
 	if( szFileName && pBuffer ) {
 		FILE* f = fopen( GlobalMediaPathLocator().Find(szFileName).c_str(), "wb" );
 		if( f ) {
-			fwrite( pBuffer, nSize, 1, f );
-			fclose( f );
-			return true;
+			const bool written = fwrite( pBuffer, 1, nSize, f ) == nSize;
+			const bool closed = fclose( f ) == 0;
+			return written && closed;
 		} else {
 			GlobalLog()->PrintEasyError( "MemoryBuffer::DumpToFile:: Failed to open file for writing" );
 		}
@@ -269,13 +282,13 @@ bool MemoryBuffer::DumpToFile( const char * szFileName )
 
 bool MemoryBuffer::DumpToFileToCursor( const char * szFileName )
 {
-	if( szFileName && pBuffer ) {
+	if( szFileName && pBuffer && nCursor <= nSize ) {
 		FILE* f = fopen( GlobalMediaPathLocator().Find(szFileName).c_str(), "wb" );
 
 		if( f ) {
-			fwrite( pBuffer, nCursor, 1, f );
-			fclose( f );
-			return true;
+			const bool written = fwrite( pBuffer, 1, nCursor, f ) == nCursor;
+			const bool closed = fclose( f ) == 0;
+			return written && closed;
 		} else {
 			GlobalLog()->PrintEasyError( "MemoryBuffer::DumpToFileToCursor:: Failed to open file for writing" );
 		}
@@ -332,16 +345,9 @@ short MemoryBuffer::getWord()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	short Low = getUChar();
-    short High = getUChar();
-	return Low | (High << 8);
-#else
-	short sh = 0;
-	memcpy( &sh, &pBuffer[nCursor], sizeof( short ) );
-	nCursor += sizeof( short );
-	return sh;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint16_t);
+	return DecodeLittleEndian<short, std::uint16_t>( bytes );
 }
 
 
@@ -358,16 +364,9 @@ unsigned short MemoryBuffer::getUWord()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned short Low = getUChar();
-    unsigned short High = getUChar();
-	return Low | (High << 8);
-#else
-	unsigned short sh = 0;
-	memcpy( &sh, &pBuffer[nCursor], sizeof( unsigned short ) );
-	nCursor += sizeof( unsigned short );
-	return sh;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint16_t);
+	return DecodeLittleEndian<unsigned short, std::uint16_t>( bytes );
 }
 
 int MemoryBuffer::getInt()
@@ -383,16 +382,9 @@ int MemoryBuffer::getInt()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	int Low = getUWord();
-    int High = getUWord();
-    return Low | (High << 16);
-#else
-	int n = 0;
-	memcpy( &n, &pBuffer[nCursor], sizeof( int ) );
-	nCursor += sizeof( int );
-	return n;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint32_t);
+	return DecodeLittleEndian<int, std::uint32_t>( bytes );
 }
 
 unsigned int MemoryBuffer::getUInt()
@@ -408,16 +400,9 @@ unsigned int MemoryBuffer::getUInt()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned int Low = getUWord();
-    unsigned int High = getUWord();
-    return Low | (High << 16);
-#else
-	unsigned int n = 0;
-	memcpy( &n, &pBuffer[nCursor], sizeof( unsigned int ) );
-	nCursor += sizeof( unsigned int );
-	return n;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint32_t);
+	return DecodeLittleEndian<unsigned int, std::uint32_t>( bytes );
 }
 
 float MemoryBuffer::getFloat()
@@ -433,17 +418,9 @@ float MemoryBuffer::getFloat()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	float f = 0;
-	unsigned int d = getUInt();
-	memcpy( &f, &d, sizeof( float ) );
-	return f;
-#else
-	float f = 0;
-	memcpy( &f, &pBuffer[nCursor], sizeof( float ) );
-	nCursor += sizeof( float );
-	return f;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint32_t);
+	return DecodeLittleEndian<float, std::uint32_t>( bytes );
 }
 
 double MemoryBuffer::getDouble()
@@ -459,27 +436,18 @@ double MemoryBuffer::getDouble()
 		return 0;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned int Low = getUInt();
-    unsigned int High = getUInt();
-
-	double d = 0;
-	char* ptrd = (char*)&d;
-	memcpy( ptrd, &High, sizeof( unsigned int  ) );
-	memcpy( &ptrd[4], &Low, sizeof( unsigned int ) );
-	return d;
-#else
-	double f = 0;
-	memcpy( &f, &pBuffer[nCursor], sizeof( double ) );
-	nCursor += sizeof( double );
-	return f;
-#endif
+	const auto* bytes = reinterpret_cast<const unsigned char*>(pBuffer + nCursor);
+	nCursor += sizeof(std::uint64_t);
+	return DecodeLittleEndian<double, std::uint64_t>( bytes );
 }
 
 bool MemoryBuffer::getBytes( void* pDest, unsigned int amount )
 {
 	if( !pDest ) {
 		return false;
+	}
+	if( amount == 0 ) {
+		return true;
 	}
 
 	// Bounds-check UNCONDITIONALLY (was _DEBUG-only): a malformed / truncated
@@ -533,7 +501,7 @@ int MemoryBuffer::getLine( char* pDest, unsigned int max )
 // buffer does not own its memory, in which case the caller must pre-size it.
 bool MemoryBuffer::setChar( const char ch )
 {
-	if( nCursor+sizeof(char) > nSize && !Resize( nCursor+sizeof(char) ) ) {
+	if( nCursor > nSize || (sizeof(char) > nSize - nCursor && !ResizeForMore( sizeof(char) )) ) {
 		return false;
 	}
 	pBuffer[nCursor++] = ch;
@@ -542,7 +510,7 @@ bool MemoryBuffer::setChar( const char ch )
 
 bool MemoryBuffer::setUChar( const unsigned char ch )
 {
-	if( nCursor+sizeof(unsigned char) > nSize && !Resize( nCursor+sizeof(unsigned char) ) ) {
+	if( nCursor > nSize || (sizeof(unsigned char) > nSize - nCursor && !ResizeForMore( sizeof(unsigned char) )) ) {
 		return false;
 	}
 	pBuffer[nCursor++] = ch;
@@ -551,111 +519,66 @@ bool MemoryBuffer::setUChar( const unsigned char ch )
 
 bool MemoryBuffer::setWord( const short sh )
 {
-	if( nCursor+sizeof(short) > nSize && !Resize( nCursor+sizeof(short) ) ) {
+	if( nCursor > nSize || (sizeof(short) > nSize - nCursor && !ResizeForMore( sizeof(short) )) ) {
 		return false;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned char low = sh & 0xFF;
-	unsigned char high = (sh >> 8) & 0xFF;
-	setUChar( low );
-	setUChar( high );
-#else
-	memcpy( &pBuffer[nCursor], &sh, sizeof( short ) );
-	nCursor += sizeof( short );
-#endif
+	EncodeLittleEndian<std::uint16_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), sh );
+	nCursor += sizeof(std::uint16_t);
 	return true;
 }
 
 bool MemoryBuffer::setUWord( const unsigned short sh )
 {
-	if( nCursor+sizeof(unsigned short) > nSize && !Resize( nCursor+sizeof(unsigned short) ) ) {
+	if( nCursor > nSize || (sizeof(unsigned short) > nSize - nCursor && !ResizeForMore( sizeof(unsigned short) )) ) {
 		return false;
 	}
-#ifdef RISE_BIG_ENDIAN
-	unsigned char low = sh & 0xFF;
-	unsigned char high = (sh >> 8) & 0xFF;
-	setUChar( low );
-	setUChar( high );
-#else
-	memcpy( &pBuffer[nCursor], &sh, sizeof( unsigned short ) );
-	nCursor += sizeof( unsigned short );
-#endif
+	EncodeLittleEndian<std::uint16_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), sh );
+	nCursor += sizeof(std::uint16_t);
 	return true;
 }
 
 bool MemoryBuffer::setInt( const int n )
 {
-	if( nCursor+sizeof(int) > nSize && !Resize( nCursor+sizeof(int) ) ) {
+	if( nCursor > nSize || (sizeof(int) > nSize - nCursor && !ResizeForMore( sizeof(int) )) ) {
 		return false;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned short low = n & 0xFFFF;
-	unsigned short high = (n >> 16) & 0xFFF;
-	setUWord( low );
-	setUWord( high );
-#else
-	memcpy( &pBuffer[nCursor], &n, sizeof( int ) );
-	nCursor += sizeof( int );
-#endif
+	EncodeLittleEndian<std::uint32_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), n );
+	nCursor += sizeof(std::uint32_t);
 	return true;
 }
 
 bool MemoryBuffer::setUInt( const unsigned int n )
 {
-	if( nCursor+sizeof(unsigned int) > nSize && !Resize( nCursor+sizeof(unsigned int) ) ) {
+	if( nCursor > nSize || (sizeof(unsigned int) > nSize - nCursor && !ResizeForMore( sizeof(unsigned int) )) ) {
 		return false;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned short low = n & 0xFFFF;
-	unsigned short high = (n >> 16) & 0xFFF;
-	setUWord( low );
-	setUWord( high );
-#else
-	memcpy( &pBuffer[nCursor], &n, sizeof( unsigned int ) );
-	nCursor += sizeof( unsigned int );
-#endif
+	EncodeLittleEndian<std::uint32_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), n );
+	nCursor += sizeof(std::uint32_t);
 	return true;
 }
 
 bool MemoryBuffer::setFloat( const float f )
 {
-	if( nCursor+sizeof(float) > nSize && !Resize( nCursor+sizeof(float) ) ) {
+	if( nCursor > nSize || (sizeof(float) > nSize - nCursor && !ResizeForMore( sizeof(float) )) ) {
 		return false;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned int n;
-	memcpy( &n, &f, sizeof( float ) );
-	setUInt( n );
-#else
-	memcpy( &pBuffer[nCursor], &f, sizeof( float ) );
-	nCursor += sizeof( float );
-#endif
+	EncodeLittleEndian<std::uint32_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), f );
+	nCursor += sizeof(std::uint32_t);
 	return true;
 }
 
 bool MemoryBuffer::setDouble( const double d )
 {
-	if( nCursor+sizeof(double) > nSize && !Resize( nCursor+sizeof(double) ) ) {
+	if( nCursor > nSize || (sizeof(double) > nSize - nCursor && !ResizeForMore( sizeof(double) )) ) {
 		return false;
 	}
 
-#ifdef RISE_BIG_ENDIAN
-	unsigned int first;
-	unsigned int last;
-
-	char* ptrd = (char*)&d;
-	memcpy( &first, ptrd, 4 );
-	memcpy( &last, &ptrd[4], 4 );
-	setUInt( last );
-	setUInt( first );
-#else
-	memcpy( &pBuffer[nCursor], &d, sizeof( double ) );
-	nCursor += sizeof( double );
-#endif
+	EncodeLittleEndian<std::uint64_t>( reinterpret_cast<unsigned char*>(pBuffer + nCursor), d );
+	nCursor += sizeof(std::uint64_t);
 	return true;
 }
 
@@ -666,13 +589,27 @@ bool MemoryBuffer::setBytes( const void* pSource, unsigned int amount )
 		return false;
 	}
 
-	if( nCursor+amount > nSize ) {
-		GlobalLog()->PrintEx( eLog_Info, "MemoryBuffer::setBytes:: resizing buffer, old size (%d), new size (%d)", nSize, nCursor+amount );
-		Resize( nCursor+amount );
+	if( nCursor > nSize || amount > std::numeric_limits<unsigned int>::max() - nCursor ) {
+		return false;
+	}
+	if( amount == 0 ) {
+		return true;
 	}
 
-	memcpy( &pBuffer[nCursor], pSource, amount );
-	nCursor += amount;
+	const unsigned int end = nCursor + amount;
+	if( end > nSize && !bIOwnMemory ) return false;
+
+	if( end > nSize && end > capacity ) {
+		// An input span can alias this buffer. Copy it before replacing storage.
+		unsigned int newCapacity;
+		auto replacement = AllocateGrowth( end, newCapacity );
+		if( nSize ) memcpy( replacement.get(), pBuffer, nSize );
+		memcpy( replacement.get() + nCursor, pSource, amount );
+		ReplaceStorage( std::move(replacement), newCapacity );
+	} else {
+		memmove( pBuffer + nCursor, pSource, amount );
+	}
+	nCursor = end;
+	nSize = std::max( nSize, end );
 	return true;
 }
-

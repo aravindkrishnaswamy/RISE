@@ -29,6 +29,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "CstRenderEquivalence.h"
+#include "../src/Library/Managers/GenericManager.h"
 #include "../src/Library/Cst/Cst.h"
 
 using namespace RISE;
@@ -66,6 +67,55 @@ static void ParserRejectsDup( const std::string& dupBody, const std::string& uni
 int main()
 {
 	std::printf( "DuplicateNameRejectionTest -- Job::Add* honors AddItem's bool (no silent first-win)\n" );
+
+	{
+		struct Item final : Implementation::Reference {};
+		struct Names final : IEnumCallback<const char*> {
+			std::vector<std::string> names;
+			bool operator()( const char* const& name ) override { names.emplace_back( name ); return true; }
+		} actual;
+		auto* manager = new GenericManager<Item>();
+		auto* item = new Item();
+		const std::vector<std::string> authored = { "", "a", "ab", "a\xc3\xa9", "\xc3\xa9" };
+		std::vector<String> legacy;
+		for( const auto& name : authored ) {
+			legacy.emplace_back( name.c_str() );
+			Check( manager->AddItem( item, name.c_str() ) && manager->GetItem( name.c_str() ) == item,
+				"manager matches empty, prefix-related and non-ASCII names" );
+		}
+		std::sort( legacy.begin(), legacy.end() );
+		std::vector<std::string> expected;
+		for( const auto& name : legacy ) expected.emplace_back( name.c_str() );
+		manager->EnumerateItemNames( actual );
+		Check( actual.names == expected, "manager retains vector<char> name ordering" );
+		String concatenated( "a" );
+		concatenated.concatenate( "b" );
+		Check( manager->GetItem( concatenated.c_str() ) == item, "manager keys use the C-string boundary" );
+		const auto serial = manager->GetItemSerial( "ab" );
+		Check( serial != 0 && manager->RemoveItem( "ab" ) && manager->GetItemSerial( "ab" ) == 0 &&
+			manager->AddItem( item, "ab" ) && manager->GetItemSerial( "ab" ) > serial,
+			"removing and restoring a name changes its registration serial" );
+		struct Callback final : IDeletedCallback<Item> {
+			int calls = 0;
+			bool operator()( const Item& ) override { ++calls; return true; }
+			bool operator==( const IDeletedCallback<Item>& other ) override { return this == &other; }
+		} first, second;
+		auto* firstUser = new Item();
+		auto* secondUser = new Item();
+		firstUser->addref();
+		manager->RequestItemUse( "", first, *firstUser );
+		manager->RequestItemUse( "", second, *secondUser );
+		const bool unsubscribed = manager->NoLongerUsingItem( *item, first );
+		const bool removed = manager->RemoveItem( "" );
+		Check( unsubscribed && removed && first.calls == 0 && second.calls == 1 && firstUser->refcount() == 2 &&
+			secondUser->refcount() == 1, "removing one subscriber leaves the next callback and its owner intact" );
+		if( firstUser->refcount() > 1 ) firstUser->release();
+		firstUser->release();
+		if( secondUser->refcount() > 1 ) secondUser->release();
+		secondUser->release();
+		manager->release();
+		item->release();
+	}
 
 	//----------------------------------------------------------------------
 	std::printf( "[A] Job API: a second Add* under an existing name returns false; first wins\n" );

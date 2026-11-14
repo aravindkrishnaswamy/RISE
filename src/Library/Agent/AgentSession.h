@@ -8663,6 +8663,11 @@ namespace RISE
 			//! concurrently.
 			void ForTest_SetThrowBeforeRasterize( bool on ) { mThrowBeforeRasterizeForTest = on; }
 
+			//! Exercise the production passthrough encoder without a render so
+			//! codec failure/retry coverage reaches comparison-image encoding.
+			static std::vector<unsigned char> ForTest_EncodeLinearPassthroughPng(
+				const std::vector<RISEColor>& pels, unsigned int width, unsigned int height );
+
 			//! 2026-08-24 fix-round test hook: run `fn` inside FinishElement at
 			//! the EXACT point each panel render returns -- i.e. the window a
 			//! shared-image-cache read used to occupy, and the window a sibling

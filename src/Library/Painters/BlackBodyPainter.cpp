@@ -178,18 +178,15 @@ void BlackBodyPainter::RegenerateData( )
 	}
 
 	// Using planck's formula
-	PiecewiseLinearFunction1D* pFunc = new PiecewiseLinearFunction1D();
-	GlobalLog()->PrintNew( pFunc, __FILE__, __LINE__, "piecewise linear function 1D" );
-
-	const Scalar delta = ( (lambda_end-lambda_begin) / Scalar(numfreq) );
+	PiecewiseLinearFunction1D function;
+	const Scalar delta = numfreq ? (lambda_end-lambda_begin) / Scalar(numfreq) : 0;
 	Scalar freq = lambda_begin;
 
 	for( unsigned int i=0; i<numfreq; i++, freq += delta ) {
-		pFunc->addControlPoint( std::make_pair( freq, IntensityForWavelength(temperature, freq*NM_to_M) * effectiveScale ) );
+		function.addControlPoint( std::make_pair( freq, IntensityForWavelength(temperature, freq*NM_to_M) * effectiveScale ) );
 	}
 
-	spectrum = SpectralPacket( lambda_begin, lambda_end, numfreq, pFunc );
-	safe_release( pFunc );
+	spectrum = SpectralPacket( lambda_begin, lambda_end, numfreq, &function );
 
 	// The RGB views project exactly what GetColorNM returns (continuous
 	// Planck, not the binned packet).

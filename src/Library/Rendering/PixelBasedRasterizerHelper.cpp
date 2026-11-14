@@ -16,6 +16,7 @@
 #include "../Utilities/ExpressionMemo.h"
 #include "PixelBasedRasterizerHelper.h"
 #include <algorithm>
+#include <atomic>
 #include <vector>
 #include "../Utilities/RTime.h"
 #include "../Utilities/Profiling.h"
@@ -180,7 +181,58 @@ bool PixelBasedRasterizerHelper::UseFilteredFilm() const
 	return hw > 0.501 || hh > 0.501;
 }
 
-IRasterImage& PixelBasedRasterizerHelper::GetIntermediateOutputImage( IRasterImage& primary ) const
+bool PixelBasedRasterizerHelper::ClampRegionToImage( const Rect* region, unsigned int w, unsigned int h, Rect& out )
+{
+	if( w == 0 || h == 0 ) return false;
+	if( !region ) {
+		out = Rect( 0, 0, h - 1, w - 1 );
+		return true;
+	}
+	if( region->left > region->right || region->top > region->bottom ||
+		region->left >= w || region->top >= h ) return false;
+	out = Rect( region->top, region->left, r_min( region->bottom, h - 1 ), r_min( region->right, w - 1 ) );
+	return true;
+}
+
+bool PixelBasedRasterizerHelper::IntersectRegion( const Rect& a, const Rect* b, Rect& out )
+{
+	if( !b ) {
+		out = a;
+		return a.left <= a.right && a.top <= a.bottom;
+	}
+	const unsigned int top = r_max( a.top, b->top );
+	const unsigned int left = r_max( a.left, b->left );
+	const unsigned int bottom = r_min( a.bottom, b->bottom );
+	const unsigned int right = r_min( a.right, b->right );
+	if( left > right || top > bottom ) return false;
+	out = Rect( top, left, bottom, right );
+	return true;
+}
+
+void PixelBasedRasterizerHelper::CopyRegion( const IRasterImage& src, IRasterImage& dst, const Rect& r )
+{
+	for( unsigned int y=r.top; y<=r.bottom; y++ ) {
+		for( unsigned int x=r.left; x<=r.right; x++ ) {
+			dst.SetPEL( x, y, src.GetPEL( x, y ) );
+		}
+	}
+}
+
+namespace
+{
+	void WarnScratchMismatchOnce( const char* who )
+	{
+		static std::atomic<bool> warned{ false };
+		bool expected = false;
+		if( warned.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"%s:: intermediate composition scratch is missing or does not match the image; "
+				"returning the uncomposited image (scratch must be prepared before the pass)", who );
+		}
+	}
+}
+
+IRasterImage& PixelBasedRasterizerHelper::GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const
 {
 	if( !pFilteredFilm || !pFilteredScratch ) {
 		return primary;
@@ -188,20 +240,31 @@ IRasterImage& PixelBasedRasterizerHelper::GetIntermediateOutputImage( IRasterIma
 
 	const unsigned int w = primary.GetWidth();
 	const unsigned int h = primary.GetHeight();
-
-	// Copy the current primary image into the scratch buffer
-	for( unsigned int y=0; y<h; y++ ) {
-		for( unsigned int x=0; x<w; x++ ) {
-			pFilteredScratch->SetPEL( x, y, primary.GetPEL( x, y ) );
-		}
+	if( pFilteredScratch->GetWidth() != w || pFilteredScratch->GetHeight() != h ) {
+		WarnScratchMismatchOnce( "PixelBasedRasterizerHelper::GetIntermediateOutputImage" );
+		return primary;
 	}
 
-	// Resolve the film into the scratch copy
-	pFilteredFilm->Resolve(
-		*pFilteredScratch,
-		mHasActiveOutputRegion ? &mActiveOutputRegion : 0 );
+	// Compose only the delivered region: copy the primary there, then
+	// resolve the film over its intersection with the active output region.
+	Rect composed( 0, 0, 0, 0 );
+	if( !ClampRegionToImage( region, w, h, composed ) ) {
+		return primary;
+	}
+	CopyRegion( primary, *pFilteredScratch, composed );
+
+	Rect filmRegion( 0, 0, 0, 0 );
+	if( IntersectRegion( composed, mHasActiveOutputRegion ? &mActiveOutputRegion : 0, filmRegion ) ) {
+		pFilteredFilm->Resolve( *pFilteredScratch, &filmRegion );
+	}
 
 	return *pFilteredScratch;
+}
+
+void PixelBasedRasterizerHelper::ReleaseRenderScopedPreviewResources() const
+{
+	safe_release( pFilteredFilm );
+	safe_release( pFilteredScratch );
 }
 
 void PixelBasedRasterizerHelper::ConfigureOutputRegion(
@@ -241,7 +304,7 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 
 	// The prediction is based on how long it takes to rasterize the set of random
 	// rays given by the sampling kernel pSampling
-	Timer	t;
+	std::chrono::steady_clock::time_point tStart;
 
 	// Create a runtime context
 	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_IRRADIANCE_CACHE, false );
@@ -256,10 +319,14 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 
 	ISampling2D::SamplesList2D samples;
 	pSampling.GenerateSamplePoints(rc.random, samples);
+	if( samples.empty() ) {
+		GlobalLog()->PrintEasyError( "Render time prediction needs at least one sample" );
+		return std::numeric_limits<unsigned int>::max();
+	}
 
 	ISampling2D::SamplesList2D::const_iterator		m, n;
 
-	t.start();
+	tStart = std::chrono::steady_clock::now();
 
 	for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
 		RISEPel			c;
@@ -274,7 +341,7 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 		}
 	}
 
-	t.stop();
+	const auto tEnd = std::chrono::steady_clock::now();
 
 	Scalar		num_subsamples = 1;
 
@@ -282,12 +349,13 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 		num_subsamples = Scalar(this->pSampling->GetNumSamples());
 	}
 
-	if( pActualTime ) {
-		*pActualTime = t.getInterval();
-	}
-
-	int threads = HowManyThreadsToSpawn();
-	return (unsigned int)((Scalar(t.getInterval())/Scalar(samples.size())) * width*height*num_subsamples / threads);
+	const auto elapsed = ElapsedMilliseconds( tStart, tEnd );
+	if( pActualTime ) *pActualTime = elapsed;
+	const auto threads = std::max( 1, HowManyThreadsToSpawn() );
+	const auto estimate = (Scalar(elapsed) / Scalar(samples.size())) * width * height * num_subsamples / threads;
+	// Reserve UINT_MAX for prediction failure.
+	constexpr auto largestEstimate = std::numeric_limits<unsigned int>::max() - 1;
+	return static_cast<unsigned int>(std::min( estimate, Scalar(largestEstimate) ));
 }
 
 void PixelBasedRasterizerHelper::DrawToggles( IRasterImage& image, const Rect& rc_region, const RISEColor& toggle_color, const double toggle_size ) const
@@ -513,12 +581,10 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		                  ( static_cast<size_t>( rect.right )  / te ) + 1 );
 		fsTy1 = std::min( mFrameStore->TileCountY(),
 		                  ( static_cast<size_t>( rect.bottom ) / te ) + 1 );
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
 	}
+
+	FrameStoreTileBracket tileBracket( fsBracket ? mFrameStore : nullptr,
+		fsTx0, fsTy0, fsTx1, fsTy1 );
 
 	// L6e-1.1 — Draw toggles + dispatch in-progress observer fire
 	// INSIDE the bracket so toggle writes are lock-protected, and
@@ -597,16 +663,8 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 	// frame-complete cadence; per-tile toggles are noise rather
 	// than useful progress.
 	if( fsBracket && !skipBlockOutput && ShouldFireToggleObserverEvents() ) {
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
+		tileBracket.Release();
+		tileBracket.Acquire();
 	}
 
 	// L8 round 11 — time-based intra-block tile-bracket flush.
@@ -665,16 +723,8 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		if( fsBracket && !skipBlockOutput && y < rect.bottom ) {
 			const auto now = FlushClock::now();
 			if( now - lastFlush >= kFlushInterval ) {
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->EndTile( tx, ty );
-					}
-				}
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->BeginTile( tx, ty );
-					}
-				}
+				tileBracket.Release();
+				tileBracket.Acquire();
 				lastFlush = now;
 
 				// L8 round 12+15 — intra-block cancellation check.
@@ -718,17 +768,15 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		// EndTile fires per-tile observers (OnTileComplete) and bumps
 		// the global generation.  Order doesn't matter — each tile's
 		// observer fire is independent.
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
+		tileBracket.Release();
 	}
 
 	if( !skipBlockOutput ) {
-		// Get the image for intermediate output.  BDPT returns a scratch
-		// copy with resolved splats; other rasterizers return the primary.
-		IRasterImage& outputImage = GetIntermediateOutputImage( image );
+		// Get the image for intermediate output.  With an active film the
+		// result is a shared scratch composed ONLY over this block's rect
+		// (other workers compose their own disjoint blocks concurrently),
+		// so consumers must read inside `rect` only; otherwise the primary.
+		IRasterImage& outputImage = GetIntermediateOutputImage( image, &rect );
 
 		// Also iterate through outputs and get them to intermediate rasterize
 		RasterizerOutputListType::const_iterator	r, s;
@@ -783,12 +831,10 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 		                  ( static_cast<size_t>( rect.right )  / te ) + 1 );
 		fsTy1 = std::min( mFrameStore->TileCountY(),
 		                  ( static_cast<size_t>( rect.bottom ) / te ) + 1 );
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
 	}
+
+	FrameStoreTileBracket tileBracket( fsBracket ? mFrameStore : nullptr,
+		fsTx0, fsTy0, fsTx1, fsTy1 );
 
 	// L6e-1.1 — block-border dim + in-progress observer dispatch
 	// inside the bracket; see SPRasterizeSingleBlock for rationale.
@@ -812,16 +858,8 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	// for the rationale; this is the animation-path twin.
 	// L8 round 6 — same per-rasterizer gate as the static path.
 	if( fsBracket && drewToggles && ShouldFireToggleObserverEvents() ) {
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
+		tileBracket.Release();
+		tileBracket.Acquire();
 	}
 
 	// L8 round 11 — time-based intra-block flush; see
@@ -863,16 +901,8 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 		if( fsBracket && !skipBlockOutput && y < rect.bottom ) {
 			const auto now = FlushClockAnim::now();
 			if( now - lastFlushAnim >= kFlushIntervalAnim ) {
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->EndTile( tx, ty );
-					}
-				}
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->BeginTile( tx, ty );
-					}
-				}
+				tileBracket.Release();
+				tileBracket.Acquire();
 				lastFlushAnim = now;
 
 				// L8 round 12+15 — intra-block cancellation check
@@ -888,11 +918,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	(void)earlyAbortAnim;
 
 	if( fsBracket ) {
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
+		tileBracket.Release();
 	}
 
 	if( !skipBlockOutput ) {
@@ -957,6 +983,7 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		return !dispatcher.WasCancelled() &&
 			!( pProgressFunc && pProgressFunc->IsCancelled() );
 	} else {
+		ThreadLocalSplatBufferTaskScope splatTask;
 
 		// Legacy "render in the background" mode: the SP branch runs
 		// the entire render on THIS thread (typically the CLI main
@@ -1051,6 +1078,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		return;
 	}
 	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
+	RasterizerScopeExit renderScratch( [this]() {
+		ReleaseRenderScopedPreviewResources();
+	} );
+	RasterizerScopeExit renderProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
+		mProgressBase = base;
+		mProgressWeight = weight;
+		mProgressTotal = total;
+	} );
 
 	// Landing 5: propagate the camera's photographic exposure
 	// compensation to every output once at render entry.  Default
@@ -1089,13 +1124,20 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	ConfigureOutputRegion( pRect, width, height );
 
 	IRasterImage* pImage = AcquireRenderImage( width, height );
+	RasterizerScopeExit imageOwner( [&]() {
+		if( pImage ) {
+			ReleaseRenderImage( std::exchange(pImage,nullptr) );
+		}
+	} );
 
 	// Allocate film buffer for wide-support pixel filter reconstruction
 	safe_release( pFilteredFilm );
 	safe_release( pFilteredScratch );
 	if( UseFilteredFilm() ) {
 		pFilteredFilm = new FilteredFilm( width, height );
-		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+		if( UsesFilteredPreviewScratch() ) {
+			pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+		}
 	}
 
 	PrepareImageForNewRender( *pImage, pRect );
@@ -1143,6 +1185,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	// If there is no raster sequence, create a default one
 	IRasterizeSequence* blocks = 0;
+	RasterizerScopeExit blocksOwner( [&]() {
+		safe_release( blocks );
+	} );
 	if( !pRasterSequence ) {
 		blocks = CreateDefaultRasterSequence( tileEdge );
 		pRasterSequence = blocks;
@@ -1152,8 +1197,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
 		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( tileEdge );
+		RasterizerScopeExit irrad_seqOwner( [&]() {
+			safe_release( irrad_seq );
+		} );
 		RISERasterImage* pIrradScratch = pRect ?
 			new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) ) : 0;
+		RasterizerScopeExit pIrradScratchOwner( [&]() {
+			safe_release( pIrradScratch );
+		} );
 		IRasterImage& irradImage = pIrradScratch ?
 			static_cast<IRasterImage&>( *pIrradScratch ) : *pImage;
 		if( pProgressFunc ) {
@@ -1223,6 +1274,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
 
 		ProgressiveFilm progFilm( width, height );
+		RasterizerScopeExit progressiveState( [this, previous=mProgressiveFilm, total=mTotalProgressiveSPP]() {
+			mProgressiveFilm = previous;
+			mTotalProgressiveSPP = total;
+		} );
 		mProgressiveFilm = &progFilm;
 		mTotalProgressiveSPP = totalSPP;
 
@@ -1259,8 +1314,11 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
 
 			ISampling2D* pPassSampling = pSavedSampling->Clone();
+			RasterizerScopeExit samplingOwner( [&]() {
+				safe_release( pPassSampling );
+			} );
 			pPassSampling->SetNumSamples( passSPP );
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pPassSampling;
+			ScopedActiveSampling samplingOverride( *this, pPassSampling );
 
 			OnProgressivePassBegin( pScene, passIdx );
 
@@ -1276,13 +1334,16 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			mProgressTotal  = totalProgressUnits;
 
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdge );
+			RasterizerScopeExit pPassSeqOwner( [&]() {
+				safe_release( pPassSeq );
+			} );
 			const bool passCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
 			safe_release( pPassSeq );
 
 			accumulatedProgress += static_cast<double>( numTilesPerPass ) *
 			                       static_cast<double>( passSPP );
 
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pPassSampling );
 
 			if( !passCompleted ) {
@@ -1313,7 +1374,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
 				}
 
-				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
+				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage, PreviewCompositionRegion() );
 				RasterizerOutputListType::const_iterator r, s;
 				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 					(*r)->OutputIntermediateImage( outputImage, pRect );
@@ -1486,7 +1547,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	pFilteredFilm = 0;
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
-	safe_release( pImage );
+	imageOwner.Run();
 	// Defensive no-op on the normal path (depth was released immediately
 	// after propagation); still protects early-return configurations.
 	if( pAOVBuffers ) pAOVBuffers->ReleaseDepthStorage();
@@ -1575,6 +1636,7 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 			!( pProgressFunc && pProgressFunc->IsCancelled() );
 
 	} else {
+		ThreadLocalSplatBufferTaskScope splatTask;
 
 		// Legacy low-priority: lower this caller thread too so it
 		// joins the rest of the render at reduced priority.  See
@@ -1780,6 +1842,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	// time. Auto quality uses configured work (DL-360), never this timer.
 	BeginRenderTimer();
 #endif
+	RasterizerScopeExit frameProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
+		mProgressBase = base;
+		mProgressWeight = weight;
+		mProgressTotal = total;
+	} );
 	// Each frame starts a fresh planned AOV accumulation, whether or not
 	// OIDN is compiled/enabled. Interlaced animation renders the two fields
 	// through separate calls into the same image/AOV set; only the first field
@@ -1889,8 +1956,14 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 				tileEdgeAnim, static_cast<unsigned int>( mFrameStore->TileEdge() ) );
 		}
 		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( tileEdgeAnim );
+		RasterizerScopeExit irrad_seqOwner( [&]() {
+			safe_release( irrad_seq );
+		} );
 		RISERasterImage* pIrradScratch = pRect ?
 			new RISERasterImage( image.GetWidth(), image.GetHeight(), RISEColor( 0, 0, 0, 0 ) ) : 0;
+		RasterizerScopeExit pIrradScratchOwner( [&]() {
+			safe_release( pIrradScratch );
+		} );
 		IRasterImage& irradImage = pIrradScratch ?
 			static_cast<IRasterImage&>( *pIrradScratch ) : image;
 		// Null-guarded like the still-render twin above (RasterizeScene's irradiance block): a
@@ -1961,6 +2034,10 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
 
 		ProgressiveFilm progFilm( width, height );
+		RasterizerScopeExit progressiveState( [this, previous=mProgressiveFilm, total=mTotalProgressiveSPP]() {
+			mProgressiveFilm = previous;
+			mTotalProgressiveSPP = total;
+		} );
 		mProgressiveFilm = &progFilm;
 		mTotalProgressiveSPP = totalSPP;
 
@@ -2041,8 +2118,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
 
 			ISampling2D* pPassSampling = pSavedSampling->Clone();
+			RasterizerScopeExit samplingOwner( [&]() {
+				safe_release( pPassSampling );
+			} );
 			pPassSampling->SetNumSamples( passSPP );
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pPassSampling;
+			ScopedActiveSampling samplingOverride( *this, pPassSampling );
 
 			if( perPassTime ) {
 				const Scalar u = GlobalRNG().CanonicalRandom();
@@ -2063,10 +2143,13 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			mProgressWeight = static_cast<double>( passSPP );
 
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdgeAnim );
+			RasterizerScopeExit pPassSeqOwner( [&]() {
+				safe_release( pPassSeq );
+			} );
 			RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, *pPassSeq, passFrameData );
 			safe_release( pPassSeq );
 
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pPassSampling );
 
 			accumulatedFrameProgress += static_cast<double>( animNumTiles ) * static_cast<double>( passSPP );
@@ -2105,7 +2188,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 					progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
 				}
 
-				IRasterImage& outputImage = GetIntermediateOutputImage( image );
+				IRasterImage& outputImage = GetIntermediateOutputImage( image, PreviewCompositionRegion() );
 				RasterizerOutputListType::const_iterator r, s;
 				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 					(*r)->OutputIntermediateImage( outputImage, pRect );
@@ -2216,6 +2299,14 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		return;
 	}
 	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
+	RasterizerScopeExit renderScratch( [this]() {
+		ReleaseRenderScopedPreviewResources();
+	} );
+	RasterizerScopeExit renderProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
+		mProgressBase = base;
+		mProgressWeight = weight;
+		mProgressTotal = total;
+	} );
 
 	// Acquire scene dimensions from the active Film.
 	const IFilm* pFilm = pScene.GetFilm();
@@ -2226,6 +2317,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 
 	// If there is no raster sequence, create a default one
 	MortonRasterizeSequence* blocks = 0;
+	RasterizerScopeExit blocksOwner( [&]() {
+		safe_release( blocks );
+	} );
 	if( !pRasterSequence ) {
 		unsigned int tileEdgeAnim = ComputeTileSize(
 			width, height,
@@ -2262,13 +2356,20 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	// genuinely the FrameStore view (when dims match) so the
 	// bracketing fires for actual writes.
 	IRasterImage* pImage = AcquireRenderImage( width, height );
+	RasterizerScopeExit imageOwner( [&]() {
+		if( pImage ) {
+			ReleaseRenderImage( std::exchange(pImage,nullptr) );
+		}
+	} );
 
 	// Allocate film buffer for wide-support pixel filter reconstruction
 	safe_release( pFilteredFilm );
 	safe_release( pFilteredScratch );
 	if( UseFilteredFilm() ) {
 		pFilteredFilm = new FilteredFilm( width, height );
-		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+		if( UsesFilteredPreviewScratch() ) {
+			pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+		}
 	}
 
 	// Get the ray caster ready to roll
@@ -2523,7 +2624,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	pFilteredFilm = 0;
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
-	ReleaseRenderImage( pImage );
+	imageOwner.Run();
 	// Match the still-image lifetime: depth is perception-only and released
 	// even when OIDN retains its own albedo/normal scratch pair.
 	if( pAOVBuffers ) pAOVBuffers->ReleaseDepthStorage();

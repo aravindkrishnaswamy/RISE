@@ -113,7 +113,7 @@ namespace RISE
 		typedef Parameter<Point3> Point3Keyframe;
 		typedef Parameter<Vector3> Vector3Keyframe;
 
-		//! Strict scalar parse used by light KeyframeFromParameters.
+		//! Strict scalar parse used by camera and light KeyframeFromParameters.
 		//! Returns true and fills `out` only if `s` parsed to a finite
 		//! scalar (rejects "garbage", "nan", "inf").  Without this,
 		//! the prior `atof(value.c_str())` silently mapped invalid
@@ -141,6 +141,9 @@ namespace RISE
 		//! defeat `-ffast-math` from inside the function, regardless
 		//! of whether the optimiser decides to inline-fold a callsite.
 		bool ParseStrictScalar( const String& s, Scalar& out );
+
+		//! Strict 2-vector parse with the same finite and exact-arity contract.
+		bool ParseStrictVec2( const String& s, double out[2] );
 
 		//! Strict 3-vector parse — tokenises on whitespace, requires
 		//! exactly three components, each routed through

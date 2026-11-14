@@ -18,7 +18,6 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "GeometryUtilities.h"
-#include "../Utilities/stl_utils.h"
 // BSPTreeSAH / Octree headers are still needed in the .cpp because v2/v3
 // .risemesh files have BSP/octree byte blocks that we read into local
 // temporaries during Deserialize so the byte stream advances correctly,

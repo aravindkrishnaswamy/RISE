@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "FisheyeCamera.h"
+#include <string_view>
 #include "CameraTransforms.h"
 #include "../Animation/KeyframableHelper.h"
 
@@ -217,9 +218,12 @@ IKeyframeParameter* FisheyeCamera::KeyframeFromParameters( const String& name, c
 	IKeyframeParameter* p = CameraCommon::KeyframeFromParameters( name, value );
 
 	if( !p ) {
+		Scalar parsed;
+		if( !ParseStrictScalar( value, parsed ) ) return nullptr;
+		const std::string_view field( name.c_str() );
 		// Check the name and see if its something we recognize
-		if( name == "scale" ) {
-			p = new Parameter<Scalar>( value.toDouble(), SCALE_ID );
+		if( field == "scale" ) {
+			p = new Parameter<Scalar>( parsed, SCALE_ID );
 		} else {
 			return 0;
 		}

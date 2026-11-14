@@ -19,7 +19,6 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "GeometryUtilities.h"
-#include "../Utilities/stl_utils.h"
 // BSPTreeSAH / Octree headers are still needed in the .cpp because v1/v2/v3
 // .risemesh files have BSP/octree byte blocks that we read into local
 // temporaries during Deserialize so the byte stream advances correctly,
@@ -1741,15 +1740,14 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 {
 	GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed:: Constructing acceleration structures for %u triangles", indexedtris.size() );
 	{
-		// Optimize the point, normal and coord lists
-		// so that they only use the amount of memory they require
-		stl_utils::container_optimize< VerticesListType >( pPoints );
+		// Compact available storage before taking pointers into the vectors.
+		pPoints.shrink_to_fit();
 		if( bUseFaceNormals ) {
-			stl_utils::container_erase_all< NormalsListType >( pNormals );
+			NormalsListType().swap( pNormals );
 		} else {
-			stl_utils::container_optimize< NormalsListType >( pNormals );
+			pNormals.shrink_to_fit();
 		}
-		stl_utils::container_optimize< TexCoordsListType >( pCoords );
+		pCoords.shrink_to_fit();
 	}
 
 	// Convert that indexed triangle into a pointer triangle
@@ -1791,7 +1789,7 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 
 		// Blow away the index triangle
 		indexedtris.clear();
-		stl_utils::container_erase_all< IndexTriangleListType >( indexedtris );
+		IndexTriangleListType().swap( indexedtris );
 
 	}
 
@@ -2975,7 +2973,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	}
 
 	if( bUseFaceNormals ) {
-		stl_utils::container_erase_all< NormalsListType >( pNormals );
+		NormalsListType().swap( pNormals );
 	}
 
 	// Get the list of co-ordinates

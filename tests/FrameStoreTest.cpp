@@ -31,16 +31,34 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <sstream>
 #include <thread>
 #include <vector>
 
 #include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
+#include "../src/Library/Shaders/StandardShader.h"
+#include "../src/Library/Scene.h"
+#include "../src/Library/Job.h"
+#include "../src/Library/Interfaces/IJobRasterizerOutput.h"
 #include "../src/Library/Rendering/FilteredFilm.h"
 #include "../src/Library/Rendering/SplatFilm.h"
+#include "../src/Library/Rendering/ThreadLocalSplatBuffer.h"
+#include "../src/Library/Rendering/RasterizeDispatchers.h"
+#include "../src/Library/Rendering/MortonRasterizeSequence.h"
+#include "../src/Library/Rendering/BDPTRasterizerBase.h"
+#include "../src/Library/Rendering/MLTSpectralRasterizer.h"
+#include "../src/Library/Interfaces/IRadianceMap.h"
+#include "../src/Library/Utilities/ThreadPool.h"
 #include "../src/Library/Rendering/ProgressiveFilm.h"
 #include "../src/Library/Rendering/BidirectionalRasterizerBase.h"
 #include "../src/Library/Rendering/OIDNDenoiser.h"
@@ -48,6 +66,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IRenderObserver.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/CheckedSize.h"
 
 using namespace RISE;
 using namespace RISE::FrameStoreOutput;
@@ -55,6 +74,14 @@ using RISE::Implementation::AOVBuffers;
 using RISE::Implementation::FrameStore;
 using RISE::Implementation::MakeAOVPlan;
 using RISE::Implementation::PropagateAOVsToFrameStore;
+
+namespace RISE { namespace Implementation {
+	IRasterizerOutput* ForTest_CreateCallbackRasterizerOutput(IJobRasterizerOutput& receiver);
+	namespace MLTResourceTestHooks {
+		using Observer=void (*)(IReference*,bool,void*);
+		void SetObserver(Observer observer,void* context) noexcept;
+	}
+} }
 
 namespace
 {
@@ -65,6 +92,7 @@ namespace
 	{
 		if ( cond ) {
 			++gPassCount;
+			if(label.find("MLT resource exception:")==0 || label.find("manual splat lifecycle:")==0 || label.find("tile exception:")==0 || label.find("full entry exception:")==0 || label.find("splat task exception:")==0 || label.find("film bounds:")==0 || label.find("film footprint:")==0)std::cout << "PASS: " << label << "\n";
 		} else {
 			++gFailCount;
 			std::cerr << "FAIL: " << label << "\n";
@@ -89,6 +117,831 @@ namespace
 		spec.tileEdge = tile;
 		spec.aovChannels = std::move( aovs );
 		return new FrameStore( spec );
+	}
+
+	// A bad lock cleanup must produce a bounded assertion, not hang this
+	// standalone executable. A timed-out worker owns the store reference and
+	// its result state, so detaching is safe even on the intentional RED path.
+	// GREEN always joins; no detached worker or extra reference survives.
+	bool ReadAndReacquireTiles(FrameStore& store)
+	{
+		struct Result {std::atomic<bool> done{false};bool ok=false;};
+		auto result=std::make_shared<Result>();store.addref();
+		std::thread reader([result,frame=&store]() {
+			try {
+				std::vector<float> pixels(frame->Width()*frame->Height()*4);
+				frame->Render(pixels.data(),frame->Width()*4*sizeof(float),
+					Rect(0,0,static_cast<unsigned int>(frame->Height()),static_cast<unsigned int>(frame->Width())),
+					TargetFormat::RGBA32F_Linear,ViewTransform::Identity());
+				for(size_t y=0;y<frame->TileCountY();++y)for(size_t x=0;x<frame->TileCountX();++x) {
+					frame->BeginTile(x,y);frame->EndTile(x,y);
+				}
+				result->ok=true;
+			} catch(...) {}
+			frame->release();result->done.store(true,std::memory_order_release);
+		});
+		const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+		while(!result->done.load(std::memory_order_acquire) && std::chrono::steady_clock::now()<deadline)
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		if(!result->done.load(std::memory_order_acquire)){reader.detach();return false;}
+		reader.join();return result->ok;
+	}
+
+
+	void TestTileBracketSynchronousReadback()
+	{
+		using RISE::Implementation::FrameStoreTileBracket;
+		struct ReadObserver final : IRenderObserver
+		{
+			std::shared_ptr<FrameStore> store;
+			unsigned int phase = 1;
+			unsigned int reads = 0;
+			bool exact = true;
+			void OnTileComplete( const Rect&, uint64_t ) override
+			{
+				// Deliberately synchronous full-frame readback. Every other
+				// tile owned by this same bracket must already be unlocked.
+				std::vector<float> pixels( 4u * 4u * 4u );
+				store->Render( pixels.data(), 4u * 4u * sizeof(float), Rect(0,0,4,4),
+					TargetFormat::RGBA32F_Linear, ViewTransform::Identity() );
+				for( size_t y = 0; y < 4; ++y ) {
+					for( size_t x = 0; x < 4; ++x ) {
+						const size_t i = (y * 4u + x) * 4u;
+						exact &= pixels[i] == float(x + phase) / 8.0f &&
+							pixels[i+1] == float(y + phase) / 8.0f &&
+							pixels[i+2] == float(x + y + phase) / 16.0f && pixels[i+3] == 0.5f;
+					}
+				}
+				++reads;
+			}
+		};
+		struct Result
+		{
+			std::shared_ptr<FrameStore> store;
+			std::shared_ptr<ReadObserver> observer;
+			std::atomic<bool> done{false};
+			bool failed = false;
+			bool firstPass = false;
+			bool retry = false;
+		};
+		auto result = std::make_shared<Result>();
+		result->store = std::shared_ptr<FrameStore>( MakeStore(4,4,2),
+			[](FrameStore* store) { store->release(); } );
+		result->observer = std::make_shared<ReadObserver>();
+		result->observer->store = result->store;
+		// The worker owns all three heap objects. On an intentionally bad
+		// RED build, no detached worker can access dead stack storage.
+		std::thread worker( [result] {
+			auto& store = *result->store;
+			auto& observer = *result->observer;
+			store.AddObserver( &observer );
+			try {
+				const auto before = store.Generation();
+				FrameStoreTileBracket bracket( &store, 0, 0, 2, 2 );
+				const auto writePixels = [&] {
+					auto* beauty = store.GetChannel<ChannelId::Beauty>();
+					auto* alpha = store.GetChannel<ChannelId::Alpha>();
+					for( size_t y = 0; y < 4; ++y ) {
+						for( size_t x = 0; x < 4; ++x ) {
+							beauty->At(x,y) = RISEPel( double(x + observer.phase) / 8.0,
+								double(y + observer.phase) / 8.0, double(x + y + observer.phase) / 16.0 );
+							alpha->At(x,y) = 0.5;
+						}
+					}
+				};
+				writePixels();
+				bracket.Release();
+				bracket.Release();
+				result->firstPass = observer.reads == 4 && observer.exact &&
+					store.Generation() == before + 4;
+				observer.phase = 2;
+				bracket.Acquire();
+				writePixels();
+				bracket.Release();
+				result->retry = observer.reads == 8 && observer.exact &&
+					store.Generation() == before + 8;
+			} catch( ... ) {
+				result->failed = true;
+			}
+			store.RemoveObserver( &observer );
+			result->done.store( true, std::memory_order_release );
+		} );
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while( !result->done.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds(1) );
+		const bool completed = result->done.load( std::memory_order_acquire );
+		if( completed ) worker.join();
+		else worker.detach(); // RED only: its captures own store, observer and result.
+		Check( completed,
+			"tile exception: synchronous full-frame observer readback completes within deadline" );
+		Check( completed && !result->failed && result->firstPass,
+			"tile exception: all four notifications read exact committed pixels after every tile unlocks" );
+		Check( completed && !result->failed && result->retry,
+			"tile exception: bracket reacquire and retry permits four more exact synchronous observer reads" );
+	}
+
+	struct ThrowingTileObserver final : IRenderObserver
+	{
+		unsigned int calls=0;bool fail=true;
+		void OnTileComplete(const Rect&,uint64_t) override {
+			++calls;if(fail)throw std::runtime_error("observer failure "+std::to_string(calls));
+		}
+	};
+
+	void TestTileBracketExceptions()
+	{
+		using RISE::Implementation::FrameStoreTileBracket;
+		using RISE::Implementation::FrameStoreBulkBracket;
+		const auto release=[](auto* p){if(p)p->release();};
+		{
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(4,4,2),release);
+			ThrowingTileObserver observer;store->AddObserver(&observer);
+			const auto before=store->Generation();std::string error;
+			FrameStoreTileBracket bracket(store.get(),0,0,2,2);
+			try{bracket.Release();}catch(const std::exception& e){error=e.what();}
+			Check(error=="observer failure 1" && observer.calls==4 && store->Generation()==before+4,
+				"tile exception: explicit Release propagates first observer error after committing all four tiles");
+			bracket.Release();Check(observer.calls==4,"tile exception: repeated Release neither double-unlocks nor notifies");
+			store->RemoveObserver(&observer);
+			const bool readable=ReadAndReacquireTiles(*store);
+			Check(readable,"tile exception: explicit Release leaves every tile readable and reacquirable within deadline");
+			if(readable){bracket.Acquire();bracket.Release();}
+			Check(readable && store->Generation()==before+12,"tile exception: released bracket can acquire and commit the same four tiles again");
+		}
+		for(bool bulk : {false,true}) {
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(4,4,2),release);
+			ThrowingTileObserver observer;store->AddObserver(&observer);
+			std::string error;
+			try {
+				if(bulk) {
+					FrameStoreBulkBracket bracket(store.get(),store->AsBeautyRasterImage());
+					throw std::runtime_error("original callback failure");
+				} else {
+					FrameStoreTileBracket bracket(store.get(),0,0,2,2);
+					throw std::runtime_error("original callback failure");
+				}
+			}catch(const std::exception& e){error=e.what();}
+			Check(error=="original callback failure" && observer.calls==4,
+				bulk?"tile exception: bulk destructor preserves active callback error and notifies all tiles despite observer errors":
+				"tile exception: tile destructor preserves active callback error and notifies all tiles despite observer errors");
+			store->RemoveObserver(&observer);
+			Check(ReadAndReacquireTiles(*store),bulk?"tile exception: bulk destructor unlocks every tile within deadline":
+				"tile exception: tile destructor unlocks every tile within deadline");
+		}
+		{
+			struct Source final : RISERasterImage {
+				bool fail=true;mutable unsigned int reads=0;
+				Source():RISERasterImage(2,2,RISEColor(.5,.25,.125,.5)){}
+				RISEColor GetPEL(unsigned int x,unsigned int y) const override {
+					if(fail && ++reads==2)throw std::runtime_error("source read failure");
+					return RISERasterImage::GetPEL(x,y);
+				}
+			} source;
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(2,2,2),release);
+			ThrowingTileObserver observer;store->AddObserver(&observer);std::string error;
+			try{store->CopyTileFromRasterImage(0,0,source,Rect(0,0,2,2));}
+			catch(const std::exception& e){error=e.what();}
+			Check(error=="source read failure" && observer.calls==1,"tile exception: CopyTile preserves source error while cleanup observer also throws");
+			store->RemoveObserver(&observer);const bool readable=ReadAndReacquireTiles(*store);
+			Check(readable,"tile exception: CopyTile source failure releases its tile within deadline");
+			if(readable){source.fail=false;store->CopyTileFromRasterImage(0,0,source,Rect(0,0,2,2));}
+			bool exact=readable;
+			for(unsigned int y=0;y<2;++y)for(unsigned int x=0;x<2;++x) {
+				const auto c=store->AsBeautyRasterImage().GetPEL(x,y);
+				exact &= c.base.r==.5 && c.base.g==.25 && c.base.b==.125 && c.a==.5;
+			}
+			Check(exact,"tile exception: CopyTile healthy retry copies all independent RGB and alpha values");
+		}
+	}
+
+	void TestRasterizerBlockExceptions()
+	{
+		using namespace RISE::Implementation;
+		struct Probe final : PixelBasedRasterizerHelper {
+			Probe(IRayCaster* caster,FrameStore* store):Rasterizer(store),PixelBasedRasterizerHelper(caster,store){}
+			bool TakeSingleSample(const RuntimeContext&,const RasterizerState&,const Ray&,RISEPel&) const override{return false;}
+			void IntegratePixel(const RuntimeContext&,unsigned int,unsigned int,unsigned int,const IScene&,
+				RISEColor& result,bool,Scalar,Scalar) const override {
+				// Test-only instrumentation is not part of the image semantics.
+				++integratedCalls;result=RISEColor(.5,.25,.125,.5);
+			}
+			mutable unsigned int integratedCalls=0;
+		};
+		struct Output final : IRasterizerOutput,Reference {
+			bool fail=true;unsigned int calls=0;
+			void OutputIntermediateImage(const IRasterImage&,const Rect*) override {
+				++calls;if(fail)throw std::runtime_error("original output failure");
+			}
+			void OutputImage(const IRasterImage& image,const Rect* region,unsigned int) override{OutputIntermediateImage(image,region);}
+		};
+		struct Receiver final : IJobRasterizerOutput {
+			bool fail=true;unsigned int calls=0;
+			bool PremultipliedAlpha() override{return true;}
+			int GetColorSpace() override{return 0;}
+			bool WantsFloat32() override{return true;}
+			void OutputImageRGBA16(const unsigned short*,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int) override{}
+			void OutputImageRGBA32F(const float*,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int) override {
+				++calls;if(fail)throw std::runtime_error("original receiver failure");
+			}
+		};
+		const auto release=[](auto* p){if(p)p->release();};
+		std::unique_ptr<StandardShader,decltype(release)> shader(new StandardShader(std::vector<IShaderOp*>()),release);
+		IRayCaster* rawCaster=nullptr;RISE_API_CreateRayCaster(&rawCaster,false,10,*shader,true);
+		std::unique_ptr<IRayCaster,decltype(release)> caster(rawCaster,release);
+		std::unique_ptr<Scene,decltype(release)> scene(new Scene(),release);
+		RandomNumberGenerator random;RuntimeContext context(random,RuntimeContext::PASS_NORMAL,false);
+		for(bool animation : {false,true})for(unsigned int mode=0;mode<3;++mode) {
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(4,4,2),release);
+			Probe probe(caster.get(),store.get());Output output;Receiver receiver;
+			std::unique_ptr<IRasterizerOutput,decltype(release)> adapter(
+				mode==1?ForTest_CreateCallbackRasterizerOutput(receiver):nullptr,release);
+			if(mode==1)probe.AddRasterizerOutput(adapter.get());else probe.AddRasterizerOutput(&output);
+			// mode2 exercises the explicit split Release rather than unwind.
+			output.fail=mode==0;ThrowingTileObserver observer;store->AddObserver(&observer);
+			const auto run=[&]() {
+				const Rect block(0,0,3,3);
+				if(animation)probe.SPRasterizeSingleBlockOfAnimation(context,store->AsBeautyRasterImage(),*scene,block,4,
+					PixelBasedRasterizerHelper::AnimFrameData{PixelBasedRasterizerHelper::FIELD_BOTH,0,0,0,0});
+				else probe.SPRasterizeSingleBlock(context,store->AsBeautyRasterImage(),*scene,block,4);
+			};
+			std::string error;try{run();}catch(const std::exception& e){error=e.what();}
+			const std::string expected=mode==0?"original output failure":mode==1?"original receiver failure":"observer failure 1";
+			const std::string label=std::string("tile exception: ")+(animation?"animation ":"static ")+
+				(mode==0?"IRasterizerOutput ":mode==1?"receiver ":"split Release ");
+			Check(error==expected && observer.calls==4 && probe.integratedCalls==0,
+				label+"propagates original failure and releases all four tiles despite throwing observers");
+			store->RemoveObserver(&observer);const bool readable=ReadAndReacquireTiles(*store);
+			Check(readable,label+"allows bounded full-store read and tile reacquisition");
+			if(readable){output.fail=false;receiver.fail=false;run();}
+			bool exact=readable && probe.integratedCalls==16 && (mode==1?receiver.calls:output.calls)==3;
+			for(unsigned int y=0;y<4;++y)for(unsigned int x=0;x<4;++x) {
+				const auto c=store->AsBeautyRasterImage().GetPEL(x,y);
+				exact &= c.base.r==.5 && c.base.g==.25 && c.base.b==.125 && c.a==.5;
+			}
+			Check(exact,label+"healthy retry writes every independent beauty and alpha sample");
+			probe.FreeRasterizerOutputs();
+		}
+	}
+
+	void TestFullEntryExceptions()
+	{
+		using namespace RISE::Implementation;
+		struct SamplingCounts {unsigned int liveClones=0;};
+		struct Sampling final : ISampling2D,Reference {
+			std::shared_ptr<SamplingCounts> counts;unsigned int samples=5;bool clone=false;
+			explicit Sampling(std::shared_ptr<SamplingCounts> value):counts(std::move(value)){}
+			Sampling(const Sampling& source):Reference(source),counts(source.counts),samples(source.samples),clone(true){++counts->liveClones;}
+			~Sampling() override{if(clone)--counts->liveClones;}
+			void SetNumSamples(unsigned int n) override{samples=n;}
+			unsigned int GetNumSamples() override{return samples;}
+			void GenerateSamplePoints(const RandomNumberGenerator&,SamplesList2D& points) const override{points.assign(samples,Point2(.5,.5));}
+			ISampling2D* Clone() const override{return new Sampling(*this);}
+		};
+		struct Probe final : PixelBasedRasterizerHelper {
+			mutable unsigned int acquisitions=0,releases=0;
+			mutable std::atomic<bool> sawThreaded{false};
+			mutable std::vector<unsigned int> passSamples;
+			Probe(IRayCaster* caster,FrameStore* store):Rasterizer(store),PixelBasedRasterizerHelper(caster,store){ForTest_SetThreadCountOverride(1);}
+			bool TakeSingleSample(const RuntimeContext&,const RasterizerState&,const Ray&,RISEPel&) const override{return false;}
+			void PrepareRuntimeContext(RuntimeContext& rc) const override {
+				PixelBasedRasterizerHelper::PrepareRuntimeContext(rc);sawThreaded.store(rc.bThreaded);
+			}
+			void IntegratePixel(const RuntimeContext& rc,unsigned int x,unsigned int y,unsigned int,const IScene&,
+				RISEColor& color,bool,Scalar,Scalar) const override {
+				sawThreaded.store(rc.bThreaded);
+				const auto n=ActiveSampling()?ActiveSampling()->GetNumSamples():1;
+				if(rc.pProgressiveFilm) {
+					auto& px=rc.pProgressiveFilm->Get(x,y);px.alphaSum+=n;px.weightSum+=n;px.sampleIndex+=n;
+				}
+				color=RISEColor(0,0,0,1);
+			}
+			void OnProgressivePassBegin(const IScene&,unsigned int) const override{passSamples.push_back(ActiveSampling()->GetNumSamples());}
+			void PrepareImageForNewRender(IRasterImage& image,const Rect*) const override {
+				FrameStoreBulkBracket bracket(mFrameStore,image);image.Clear(RISEColor(0,0,0,1),nullptr);
+			}
+			IRasterImage* AcquireRenderImage(unsigned int w,unsigned int h) const override {
+				++acquisitions;return PixelBasedRasterizerHelper::AcquireRenderImage(w,h);
+			}
+			void ReleaseRenderImage(IRasterImage* image) const override {
+				++releases;PixelBasedRasterizerHelper::ReleaseRenderImage(image);
+			}
+			ISampling2D* AuthoredKernel()const{return pSampling;}
+			bool Idle()const{return !mProgressiveFilm && !mTotalProgressiveSPP &&
+				mProgressBase==0 && mProgressWeight==0 && mProgressTotal==0 && ActiveSampling()==pSampling;}
+		};
+		struct Output final : IRasterizerOutput,Reference {
+			const Probe& probe;bool fail=true,final=false,stableConfig=true,exactFinal=true;
+			unsigned int finalCalls=0;
+			std::mutex outputMutex;
+			std::string kernel;ISampling2D* authored;
+			Output(const Probe& p,ISampling2D* expected):probe(p),kernel(p.ForTest_SamplingKernelName()),authored(expected){}
+			void Observe() {
+				stableConfig &= probe.AuthoredKernel()==authored && probe.GetSampleCountOverride()==5 &&
+					probe.ForTest_SamplingKernelName()==kernel;
+			}
+			void OutputIntermediateImage(const IRasterImage&,const Rect*) override {
+				std::lock_guard<std::mutex> lock(outputMutex);
+				Observe();if(fail && !final)throw std::runtime_error("full-entry intermediate failure");
+			}
+			void OutputImage(const IRasterImage& image,const Rect*,unsigned int) override {
+				std::lock_guard<std::mutex> lock(outputMutex);
+				Observe();++finalCalls;
+				for(unsigned int y=0;y<4;++y)for(unsigned int x=0;x<4;++x) {
+					const auto pixel=image.GetPEL(x,y);
+					exactFinal &= pixel.base.r==0 && pixel.base.g==0 && pixel.base.b==0 && pixel.a==1;
+				}
+				if(fail && final)throw std::runtime_error("full-entry final failure");
+			}
+		};
+		const auto release=[](auto* p){if(p)p->release();};
+		std::unique_ptr<Job,decltype(release)> job(new Job(),release);
+		const double location[]={0,0,2},lookAt[]={0,0,0},up[]={0,1,0},orientation[]={0,0,0},target[]={0,0};
+		const bool setup=job->SetFilm(4,4,1) && job->AddPinholeCamera("tile-exception",location,lookAt,up,1,0,0,0,orientation,target);
+		Check(setup,"full entry exception: tiny initialized scene fixture installs a four-by-four film and camera");
+		if(!setup)return;
+		std::unique_ptr<StandardShader,decltype(release)> shader(new StandardShader(std::vector<IShaderOp*>()),release);
+		IRayCaster* rawCaster=nullptr;RISE_API_CreateRayCaster(&rawCaster,false,10,*shader,true);
+		std::unique_ptr<IRayCaster,decltype(release)> caster(rawCaster,release);
+		for(bool pooled:{false,true})for(bool animation:{false,true})for(bool progressive:{false,true})for(bool final:{false,true}) {
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(4,4,2),release);
+			auto counts=std::make_shared<SamplingCounts>();
+			std::unique_ptr<Sampling,decltype(release)> kernel(new Sampling(counts),release);
+			Probe probe(caster.get(),store.get());probe.ForTest_SetThreadCountOverride(pooled?2:1);probe.SubSampleRays(kernel.get(),nullptr);
+			ProgressiveConfig config;config.enabled=progressive;config.samplesPerPass=2;probe.SetProgressiveConfig(config);
+			Output output(probe,kernel.get());output.final=final;probe.AddRasterizerOutput(&output);
+			const auto storeRefs=store->refcount(),kernelRefs=kernel->refcount();
+			const auto run=[&]() {
+				if(animation)probe.RasterizeSceneAnimation(*job->GetScene(),0,0,1,false,false,nullptr,nullptr,nullptr);
+				else probe.RasterizeScene(*job->GetScene(),nullptr,nullptr);
+			};
+			std::string error;try{run();}catch(const std::exception& e){error=e.what();}
+			const std::string label=std::string("full entry exception: ")+(pooled?"worker pool ":"caller thread ")+(animation?"animation ":"static ")+
+				(progressive?"progressive ":"single ")+(final?"final ":"intermediate ");
+			Check(error==(final?"full-entry final failure":"full-entry intermediate failure") &&
+				probe.acquisitions==1 && probe.releases==1 && store->refcount()==storeRefs &&
+				(!pooled || final || probe.sawThreaded.load()),
+				label+"propagates callback failure and calls virtual image release exactly once without leaking store refs");
+			const bool idle=probe.Idle() && counts->liveClones==0 && kernel->refcount()==kernelRefs &&
+				probe.AuthoredKernel()==kernel.get() && output.stableConfig;
+			Check(idle,label+"restores execution state and keeps authored kernel identity count and ownership stable");
+			const bool readable=ReadAndReacquireTiles(*store);
+			Check(readable,label+"leaves every tile readable and reacquirable within deadline");
+			if(idle && readable){output.fail=false;probe.passSamples.clear();run();}
+			const std::vector<unsigned int> expected=progressive?std::vector<unsigned int>{2,2,1}:std::vector<unsigned int>{};
+			Check(idle && readable && probe.acquisitions==2 && probe.releases==2 && store->refcount()==storeRefs &&
+				probe.Idle() && counts->liveClones==0 && probe.passSamples==expected && output.stableConfig &&
+				output.exactFinal && output.finalCalls==(final?2u:1u) && probe.sawThreaded.load()==pooled,
+				label+"healthy retry uses exact pass sample counts and releases cloned kernels and image references");
+			probe.FreeRasterizerOutputs();
+		}
+	}
+
+	void TestSplatTaskExceptions()
+	{
+		using namespace RISE::Implementation;
+		struct Source {
+			SplatFilm* film=nullptr;
+			unsigned int emitted=0;
+			void Emit(unsigned int x,unsigned int y) {
+				film->Splat(x,y,RISEPel(.5,.25,.125));++emitted;
+			}
+		};
+		struct Probe final : PixelBasedRasterizerHelper {
+			Source& source;
+			Probe(IRayCaster* caster,FrameStore* store,Source& value):
+				Rasterizer(store),PixelBasedRasterizerHelper(caster,store),source(value) {ForTest_SetThreadCountOverride(1);}
+			bool TakeSingleSample(const RuntimeContext&,const RasterizerState&,const Ray&,RISEPel&) const override{return false;}
+			bool ShouldFireToggleObserverEvents() const override{return false;}
+			void PrepareImageForNewRender(IRasterImage&,const Rect*) const override{}
+			void IntegratePixel(const RuntimeContext&,unsigned int x,unsigned int y,unsigned int,const IScene&,
+				RISEColor& color,bool,Scalar,Scalar) const override {source.Emit(x,y);color=RISEColor(0,0,0,1);}
+		};
+		struct BidirectionalProbe final : BDPTRasterizerBase {
+			Source& source;
+			BidirectionalProbe(IRayCaster* caster,FrameStore* store,Source& value):
+				Rasterizer(store),PixelBasedRasterizerHelper(caster,store),
+				BDPTRasterizerBase(caster,3,3,PathGuidingConfig(),StabilityConfig(),store),source(value) {ForTest_SetThreadCountOverride(1);}
+			bool TakeSingleSample(const RuntimeContext&,const RasterizerState&,const Ray&,RISEPel&) const override{return false;}
+			bool ShouldFireToggleObserverEvents() const override{return false;}
+			const char* GetProgressTitle() const override{return "Splat task probe: ";}
+			void PreRenderSetup(const IScene&,const Rect*) const override{}
+			void IntegratePixel(const RuntimeContext&,unsigned int x,unsigned int y,unsigned int,const IScene&,
+				RISEColor& color,bool,Scalar,Scalar) const override {source.Emit(x,y);color=RISEColor(0,0,0,1);}
+		};
+		struct Observer final : IRenderObserver {
+			Source& source;bool fail=true,exact=true;unsigned int calls=0;
+			explicit Observer(Source& value):source(value){}
+			void OnTileComplete(const Rect&,uint64_t) override {
+				auto& tls=GetThreadLocalSplatBuffer();
+				if(fail && tls.Size()!=0) {
+					exact &= tls.GetBoundFilm()==source.film && tls.Size()==16 && source.emitted==16;
+					++calls;throw std::runtime_error("postpixel splat failure");
+				}
+			}
+		};
+		struct Result {bool failure=false,clean=false,discarded=false,fresh=false,normalClean=false,onWorker=false;};
+		const auto release=[](auto* p){if(p)p->release();};
+		std::unique_ptr<Job,decltype(release)> job(new Job(),release);
+		const double location[]={0,0,2},lookAt[]={0,0,0},up[]={0,1,0},orientation[]={0,0,0},target[]={0,0};
+		std::unique_ptr<StandardShader,decltype(release)> shader(new StandardShader(std::vector<IShaderOp*>()),release);
+		IRayCaster* rawCaster=nullptr;RISE_API_CreateRayCaster(&rawCaster,false,10,*shader,true);
+		std::unique_ptr<IRayCaster,decltype(release)> caster(rawCaster,release);
+		const bool setup=caster && job->SetFilm(4,4,1) &&
+			job->AddPinholeCamera("splat-task-exception",location,lookAt,up,1,0,0,0,orientation,target);
+		Check(setup,"splat task exception: initialized four-by-four constant-probe scene");
+		if(!setup)return;
+		const auto caller=std::this_thread::get_id();
+		const auto exercise=[&](unsigned int mode) {
+			Result result;result.onWorker=std::this_thread::get_id()!=caller;
+			const bool pool=mode==2 || mode==3,animation=mode==1 || mode==3,bdpt=mode>=4,progressive=mode==5;
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(4,4,2),release);
+			std::unique_ptr<SplatFilm,decltype(release)> film(new SplatFilm(4,4),release);
+			Source source;source.film=film.get();Observer observer(source);store->AddObserver(&observer);
+			std::unique_ptr<PixelBasedRasterizerHelper,decltype(release)> probe(
+				bdpt?static_cast<PixelBasedRasterizerHelper*>(new BidirectionalProbe(caster.get(),store.get(),source)):
+				static_cast<PixelBasedRasterizerHelper*>(new Probe(caster.get(),store.get(),source)),release);
+			ProgressiveConfig config;config.enabled=progressive;config.samplesPerPass=2;probe->SetProgressiveConfig(config);
+			if(progressive) {
+				ISampling2D* sampling=nullptr;RISE_API_CreateUniformSampling2D(&sampling,1,1);
+				sampling->SetNumSamples(3);probe->SubSampleRays(sampling,nullptr);sampling->release();
+			}
+			const auto run=[&]() {
+				if(pool) {
+					std::unique_ptr<MortonRasterizeSequence,decltype(release)> sequence(new MortonRasterizeSequence(8),release);
+					sequence->Begin(0,3,0,3);
+					if(animation) {
+						const PixelBasedRasterizerHelper::AnimFrameData data{PixelBasedRasterizerHelper::FIELD_BOTH,0,0,0,0};
+						RasterizeBlockAnimationDispatcher dispatcher(RuntimeContext::PASS_NORMAL,
+							store->AsBeautyRasterImage(),*job->GetScene(),*sequence,*probe,nullptr,data,0,0,0);
+						dispatcher.DoAnimWork();
+					} else {
+						RasterizeBlockDispatcher dispatcher(RuntimeContext::PASS_NORMAL,
+							store->AsBeautyRasterImage(),*job->GetScene(),*sequence,*probe,nullptr,0,0,0);
+						dispatcher.DoWork();
+					}
+				} else if(animation)probe->RasterizeSceneAnimation(*job->GetScene(),0,0,1,false,false,nullptr,nullptr,nullptr);
+				else probe->RasterizeScene(*job->GetScene(),nullptr,nullptr);
+			};
+			std::string error;try{run();}catch(const std::exception& e){error=e.what();}
+			auto& tls=GetThreadLocalSplatBuffer();
+			result.failure=error=="postpixel splat failure" && observer.exact && observer.calls==4;
+			// Inspect the actual rendering thread before destroying its film.
+			// Never dereference a stale binding, even in the intentional RED.
+			result.clean=tls.GetBoundFilm()==nullptr && tls.Size()==0;
+			std::unique_ptr<RISERasterImage,decltype(release)> discarded(new RISERasterImage(4,4,RISEColor(0,0,0,1)),release);
+			film->Resolve(*discarded,1);
+			result.discarded=true;
+			for(unsigned int y=0;y<4;++y)for(unsigned int x=0;x<4;++x) {
+				const auto pixel=discarded->GetPEL(x,y);
+				result.discarded &= pixel.base.r==0 && pixel.base.g==0 && pixel.base.b==0;
+			}
+			if(!result.clean)tls.DiscardAndUnbind(); // Safe RED cleanup; retry stays gated.
+			film.reset(); // Training-style immediate release before reuse of this same TLS.
+			film.reset(new SplatFilm(5,5));source.film=film.get();source.emitted=0;observer.fail=false;
+			if(result.clean)run();
+			result.normalClean=result.clean && tls.GetBoundFilm()==nullptr && tls.Size()==0;
+			std::unique_ptr<RISERasterImage,decltype(release)> fresh(new RISERasterImage(5,5,RISEColor(0,0,0,1)),release);
+			film->Resolve(*fresh,1);
+			const unsigned int passes=progressive?2:1;
+			result.fresh=result.clean && source.emitted==16*passes;
+			for(unsigned int y=0;y<5;++y)for(unsigned int x=0;x<5;++x) {
+				const auto pixel=fresh->GetPEL(x,y);const double scale=(x<4 && y<4)?passes:0;
+				result.fresh &= pixel.base.r==.5*scale && pixel.base.g==.25*scale && pixel.base.b==.125*scale;
+			}
+			store->RemoveObserver(&observer);return result;
+		};
+		const char* labels[]={"caller static","caller animation","pool static dispatcher","pool animation dispatcher",
+			"BDPT bespoke caller","BDPT progressive caller"};
+		for(unsigned int mode=0;mode<6;++mode) {
+			Result result;
+			if(mode==2 || mode==3) {
+				// Submit (not ParallelFor) ensures failure inspection, film death
+				// and retry all run on this one real persistent worker thread.
+				ThreadPool pool(1,{});std::promise<Result> promise;auto future=promise.get_future();
+				pool.Submit([&]{try{promise.set_value(exercise(mode));}catch(...){promise.set_exception(std::current_exception());}});
+				result=future.get();
+			} else result=exercise(mode);
+			const std::string label=std::string("splat task exception: ")+labels[mode]+" ";
+			Check(result.failure,label+"throws only after sixteen real pending splats reach the postpixel observer");
+			Check(result.clean && (mode<2 || mode>3 || result.onWorker),label+"same-thread catch sees no binding or pending records before film destruction");
+			Check(result.discarded && result.fresh,label+"discarded film stays black and fresh differently-sized film has exact uncontaminated batch sums");
+			Check(result.normalClean,label+"healthy retry flushes all normal splats and unbinds before task exit");
+		}
+	}
+
+	void TestManualSplatLifecycle()
+	{
+		using namespace RISE::Implementation;
+		const auto release=[](auto* p){if(p)p->release();};
+		// Owners precede the task scope: its destructor must unbind before
+		// either the manual film or its target image can be destroyed.
+		std::unique_ptr<SplatFilm,decltype(release)> film(new SplatFilm(1,1),release);
+		std::unique_ptr<RISERasterImage,decltype(release)> image(new RISERasterImage(1,1,RISEColor(0,0,0,1)),release);
+		ThreadLocalSplatBufferTaskScope task;
+		auto& tls=GetThreadLocalSplatBuffer();
+		film->Splat(0u,0u,RISEPel(.5,.25,.125));
+		film->Resolve(*image,1);
+		auto pixel=image->GetPEL(0,0);
+		Check(pixel.base.r==0 && pixel.base.g==0 && pixel.base.b==0 && pixel.a==1 &&
+			tls.Size()==1 && tls.GetBoundFilm()==film.get(),
+			"manual splat lifecycle: Resolve leaves pending caller records and binding untouched");
+		film->FlushCallingThreadBuffer();
+		film->Resolve(*image,1);
+		pixel=image->GetPEL(0,0);
+		Check(pixel.base.r==.5 && pixel.base.g==.25 && pixel.base.b==.125 && pixel.a==1 &&
+			tls.Size()==0 && tls.GetBoundFilm()==film.get(),
+			"manual splat lifecycle: explicit caller flush commits exact RGB and retains empty binding");
+		FlushCallingThreadSplatBuffer();
+		Check(tls.Size()==0 && tls.GetBoundFilm()==nullptr,
+			"manual splat lifecycle: task completion flush unbinds before film owner release");
+
+		struct Filter final : IPixelFilter,Reference {
+			double scale=1;
+			Scalar warp(const RandomNumberGenerator&,const Point2& in,Point2& out)const override{out=in;return 1;}
+			Scalar warpOnScreen(const RandomNumberGenerator&,const Point2& in,Point2& out,unsigned int,unsigned int)const override{out=in;return 1;}
+			void GetFilterSupport(Scalar& w,Scalar& h)const override{w=h=1;}
+			Scalar EvaluateFilter(Scalar x,Scalar y)const override{return scale*(2-std::abs(x))*(2-std::abs(y));}
+		};
+		const auto paint=[&](double scale) {
+			std::unique_ptr<SplatFilm,decltype(release)> filtered(new SplatFilm(3,3),release);
+			std::unique_ptr<RISERasterImage,decltype(release)> target(new RISERasterImage(3,3,RISEColor(0,0,0,1)),release);
+			Filter filter;filter.scale=scale;ThreadLocalSplatBufferTaskScope filteredTask;
+			filtered->SplatFiltered(1.5,1.5,RISEPel(.5,.25,.125),filter);
+			filtered->FlushCallingThreadBuffer();filtered->Resolve(*target,1);
+			std::vector<RISEColor> result;
+			for(unsigned int y=0;y<3;++y)for(unsigned int x=0;x<3;++x)result.push_back(target->GetPEL(x,y));
+			return result;
+		};
+		const auto unit=paint(1),twice=paint(2);bool invariant=true;
+		// Independent outer-product weights {1,2,1} x {1,2,1} sum to16.
+		// Multiplication by2 changes the continuous integral but not the
+		// normalized discrete distribution or its exact binary RGB values.
+		for(unsigned int y=0;y<3;++y)for(unsigned int x=0;x<3;++x){const auto i=y*3+x;
+			const double weight=(x==1?2:1)*(y==1?2:1);
+			invariant &= unit[i].base.r==weight/32 && unit[i].base.g==weight/64 && unit[i].base.b==weight/128 && unit[i].a==1 &&
+				twice[i].base.r==unit[i].base.r && twice[i].base.g==unit[i].base.g && twice[i].base.b==unit[i].base.b && twice[i].a==1;
+		}
+		Check(invariant,"manual splat lifecycle: positive kernel scaling preserves the independent exact nine-pixel normalized distribution");
+	}
+
+	void TestMLTResourceExceptions()
+	{
+		using namespace RISE::Implementation;
+		struct Resources {
+			std::vector<IReference*> samplers;
+			std::vector<IReference*> films;
+			~Resources(){Clear();}
+			void Clear(){for(auto* p:samplers)p->release();for(auto* p:films)p->release();samplers.clear();films.clear();}
+			static void Observe(IReference* object,bool isFilm,void* context) {
+				auto& self=*static_cast<Resources*>(context);
+				(isFilm?self.films:self.samplers).push_back(object);object->addref();
+			}
+			bool Exact(unsigned int refs)const {
+				if(samplers.size()!=2 || films.size()!=1)return false;
+				for(auto* p:samplers)if(p->refcount()!=refs)return false;
+				for(auto* p:films)if(p->refcount()!=refs)return false;
+				return true;
+			}
+		};
+		struct ObserveScope {
+			explicit ObserveScope(Resources& resources){MLTResourceTestHooks::SetObserver(Resources::Observe,&resources);}
+			~ObserveScope(){MLTResourceTestHooks::SetObserver(nullptr,nullptr);}
+		};
+		struct ProgressCallback final : IProgressCallback {
+			Resources& resources;bool fail=true,onTitle=true,rendering=false,ownedAtThrow=false;
+			unsigned int renderingTitles=0,renderingProgress=0;
+			explicit ProgressCallback(Resources& value):resources(value){}
+			void SetTitle(const char* title) override {
+				rendering=std::strcmp(title,"MLT Rendering: ")==0 || std::strcmp(title,"MLT Spectral Rendering: ")==0;
+				if(rendering){++renderingTitles;if(fail && onTitle){ownedAtThrow=resources.Exact(2);throw std::runtime_error("MLT phase-three title failure");}}
+			}
+			bool Progress(const double,const double) override {
+				if(rendering){++renderingProgress;if(fail && !onTitle){ownedAtThrow=resources.Exact(2);throw std::runtime_error("MLT phase-three progress failure");}}
+				return true;
+			}
+		};
+		struct Output final : IRasterizerOutput,Reference {
+			unsigned int intermediate=0,final=0;bool valid=true;std::vector<RISEColor> pixels;
+			void OutputIntermediateImage(const IRasterImage&,const Rect*) override{++intermediate;}
+			void OutputImage(const IRasterImage& image,const Rect*,unsigned int) override {
+				++final;valid &= image.GetWidth()==2 && image.GetHeight()==2;pixels.clear();double total=0;
+				for(unsigned int y=0;y<2;++y)for(unsigned int x=0;x<2;++x){const auto p=image.GetPEL(x,y);pixels.push_back(p);
+					valid &= std::isfinite(p.base.r) && std::isfinite(p.base.g) && std::isfinite(p.base.b) && p.a==1;
+					total+=p.base.r+p.base.g+p.base.b;}
+				valid &= total>0;
+			}
+		};
+		const auto release=[](auto* p){if(p)p->release();};
+		std::unique_ptr<Job,decltype(release)> job(new Job(),release);
+		const double location[]={0,0,2},lookAt[]={0,0,0},up[]={0,1,0},orientation[]={0,0,0},target[]={0,0};
+		std::unique_ptr<StandardShader,decltype(release)> shader(new StandardShader(std::vector<IShaderOp*>()),release);
+		IRayCaster* rawCaster=nullptr;RISE_API_CreateRayCaster(&rawCaster,true,3,*shader,true);
+		std::unique_ptr<IRayCaster,decltype(release)> caster(rawCaster,release);
+		IPainter* rawPainter=nullptr;RISE_API_CreateUniformColorPainter(&rawPainter,RISEPel(1,1,1),eSpectrumKind_Illuminant);
+		std::unique_ptr<IPainter,decltype(release)> painter(rawPainter,release);
+		IRadianceMap* rawMap=nullptr;if(painter)RISE_API_CreateRadianceMap(&rawMap,*painter,1);
+		std::unique_ptr<IRadianceMap,decltype(release)> map(rawMap,release);
+		// BDPT needs finite scene bounds for its synthetic environment endpoint.
+		// This sphere lies entirely behind every camera ray; its bounding
+		// sphere encloses the camera, while its actual surface does not.
+		const double behindCamera[]={0,0,3.25},unitScale[]={1,1,1};
+		const bool setup=caster && map && job->SetFilm(2,2,1) &&
+			job->AddPinholeCamera("MLT-resource-exception",location,lookAt,up,1,0,0,0,orientation,target) &&
+			job->AddSphereGeometry("MLT-resource-bound",1) &&
+			job->AddObject("MLT-resource-bound","MLT-resource-bound","none",nullptr,nullptr,RadianceMapConfig(),
+				behindCamera,orientation,unitScale,true,true) && job->SetGlobalRadianceMap(map.get());
+		Check(setup,"MLT resource exception: actual four-pixel scene has a positive constant environment");
+		if(!setup)return;
+		for(unsigned int family=0;family<3;++family)for(bool animation:{false,true})for(bool onTitle:{true,false}) {
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(2,2,2),release);
+			// At least twenty mutations per chain keep the existing timed-round
+			// fallback bounded even when bootstrap finishes within one clock tick.
+			std::unique_ptr<MLTRasterizer,decltype(release)> rasterizer(family==0?
+				new MLTRasterizer(caster.get(),3,3,8,2,16,.3,store.get()):
+				new MLTSpectralRasterizer(caster.get(),3,3,8,2,16,.3,380,780,1,family==2,store.get()),release);
+			Resources resources;ObserveScope observe(resources);ProgressCallback progress(resources);progress.onTitle=onTitle;
+			Output output;rasterizer->AddRasterizerOutput(&output);rasterizer->SetProgressCallback(&progress);
+			const auto run=[&](){
+				if(animation)rasterizer->RasterizeSceneAnimation(*job->GetScene(),0,0,1,false,false,nullptr,nullptr,nullptr);
+				else rasterizer->RasterizeScene(*job->GetScene(),nullptr,nullptr);
+			};
+			std::string error;try{run();}catch(const std::exception& e){error=e.what();}
+			const std::string label=std::string("MLT resource exception: ")+(family==0?"RGB ":family==1?"spectral NM ":"spectral HWSS ")+(animation?"animation ":"still ")+(onTitle?"title ":"progress ");
+			Check(error==(onTitle?"MLT phase-three title failure":"MLT phase-three progress failure") &&
+				progress.renderingTitles==1 && progress.renderingProgress==(onTitle?0u:1u),label+"propagates phase-three callback failure before mutation work");
+			Check(progress.ownedAtThrow && resources.Exact(1),label+"releases both actual chain samplers and film leaving only tester references");
+			Check(output.final==0 && output.intermediate==0 && GetThreadLocalSplatBuffer().Size()==0 &&
+				GetThreadLocalSplatBuffer().GetBoundFilm()==nullptr,label+"publishes no image and leaves caller TLS unbound on early failure");
+			// Retry without reinstalling the callback: an animation must not
+			// leave its borrowed stack frame-progress adapter in authored state.
+			resources.Clear();progress.fail=false;error.clear();try{run();}catch(const std::exception& e){error=e.what();}
+			Check(error.empty() && resources.Exact(1) && progress.renderingTitles==2 && progress.renderingProgress>0,
+				label+"healthy retry completes with exactly balanced new chain and film references");
+			Check(output.final==1 && output.valid && output.pixels.size()==4,label+"healthy retry publishes one finite positive four-pixel opaque image");
+			const auto expected=output.pixels;resources.Clear();error.clear();try{run();}catch(const std::exception& e){error=e.what();}
+			bool same=expected.size()==4 && output.pixels.size()==4;
+			if(same)for(std::size_t i=0;i<4;++i){const auto& a=expected[i];const auto& b=output.pixels[i];
+				same &= ApproxEq(a.base.r,b.base.r,1e-10) && ApproxEq(a.base.g,b.base.g,1e-10) && ApproxEq(a.base.b,b.base.b,1e-10) && a.a==b.a;}
+			Check(error.empty() && resources.Exact(1) && output.final==2 && output.valid && same,
+				label+"second healthy render preserves the deterministic image and exact ownership balance");
+			rasterizer->SetProgressCallback(nullptr);rasterizer->FreeRasterizerOutputs();
+		}
+	}
+
+	bool TestFilmAllocationBounds()
+	{
+		using namespace RISE::Implementation;
+		struct SplatProbe final : SplatFilm {
+			using SplatFilm::SplatFilm;
+			static size_t Count(unsigned int w,unsigned int h){return CheckedPixelCount(w,h);}
+			size_t Rows()const{return rowMutexes.size();}
+		};
+		struct FilteredProbe final : FilteredFilm {
+			using FilteredFilm::FilteredFilm;
+			static size_t Count(unsigned int w,unsigned int h){return CheckedPixelCount(w,h);}
+			size_t Rows()const{return rowMutexes.size();}
+		};
+		const auto release=[](auto* p){if(p)p->release();};
+		const auto rejects=[](auto operation) {
+			try{operation();}catch(const std::length_error&){return true;}catch(...){return false;}
+			return false;
+		};
+		const auto nativeMax=std::numeric_limits<size_t>::max();
+		const auto unsignedMax=std::numeric_limits<unsigned int>::max();
+		Check(CheckedPixelCount<std::uint64_t>(3,2)==6,"film bounds: ordinary checked product preserves exact pixel count");
+		Check(CheckedPixelCount<std::uint64_t>(0,nativeMax)==0 && CheckedPixelCount<std::uint64_t>(nativeMax,0)==0,
+			"film bounds: empty dimensions require no product or byte allocation");
+		Check(rejects([&]{CheckedPixelCount<std::uint64_t>(nativeMax,2);}) &&
+			rejects([&]{CheckedPixelCount<std::uint64_t>(nativeMax/sizeof(std::uint64_t)+1,1);}),
+			"film bounds: native product and native byte overflow throw length_error before allocation");
+		Check(CheckedPixelCount<unsigned char>(4,2,8)==8 && rejects([]{CheckedPixelCount<unsigned char>(4,3,8);}),
+			"film bounds: explicit index-count budget includes its endpoint and rejects the next row");
+		// Old code allocates only65536pixels and65537row mutexes here,
+		// so normal RED never requests giant storage or performs an OOB write.
+		const bool splatGuarded=rejects([&]{std::unique_ptr<SplatProbe,decltype(release)> film(new SplatProbe(65536,65537),release);});
+		Check(splatGuarded,"film bounds: actual SplatFilm rejects a wrapped uint32 pixel product before allocation");
+		const auto fullIndexDomain=std::uint64_t(1)<<32;
+		const bool wide=sizeof(size_t)>4;
+		Check(wide?SplatProbe::Count(65536,65536)==fullIndexDomain:
+			rejects([]{SplatProbe::Count(65536,65536);}),"film bounds: pure SplatFilm preflight permits the full representable uint32 index domain");
+		Check(wide?FilteredProbe::Count(65536,65536)==fullIndexDomain:
+			rejects([]{FilteredProbe::Count(65536,65536);}),"film bounds: pure FilteredFilm preflight retains native count budget without allocating backing storage");
+		// Both old products wrap toONEelement, a bounded constructor canary.
+		const bool progressiveGuarded=rejects([&]{ProgressiveFilm film(unsignedMax,unsignedMax);});
+		Check(progressiveGuarded,"film bounds: actual ProgressiveFilm rejects native byte overflow instead of a one-pixel wrapped allocation");
+		const bool channelGuarded=rejects([&]{Channel<std::uint64_t> channel(nativeMax,nativeMax);});
+		Check(channelGuarded,"film bounds: actual Channel rejects native product overflow instead of a one-element wrapped allocation");
+		Check(wide?(CheckedPixelCount<ProgressivePixel>(65536,65536)==fullIndexDomain &&
+			CheckedPixelCount<std::uint64_t>(65536,65536)==fullIndexDomain):
+			rejects([]{CheckedPixelCount<ProgressivePixel>(65536,65536);}),
+			"film bounds: progressive uint64 aggregates and Channel retain native-width pure storage counts");
+		Check(rejects([&]{FilteredProbe::Count(unsignedMax,unsignedMax);}) &&
+			rejects([&]{CheckedPixelCount<ProgressivePixel>(unsignedMax,unsignedMax);}),
+			"film bounds: pure filtered and progressive native byte preflights reject without backing allocation");
+		const unsigned int empty[][2]={{0,0},{0,2},{2,0}};
+		for(const auto& dimensions:empty) {
+			std::unique_ptr<SplatProbe,decltype(release)> splats(new SplatProbe(dimensions[0],dimensions[1]),release);
+			std::unique_ptr<FilteredProbe,decltype(release)> filtered(new FilteredProbe(dimensions[0],dimensions[1]),release);
+			ProgressiveFilm progressive(dimensions[0],dimensions[1]);Channel<float> channel(dimensions[0],dimensions[1]);
+			std::unique_ptr<RISERasterImage,decltype(release)> target(new RISERasterImage(1,1,RISEColor(.75,.5,.25,1)),release);
+			splats->Resolve(*target,1);splats->Unresolve(*target,1);splats->Clear();
+			filtered->Resolve(*target);filtered->Unresolve(*target);filtered->Clear();
+			progressive.Resolve(*target);progressive.Clear();channel.Fill(2);
+			bool exact=splatGuarded && progressiveGuarded && channelGuarded && splats->Rows()==0 && filtered->Rows()==0 &&
+				progressive.CountDone(1)==0 && progressive.IsTileDone(Rect(0,0,unsignedMax,unsignedMax),1) && channel.Size()==0;
+			if(exact && dimensions[0]==0 && dimensions[1]!=0)exact=channel.Row(0)==channel.Data();
+			if(exact) {
+				const SplatFilm::BatchRecord record{0,RISEPel(1,0,0)};splats->BatchCommit(&record,1);
+				const auto pixel=target->GetPEL(0,0);exact=pixel.base.r==.75 && pixel.base.g==.5 && pixel.base.b==.25 && pixel.a==1;
+			}
+			Check(exact,"film bounds: zero-axis films allocate no rows, aggregates are empty and resolves preserve every target channel");
+		}
+		ProgressiveFilm progressive(3,2);auto& last=progressive.Get(2,1);last.sampleIndex=4;last.converged=true;
+		Check(progressiveGuarded && progressive.CountDone(4)==1 && progressive.IsConverged(2,1) &&
+			progressive.IsTileDone(Rect(1,2,unsignedMax,unsignedMax),4) && progressive.IsTileDone(Rect(8,8,9,9),4),
+			"film bounds: progressive last-row indexing and clipped or outside tile aggregates have exact completion semantics");
+		progressive.Clear();Check(progressive.CountDone(4)==0 && !progressive.IsConverged(2,1),
+			"film bounds: progressive Clear resets the complete last row");
+		Channel<std::uint64_t> channel(3,2);channel.Fill(42);channel.At(2,1)=99;
+		Check(channel.Size()==6 && channel.Row(1)[2]==99 && channel.Data()[5]==99 && channel.At(2,0)==42,
+			"film bounds: Channel normal last-row storage and fill preserve exact values");
+		return splatGuarded;
+	}
+
+	void TestFilmFootprintBounds(bool splatGuarded)
+	{
+		using namespace RISE::Implementation;
+		struct Filter final : IPixelFilter,Reference {
+			double support=1;bool fail=false;
+			Scalar warp(const RandomNumberGenerator&,const Point2& input,Point2& output)const override{output=input;return 1;}
+			Scalar warpOnScreen(const RandomNumberGenerator&,const Point2& input,Point2& output,unsigned int,unsigned int)const override{output=input;return 1;}
+			void GetFilterSupport(Scalar& w,Scalar& h)const override{w=h=support;}
+			Scalar EvaluateFilter(Scalar,Scalar)const override {
+				if(fail)throw std::runtime_error("filter evaluation failure");
+				return 1;
+			}
+		};
+		struct Probe final : FilteredFilm {
+			using FilteredFilm::FilteredFilm;
+			bool TryRow(unsigned int y)const {if(!rowMutexes[y]->try_lock())return false;rowMutexes[y]->unlock();return true;}
+			void UnlockKnownOwnedRow(unsigned int y){rowMutexes[y]->unlock();}
+		};
+		const auto release=[](auto* p){if(p)p->release();};
+		std::unique_ptr<Probe,decltype(release)> probe(new Probe(2,2),release);Filter filter;filter.fail=true;
+		bool reported=false;try{probe->Splat(.5,.5,XYZPel(.25,.25,.25),filter);}catch(const std::runtime_error& e){reported=std::string(e.what())=="filter evaluation failure";}
+		Check(reported,"film footprint: throwing EvaluateFilter propagates its original exception");
+		bool rowsFree=false;std::thread reader([&]{rowsFree=probe->TryRow(0) && probe->TryRow(1);});reader.join();
+		Check(rowsFree,"film footprint: another thread can try_lock every row after EvaluateFilter throws");
+		// Old failure leaves row0 locked by THIS caller. Repair only that
+		// known ownership before teardown, and skip its unsafe cast paths.
+		if(!rowsFree)probe->UnlockKnownOwnedRow(0);
+		probe->Clear();filter.fail=false;
+		std::unique_ptr<RISERasterImage,decltype(release)> target(new RISERasterImage(2,2,RISEColor(0,0,0,1)),release);
+		if(rowsFree){probe->Splat(.5,.5,XYZPel(.25,.25,.25),filter);probe->Resolve(*target);}
+		bool retry=rowsFree;
+		for(unsigned int y=0;y<2;++y)for(unsigned int x=0;x<2;++x) {
+			const auto pixel=target->GetPEL(x,y);
+			retry &= ApproxEq(pixel.base.r,.3011985,1e-12) && ApproxEq(pixel.base.g,.237073,1e-12) && ApproxEq(pixel.base.b,.227229,1e-12);
+		}
+		Check(retry,"film footprint: healthy retry resolves the fixed XYZ-to-Rec709 oracle after row-lock recovery");
+		const auto paint=[&](bool splat,double support,double sx,double sy,unsigned int extent) {
+			if(!(splat?splatGuarded:rowsFree))return false;
+			Filter input;input.support=support;
+			std::unique_ptr<RISERasterImage,decltype(release)> image(new RISERasterImage(4,4,RISEColor(0,0,0,1)),release);
+			if(splat) {
+				std::unique_ptr<SplatFilm,decltype(release)> film(new SplatFilm(4,4),release);
+				ThreadLocalSplatBufferTaskScope task;
+				film->SplatFiltered(sx,sy,RISEPel(.5,.25,.125),input);FlushCallingThreadSplatBuffer();film->Resolve(*image,1);
+			} else {
+				std::unique_ptr<FilteredFilm,decltype(release)> film(new FilteredFilm(4,4),release);
+				film->Splat(sx,sy,XYZPel(.25,.25,.25),input);film->Resolve(*image);
+			}
+			bool exact=true;
+			for(unsigned int y=0;y<4;++y)for(unsigned int x=0;x<4;++x) {
+				const auto pixel=image->GetPEL(x,y);const bool active=x<extent && y<extent;
+				const double scale=active?(splat?1.0/(extent*extent):1):0;
+				exact &= ApproxEq(pixel.base.r,(splat?.5:.3011985)*scale,1e-12) &&
+					ApproxEq(pixel.base.g,(splat?.25:.237073)*scale,1e-12) && ApproxEq(pixel.base.b,(splat?.125:.227229)*scale,1e-12);
+			}
+			return exact;
+		};
+		const double huge=std::strtod("0x1.fffffffffffffp1023",nullptr),nan=std::strtod("nan",nullptr),
+			pinf=std::strtod("1e999",nullptr),ninf=std::strtod("-1e999",nullptr);
+		for(bool splat:{false,true}) {
+			const std::string label=std::string("film footprint: ")+(splat?"SplatFilm ":"FilteredFilm ");
+			Check(paint(splat,huge,1.5,1.5,4),label+"DBL_MAX support clips before narrowing and matches independent finite pixel values");
+			Check(paint(splat,huge,-10,.5,splat?0:4),label+"retains its documented off-image sample membership policy");
+			for(double bad:{nan,pinf,ninf,-1.0})Check(paint(splat,bad,1.5,1.5,0),label+"invalid support performs no writes");
+			bool finitePositions=true;for(double bad:{nan,pinf,ninf})finitePositions &= paint(splat,1,bad,.5,0) && paint(splat,1,.5,bad,0);
+			Check(finitePositions,label+"nonfinite screen positions perform no writes");
+			Check(paint(splat,1,huge,huge,0),label+"finite nonintersecting extreme screen positions reject before narrowing");
+			Check(paint(splat,1,1.5,1.5,3),label+"ordinary unit support retains the independent three-by-three footprint oracle");
+		}
+	}
+
+	void TestFilmBoundsAndFootprints()
+	{
+		TestFilmFootprintBounds(TestFilmAllocationBounds());
 	}
 
 	// ─── Section 1: construction & geometry ───────────────────────
@@ -297,7 +1150,7 @@ namespace
 		store->release();
 	}
 
-	// ─── Section 3: tile seqlock + observer firing ────────────────
+	// ─── Section 3: tile locks + observer firing ────────────────
 	struct CountingObserver : public IRenderObserver
 	{
 		std::atomic<int> tileCount{ 0 };
@@ -358,7 +1211,7 @@ namespace
 		store->release();
 	}
 
-	// ─── Section 4: concurrent reader / writer (seqlock stress) ───
+	// ─── Section 4: concurrent reader / writer (tile-lock stress) ───
 	void TestConcurrentSeqlock()
 	{
 		FrameStore* store = MakeStore( 32, 32, 8 );
@@ -825,6 +1678,28 @@ namespace
 		Check( beauty->At( 5, 3 ).r == 0.0,
 			"shim Clear leaves outside-rect untouched" );
 
+		// An inclusive UINT_MAX endpoint means "to the edge" (as for
+		// RISERasterImage::Clear); a 32-bit `right + 1` wrapped it to 0
+		// and cleared nothing.
+		{
+			const unsigned int kMax = std::numeric_limits<unsigned int>::max();
+			RISEColor grey( RISEPel( 0.25, 0.25, 0.25 ), 0.5 );
+			Rect toEdge( 2, 5, kMax, kMax );	// rows 2..3, columns 5..7
+			img.Clear( grey, &toEdge );
+			unsigned bad = 0;
+			for( unsigned y = 0; y < 4; ++y )
+				for( unsigned x = 0; x < 8; ++x ) {
+					const bool in = x >= 5 && y >= 2;
+					const double r = beauty->At( x, y ).r;
+					if( in ? ( r != 0.25 || !ApproxEq( alpha->At( x, y ), 0.5f, 1e-6f ) ) : r == 0.25 ) ++bad;
+				}
+			Check( bad == 0, "shim Clear with a UINT_MAX endpoint clears exactly to the edge (" +
+				std::to_string( bad ) + " wrong)" );
+			Rect outside( 4, 8, kMax, kMax );
+			img.Clear( white, &outside );
+			Check( beauty->At( 7, 3 ).r == 0.25, "shim Clear with a wholly outside UINT_MAX region writes nothing" );
+		}
+
 		store->release();
 	}
 
@@ -1100,6 +1975,7 @@ namespace
 		splats->Unresolve( *image, 2.0, &region );
 		Check( ApproxEq( image->GetPEL( 5, 7 ).base.r, insideSplatBefore.base.r, 1e-12 ),
 			"regional splat unresolve restores its in-region pixel" );
+		RISE::Implementation::FlushCallingThreadSplatBuffer();
 		splats->release();
 
 		// Adaptive-map mode used to overwrite every outside pixel with zero
@@ -1180,11 +2056,34 @@ namespace
 	}
 }
 
-int main()
+int main(int argc,char** argv)
 {
+	if(argc==2 && std::strcmp(argv[1],"--mlt-resource-only")==0) {
+		TestManualSplatLifecycle();TestMLTResourceExceptions();
+		std::cout << "MLT resource exceptions: passed " << gPassCount << ", failed " << gFailCount << "\n";
+		return gFailCount==0?0:1;
+	}
+	if(argc==2 && std::strcmp(argv[1],"--film-bounds-only")==0) {
+		TestFilmBoundsAndFootprints();
+		std::cout << "Film bounds: passed " << gPassCount << ", failed " << gFailCount << "\n";
+		return gFailCount==0?0:1;
+	}
+	if(argc==2 && std::strcmp(argv[1],"--tile-exception-only")==0) {
+		TestTileBracketExceptions();TestRasterizerBlockExceptions();TestTileBracketSynchronousReadback();TestFullEntryExceptions();TestSplatTaskExceptions();
+		std::cout << "FrameStore tile exceptions: passed " << gPassCount << ", failed " << gFailCount << "\n";
+		return gFailCount==0?0:1;
+	}
 	std::cout << "FrameStoreTest L1 — buffer + tile locking + Render readback\n";
 	std::cout << "------------------------------------------------------------\n";
 
+	TestTileBracketExceptions();
+	TestTileBracketSynchronousReadback();
+	TestRasterizerBlockExceptions();
+	TestFullEntryExceptions();
+	TestSplatTaskExceptions();
+	TestFilmBoundsAndFootprints();
+	TestManualSplatLifecycle();
+	TestMLTResourceExceptions();
 	TestConstructionAndGeometry();
 	TestAOVChannels();
 	TestPlannedAOVBridge();

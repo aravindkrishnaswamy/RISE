@@ -29,6 +29,8 @@
 	#include <ImfIO.h>
 	#include <ImfArray.h>
 	#include <vector>
+	#include <limits>
+	#include <stdexcept>
 #endif
 
 namespace RISE
@@ -41,24 +43,45 @@ namespace RISE
 		{
 		protected:
 			IReadBuffer& pBuffer;
+			const std::uint64_t origin;
+			bool failed = false;
 
 		public:
-			IStreamWrapper( IReadBuffer& buffer ) : Imf::IStream( "none" ), pBuffer( buffer )
+			IStreamWrapper( IReadBuffer& buffer, std::uint64_t origin_ = 0 ) :
+				Imf::IStream( "none" ), pBuffer( buffer ), origin( origin_ )
 			{}
 
 			bool read( char c[/*n*/], int n )
 			{
-				return pBuffer.getBytes( c, n );
+				if( n < 0 || !pBuffer.getBytes( c, static_cast<unsigned int>(n) ) ) {
+					failed = true;
+					throw std::runtime_error("EXR input read failed");
+				}
+				return BufferBytesAvailable(pBuffer) != 0;
 			}
+
+			// OpenEXR can catch a final uncompressed-chunk read exception and
+			// still return normally. Keep that failure visible to the decoder.
+			bool Failed() const { return failed; }
 
 			uint64_t tellg()
 			{
-				return pBuffer.getCurPos();
+				const auto position = BufferPosition(pBuffer);
+				if( position < origin || position == std::numeric_limits<std::uint64_t>::max() ) {
+					failed = true;
+					throw std::runtime_error("EXR input position is unavailable");
+				}
+				return position - origin;
 			}
 
 			void seekg( uint64_t pos )
 			{
-				pBuffer.seek( IBuffer::START, static_cast<int>(pos) );
+				const auto limit = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+				if( origin > limit || pos > limit - origin ||
+					!BufferSeek(pBuffer, IBuffer::START, static_cast<std::int64_t>(origin + pos)) ) {
+					failed = true;
+					throw std::runtime_error("EXR input seek failed");
+				}
 			}
 		};
 	#endif
@@ -69,8 +92,11 @@ namespace RISE
 
 		#ifndef NO_EXR_SUPPORT
 			// Interleaved R,G,B,A float scanline buffer.  Read through
-			// Imf::InputFile with FLOAT framebuffer slices so 32-bit
-			// FLOAT EXRs round-trip at full range; half-stored EXRs are
+			// Imf::InputFile with FLOAT framebuffer slices for RGB and
+			// plain Y/YA, so 32-bit FLOAT channels retain their full range.
+			// YC/YCA uses the SDK's historical half-precision RgbaInputFile
+			// reconstruction, including its chroma filters/chromaticities.
+			// In the direct FLOAT path, half-stored EXRs are
 			// converted half->float losslessly by OpenEXR.  (The former
 			// Imf::RgbaInputFile path stored Imf::Rgba (FP16), turning
 			// any channel > 65504 into +Inf on read — read-side twin of
@@ -82,7 +108,7 @@ namespace RISE
 
 			IReadBuffer&		pReadBuffer;
 			COLOR_SPACE			color_space;
-			unsigned int		buffer_start_pos;
+			std::uint64_t		buffer_start_pos;
 
 		public:
 			EXRReader( IReadBuffer& buffer, const COLOR_SPACE color_space_ );

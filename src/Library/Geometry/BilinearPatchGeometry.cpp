@@ -20,7 +20,6 @@
 #include "../Interfaces/ILog.h"
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
-#include "../Utilities/stl_utils.h"
 #include "../Utilities/SurfaceCurvature.h"
 #include <algorithm>   // std::lower_bound for the area-CDF search
 
@@ -170,7 +169,7 @@ void BilinearPatchGeometry::Prepare()
 {
 	// Prepare for rendering
 	// Optimize the patch container
-	stl_utils::container_optimize< BilinearPatchList >( patches );
+	patches.shrink_to_fit();
 	InvalidateCertificate();	// DL-616: recomputed lazily on first query
 
 	// First create the pointer patches list
