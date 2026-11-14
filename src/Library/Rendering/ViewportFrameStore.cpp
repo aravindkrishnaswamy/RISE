@@ -37,7 +37,7 @@ namespace RISE
 	{
 		namespace
 		{
-			class CheckedWriteBuffer final : public IWriteBuffer, public Reference
+			class CheckedWriteBuffer : public IWriteBuffer, public Reference
 			{
 			public:
 				explicit CheckedWriteBuffer( IWriteBuffer& target ) : target_( target ) {}
@@ -60,20 +60,40 @@ namespace RISE
 					return Record( target_.setBytes( bytes, size ), size != 0 );
 				}
 				void Clear() override { target_.Clear(); written_ = false; }
+				// Encoders use resize as a capacity hint. Disk/borrowed buffers can
+				// decline it while successfully accepting all subsequent writes.
 				bool Resize( unsigned int size, bool force ) override { return target_.Resize( size, force ); }
 				bool ResizeForMore( unsigned int size ) override { return target_.ResizeForMore( size ); }
 				bool Succeeded() const { return written_ && !failed_; }
 
-			private:
+			protected:
 				bool Record( bool ok, bool wrote = true )
 				{
 					failed_ |= !ok;
 					written_ |= ok && wrote;
 					return ok;
 				}
+			private:
 				IWriteBuffer& target_;
 				bool written_ = false;
 				bool failed_ = false;
+			};
+
+			// Preserve the optional extension only when the destination really
+			// supports it. Legacy destinations retain their original interface.
+			class WideCheckedWriteBuffer final : public CheckedWriteBuffer, public IBuffer64
+			{
+			public:
+				WideCheckedWriteBuffer( IWriteBuffer& target, IBuffer64& wide )
+					: CheckedWriteBuffer( target ), wide_( wide ) {}
+				std::uint64_t Size64() const override { return wide_.Size64(); }
+				std::uint64_t getCurPos64() const override { return wide_.getCurPos64(); }
+				bool seek64( IBuffer::eSeek origin, std::int64_t offset ) override
+				{
+					return Record( wide_.seek64( origin, offset ), false );
+				}
+			private:
+				IBuffer64& wide_;
 			};
 		}
 
@@ -589,15 +609,22 @@ namespace RISE
 			std::unique_ptr<FrameStore, decltype(release)> snap(
 				SnapshotFrameStore( chainMutex_, framestore_ ), release );
 			if ( !snap ) return false;
-			CheckedWriteBuffer checked( dst );
-			try {
-				encoder->Encode( *snap, checked, opts );
-			} catch( const std::exception& failure ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"ViewportFrameStore::SaveTo: encoding failed: %s", failure.what() );
-				return false;
+			const auto encode = [&]( CheckedWriteBuffer& checked ) {
+				try {
+					encoder->Encode( *snap, checked, opts );
+				} catch( const std::exception& failure ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"ViewportFrameStore::SaveTo: encoding failed: %s", failure.what() );
+					return false;
+				}
+				return checked.Succeeded();
+			};
+			if( auto* wide = dynamic_cast<IBuffer64*>( &dst ) ) {
+				WideCheckedWriteBuffer checked( dst, *wide );
+				return encode( checked );
 			}
-			return checked.Succeeded();
+			CheckedWriteBuffer checked( dst );
+			return encode( checked );
 		}
 
 		// ─────────────────────────────────────────────────────────────

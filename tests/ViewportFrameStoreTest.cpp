@@ -556,6 +556,108 @@ namespace
 		vfs->release();
 	}
 
+	void TestSaveToLargeBufferExtension()
+	{
+		// Model large logical positions while storing only a single byte.
+		// No multi-GiB file or allocation is needed to test wrapper dispatch.
+		struct WideSink final : MemoryBuffer, IBuffer64
+		{
+			std::uint64_t position = (std::uint64_t{1} << 32) + 1024;
+			std::uint64_t length = (std::uint64_t{1} << 32) + 8192;
+			bool rejectSeek = false;
+			std::uint64_t Size64() const override { return length; }
+			std::uint64_t getCurPos64() const override { return position; }
+			bool seek64( IBuffer::eSeek origin, std::int64_t amount ) override
+			{
+				if( rejectSeek || origin != IBuffer::START || amount < 0 ) return false;
+				position = static_cast<std::uint64_t>( amount );
+				return true;
+			}
+			bool setBytes( const void* bytes, unsigned int count ) override
+			{
+				if( !MemoryBuffer::setBytes( bytes, count ) ) return false;
+				position += count;
+				if( position > length ) length = position;
+				return true;
+			}
+		};
+		struct ProbeEncoder final : IFrameEncoder, Reference
+		{
+			explicit ProbeEncoder( bool wide ) : expectWide( wide ) {}
+			bool expectWide;
+			bool sawWide = false;
+			bool queriesMatch = false;
+			bool seekAccepted = false;
+			bool positionMatches = false;
+			bool wrote = false;
+			std::string FormatName() const override { return "buffer_probe"; }
+			std::vector<std::string> Extensions() const override { return { "probe" }; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode( const FrameStore&, IWriteBuffer& dst, const EncodeOpts& ) override
+			{
+				sawWide = dynamic_cast<IBuffer64*>( &dst ) != nullptr;
+				if( expectWide ) {
+					queriesMatch = BufferSize( dst ) == (std::uint64_t{1} << 32) + 8192 &&
+						BufferPosition( dst ) == (std::uint64_t{1} << 32) + 1024;
+					constexpr std::int64_t offset = (std::int64_t{1} << 32) + 4096;
+					seekAccepted = BufferSeek( dst, IBuffer::START, offset );
+					positionMatches = BufferPosition( dst ) == static_cast<std::uint64_t>( offset );
+				} else {
+					queriesMatch = BufferSize( dst ) == 0 && BufferPosition( dst ) == 0;
+					seekAccepted = BufferSeek( dst, IBuffer::START, 0 );
+					positionMatches = BufferPosition( dst ) == 0;
+				}
+				// Deliberately proceed after a rejected seek. SaveTo must latch
+				// the failure even when this later write succeeds.
+				const char byte = 'x';
+				wrote = dst.setBytes( &byte, 1 );
+			}
+		};
+		auto* viewport = new ViewportFrameStore();
+		auto* image = MakeTestImage();
+		viewport->OutputImage( *image, nullptr, 0 );
+		image->release();
+		EncodeOpts opts;
+		WideSink wide;
+		ProbeEncoder encoder( true );
+		const bool saved = viewport->SaveTo( wide, &encoder, opts );
+		Check( saved && encoder.sawWide && encoder.queriesMatch && encoder.seekAccepted &&
+			encoder.positionMatches && encoder.wrote &&
+			wide.getCurPos64() == (std::uint64_t{1} << 32) + 4097 && wide.Size() == 1,
+			"SaveTo64: preserves large size, position and seeks while writing one byte" );
+		WideSink rejected;
+		rejected.rejectSeek = true;
+		ProbeEncoder ignoringFailure( true );
+		Check( !viewport->SaveTo( rejected, &ignoringFailure, opts ) &&
+			ignoringFailure.sawWide && !ignoringFailure.seekAccepted && ignoringFailure.wrote,
+			"SaveTo64: rejected wide seek remains a failure after a successful write" );
+		auto* legacy = new MemoryBuffer();
+		ProbeEncoder legacyEncoder( false );
+		Check( viewport->SaveTo( *legacy, &legacyEncoder, opts ) && !legacyEncoder.sawWide &&
+			legacyEncoder.queriesMatch && legacyEncoder.seekAccepted && legacyEncoder.positionMatches &&
+			legacy->Size() == 1 && legacy->Pointer()[0] == 'x',
+			"SaveTo64: legacy destinations retain their narrow interface and behavior" );
+		legacy->release();
+		struct HintEncoder final : IFrameEncoder, Reference {
+			bool declined = false;
+			std::string FormatName() const override { return "hints"; }
+			std::vector<std::string> Extensions() const override { return {}; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode(const FrameStore&, IWriteBuffer& output, const EncodeOpts&) override {
+				declined = !output.Resize(1, false) && !output.ResizeForMore(1);
+				output.setChar('r');
+			}
+		} hints;
+		char byte = 0;
+		auto* borrowed = new MemoryBuffer(&byte, 1, false);
+		Check( viewport->SaveTo(*borrowed, &hints, opts) && hints.declined && byte == 'r',
+			"SaveTo64: advisory resize refusal does not fail a complete streaming write" );
+		borrowed->release();
+		viewport->release();
+	}
+
 	void TestWriteOnlyFinalizationFailure()
 	{
 		struct ThrowingWriter final : IRasterImageWriter, Reference
@@ -1139,6 +1241,7 @@ int main()
 	TestRenderToBuffer();
 	TestSaveAsByteIdenticalToL2();
 	TestWriteOnlyFinalizationFailure();
+	TestSaveToLargeBufferExtension();
 	TestRasterizerSwap();
 	TestResolutionChange();
 	TestMultiFrameReuse();
