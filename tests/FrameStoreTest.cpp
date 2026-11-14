@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -62,6 +63,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IRenderObserver.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/CheckedSize.h"
 
 using namespace RISE;
 using namespace RISE::FrameStoreOutput;
@@ -83,7 +85,7 @@ namespace
 	{
 		if ( cond ) {
 			++gPassCount;
-			if(label.find("tile exception:")==0 || label.find("full entry exception:")==0 || label.find("splat task exception:")==0)std::cout << "PASS: " << label << "\n";
+			if(label.find("tile exception:")==0 || label.find("full entry exception:")==0 || label.find("splat task exception:")==0 || label.find("film bounds:")==0 || label.find("film footprint:")==0)std::cout << "PASS: " << label << "\n";
 		} else {
 			++gFailCount;
 			std::cerr << "FAIL: " << label << "\n";
@@ -618,6 +620,162 @@ namespace
 			Check(result.discarded && result.fresh,label+"discarded film stays black and fresh differently-sized film has exact uncontaminated batch sums");
 			Check(result.normalClean,label+"healthy retry flushes all normal splats and unbinds before task exit");
 		}
+	}
+
+	bool TestFilmAllocationBounds()
+	{
+		using namespace RISE::Implementation;
+		struct SplatProbe final : SplatFilm {
+			using SplatFilm::SplatFilm;
+			static size_t Count(unsigned int w,unsigned int h){return CheckedPixelCount(w,h);}
+			size_t Rows()const{return rowMutexes.size();}
+		};
+		struct FilteredProbe final : FilteredFilm {
+			using FilteredFilm::FilteredFilm;
+			static size_t Count(unsigned int w,unsigned int h){return CheckedPixelCount(w,h);}
+			size_t Rows()const{return rowMutexes.size();}
+		};
+		const auto release=[](auto* p){if(p)p->release();};
+		const auto rejects=[](auto operation) {
+			try{operation();}catch(const std::length_error&){return true;}catch(...){return false;}
+			return false;
+		};
+		const auto nativeMax=std::numeric_limits<size_t>::max();
+		const auto unsignedMax=std::numeric_limits<unsigned int>::max();
+		Check(CheckedPixelCount<std::uint64_t>(3,2)==6,"film bounds: ordinary checked product preserves exact pixel count");
+		Check(CheckedPixelCount<std::uint64_t>(0,nativeMax)==0 && CheckedPixelCount<std::uint64_t>(nativeMax,0)==0,
+			"film bounds: empty dimensions require no product or byte allocation");
+		Check(rejects([&]{CheckedPixelCount<std::uint64_t>(nativeMax,2);}) &&
+			rejects([&]{CheckedPixelCount<std::uint64_t>(nativeMax/sizeof(std::uint64_t)+1,1);}),
+			"film bounds: native product and native byte overflow throw length_error before allocation");
+		Check(CheckedPixelCount<unsigned char>(4,2,8)==8 && rejects([]{CheckedPixelCount<unsigned char>(4,3,8);}),
+			"film bounds: explicit index-count budget includes its endpoint and rejects the next row");
+		// Old code allocates only65536pixels and65537row mutexes here,
+		// so normal RED never requests giant storage or performs an OOB write.
+		const bool splatGuarded=rejects([&]{std::unique_ptr<SplatProbe,decltype(release)> film(new SplatProbe(65536,65537),release);});
+		Check(splatGuarded,"film bounds: actual SplatFilm rejects a wrapped uint32 pixel product before allocation");
+		const auto fullIndexDomain=std::uint64_t(1)<<32;
+		const bool wide=sizeof(size_t)>4;
+		Check(wide?SplatProbe::Count(65536,65536)==fullIndexDomain:
+			rejects([]{SplatProbe::Count(65536,65536);}),"film bounds: pure SplatFilm preflight permits the full representable uint32 index domain");
+		Check(wide?FilteredProbe::Count(65536,65536)==fullIndexDomain:
+			rejects([]{FilteredProbe::Count(65536,65536);}),"film bounds: pure FilteredFilm preflight retains native count budget without allocating backing storage");
+		// Both old products wrap toONEelement, a bounded constructor canary.
+		const bool progressiveGuarded=rejects([&]{ProgressiveFilm film(unsignedMax,unsignedMax);});
+		Check(progressiveGuarded,"film bounds: actual ProgressiveFilm rejects native byte overflow instead of a one-pixel wrapped allocation");
+		const bool channelGuarded=rejects([&]{Channel<std::uint64_t> channel(nativeMax,nativeMax);});
+		Check(channelGuarded,"film bounds: actual Channel rejects native product overflow instead of a one-element wrapped allocation");
+		Check(wide?(CheckedPixelCount<ProgressivePixel>(65536,65536)==fullIndexDomain &&
+			CheckedPixelCount<std::uint64_t>(65536,65536)==fullIndexDomain):
+			rejects([]{CheckedPixelCount<ProgressivePixel>(65536,65536);}),
+			"film bounds: progressive uint64 aggregates and Channel retain native-width pure storage counts");
+		Check(rejects([&]{FilteredProbe::Count(unsignedMax,unsignedMax);}) &&
+			rejects([&]{CheckedPixelCount<ProgressivePixel>(unsignedMax,unsignedMax);}),
+			"film bounds: pure filtered and progressive native byte preflights reject without backing allocation");
+		const unsigned int empty[][2]={{0,0},{0,2},{2,0}};
+		for(const auto& dimensions:empty) {
+			std::unique_ptr<SplatProbe,decltype(release)> splats(new SplatProbe(dimensions[0],dimensions[1]),release);
+			std::unique_ptr<FilteredProbe,decltype(release)> filtered(new FilteredProbe(dimensions[0],dimensions[1]),release);
+			ProgressiveFilm progressive(dimensions[0],dimensions[1]);Channel<float> channel(dimensions[0],dimensions[1]);
+			std::unique_ptr<RISERasterImage,decltype(release)> target(new RISERasterImage(1,1,RISEColor(.75,.5,.25,1)),release);
+			splats->Resolve(*target,1);splats->Unresolve(*target,1);splats->Clear();
+			filtered->Resolve(*target);filtered->Unresolve(*target);filtered->Clear();
+			progressive.Resolve(*target);progressive.Clear();channel.Fill(2);
+			bool exact=splatGuarded && progressiveGuarded && channelGuarded && splats->Rows()==0 && filtered->Rows()==0 &&
+				progressive.CountDone(1)==0 && progressive.IsTileDone(Rect(0,0,unsignedMax,unsignedMax),1) && channel.Size()==0;
+			if(exact && dimensions[0]==0 && dimensions[1]!=0)exact=channel.Row(0)==channel.Data();
+			if(exact) {
+				const SplatFilm::BatchRecord record{0,RISEPel(1,0,0)};splats->BatchCommit(&record,1);
+				const auto pixel=target->GetPEL(0,0);exact=pixel.base.r==.75 && pixel.base.g==.5 && pixel.base.b==.25 && pixel.a==1;
+			}
+			Check(exact,"film bounds: zero-axis films allocate no rows, aggregates are empty and resolves preserve every target channel");
+		}
+		ProgressiveFilm progressive(3,2);auto& last=progressive.Get(2,1);last.sampleIndex=4;last.converged=true;
+		Check(progressiveGuarded && progressive.CountDone(4)==1 && progressive.IsConverged(2,1) &&
+			progressive.IsTileDone(Rect(1,2,unsignedMax,unsignedMax),4) && progressive.IsTileDone(Rect(8,8,9,9),4),
+			"film bounds: progressive last-row indexing and clipped or outside tile aggregates have exact completion semantics");
+		progressive.Clear();Check(progressive.CountDone(4)==0 && !progressive.IsConverged(2,1),
+			"film bounds: progressive Clear resets the complete last row");
+		Channel<std::uint64_t> channel(3,2);channel.Fill(42);channel.At(2,1)=99;
+		Check(channel.Size()==6 && channel.Row(1)[2]==99 && channel.Data()[5]==99 && channel.At(2,0)==42,
+			"film bounds: Channel normal last-row storage and fill preserve exact values");
+		return splatGuarded;
+	}
+
+	void TestFilmFootprintBounds(bool splatGuarded)
+	{
+		using namespace RISE::Implementation;
+		struct Filter final : IPixelFilter,Reference {
+			double support=1;bool fail=false;
+			Scalar warp(const RandomNumberGenerator&,const Point2& input,Point2& output)const override{output=input;return 1;}
+			Scalar warpOnScreen(const RandomNumberGenerator&,const Point2& input,Point2& output,unsigned int,unsigned int)const override{output=input;return 1;}
+			void GetFilterSupport(Scalar& w,Scalar& h)const override{w=h=support;}
+			Scalar EvaluateFilter(Scalar,Scalar)const override {
+				if(fail)throw std::runtime_error("filter evaluation failure");
+				return 1;
+			}
+		};
+		struct Probe final : FilteredFilm {
+			using FilteredFilm::FilteredFilm;
+			bool TryRow(unsigned int y)const {if(!rowMutexes[y]->try_lock())return false;rowMutexes[y]->unlock();return true;}
+			void UnlockKnownOwnedRow(unsigned int y){rowMutexes[y]->unlock();}
+		};
+		const auto release=[](auto* p){if(p)p->release();};
+		std::unique_ptr<Probe,decltype(release)> probe(new Probe(2,2),release);Filter filter;filter.fail=true;
+		bool reported=false;try{probe->Splat(.5,.5,XYZPel(.25,.25,.25),filter);}catch(const std::runtime_error& e){reported=std::string(e.what())=="filter evaluation failure";}
+		Check(reported,"film footprint: throwing EvaluateFilter propagates its original exception");
+		bool rowsFree=false;std::thread reader([&]{rowsFree=probe->TryRow(0) && probe->TryRow(1);});reader.join();
+		Check(rowsFree,"film footprint: another thread can try_lock every row after EvaluateFilter throws");
+		// Old failure leaves row0 locked by THIS caller. Repair only that
+		// known ownership before teardown, and skip its unsafe cast paths.
+		if(!rowsFree)probe->UnlockKnownOwnedRow(0);
+		probe->Clear();filter.fail=false;
+		std::unique_ptr<RISERasterImage,decltype(release)> target(new RISERasterImage(2,2,RISEColor(0,0,0,1)),release);
+		if(rowsFree){probe->Splat(.5,.5,XYZPel(.25,.25,.25),filter);probe->Resolve(*target);}
+		bool retry=rowsFree;
+		for(unsigned int y=0;y<2;++y)for(unsigned int x=0;x<2;++x) {
+			const auto pixel=target->GetPEL(x,y);
+			retry &= ApproxEq(pixel.base.r,.3011985,1e-12) && ApproxEq(pixel.base.g,.237073,1e-12) && ApproxEq(pixel.base.b,.227229,1e-12);
+		}
+		Check(retry,"film footprint: healthy retry resolves the fixed XYZ-to-Rec709 oracle after row-lock recovery");
+		const auto paint=[&](bool splat,double support,double sx,double sy,unsigned int extent) {
+			if(!(splat?splatGuarded:rowsFree))return false;
+			Filter input;input.support=support;
+			std::unique_ptr<RISERasterImage,decltype(release)> image(new RISERasterImage(4,4,RISEColor(0,0,0,1)),release);
+			if(splat) {
+				std::unique_ptr<SplatFilm,decltype(release)> film(new SplatFilm(4,4),release);
+				ThreadLocalSplatBufferTaskScope task;
+				film->SplatFiltered(sx,sy,RISEPel(.5,.25,.125),input);FlushCallingThreadSplatBuffer();film->Resolve(*image,1);
+			} else {
+				std::unique_ptr<FilteredFilm,decltype(release)> film(new FilteredFilm(4,4),release);
+				film->Splat(sx,sy,XYZPel(.25,.25,.25),input);film->Resolve(*image);
+			}
+			bool exact=true;
+			for(unsigned int y=0;y<4;++y)for(unsigned int x=0;x<4;++x) {
+				const auto pixel=image->GetPEL(x,y);const bool active=x<extent && y<extent;
+				const double scale=active?(splat?1.0/(extent*extent):1):0;
+				exact &= ApproxEq(pixel.base.r,(splat?.5:.3011985)*scale,1e-12) &&
+					ApproxEq(pixel.base.g,(splat?.25:.237073)*scale,1e-12) && ApproxEq(pixel.base.b,(splat?.125:.227229)*scale,1e-12);
+			}
+			return exact;
+		};
+		const double huge=std::strtod("0x1.fffffffffffffp1023",nullptr),nan=std::strtod("nan",nullptr),
+			pinf=std::strtod("1e999",nullptr),ninf=std::strtod("-1e999",nullptr);
+		for(bool splat:{false,true}) {
+			const std::string label=std::string("film footprint: ")+(splat?"SplatFilm ":"FilteredFilm ");
+			Check(paint(splat,huge,1.5,1.5,4),label+"DBL_MAX support clips before narrowing and matches independent finite pixel values");
+			Check(paint(splat,huge,-10,.5,splat?0:4),label+"retains its documented off-image sample membership policy");
+			for(double bad:{nan,pinf,ninf,-1.0})Check(paint(splat,bad,1.5,1.5,0),label+"invalid support performs no writes");
+			bool finitePositions=true;for(double bad:{nan,pinf,ninf})finitePositions &= paint(splat,1,bad,.5,0) && paint(splat,1,.5,bad,0);
+			Check(finitePositions,label+"nonfinite screen positions perform no writes");
+			Check(paint(splat,1,huge,huge,0),label+"finite nonintersecting extreme screen positions reject before narrowing");
+			Check(paint(splat,1,1.5,1.5,3),label+"ordinary unit support retains the independent three-by-three footprint oracle");
+		}
+	}
+
+	void TestFilmBoundsAndFootprints()
+	{
+		TestFilmFootprintBounds(TestFilmAllocationBounds());
 	}
 
 	// ─── Section 1: construction & geometry ───────────────────────
@@ -1629,6 +1787,7 @@ namespace
 		splats->Unresolve( *image, 2.0, &region );
 		Check( ApproxEq( image->GetPEL( 5, 7 ).base.r, insideSplatBefore.base.r, 1e-12 ),
 			"regional splat unresolve restores its in-region pixel" );
+		RISE::Implementation::FlushCallingThreadSplatBuffer();
 		splats->release();
 
 		// Adaptive-map mode used to overwrite every outside pixel with zero
@@ -1711,6 +1870,11 @@ namespace
 
 int main(int argc,char** argv)
 {
+	if(argc==2 && std::strcmp(argv[1],"--film-bounds-only")==0) {
+		TestFilmBoundsAndFootprints();
+		std::cout << "Film bounds: passed " << gPassCount << ", failed " << gFailCount << "\n";
+		return gFailCount==0?0:1;
+	}
 	if(argc==2 && std::strcmp(argv[1],"--tile-exception-only")==0) {
 		TestTileBracketExceptions();TestRasterizerBlockExceptions();TestTileBracketSynchronousReadback();TestFullEntryExceptions();TestSplatTaskExceptions();
 		std::cout << "FrameStore tile exceptions: passed " << gPassCount << ", failed " << gFailCount << "\n";
@@ -1724,6 +1888,7 @@ int main(int argc,char** argv)
 	TestRasterizerBlockExceptions();
 	TestFullEntryExceptions();
 	TestSplatTaskExceptions();
+	TestFilmBoundsAndFootprints();
 	TestConstructionAndGeometry();
 	TestAOVChannels();
 	TestPlannedAOVBridge();

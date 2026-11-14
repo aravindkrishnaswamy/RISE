@@ -32,6 +32,7 @@
 #include <cassert>
 
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/CheckedSize.h"
 #include "../Utilities/Math3D/Math3D.h"
 
 namespace RISE
@@ -103,7 +104,7 @@ namespace RISE
 			Channel( size_t width, size_t height )
 				: width_( width )
 				, height_( height )
-				, data_( width * height )
+				, data_( RISE::Implementation::CheckedPixelCount<T>( width, height ) )
 			{
 			}
 
@@ -117,12 +118,12 @@ namespace RISE
 			T* Row( size_t y )
 			{
 				assert( y < height_ );
-				return data_.data() + y * width_;
+				return width_ ? data_.data() + y * width_ : data_.data();
 			}
 			const T* Row( size_t y ) const
 			{
 				assert( y < height_ );
-				return data_.data() + y * width_;
+				return width_ ? data_.data() + y * width_ : data_.data();
 			}
 
 			//! Per-pixel access.  Bounds-checked in debug; raw

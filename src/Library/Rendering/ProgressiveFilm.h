@@ -19,6 +19,7 @@
 
 #include "../Interfaces/IReference.h"
 #include "../Utilities/Color/ColorUtils.h"
+#include "../Utilities/CheckedSize.h"
 #include <vector>
 #include <cstdint>
 
@@ -110,22 +111,22 @@ namespace RISE
 			  width( w ),
 			  height( h )
 			{
-				pixels.resize( w * h );
+				pixels.resize( CheckedPixelCount<ProgressivePixel>( w, h ) );
 			}
 
 			ProgressivePixel& Get( const unsigned int x, const unsigned int y )
 			{
-				return pixels[y * width + x];
+				return pixels[static_cast<std::size_t>( y ) * width + x];
 			}
 
 			const ProgressivePixel& Get( const unsigned int x, const unsigned int y ) const
 			{
-				return pixels[y * width + x];
+				return pixels[static_cast<std::size_t>( y ) * width + x];
 			}
 
 			bool IsConverged( const unsigned int x, const unsigned int y ) const
 			{
-				return pixels[y * width + x].converged;
+				return pixels[static_cast<std::size_t>( y ) * width + x].converged;
 			}
 
 			/// Resolve the current progressive state into a display image.
@@ -168,7 +169,7 @@ namespace RISE
 				}
 				for( unsigned int y = startY; y <= endY; y++ ) {
 					for( unsigned int x = startX; x <= endX; x++ ) {
-						const ProgressivePixel& px = pixels[y * width + x];
+						const ProgressivePixel& px = pixels[static_cast<std::size_t>( y ) * width + x];
 						if( emitMap ) {
 							const Scalar t = Scalar( px.sampleIndex ) * invTarget;
 							target.SetPEL( x, y, RISEColor( RISEPel( t, t, t ), 1.0 ) );
@@ -208,19 +209,24 @@ namespace RISE
 				uint64_t count = 0;
 				for( unsigned int y = startY; y <= endY; y++ ) {
 					for( unsigned int x = startX; x <= endX; x++ ) {
-						if( IsPixelDone( pixels[y * width + x], targetSamples ) ) count++;
+						if( IsPixelDone( pixels[static_cast<std::size_t>( y ) * width + x], targetSamples ) ) count++;
 					}
 				}
 				return count;
 			}
 
 			/// Check if all pixels within a rectangular region have either
-			/// converged or hit the progressive sample budget.
+			/// converged or hit the progressive sample budget. Bounds are
+			/// intersected with the film; an empty intersection is complete.
 			bool IsTileDone( const Rect& rect, const unsigned int targetSamples ) const
 			{
-				for( unsigned int y = rect.top; y <= rect.bottom; y++ ) {
-					for( unsigned int x = rect.left; x <= rect.right; x++ ) {
-						if( !IsPixelDone( pixels[y * width + x], targetSamples ) ) {
+				if( width == 0 || height == 0 || rect.left > rect.right || rect.top > rect.bottom ||
+					rect.left >= width || rect.top >= height ) return true;
+				const unsigned int endX = r_min( rect.right, width - 1 );
+				const unsigned int endY = r_min( rect.bottom, height - 1 );
+				for( unsigned int y = rect.top; y <= endY; y++ ) {
+					for( unsigned int x = rect.left; x <= endX; x++ ) {
+						if( !IsPixelDone( pixels[static_cast<std::size_t>( y ) * width + x], targetSamples ) ) {
 							return false;
 						}
 					}

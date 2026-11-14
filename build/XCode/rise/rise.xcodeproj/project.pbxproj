@@ -1950,8 +1950,10 @@
 		FA1ABSC1000000000000003B /* Atan2ScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000003B /* Atan2ScalarPainter.h */; };
 		FA1ABSC10000000000000035 /* PainterToScalarAdapter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */; };
 		FA9D00010000000000000001 /* FiniteMath.h in Sources */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000001 /* FiniteMath.h */; };
+		F18C00010000000000000001 /* CheckedSize.h in Sources */ = {isa = PBXBuildFile; fileRef = F18C00030000000000000001 /* CheckedSize.h */; };
 		FA9D00010000000000000002 /* LittleEndian.h in Sources */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000002 /* LittleEndian.h */; };
 		FA9D00020000000000000001 /* FiniteMath.h in Headers */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000001 /* FiniteMath.h */; };
+		F18C00020000000000000001 /* CheckedSize.h in Headers */ = {isa = PBXBuildFile; fileRef = F18C00030000000000000001 /* CheckedSize.h */; };
 		FA9D00020000000000000002 /* LittleEndian.h in Headers */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000002 /* LittleEndian.h */; };
 		FB255A9D62917BC1024B3ACA /* MappingPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 457B359DA029B1CE5FC98767 /* MappingPainter.h */; };
 		FCA01000000000000000A001 /* ICameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
@@ -3086,6 +3088,7 @@
 		FA1ABFR1000000000000003B /* Atan2ScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Atan2ScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterToScalarAdapter.h; sourceTree = "<group>"; };
 		FA9D00030000000000000001 /* FiniteMath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FiniteMath.h; sourceTree = "<group>"; };
+		F18C00030000000000000001 /* CheckedSize.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CheckedSize.h; sourceTree = "<group>"; };
 		FA9D00030000000000000002 /* LittleEndian.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LittleEndian.h; sourceTree = "<group>"; };
 		FCA01000000000000000A003 /* ICameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICameraManager.h; sourceTree = "<group>"; };
 		FCA01000000000000000A006 /* CameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraManager.h; sourceTree = "<group>"; };
@@ -4309,6 +4312,7 @@
 				DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */,
 				DEFE44ED00000000000000F2 /* RenderParallelScope.h */,
 				FA9D00030000000000000001 /* FiniteMath.h */,
+				F18C00030000000000000001 /* CheckedSize.h */,
 				FA9D00030000000000000002 /* LittleEndian.h */,
 				F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */,
 				F27F0A0C069C42900069C9E5 /* GeometricUtilities.h */,
@@ -5156,6 +5160,7 @@
 				F27F0C63069C42910069C9E5 /* DiskFileWriteBuffer.h in Headers */,
 				DEFE44ED00000000000000D2 /* RenderParallelScope.h in Headers */,
 				FA9D00020000000000000001 /* FiniteMath.h in Headers */,
+				F18C00020000000000000001 /* CheckedSize.h in Headers */,
 				FA9D00020000000000000002 /* LittleEndian.h in Headers */,
 				F27F0C67069C42910069C9E5 /* GeometricUtilities.h in Headers */,
 				F27F0C68069C42910069C9E5 /* HermiteInterpolator.h in Headers */,
@@ -6577,6 +6582,7 @@
 				DEFE44ED00000000000000C1 /* RenderParallelScope.cpp in Sources */,
 				DEFE44ED00000000000000C2 /* RenderParallelScope.h in Sources */,
 				FA9D00010000000000000001 /* FiniteMath.h in Sources */,
+				F18C00010000000000000001 /* CheckedSize.h in Sources */,
 				FA9D00010000000000000002 /* LittleEndian.h in Sources */,
 				F24B741B2F52A632008304C4 /* GeometricUtilities.cpp in Sources */,
 				F24B741C2F52A632008304C4 /* GeometricUtilities.h in Sources */,

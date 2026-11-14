@@ -38,6 +38,7 @@
 #include "../Utilities/Color/Color_Template.h"
 #include "../Utilities/Threads/Threads.h"
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace RISE
@@ -60,18 +61,33 @@ namespace RISE
 				}
 			};
 
+			// Pure representability preflight; does not allocate film storage.
+			// The full uint32_t BatchRecord index domain permits 2^32 pixels
+			// where native byte counts and vector limits can represent them.
+			static std::size_t CheckedPixelCount(unsigned int w, unsigned int h);
+
 			unsigned int				width;
 			unsigned int				height;
 			std::vector<SplatPixel>		pixels;
-			std::vector<RMutex*>		rowMutexes;		///< One mutex per scanline for concurrent access
+			std::vector<std::unique_ptr<RMutex>> rowMutexes;		///< One mutex per scanline for concurrent access
 
-			virtual ~SplatFilm();
+			~SplatFilm() override;
 
 		public:
+			// Zero extents produce a no-op film. Unrepresentable index/native
+			// storage counts throw length_error before allocating film storage.
 			SplatFilm(
 				const unsigned int w,					///< [in] Width of the film in pixels
 				const unsigned int h					///< [in] Height of the film in pixels
 				);
+			SplatFilm(const SplatFilm&) = delete;
+			SplatFilm& operator=(const SplatFilm&) = delete;
+
+			// Row mutexes are owned by this noncopyable film. Manual users must
+			// flush/unbind every participating thread's TLS before film destruction:
+			// use FlushCallingThreadSplatBuffer() or ThreadLocalSplatBufferTaskScope
+			// from ThreadLocalSplatBuffer.h. The film destructor cannot clear other
+			// workers' thread-local bindings. Render task entrypoints provide scopes.
 
 			//! DL-294: THE film-membership rule for a fractional splat
 			//! position (FILM coordinates: fx = screen x, fy = H - screen
@@ -128,6 +144,7 @@ namespace RISE
 			//! Degenerates to a point splat when the filter's
 			//! half-width is ≤ 0.501 (box case) to avoid unnecessary
 			//! work — matches PixelBasedRasterizerHelper::UseFilteredFilm.
+			//! Nonfinite or negative filter support is rejected without splatting.
 			void SplatFiltered(
 				const Scalar screenX,					///< [in] Fractional X (image-row convention; see NearestPixel)
 				const Scalar screenY,					///< [in] Fractional Y (image-row convention; see NearestPixel)
@@ -173,6 +190,8 @@ namespace RISE
 			//! it's bound to this film) into the shared accumulator.
 			//! Called at tile boundaries and at end-of-pass to make
 			//! sure no splats are orphaned in thread_local storage.
+			//! This commits records but retains the binding; manual lifetime
+			//! completion requires FlushCallingThreadSplatBuffer() or a task scope.
 			void FlushCallingThreadBuffer();
 		};
 	}
