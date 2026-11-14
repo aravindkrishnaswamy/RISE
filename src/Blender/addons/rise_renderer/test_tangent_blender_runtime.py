@@ -190,7 +190,7 @@ with tempfile.TemporaryDirectory(prefix='rise-tangent-runtime-') as directory:
     print('R1 SECOND UV TILTED NORMAL INDEPENDENT WORLD ORACLE PASS',flush=True)
     # Real parent scale*child rotation yields shear; no synthetic matrix setter.
     parent=bpy.data.objects.new('R1 nonuniform parent',None);bpy.context.collection.objects.link(parent)
-    info=tree.nodes.new('ShaderNodeObjectInfo');transform=tree.nodes.new('ShaderNodeVectorTransform');transform.vector_type='VECTOR';transform.convert_from='OBJECT';transform.convert_to='WORLD';transform.inputs[0].default_value=(1,1,1)
+    info=tree.nodes.new('ShaderNodeObjectInfo');transform=tree.nodes.new('ShaderNodeVectorTransform');transform.vector_type='VECTOR';transform.convert_from='OBJECT';transform.convert_to='WORLD';transform.inputs['Vector'].default_value=(1,1,1)
     for scale in (2,-2):
         ro.parent=parent;parent.scale=(scale,1,1);parent.location=(1,2,0);ro.matrix_parent_inverse=Matrix.Identity(4);ro.rotation_euler=(0,0,.7);ro.scale=(1,1,1);ro.location=(0,0,0);bpy.context.view_layer.update();matrix=ro.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world.copy()
         expected=(matrix.to_3x3().inverted().transposed()@Vector((math.sqrt(.5),math.sqrt(.5),0))).normalized()

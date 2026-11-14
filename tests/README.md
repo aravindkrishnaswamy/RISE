@@ -148,7 +148,11 @@ Useful filename families:
   peak by the closed-form reflected angle while the substrate's own diffuse
   response is unaffected), `BlenderBridgeAlphaTest` (Principled Alpha -> scalar material
   coverage, ABI v14: legacy pixelpel and modern PT/BDPT cutout renders plus
-  threshold-adjacent numeric precision checks). The matching Python-side
+  threshold-adjacent numeric precision checks), `BlenderBridgeThinFilmDispersionTest`
+  (Principled Thin Film -> `ggx_material` `thinfilm` base / dielectric AR layer, and
+  Blender 5.3 transmission dispersion -> a Cauchy IOR painter, ABI v18 -- reads back the
+  constructed painters, AR layer, Fresnel mode and substrate, plus a thickness-dependent
+  reflected hue). The matching Python-side
   exporter (socket-reading) contract lives in
   `src/Blender/addons/rise_renderer/test_hair_export.py`, run separately
   since it needs no C++ build.

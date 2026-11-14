@@ -48,6 +48,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import hair_file_writer as hfw  # noqa: E402
 import hair_material_math as hmm  # noqa: E402
+import principled_math as pmath  # noqa: E402
+import light_math as lmath  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 
 # `bridge.py` is bpy-free too (ctypes / os / sys / dataclasses only) and
 # does NOT load the native library at import time -- `_load_library` is
@@ -521,6 +524,102 @@ class AnisotropicRotationConversionTest(unittest.TestCase):
         self.assertAlmostEqual(composed, 3.0 * math.pi / 4.0, places=9)
 
 
+class PrincipledMathTest(unittest.TestCase):
+    """ABI v18 conversions in `principled_math`: Blender 5.3 / OpenPBR
+    dispersion folding and the dielectric thin-film tint.  The native half
+    (Cauchy painter, per-wavelength metal substrate, GGX thinfilm base, AR
+    layer) is tests/BlenderBridgeThinFilmDispersionTest.cpp."""
+
+    def test_effective_abbe_is_abbe_over_scale(self):
+        self.assertAlmostEqual(pmath.effective_abbe_number(20.0, 1.0), 20.0)
+        self.assertAlmostEqual(pmath.effective_abbe_number(20.0, 0.5), 40.0)
+
+    def test_zero_scale_means_no_dispersion(self):
+        # OpenPBR: scale 0 -> V_d infinite -> no dispersion; the socket
+        # default (scale 0, abbe 20) must export nothing.
+        self.assertEqual(pmath.effective_abbe_number(20.0, 0.0), 0.0)
+        self.assertEqual(pmath.effective_abbe_number(0.0, 1.0), 0.0)
+        self.assertEqual(pmath.effective_abbe_number(float("nan"), 1.0), 0.0)
+
+    def test_dielectric_film_substrate_default_is_the_ior(self):
+        self.assertEqual(pmath.dielectric_film_substrate(1.5, 0.5, (1.0, 1.0, 1.0)), (1.5, (1.0, 1.0, 1.0)))
+
+    def test_specular_level_adjusts_the_index_like_cycles(self):
+        # kernel/svm/closure.h: f0 = F0(ior) * 2 * level; eta = ior_from_F0(f0).
+        eta, _ = pmath.dielectric_film_substrate(1.5, 1.0, (1.0, 1.0, 1.0))
+        self.assertAlmostEqual(((eta - 1.0) / (eta + 1.0)) ** 2, 2.0 * 0.04, places=12)
+        eta0, _ = pmath.dielectric_film_substrate(1.5, 0.0, (1.0, 1.0, 1.0))
+        self.assertAlmostEqual(eta0, 1.0, places=12)
+
+    def test_specular_level_inverts_below_unit_ior_like_cycles(self):
+        eta, _ = pmath.dielectric_film_substrate(0.8, 1.0, (1.0, 1.0, 1.0))
+        inverse = 1.0 / eta
+        r = (0.8 - 1.0) / (0.8 + 1.0)
+        self.assertAlmostEqual(((inverse - 1.0) / (inverse + 1.0)) ** 2, 2.0 * r * r, places=12)
+        self.assertLess(eta, 1.0)
+
+    def test_film_tint_is_specular_tint_clamped_to_one(self):
+        # A tint above 1 would push RISE's interface reflectance past 1
+        # at grazing and make the diffuse term (1 - A_i)(1 - A_o) negative.
+        _, tint = pmath.dielectric_film_substrate(1.5, 0.7, (1.4, 0.5, -0.2))
+        self.assertEqual(tint, (1.0, 0.5, 0.0))
+
+    def test_dispersion_guard_matches_the_band_ends(self):
+        self.assertTrue(pmath.dispersion_keeps_positive_ior(1.5, 20.0))
+        self.assertTrue(pmath.dispersion_keeps_positive_ior(1.5, 0.3))
+        self.assertFalse(pmath.dispersion_keeps_positive_ior(1.5, 0.28))
+        self.assertFalse(pmath.dispersion_keeps_positive_ior(1.5, 0.1))
+
+    def test_thin_film_cutoff_matches_cycles(self):
+        self.assertEqual(pmath.THIN_FILM_THICKNESS_CUTOFF_NM, 0.1)
+
+
+class LightMathTest(unittest.TestCase):
+    """`light_math`: Blender -> RISE light power.  The factors were
+    measured against Cycles 5.3 (tools/blender_light_parity.py); these pin
+    the formulas so a refactor cannot drift from the measured ones."""
+
+    def test_normalize_on_is_unscaled(self):
+        for kind in ("POINT", "SPOT", "SUN"):
+            light = SimpleNamespace(type=kind, normalize=True, shadow_soft_size=2.0, angle=0.5)
+            self.assertEqual(lmath.unnormalized_power_scale(light), 1.0)
+
+    def test_point_and_spot_scale_by_sphere_area(self):
+        for kind in ("POINT", "SPOT"):
+            light = SimpleNamespace(type=kind, normalize=False, shadow_soft_size=1.0)
+            self.assertAlmostEqual(lmath.unnormalized_power_scale(light), 4.0 * math.pi, places=12)
+            light.shadow_soft_size = 0.0
+            self.assertEqual(lmath.unnormalized_power_scale(light), 4.0)
+
+    def test_sun_scales_by_pi_sin_squared_half_angle(self):
+        light = SimpleNamespace(type="SUN", normalize=False, angle=math.radians(30.0))
+        self.assertAlmostEqual(lmath.unnormalized_power_scale(light), 0.2104468036, places=9)
+        light.angle = 0.0
+        self.assertEqual(lmath.unnormalized_power_scale(light), 1.0)
+
+    def test_disk_polygon_area_approaches_the_ellipse(self):
+        poly = lmath.area_light_polygon_area("DISK", 2.0, 2.0)
+        self.assertAlmostEqual(poly, 0.5 * 64 * math.sin(2.0 * math.pi / 64), places=12)
+        self.assertLess(poly, math.pi)
+        self.assertEqual(lmath.area_light_polygon_area("RECTANGLE", 3.0, 1.0), 3.0)
+
+    def test_area_exitance_normalized_divides_by_world_polygon_area(self):
+        m = lmath.area_light_exitance(100.0, "SQUARE", 2.0, 2.0, plane_scale=4.0, normalize=True)
+        self.assertAlmostEqual(m, 100.0 / 16.0, places=12)
+        disk = lmath.area_light_exitance(100.0, "DISK", 2.0, 2.0, plane_scale=1.0, normalize=True)
+        self.assertAlmostEqual(disk * lmath.area_light_polygon_area("DISK", 2.0, 2.0), 100.0, places=9)
+
+    def test_area_exitance_unnormalized_is_power_per_true_area(self):
+        # Flux = power * true world area, independent of the object scale.
+        square = lmath.area_light_exitance(100.0, "SQUARE", 2.0, 2.0, plane_scale=4.0, normalize=False)
+        self.assertAlmostEqual(square, 100.0, places=12)
+        disk = lmath.area_light_exitance(100.0, "DISK", 2.0, 2.0, plane_scale=1.0, normalize=False)
+        self.assertAlmostEqual(disk * lmath.area_light_polygon_area("DISK", 2.0, 2.0), 100.0 * math.pi, places=9)
+
+    def test_degenerate_panel_emits_nothing(self):
+        self.assertEqual(lmath.area_light_exitance(100.0, "SQUARE", 2.0, 2.0, plane_scale=0.0, normalize=True), 0.0)
+
+
 # ---------------------------------------------------------------------------
 # Bridge (ABI v9) — the ctypes mirror of the native hair structs, and the
 # marshalling that fills them.
@@ -605,6 +704,8 @@ def _canonical_ctype(ctype):
     if element is not None and length is not None:
         if element is ctypes.c_float:
             return f"float[{length}]"
+        if element is ctypes.c_double:
+            return f"double[{length}]"
         if element is ctypes.c_char:
             return f"char[{length}]"
         raise AssertionError(f"unmapped array element type {element}")
@@ -655,7 +756,7 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 17)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 18)
 
     def test_mesh_struct_matches(self):
         self._assert_matches(bridge._Mesh, "rise_blender_mesh")
@@ -1062,7 +1163,7 @@ class LegacyDefaultsTest(unittest.TestCase):
         end = self.exporter.find("\ndef ", start + 1)
         body = self.exporter[start:end if end >= 0 else len(self.exporter)]
         gate = body.index("world_radiance_painter is None and not render_settings.use_world_ambient")
-        self.assertIn("not scene.world.use_nodes", body[gate:gate + 200])
+        self.assertIn("not uses_nodes(scene.world)", body[gate:gate + 200])
         self.assertIn('_add_uniform_painter(state, "world_radiance_uniform", world_rgb)', body[gate:])
         # The explicitly-enabled ambient path is unchanged.
         self.assertIn("world_radiance_painter is None and render_settings.use_world_ambient", body)

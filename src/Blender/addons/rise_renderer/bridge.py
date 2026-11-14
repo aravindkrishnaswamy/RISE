@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 17
+_EXPECTED_API_VERSION = 18
 
 # Hair colour tiers -- must match `enum rise_blender_hair_tier` in
 # rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
@@ -163,6 +163,14 @@ class _Material(ctypes.Structure):
         ("alpha_texture_painter_name", ctypes.c_char_p),
         ("alpha_mode", ctypes.c_int),
         ("alpha_threshold", ctypes.c_double),
+        # ABI v18: Principled thin film + transmission dispersion.
+        ("thin_film_thickness", ctypes.c_double),
+        ("thin_film_ior", ctypes.c_double),
+        ("thin_film_conductor", ctypes.c_int),
+        ("thin_film_dielectric_ior", ctypes.c_double),
+        ("thin_film_metal_f0", ctypes.c_double * 3),
+        ("thin_film_metal_tint", ctypes.c_double * 3),
+        ("dispersion_abbe", ctypes.c_double),
     ]
 
 
@@ -780,6 +788,15 @@ class _SceneHandle:
         payload.alpha_texture_painter_name = self._cstring(getattr(material, "alpha_texture_painter_name", None))
         payload.alpha_mode = int(getattr(material, "alpha_mode", 0))
         payload.alpha_threshold = float(getattr(material, "alpha_threshold", 0.5))
+        # ABI v18 -- same `getattr` tolerance pattern as v10-v14 above.
+        payload.thin_film_thickness = float(getattr(material, "thin_film_thickness", 0.0))
+        payload.thin_film_ior = float(getattr(material, "thin_film_ior", 1.33))
+        payload.thin_film_conductor = int(bool(getattr(material, "thin_film_conductor", False)))
+        payload.thin_film_dielectric_ior = float(getattr(material, "thin_film_dielectric_ior", 1.5))
+        for attribute in ("thin_film_metal_f0", "thin_film_metal_tint"):
+            values = tuple(getattr(material, attribute, (1.0, 1.0, 1.0)))
+            setattr(payload, attribute, (ctypes.c_double * 3)(*(float(v) for v in values[:3])))
+        payload.dispersion_abbe = float(getattr(material, "dispersion_abbe", 0.0))
         return payload
 
     def _marshal_mesh(self, mesh):

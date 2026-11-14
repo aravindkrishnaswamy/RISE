@@ -10,9 +10,13 @@ types come up.
 
 The ordinary material-channel classifier chooses between two paths:
 
-1. **Direct procedural translation** ("simple" graphs). Walk supported
-   material input chains into RISE painters. Noise bases and some filters
-   are approximations, so this is not bit-for-bit Cycles rendering.
+1. **Direct translation** ("simple" graphs). Walk supported material
+   input chains into RISE painters: constants and image textures (with
+   UV Mapping). Mix nodes follow their A input and colour filters are
+   lossy pass-throughs, and the
+   procedural Noise / Voronoi / Checker textures the classifier admits are
+   NOT translated -- the input they feed loses their contribution, with a
+   per-input warning (see the table below).
 2. **Explicit image baking** ("complex" graphs). Click **Bake Procedural
    Materials** to run Cycles channel bakes and store PNG paths on the
    material. An existing diffuse PNG selects the synthetic dielectric cache;
@@ -69,15 +73,13 @@ Tangent; this table is not a whitelist for its corner-direction graph.
 | `ShaderNodeRGB` | `uniformcolor_painter` | Constant colour |
 | `ShaderNodeValue` | `scalar_painter` | Constant scalar |
 | `ShaderNodeTexImage` | `png_painter` / `jpg_painter` / `exr_painter` / `tiff_painter` / `hdr_painter` | Already wired (Round 1 of the bridge) |
-| `ShaderNodeTexCoord` | UV / Object / Generated / Camera | Object → 3D painter chains; UV → 2D painter chains.  Most other outputs force-bake. |
+| `ShaderNodeTexCoord` | UV only | Feeds an image texture's UV lookup (with Mapping).  Object / Generated / Camera coordinates are not translated (no 3D painter chains are emitted).  Most other outputs force-bake. |
 | `ShaderNodeMapping` (POINT) | `RISE_BLENDER_PAINTER_UV_TRANSFORM` wrapper | KHR_texture_transform — already implemented for 2D image textures (ABI v6) |
-| `ShaderNodeTexNoise` | `perlin3d_painter` (with `turbulence3d_painter` for high-detail variants) | Blender's noise ≠ Perlin bit-exactly; visual approximation only |
-| `ShaderNodeTexVoronoi` | `voronoi3d_painter` | F1 distance, cell colour, etc. — direct mapping |
-| `ShaderNodeTexChecker` | `checker_painter` | Two-colour checker; Blender's `Scale` socket maps to `size` |
-| `ShaderNodeValToRGB` (Color Ramp) | `colorramp_painter` | Scalar → colour via stops; multi-stop, multi-interpolation.  **Added to RISE core for this translation** (`docs/RISE_API.h` + parser). |
-| `ShaderNodeMix` (Color blend) | `blend_painter` | A / B + Factor → 2-stop blend.  When `clamp_factor=True` matches RISE behaviour. |
-| `ShaderNodeMixRGB` (legacy) | `blend_painter` | Identical to ShaderNodeMix in Color mode |
-| `ShaderNodeMath` (Add/Multiply/Multiply Add when one input is constant) | folded inline at export time | Math nodes that fold to scaling / offsetting of a single value are inlined into the downstream painter (e.g. a Multiply on a noise output absorbed into a ColorRamp position).  The classifier admits Math regardless of operation; this does not promise direct translation of every operation or automatic manual-bake routing. |
+| `ShaderNodeTexNoise` / `ShaderNodeTexVoronoi` / `ShaderNodeTexChecker` | not translated (warned) | The classifier admits them, so the material keeps its direct path; the input they feed loses their contribution and the exporter warns per input.  Routing them to the manual bake was tried (2026-11-14) and rejected: the bake replaces the whole material with a metallic-0 PBR built from the baked channels, turning a noise-bumped metal or noise-roughened glass opaque.  RISE has `perlin3d_painter` / `voronoi3d_painter` / `checker_painter`; translating onto them is listed under "Capabilities to extend later". |
+| `ShaderNodeValToRGB` (Color Ramp) | pass-through (currently lossy) | Texture discovery walks through the ramp to the image feeding it and ignores the stops (the ramp itself is not translated). A ramp fed by a procedural texture gets the procedural-texture warning below. |
+| `ShaderNodeMix` (Color blend) | follows one input (lossy) | Texture discovery follows the A input (`_SOCKET_MIX_NODES`), or the first linked non-factor input when A is unlinked; the factor and the other input are dropped.  `exporter._add_blend_painter` exists but nothing calls it yet. |
+| `ShaderNodeMixRGB` (legacy) | follows Color1 (lossy) | Identical to ShaderNodeMix |
+| `ShaderNodeMath` | admitted, not translated | The classifier admits Math so a material using it stays on the direct path, but no operation is folded: a socket reached only through Math reads its socket default. |
 | `ShaderNodeRGBCurve` / `ShaderNodeHueSaturation` / `ShaderNodeBrightContrast` / `ShaderNodeGamma` / `ShaderNodeInvert` | pass-through (currently lossy) | Existing bridge walks through these and ignores the filter; future work could honour them via a remap painter. |
 | `ShaderNodeBump` | `ReliefModifier` attached to the **object** (`IObject`) | Driven by a scalar height painter from a supported chain (`ReliefModifier` replaced the retired `BumpMap`; in RISE, ray-intersection modifiers attach to `standard_object` — via `modifier_stack` when combined — rather than to `IMaterial`) |
 | `ShaderNodeNormalMap` | `NormalMapModifier` attached to the **object** (`IObject`) | Attached to the exported `IObject` (not `IMaterial`, except Principled `Coat Normal` which lives on `CoatedMaterial`). Normal-map painters are tagged `RISE_BLENDER_COLOR_LINEAR = 0` (`Rec709RGB_Linear`), matching `GLTFSceneImporter.cpp` for bit-exact tangent-vector passthrough in RISE's working space. |
@@ -211,6 +213,10 @@ cleanup and measured backend limits are documented in the Tangent section.
 These would enable more graphs to take the direct path.  Each is
 self-contained and small enough to land as one PR.
 
+- **Noise / Voronoi / Checker → `perlin3d_painter` / `voronoi3d_painter` /
+  `checker_painter`** — the painters exist; the bridge needs painter kinds
+  (and Blender's Generated/Object/UV coordinate + Mapping conventions)
+  to emit them.  Replaces today's per-input "not translated" warning.
 - **`remap_painter`** — applies a 1D piecewise-linear function to a
   scalar source painter.  Maps Cycles `ShaderNodeMath` (Add /
   Multiply Add / Power / etc.) without baking.
@@ -274,9 +280,8 @@ in the same commit.
 | Emission Color | `sRGB` |
 | Transmission Weight | `Linear` |
 
-For procedural painters (Perlin, Voronoi, Checker, etc.) the
-colour-space tag has no effect — the painter generates float values
-directly without going through the texture color-management pipeline.
+Procedural textures are not emitted by the bridge (see the supported-node
+table), so no colour-space tag applies to them.
 
 ## Mapping node (UV transforms)
 
@@ -287,11 +292,11 @@ wrapper (ABI v6, commit `30f85ea2`).  The wrapper carries
 `uv_scale_v` — exactly the KHR_texture_transform set RISE's
 `UVTransformPainter` consumes.
 
-For procedural painters that read 3D coordinates (`perlin3d`,
-`voronoi3d`, `simplex3d`, etc.), Cycles' Mapping node is more
-expressive (3D rotation, 3D location).  The bridge translates the
-Mapping into a per-painter `xform_translate` / `xform_rotate` /
-`xform_scale` triple on the procedural's input.
+Only image textures receive a Mapping today.  Procedural painters that
+read 3D coordinates (`perlin3d`, `voronoi3d`, ...) are not emitted by the
+bridge (see the supported-node table); translating them would also need
+Cycles' 3D Mapping (rotation, location) carried onto the painter's input
+transform.
 
 ## Anisotropy and sheen (Principled BSDF -> `ggx_material` / `fabric_material`)
 
@@ -499,7 +504,9 @@ IOR Level has any remaining effect. Blender's Principled BSDF v2
 (4.x) additionally tints the METALLIC edge reflectance with the SAME
 Specular Tint socket (an F82-style edge tint); this bridge does not
 reproduce that contribution — a pure metal's F0 here always comes
-from `base_color` alone, regardless of Specular Tint. This is an
+from `base_color` alone, regardless of Specular Tint -- except under a
+Principled Thin Film, where the tint feeds the metal substrate's n, k (see
+"Thin film and dispersion"). This is an
 existing architectural property of `AddPBRMetallicRoughnessMaterial`'s
 F0 formula (not a wrong formula introduced by DL-151), so it is
 recorded here as a documented limitation rather than fixed.
@@ -732,7 +739,7 @@ including normal-map decode and chart/mirror handedness. Blender's Principled
 Tangent socket is a different signal: it controls anisotropy independently of
 Normal Map and Coat Normal UV axes. Tail flag `tangent_is_shader_direction`
 (introduced in ABI v16) is 1 for the exporter's per-triangle-corner `tangent_attribute`; 0 retains the
-ABI15 global tangent convention. Native/Python ABI versions must match in lockstep (currently **ABI v17**, `RISE_BLENDER_API_VERSION = 17`).
+ABI15 global tangent convention. Native/Python ABI versions must match in lockstep (currently **ABI v18**, `RISE_BLENDER_API_VERSION = 18`).
 Corner expansion preserves normal/UV/material seams. The Indexed4 shader
 array is separate from Tangent4. Object and CSG promote it with the forward
 matrix into a canonical world `cross(N,T)` frame, while preserving the
@@ -854,6 +861,153 @@ anisotropy); both accept independently indexed normals/UVs and corner vec4s.
 The shader vec4's w is validated source metadata (not stored by Indexed4); it never controls
 anisotropy rotation. Empty payloads delegate the frozen indexed API. These
 optional arrays are live geometry data, not persisted by legacy .risemesh.
+
+## Thin film and dispersion (ABI v18, 2026-11-14)
+
+Blender 4.2 added Principled **Thin Film Thickness** (nm) / **Thin Film
+IOR**; Blender 5.3 added **Transmission Dispersion Scale** / **Abbe
+Number**, defined as in OpenPBR 1.1.1.  Both are read at their socket
+defaults (a linked input is warned about, not sampled).  The exporter
+(`exporter.py`, `principled_math.py`) folds the Blender parameters; the
+native bridge (`rise_blender_bridge.cpp`) builds the wavelength-dependent
+RISE objects.  Films at or below Cycles' 0.1 nm cutoff
+(`THINFILM_THICKNESS_CUTOFF`) are dropped by the exporter.
+
+### Thin film
+
+| Principled branch | RISE construction |
+|-------------------|-------------------|
+| Opaque (PBR) | The base is a `ggx_material` in `fresnel_mode thinfilm` (an Airy film over the substrate n + i k) instead of the PBR painter graph; sheen / coat wraps and deferred emission layer over it exactly as over the PBR base.  The Spectral integrators evaluate the film exactly per wavelength; the Pel integrators integrate the film's spectral reflectance back to RGB on every shading call (`ThinFilm::ReflectanceConductorRGBSpectral`, 32 samples over 380-780 nm), which `GGXBRDF.cpp` documents as preview-grade. |
+| Transmission (dielectric) | One transparent AR-coating layer on `dielectric_material` (n = Thin Film IOR, k = 0, thickness in nm). |
+| Subsurface | No interface to carry a film: skipped with a warning. |
+
+The opaque film needs ONE substrate.  Both cases follow what Cycles does
+once a film is present (`intern/cycles/kernel/closure/bsdf_microfacet.h`):
+
+- **Dielectric** (Metallic < 0.5): as in Cycles (`kernel/svm/closure.h`),
+  Specular IOR Level ADJUSTS THE INDEX the film sits on
+  (`F0 = F0(IOR) * 2 * level`, `eta = ior_from_F0(F0)`, inverted for
+  IOR < 1), and Specular Tint scales the film reflectance
+  (`principled_math.dielectric_film_substrate`); diffuse = Base Color.
+  The tint is clamped to [0, 1]: Cycles fades its scale out as the
+  reflectance approaches 1, while RISE's `thinfilm` mode multiplies the
+  whole interface reflectance by it, so a tint above 1 would push that
+  reflectance past 1 at grazing and make the diffuse term negative.  A
+  tint below 1 matches at normal incidence and is over-applied toward
+  grazing.
+- **Metal** (Metallic >= 0.5): Cycles estimates the metal's complex index
+  with Gulbrandsen's "Artist Friendly Metallic Fresnel": `r = min(F0,
+  0.999)` (Base Color) and `g = saturate(min(Specular Tint, 1) *
+  Schlick(F0, 1/7))`, the F82-tint reflectance at `cos 1/7`
+  (`closure.h`, `bsdf_util.h`, `bsdf_microfacet.h`).  RISE's film path is
+  per-wavelength, so the bridge uplifts Base Color and Specular Tint to
+  reflectance spectra (the Jakob-Hanika uplift every material uses) and
+  applies that estimate at every wavelength, giving `n(lambda)`,
+  `k(lambda)` painters (`register_thin_film_metal_substrate`); F(0) = F0
+  always.  Diffuse is black, the specular tint white.  One deliberate
+  difference: Cycles takes the film/substrate reflectance MAGNITUDE from
+  its F82 model and only the phase from (n, k), while RISE uses the exact
+  conductor Fresnel of (n, k) for both, so the two agree at normal
+  incidence and drift apart off-normal.  (Handing RISE the per-channel n,
+  k as an RGB triple instead -- an earlier revision -- badly desaturated
+  saturated metals, because the film path read them interpolated across
+  450/550/650 nm.)
+- Partial or textured Metallic resolves to the nearer end (warned); the
+  film base is isotropic, so Anisotropic is dropped under a film (warned).
+
+Measured with a vanishing (0.01 nm) film (`BlenderBridgeThinFilmDispersionTest`,
+three metals: grey, gold, a saturated red):
+
+- Pel, against RISE's own `conductor` mode given Cycles' per-channel n, k
+  (a RISE-to-RISE comparison: Cycles' film-less metal is its F82-tint
+  Schlick model, which agrees with that conductor at normal incidence
+  only; the test probes at 30 degrees): grey within 0.02%, gold within 3.3%,
+  and the red metal's dim green channel +14.7%.  The film path integrates
+  a per-wavelength reflectance back to RGB, so it cannot reproduce an
+  arbitrary per-channel F0 exactly; the test pins these bands.
+- Spectral: the vanishing film matches a conductor built from the same
+  `n(lambda)`, `k(lambda)` to 2.3e-4 -- a self-consistency check that the
+  film disappears, not a comparison with Cycles' RGB metal.
+
+### Dispersion
+
+OpenPBR: `V_d = abbe_number / dispersion_scale` (scale 0 = no dispersion,
+the socket default), and the IOR is Cauchy's `n(lambda) = A + B/lambda^2`
+with `n(587.6 nm) = IOR` and `(n_d - 1) / (n(486.1) - n(656.3)) = V_d`.
+The native bridge samples that curve every 1 nm over 300-900 nm into a
+piecewise-linear scalar painter bound to `dielectric_material`'s `ior`
+(interpolation error `<= 0.75 B / lambda^4`: 2.4e-6 in n at V_d = 10,
+3.0e-6 measured at V_d = 8).  A curve that would go non-positive in that
+band (V_d below about 0.29 at IOR 1.5) is dropped by the exporter with a
+warning (`principled_math.dispersion_keeps_positive_ior`) and refused by
+the bridge as a guard.  An IOR below 1 (reachable only by a direct
+ABI caller -- the exporter clamps the dielectric IOR to >= 1) inverts the
+curve's slope, as Cauchy's formula does.  Spectral integrators render true dispersion; Pel integrators
+read the per-channel IOR at `ScalarPainterRGB::kChannelNM` (DL-82).
+Dispersion only exists on the transmission (dielectric) branch, as in
+Cycles.  A `Dispersion` socket from another Blender version (not present
+on the 5.2 / 5.3 Principled node) is warned about, not translated.
+
+### Not translated (warned)
+
+- **Diffuse Roughness** (4.3), where the material has a diffuse lobe: the
+  PBR diffuse lobe stays Lambertian.
+- **Thin Wall** (5.3): transmission renders as a solid refracting
+  interface.
+
+Tests: `tests/BlenderBridgeThinFilmDispersionTest.cpp` reads back the
+constructed state (Cauchy painter at the Fraunhofer lines and its
+interpolation bound, the AR layer, the GGX Fresnel mode / film painters /
+substrate / diffuse / tint, the per-wavelength metal n, k against Cycles'
+formula, a thickness-dependent reflected hue, and the vanishing-film
+residuals above); `PrincipledMathTest` in
+`src/Blender/addons/rise_renderer/test_hair_export.py` pins the Python
+folding.
+
+## Lights (point, spot, sun, area)
+
+Blender's light power is converted so the irradiance a white Lambertian
+floor receives matches Cycles.  Point / spot: radiant intensity
+`P / 4 pi` W/sr; sun: irradiance = strength; area: a real emitting panel
+(square / rectangle / disk / ellipse mesh with a Lambertian luminaire)
+whose exitance is normalised by the panel's WORLD area (the inscribed
+64-gon for disk / ellipse, times the object matrix's in-plane area
+scale).  Blender's `exposure` and colour temperature apply to all.
+
+**Normalize off** (Blender 4.x+): Cycles stops dividing by the light's
+size.  The factors were MEASURED in Cycles 5.3, not inferred:
+
+| Light | Normalize off multiplies power by |
+|-------|----------------------------------|
+| point / spot, radius r > 0 | 4 pi r^2 (the sphere's area) |
+| point / spot, radius 0 | 4 |
+| sun, angle a > 0 | pi sin^2(a / 2) (x0.21045 at 30 deg) |
+| sun, angle 0 | 1 |
+| area | its world area (true ellipse area for disk / ellipse) |
+
+`tools/blender_light_parity.py` renders the white-floor probe with Cycles
+and RISE for 20 gated cases (every type, Normalize on/off, all area
+shapes, sun at 0 / 10 / 30 degrees, uniform and non-uniform object scale)
+and fails outside +/-0.5%.  On 2026-11-14 all 20 read within 0.33% (point
+/ spot, where Cycles' light is a small sphere and RISE's a point) and
+0.09% (sun, area).  The formulas are unit-tested in `LightMathTest`
+(`test_hair_export.py`).  Measured before this change with the same probe:
+Normalize-off point (r = 1) x0.08, spot x0.32, area x0.25, sun at 10
+degrees x41.9 (it ignored Normalize), disk / ellipse panels 0.56% dark and
+an object-scaled (x2) panel 4x bright.
+
+Known divergence: a genuinely SHEARED area light (a rotated child of a
+non-uniformly scaled parent -- Blender cannot store shear on an object
+directly) keeps exactly its stated power in RISE, over the true
+parallelogram, but not in Cycles 5.3: the tool reports (ungated)
+rise/cycles = 0.645 with Normalize on and 0.516 with it off.
+
+Not reproduced: Cycles hides light objects from camera rays by default
+(`visible_camera = False`), but a RISE area panel is an ordinary emitting
+object and is visible in frame; area Spread below 180 deg is ignored with
+a warning; point / spot Radius and sun Angle only enter through the
+Normalize-off power (RISE's point / spot / directional lights are deltas,
+so their shadows stay hard).
 
 ## Hair / fur export
 
@@ -1098,7 +1252,7 @@ at the end of the struct, so every v8 field keeps its offset).
 `bridge.py` mirrors both structs and marshals `SceneData.hair_objects`
 / `SceneData.hair_materials` into them; its `_EXPECTED_API_VERSION` is
 bumped in lockstep with `RISE_BLENDER_API_VERSION` (9 at that slice, 10
-when the texture-driven scalar slots below landed, and **v17** at HEAD), and the
+when the texture-driven scalar slots below landed, and **v18** at HEAD), and the
 existing hard-mismatch behaviour is unchanged (a stale add-on against a
 newer bridge, or the reverse, raises `BridgeError` telling you to
 rebuild — it does not attempt a partial load).

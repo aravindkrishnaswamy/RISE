@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 17
+#define RISE_BLENDER_API_VERSION 18
 
 #ifdef __cplusplus
 extern "C" {
@@ -460,6 +460,45 @@ typedef struct rise_blender_material {
 	const char* alpha_texture_painter_name;
 	int alpha_mode;
 	double alpha_threshold;
+
+	// ABI v18: Principled "Thin Film Thickness" (nm) / "Thin Film IOR"
+	// (Blender 4.2+).  `thin_film_thickness <= 0` = no film, bit-identical
+	// to a v17 payload; a non-positive thin_film_ior falls back to 1.33
+	// (Blender's socket default).  The exporter drops films at or below
+	// Cycles' 0.1 nm cutoff before they reach this struct.
+	//   PBR_METALLIC_ROUGHNESS: the base is built as a `ggx_material` in
+	//     `thinfilm` Fresnel mode instead of the PBR painter graph:
+	//     - thin_film_conductor == 0: substrate = thin_film_dielectric_ior
+	//       (k = 0; the exporter passes Cycles' Specular-IOR-Level-adjusted
+	//       index); diffuse = base color; the film reflectance is tinted by
+	//       `specular_color_painter_name` (Specular Tint; the EXPORTER
+	//       clamps it to [0, 1] -- a direct caller passing a tint above 1
+	//       makes the interface reflectance exceed 1 at grazing angles).
+	//     - thin_film_conductor != 0: a metal.  For every wavelength the
+	//       bridge uplifts thin_film_metal_f0 (Base Color) and
+	//       thin_film_metal_tint (Specular Tint) to reflectance spectra and
+	//       applies Cycles' Gulbrandsen estimate per wavelength (tint
+	//       clamped to 1, g saturated, as Cycles does), giving n(lambda),
+	//       k(lambda) painters; diffuse black, tint white.  Cycles takes the
+	//       film/substrate reflectance magnitude from its F82 model and only
+	//       the phase from (n, k); RISE uses the exact conductor Fresnel of
+	//       (n, k), so the two agree at normal incidence only.
+	//   DIELECTRIC: a one-layer AR coating (n = thin_film_ior, k = 0).
+	//   Other models ignore the film.
+	double thin_film_thickness;
+	double thin_film_ior;
+	int thin_film_conductor;
+	double thin_film_dielectric_ior;
+	double thin_film_metal_f0[3];
+	double thin_film_metal_tint[3];
+
+	// ABI v18: Principled transmission dispersion (Blender 5.3 / OpenPBR
+	// 1.1.1) as the EFFECTIVE Abbe number V_d = abbe / scale.  DIELECTRIC
+	// only: `ior_painter_name` must then be a numeric literal n_d, which
+	// becomes a Cauchy curve n(lambda) = A + B / lambda^2 with
+	// n(587.6 nm) = n_d and (n_d - 1) / (n(486.1) - n(656.3)) = V_d.
+	// <= 0 = no dispersion.
+	double dispersion_abbe;
 } rise_blender_material;
 
 typedef struct rise_blender_mesh {

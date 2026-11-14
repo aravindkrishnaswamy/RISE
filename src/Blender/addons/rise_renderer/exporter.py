@@ -18,6 +18,19 @@ from .hair_material_math import (
     melanin_to_eumelanin_pheomelanin,
     offset_radians_to_alpha_degrees,
 )
+from .blender_compat import uses_nodes
+from .light_math import (
+    AREA_LIGHT_DISK_SEGMENTS,
+    area_light_exitance,
+    area_light_polygon_area,
+    unnormalized_power_scale,
+)
+from .principled_math import (
+    THIN_FILM_THICKNESS_CUTOFF_NM,
+    dielectric_film_substrate,
+    dispersion_keeps_positive_ior,
+    effective_abbe_number,
+)
 
 
 GEOMETRY_TYPES = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
@@ -322,6 +335,24 @@ class MaterialData:
     alpha_texture_painter_name: str | None = None
     alpha_mode: int = 0
     alpha_threshold: float = 0.5
+    # ABI v18.  Principled "Thin Film Thickness" (nm) / "Thin Film IOR"
+    # (Blender 4.2+).  thickness <= 0 = no film (bit-identical to v17).
+    # PBR path: the base becomes a `ggx_material` in `thinfilm` Fresnel
+    # mode over a dielectric (Specular-IOR-Level-adjusted index) or a
+    # metal (F0 + F82 tint, turned
+    # into n(lambda), k(lambda) by the native bridge); DIELECTRIC path: a
+    # one-layer AR coating.  See rise_blender_bridge.h.
+    thin_film_thickness: float = 0.0
+    thin_film_ior: float = 1.33
+    thin_film_conductor: bool = False
+    thin_film_dielectric_ior: float = 1.5
+    thin_film_metal_f0: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    thin_film_metal_tint: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    # ABI v18.  Principled "Transmission Dispersion Abbe Number" /
+    # "Transmission Dispersion Scale" (Blender 5.3, OpenPBR 1.1.1),
+    # folded to the effective V_d = abbe / scale.  DIELECTRIC only;
+    # <= 0 = no dispersion.
+    dispersion_abbe: float = 0.0
 
 
 @dataclass
@@ -1122,8 +1153,183 @@ def _warn_unsupported_principled_features(state: _ExportState, material, wrapper
     # (DL-186, docs/DEBT_LEDGER.md) -- removed from this generic
     # warn-only sweep since both are read (and warned about
     # PER-SOCKET, where relevant) below in `_material_payload`.
-    # "Coat Normal" and "Tangent" remain entirely unread -- see DL-192
-    # in docs/DEBT_LEDGER.md.
+    # "Coat Normal" is translated too (coat_normal_painter_name, ABI v14,
+    # DL-192), and "Tangent" is read by the independent DL-213 shader-
+    # direction producer (which is why the procedural-texture warning
+    # below skips that socket).
+    #
+    # Sockets newer than the PBR model RISE translates onto (Blender
+    # 4.3 Diffuse Roughness, 5.3 Thin Wall).  Thin Film (4.2) and
+    # Transmission Dispersion (5.3) ARE translated (ABI v18) and are
+    # not listed here.
+    if node is None:
+        return
+
+    def _matters(socket_name: str, default: float) -> bool:
+        socket = _node_input(node, socket_name)
+        return socket is not None and (socket.is_linked or float(socket.default_value) > default)
+
+    # Diffuse Roughness only shapes the PBR diffuse lobe.  The branches
+    # without one: fully metallic, the dielectric branch (Transmission
+    # >= 0.05, `transmission_heavy`) and the random-walk SSS branch.
+    def _constant_at_least(socket_name: str, threshold: float) -> bool:
+        socket = _node_input(node, socket_name)
+        return socket is not None and not socket.is_linked and float(socket.default_value) >= threshold
+
+    has_diffuse = not (
+        _constant_at_least("Metallic", 1.0 - 1.0e-4)
+        or _constant_at_least("Transmission Weight", 0.05)
+        or _constant_at_least("Subsurface Weight", 1.0e-4)
+    )
+    if has_diffuse and _matters("Diffuse Roughness", 1.0e-4):
+        _warn_once(
+            state,
+            f"RISE ignores Principled Diffuse Roughness on '{material_name}'; "
+            f"the base diffuse lobe stays Lambertian.",
+        )
+    thin_wall = _node_input(node, "Thin Wall")
+    if (thin_wall is not None and (thin_wall.is_linked or bool(thin_wall.default_value))
+            and _matters("Transmission Weight", 0.0)):
+        _warn_once(
+            state,
+            f"RISE ignores Principled Thin Wall on '{material_name}'; "
+            f"transmission is rendered as a solid (refracting) interface.",
+        )
+    # A single "Dispersion" socket is not part of the 5.2/5.3 Principled
+    # node; if a Blender version exposes one, say so rather than drop it.
+    if _matters("Dispersion", 0.0):
+        _warn_once(
+            state,
+            f"RISE does not translate the Principled 'Dispersion' socket on '{material_name}'; "
+            f"use Blender 5.3's Transmission Dispersion Scale / Abbe Number.",
+        )
+
+    # Procedural textures with no direct translation.  They classify as
+    # "simple" so the material keeps its direct path (routing them to the
+    # manual bake would replace metals / glass / coats with the bake's
+    # synthetic metallic-0 PBR), which means the input they feed loses
+    # their contribution -- say so, per input.
+    def _live_links(socket):
+        return [link for link in socket.links if not getattr(link, "is_muted", False)]
+
+    for socket in node.inputs:
+        if socket.name == "Tangent":
+            continue        # the Tangent producer bakes its whole linked graph (DL-213)
+        links = _live_links(socket) if socket.is_linked else []
+        if not links:
+            continue
+        stack = [links[0].from_node]
+        seen: set[int] = set()
+        while stack:
+            upstream = stack.pop()
+            if upstream is None or id(upstream) in seen or len(seen) > 64:
+                continue
+            seen.add(id(upstream))
+            if getattr(upstream, "mute", False):
+                continue
+            label = _UNTRANSLATED_PROCEDURAL_TEXTURES.get(upstream.bl_idname)
+            if label is not None:
+                _warn_once(
+                    state,
+                    f"RISE does not translate the procedural {label} texture feeding '{socket.name}' "
+                    f"on '{material_name}'; that input loses the texture's contribution (bake the "
+                    f"texture to an image in Blender to keep it).",
+                )
+                continue
+            for upstream_input in upstream.inputs:
+                upstream_links = _live_links(upstream_input) if upstream_input.is_linked else []
+                if upstream_links:
+                    stack.append(upstream_links[0].from_node)
+
+
+# Procedural texture nodes the classifier admits as "simple" but the
+# exporter does not translate (RISE has perlin3d / voronoi3d / checker
+# painters; the bridge does not emit them yet).
+_UNTRANSLATED_PROCEDURAL_TEXTURES = {
+    "ShaderNodeTexNoise": "Noise",
+    "ShaderNodeTexVoronoi": "Voronoi",
+    "ShaderNodeTexChecker": "Checker",
+}
+
+
+@dataclass
+class _ThinFilmSubstrate:
+    conductor: bool
+    dielectric_ior: float
+    metal_f0: tuple[float, float, float]
+    metal_tint: tuple[float, float, float]
+    film_tint: tuple[float, float, float] | None
+
+
+def _thin_film_substrate(state: _ExportState, material, node, base_color,
+                         metallic: float, specular_ior_level: float, anisotropy: float):
+    """Substrate of the `ggx_material` `thinfilm` base that replaces the
+    PBR base when a Principled Thin Film is present (ABI v18).
+
+    Both cases follow what Cycles renders once a film is present
+    (``intern/cycles/kernel/closure/bsdf_microfacet.h``):
+
+    - Dielectric (Metallic < 0.5): the Specular-IOR-Level-adjusted index
+      (k = 0) and Specular Tint as the film-reflectance tint, clamped to
+      [0, 1] (``principled_math.dielectric_film_substrate``).
+    - Conductor (Metallic >= 0.5): F0 = Base Color and the F82 tint =
+      Specular Tint, numerically; the native bridge applies Cycles'
+      Gulbrandsen estimate at every wavelength of their uplifted spectra
+      (``register_thin_film_metal_substrate``).
+
+    The film needs ONE substrate, so a partial or textured Metallic is
+    resolved to the nearer end with a warning, and every input it reads
+    numerically is read at its socket default.
+    """
+
+    name = material.name_full
+    metallic_socket = _node_input(node, "Metallic")
+    if metallic_socket is not None and metallic_socket.is_linked:
+        _warn_once(state, f"RISE resolves textured Metallic on thin-film '{name}' to its socket default "
+                          f"({metallic:.2f}); the film needs a single substrate.")
+    elif 1.0e-3 < metallic < 1.0 - 1.0e-3:
+        _warn_once(state, f"RISE resolves partial Metallic {metallic:.2f} on thin-film '{name}' to a "
+                          f"{'conductor' if metallic >= 0.5 else 'dielectric'} substrate.")
+    if anisotropy > 1.0e-4:
+        _warn_once(state, f"RISE renders the thin film on '{name}' over an isotropic GGX base; "
+                          f"Anisotropic is ignored there.")
+
+    if metallic >= 0.5:
+        for socket_name in ("Base Color", "Specular Tint"):
+            socket = _node_input(node, socket_name)
+            if socket is not None and socket.is_linked:
+                _warn_once(state, f"RISE derives the thin-film metal substrate on '{name}' from the "
+                                  f"{socket_name} socket default; a linked value is not sampled.")
+        tint_socket = _node_input(node, "Specular Tint")
+        if tint_socket is not None and tint_socket.type != "VALUE":
+            tint = _socket_default_color(node, "Specular Tint", (1.0, 1.0, 1.0))
+        else:
+            tint = (1.0, 1.0, 1.0)      # pre-4.0 float tint has no F82 meaning
+        return _ThinFilmSubstrate(conductor=True, dielectric_ior=1.5,
+                                  metal_f0=tuple(float(c) for c in base_color),
+                                  metal_tint=tuple(float(c) for c in tint), film_tint=None)
+
+    for socket_name in ("IOR", "Specular IOR Level", "Specular Tint"):
+        socket = _node_input(node, socket_name)
+        if socket is not None and socket.is_linked:
+            _warn_once(state, f"RISE derives the thin-film dielectric on '{name}' from the "
+                              f"{socket_name} socket default; a linked value is not sampled.")
+    # As in Cycles: Specular IOR Level adjusts the index the film sits on,
+    # and Specular Tint (clamped to [0, 1], see dielectric_film_substrate)
+    # scales the film reflectance.
+    tint_socket = _node_input(node, "Specular Tint")
+    if tint_socket is not None and tint_socket.type != "VALUE":
+        tint = _socket_default_color(node, "Specular Tint", (1.0, 1.0, 1.0))
+    else:
+        tint = (1.0, 1.0, 1.0)
+    if any(c > 1.0 + 1.0e-6 for c in tint):
+        _warn_once(state, f"RISE caps the Specular Tint on thin-film '{name}' at 1 per channel; "
+                          f"a brighter tint would push the film reflectance past 1.")
+    eta, film_tint = dielectric_film_substrate(
+        _socket_default_float(node, "IOR", 1.5), specular_ior_level, tint)
+    return _ThinFilmSubstrate(conductor=False, dielectric_ior=eta,
+                              metal_f0=(1.0, 1.0, 1.0), metal_tint=(1.0, 1.0, 1.0),
+                              film_tint=film_tint)
 
 
 class _ImageSocketWrapper:
@@ -1357,7 +1563,7 @@ def _find_any_principled_bsdf(material):
     Shader chains hide the connection).  Returns the node, or None
     if the material has no Principled BSDF at all."""
 
-    if not material.use_nodes or material.node_tree is None:
+    if not uses_nodes(material):
         return None
     for node in material.node_tree.nodes:
         if node.bl_idname == "ShaderNodeBsdfPrincipled":
@@ -1881,7 +2087,7 @@ def _find_material_output(material):
 
 
 def _find_world_output(world):
-    if not world.use_nodes or world.node_tree is None:
+    if not uses_nodes(world):
         return None
     for node in world.node_tree.nodes:
         if node.bl_idname == "ShaderNodeOutputWorld" and getattr(node, "is_active_output", False):
@@ -1900,7 +2106,7 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     if material is None:
         return _default_surface_binding(state)
 
-    if not material.use_nodes or material.node_tree is None:
+    if not uses_nodes(material):
         base = _add_uniform_painter(state, f"{material.name_full}_base", _float_color3(material.diffuse_color))
         payload = MaterialData(
             name=_unique_name(state, "mat", material.name_full),
@@ -2492,6 +2698,31 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         subsurface_absorption_literal = "{:.9g} {:.9g} {:.9g}".format(*sigma_a_channels)
         subsurface_scattering_literal = "{:.9g} {:.9g} {:.9g}".format(*sigma_s_channels)
 
+    # ----- Thin film (Blender 4.2+) and transmission dispersion (5.3) -----
+    # ABI v18.  Both are read at their socket defaults; a linked input is
+    # diagnosed rather than silently sampled at one value.  The film's
+    # placement depends on the branch chosen below (GGX `thinfilm`
+    # Fresnel over the opaque base; a one-layer AR coating on the
+    # dielectric); dispersion only exists on the dielectric branch, as
+    # in Cycles/OpenPBR where it modulates transmission only.
+    for linked_name in ("Thin Film Thickness", "Thin Film IOR",
+                        "Transmission Dispersion Scale", "Transmission Dispersion Abbe Number"):
+        linked_socket = _node_input(principled_node, linked_name)
+        if linked_socket is not None and linked_socket.is_linked:
+            _warn_once(
+                state,
+                f"RISE reads Principled {linked_name} on '{material.name_full}' at its socket default; "
+                f"a linked/textured value is not sampled.",
+            )
+    thin_film_thickness_value = max(0.0, _socket_default_float(principled_node, "Thin Film Thickness", 0.0))
+    if thin_film_thickness_value <= THIN_FILM_THICKNESS_CUTOFF_NM:
+        thin_film_thickness_value = 0.0     # Cycles ignores films this thin
+    thin_film_ior_value = max(1.0e-3, _socket_default_float(principled_node, "Thin Film IOR", 1.33))
+    dispersion_abbe_value = effective_abbe_number(
+        _socket_default_float(principled_node, "Transmission Dispersion Abbe Number", 20.0),
+        _socket_default_float(principled_node, "Transmission Dispersion Scale", 0.0),
+    )
+
     transmission_texture = _maybe_resolve_socket_texture(
         principled_node, "Transmission Weight",
         wrapper.transmission_texture,
@@ -2683,6 +2914,13 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             _warn_once(state, f"RISE currently ignores textured IOR on '{material.name_full}'; using the uniform value.")
         ior_value = max(1.0, float(wrapper.ior))
         ior_inline = f"{ior_value:.6f}"
+        if dispersion_abbe_value > 0.0 and not dispersion_keeps_positive_ior(ior_value, dispersion_abbe_value):
+            _warn_once(
+                state,
+                f"RISE drops the transmission dispersion on '{material.name_full}': an effective Abbe "
+                f"number of {dispersion_abbe_value:.3g} makes the IOR curve non-positive in 300-900 nm.",
+            )
+            dispersion_abbe_value = 0.0
 
         # Convert Blender's Principled BSDF Roughness (0 = sharp, 1 =
         # diffuse) to RISE's dielectric `scattering` parameter, which
@@ -2715,6 +2953,12 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             scatter_painter_name=scatter_inline,
             emission_painter_name=emission_painter,
             double_sided=double_sided,
+            # ABI v18: the film is a one-layer AR coating on the
+            # dielectric interface; dispersion turns `ior` into a
+            # Cauchy curve pinned at n(587.6 nm) = IOR.
+            thin_film_thickness=thin_film_thickness_value,
+            thin_film_ior=thin_film_ior_value,
+            dispersion_abbe=dispersion_abbe_value,
             alpha=alpha_value,
             alpha_texture_painter_name=alpha_texture_painter,
             alpha_mode=alpha_mode_value,
@@ -2738,6 +2982,12 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 f"RISE: '{material.name_full}' declares both Subsurface Weight and Sheen; "
                 f"randomwalk_sss_material has no sheen layer, so Sheen is skipped.",
             )
+        if thin_film_thickness_value > 0.0:
+            _warn_once(
+                state,
+                f"RISE: '{material.name_full}' declares a Thin Film on a Subsurface material; "
+                f"randomwalk_sss_material has no thin-film interface, so the film is skipped.",
+            )
         payload = MaterialData(
             name=_unique_name(state, "mat", material.name_full),
             model=MATERIAL_RANDOMWALK_SSS,
@@ -2755,6 +3005,20 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             alpha_threshold=alpha_threshold_value,
         )
     else:
+        film = None
+        if thin_film_thickness_value > 0.0:
+            film = _thin_film_substrate(
+                state, material, principled_node, base_color, metallic,
+                specular, anisotropy_value,
+            )
+            # The film base reads `specular_color_painter_name` as the tint
+            # on the film reflectance (unused by the conductor base).
+            if film.film_tint is not None:
+                specular_color_painter = (
+                    None if all(abs(v - 1.0) < 1e-6 for v in film.film_tint)
+                    else _add_uniform_painter(state, f"{material.name_full}_film_tint", film.film_tint)
+                )
+
         # Opaque Principled BSDF — route through
         # RISE_API_CreatePBRMetallicRoughnessMaterial, which handles
         # the metallic/dielectric blend, F0=0.04 dielectric Fresnel,
@@ -2784,6 +3048,12 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             coat_ior=coat_ior_value,
             coat_normal_painter_name=coat_normal_painter,
             coat_normal_scale=coat_normal_scale,
+            thin_film_thickness=thin_film_thickness_value if film is not None else 0.0,
+            thin_film_ior=thin_film_ior_value,
+            thin_film_conductor=film.conductor if film is not None else False,
+            thin_film_dielectric_ior=film.dielectric_ior if film is not None else 1.5,
+            thin_film_metal_f0=film.metal_f0 if film is not None else (1.0, 1.0, 1.0),
+            thin_film_metal_tint=film.metal_tint if film is not None else (1.0, 1.0, 1.0),
             alpha=alpha_value,
             alpha_texture_painter_name=alpha_texture_painter,
             alpha_mode=alpha_mode_value,
@@ -3171,7 +3441,7 @@ def _hair_material_payload(material, state: _ExportState) -> str:
     if material is None:
         return _fallback()
 
-    if not getattr(material, "use_nodes", False) or material.node_tree is None:
+    if not uses_nodes(material):
         _warn_once(
             state,
             f"RISE hair export needs a node-based Principled Hair BSDF material; "
@@ -3625,6 +3895,7 @@ def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData
 
     # Blender energy + Cycles exposure (stops) → physical light units.
     raw_energy = float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))
+    raw_energy *= unnormalized_power_scale(light)
     if light.type in ("POINT", "SPOT"):
         # Cycles total-flux (W) → RISE radiant intensity (W/sr).
         # 1/(4π) ≈ 0.0795775.
@@ -3645,7 +3916,7 @@ def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData
     )
 
 
-def _area_light_geometry(shape: str, size_x: float, size_y: float, segments: int = 32):
+def _area_light_geometry(shape: str, size_x: float, size_y: float, segments: int = AREA_LIGHT_DISK_SEGMENTS):
     """Build a planar mesh (vertices, normals, uvs, indices) for an area
     light in the light's LOCAL space.  The mesh faces -Z (Blender's
     convention for area-light shine direction)."""
@@ -3720,9 +3991,26 @@ def _register_area_light_mesh(light_object, matrix_world, state: _ExportState) -
     if size_x <= 0.0 or size_y <= 0.0:
         return None
 
-    area = (size_x * size_y) if shape in ("SQUARE", "RECTANGLE") else math.pi * (size_x * 0.5) * (size_y * 0.5)
-    if area <= 0.0:
+    # Emitted flux must equal Cycles'.  The mesh RISE emits from is the
+    # inscribed polygon for DISK/ELLIPSE, and it is placed with the full
+    # object matrix, so its WORLD area is the local polygon area times
+    # the in-plane area scale |X x Y| of that matrix.
+    #   Normalize ON  : flux = power                 -> M = power / world polygon area
+    #   Normalize OFF : flux = power * world true area -> M = power * true / polygon
+    # Measured against Cycles 5.3: the old `power / local true area`
+    # rendered an object-scaled (x2) panel 4.0x too bright and disk /
+    # ellipse lights 0.56% dark.
+    plane_scale = matrix_world.col[0].to_3d().cross(matrix_world.col[1].to_3d()).length
+    if area_light_polygon_area(shape, size_x, size_y) <= 0.0 or plane_scale <= 0.0:
         return None
+
+    spread = float(getattr(light, "spread", math.pi))
+    if spread < math.pi - 1.0e-3:
+        _warn_once(
+            state,
+            f"RISE ignores the Spread ({math.degrees(spread):.0f} deg) of area light '{light_object.name_full}'; "
+            f"it emits as a full Lambertian (180 deg) panel.",
+        )
 
     # Cycles area-light energy is total radiant flux (W).  We encode
     # the painter as per-area radiant exitance M = energy / area
@@ -3738,7 +4026,9 @@ def _register_area_light_mesh(light_object, matrix_world, state: _ExportState) -
         color[0] *= temperature_color[0]
         color[1] *= temperature_color[1]
         color[2] *= temperature_color[2]
-    intensity = (float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))) / area
+    power = float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))
+    intensity = area_light_exitance(power, shape, size_x, size_y, plane_scale,
+                                    bool(getattr(light, "normalize", True)))
     emission_color = (color[0] * intensity, color[1] * intensity, color[2] * intensity)
 
     base_name = _safe_name(light_object.name_full)
@@ -4371,7 +4661,7 @@ def _synthesise_world_lights(scene, state: _ExportState) -> list[LightData]:
     contribution; the caller still gets the IBL via `_world_radiance_map`.
     """
 
-    if scene.world is None or not scene.world.use_nodes or scene.world.node_tree is None:
+    if not uses_nodes(scene.world):
         return []
 
     output_node = _find_world_output(scene.world)
@@ -4425,7 +4715,7 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
     Camera Ray`` pattern (HDRI for indirect, separate colour for the
     camera-visible background).
     """
-    if scene.world is None or not scene.world.use_nodes or scene.world.node_tree is None:
+    if not uses_nodes(scene.world):
         return None, 1.0, (0.0, 0.0, 0.0), True
 
     output_node = _find_world_output(scene.world)
@@ -4554,7 +4844,7 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
 
 def _world_volume_medium(scene, state: _ExportState) -> str | None:
     world = scene.world
-    if world is None or not world.use_nodes or world.node_tree is None:
+    if not uses_nodes(world):
         return None
     output_node = _find_world_output(world)
     if output_node is None:
@@ -4764,7 +5054,7 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
     # A .blend that explicitly enabled `use_world_ambient` keeps the ambient
     # approximation below, unchanged.
     if (world_radiance_painter is None and not render_settings.use_world_ambient
-            and scene.world is not None and not scene.world.use_nodes):
+            and scene.world is not None and not uses_nodes(scene.world)):
         world_rgb = _float_color3(scene.world.color)
         if any(c > 0.0 for c in world_rgb):
             world_radiance_painter = _add_uniform_painter(state, "world_radiance_uniform", world_rgb)
@@ -4775,7 +5065,7 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
     world_color = (0.0, 0.0, 0.0)
     world_strength = 0.0
     if world_radiance_painter is None and render_settings.use_world_ambient and scene.world is not None:
-        if scene.world.use_nodes:
+        if uses_nodes(scene.world):
             _warn_once(
                 state,
                 "RISE reduces non-image-based world shaders to the world viewport colour for ambient approximation; plug an Environment Texture into Background.Color for proper IBL.",
