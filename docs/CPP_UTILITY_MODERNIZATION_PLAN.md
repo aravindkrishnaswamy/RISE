@@ -221,6 +221,23 @@ Sparse multi-GiB cases and native Windows/Android work retain their stated
 limits and deferrals.
 
 
+### Test-integrity follow-up after `8e70540df`
+
+The codec review found no remaining production host P1/P2, while the test
+review reproduced concurrent TIFF-fixture collisions in the image suite
+and found redundant retains in its TIFF driver. The image suite now uses
+POSIX parent-owned scratch storage. The TIFF helper removes both extra
+retains and asserts that reader destruction releases its borrowed buffer
+reference and that the wrapper is destroyed, for successful and rejected
+reads. Restoring the old retains caused eight normal assertion failures;
+removing them restored all 110 image checks. Three trials of eight concurrent
+image-suite copies passed all 110 checks each and left no owned directories.
+A targeted image ASan/UBSan run and all 192 source-hygiene checks passed,
+with no compiler warnings from the changed test. Production sources remain
+unchanged from the fully rebuilt `8e70540df` checkpoint. The Windows wrapper
+still requires the already-deferred native fixture-isolation work.
+
+
 ### Host measurements and decisions
 
 - A 50,000-scalar append probe reduced backing allocations from 50,000 to 28, with identical logical size, cursor and checksum. Four warm host trials measured 75.33 ± 3.26 ms for exact-growth storage and 0.2245 ± 0.0065 ms for geometric capacity. These are append-probe measurements. A sanitizer differential review also exercised 192,000 buffer operations against a shadow model.
