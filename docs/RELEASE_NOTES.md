@@ -41,6 +41,12 @@ source assets with the corrected build.
   Other staging errors remain failures. In-place copying or direct encoding
   can leave a partial image; failed copying retains its completed stage.
   Callers must serialize in-place writes to the same file or hardlink alias.
+- POSIX staging ancestry is validated from `/` downward through opened
+  directory descriptors, preventing mixed-tree validation. PNG and HDR10 PNG
+  codec failures now propagate after cleanup, so partial headers do not
+  count as successful images. Agent PNG helpers contain these failures.
+  Null writer factories and disabled PNG encoders report failure by exception;
+  viewport saves reject empty frames before opening or changing output.
 - Spectral and piecewise-function tables accept their leading finite
   columns, skip file headers and malformed rows, and ignore extra columns.
   Inline control points require two whitespace-separated values: replace

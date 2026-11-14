@@ -627,6 +627,78 @@ remains a separate checkpoint, not a claim that every suite was repeated.
 Native Windows/Android and the previously disclosed privileged ownership
 and sparse-file exclusions remain outside the executed host verification.
 
+### Connected ancestry and PNG failure closure
+
+The fresh round on `bc0cbb971` found two further P1s. The staging ancestry
+walk validated full paths from leaf to root, so directory substitution could
+make separate checks observe different trees. It now opens `/`, validates
+it, and descends with `openat`/`O_NOFOLLOW`, checking each child while holding
+its already-trusted parent descriptor. An unsafe component is refused before
+any lower component or automatic stage is opened. The established trust
+policy still assumes trusted owners do not deliberately remove a boundary.
+The added static unsafe-ancestor/sticky-descendant/private-leaf test checks
+policy composition; it also passes the former implementation and is not
+claimed as a live cross-user race reproduction. No concurrent directory-swap
+harness or privileged foreign-owner fixture was executed for this fix.
+
+Ordinary PNG and HDR10 PNG encoders previously swallowed libpng's `longjmp`
+error and could return after writing a partial header. Both now clean codec
+state and throw on encoding or structure-allocation failure; ordinary PNG
+also throws on invalid dimensions or pixel allocation failure. Write
+callbacks check the sink result and bound lengths, converting sink
+exceptions to libpng errors only after leaving the catch scope. Agent-side
+PNG helpers now own references with RAII and return their existing empty
+failure result on an encoding exception. The separate perception libpng
+path already discards its partial bytes and marks output unavailable.
+
+A thread-local test hook triggers libpng's real error/`longjmp` path just
+after successful header emission. It models an internal codec failure; it
+is not a claim of reproducing allocator exhaustion. Tests use sinks whose
+writes all succeed, require direct encoding to throw, require SaveTo/SaveAs
+to fail while preserving existing staged destinations, and check healthy
+retry. Agent tests cover both ordinary output helpers and the composite
+passthrough helper. The default-thumbnail initializer retains its outer
+exception containment and completion check.
+A controlled mutation in isolated copies restores only the two swallowed-error
+returns while keeping the fault hook. It fails nine assertions normally
+(exit 1), including both staged-destination preservation guards. This is a
+handler mutation check, not a claim that the unmodified old binary contains
+the new hook.
+
+The caller sweep also rejects bound empty viewport frames before opening or
+encoding, covering `0x0`, `0xH` and `Wx0`, and verifies a healthy rebind.
+Existing no-byte checks already refused an empty encoded result; the new
+preflight avoids a direct fallback truncating a destination before that
+late rejection and prevents a custom encoder from accepting an empty store.
+Null writer factories now throw even if they wrote bytes before returning
+null. Both disabled-PNG writer branches also throw after their diagnostic.
+Against the preceding immutable library, the null-factory suite fails three
+assertions and the viewport suite fails six, both with normal exit 1.
+A separately compiled `NO_PNG_SUPPORT` probe fails both encoder checks before
+the correction and passes both after it; the normal configured suite does
+not exercise that compile-time variant.
+
+The same round proposed TGA 2.0 associated-alpha support as a P2. That finding
+was withdrawn: the published reader contract explicitly supports straight
+alpha and excludes extended TGA 2.0 metadata interpretation. Tolerating an
+unsupported extension does not change that declared subset. No new TGA 2.0
+feature is included in this follow-up.
+
+The broader functional checkpoint passed 19 executable suites and seven
+targeted ASan/UBSan suites, including 171 buffer checks and 380 agent checks.
+The final size-type correction was followed by clean make and Xcode
+Deployment/Opto builds with zero compiler warnings (excluding the expected
+AppIntents tooling notice), plus the Blender native LTO relink. The final
+four focused programs pass 302 image, 199 frame-encoder, 104 viewport and
+eight agent PNG checks; the frame/viewport sanitizer reruns pass too.
+Six CLI TIFF/EXR/PNG write-failure paths return normal exit 1. Actual Opto
+codec, frame-encoder, viewport and agent-helper objects, built with full LTO
+and fast-math, pass the same four focused programs when linked with the
+canonical make archive. This does not claim a full GUI runtime test or a
+repeat of all 19 suites after the final size-type/preflight changes.
+The live-race, privileged-owner, sparse-file and native Windows/Android
+verification limitations recorded above remain unchanged.
+
 ### Host measurements and decisions
 
 - A 50,000-scalar append probe reduced backing allocations from 50,000 to 28, with identical logical size, cursor and checksum. Four warm host trials measured 75.33 ± 3.26 ms for exact-growth storage and 0.2245 ± 0.0065 ms for geometric capacity. These are append-probe measurements. A sanitizer differential review also exercised 192,000 buffer operations against a shadow model.
