@@ -11064,13 +11064,13 @@ namespace RISE {
 						for(unsigned int x=rc.left;x<=rc.right;++x) {
 							const RISEColor c=pImage.GetPEL(x,y);
 							const size_t idx=(static_cast<size_t>(y)*width+x)*4;
-							fbuf[idx]=static_cast<float>(c.base.r);
-							fbuf[idx+1]=static_cast<float>(c.base.g);
-							fbuf[idx+2]=static_cast<float>(c.base.b);
+							// Associate at source precision before narrowing: a source
+							// RGB or alpha outside binary32 can still have a finite
+							// representable product. Alpha is delivered independently.
+							fbuf[idx]=static_cast<float>(bPremultipliedAlpha?c.base.r*c.a:c.base.r);
+							fbuf[idx+1]=static_cast<float>(bPremultipliedAlpha?c.base.g*c.a:c.base.g);
+							fbuf[idx+2]=static_cast<float>(bPremultipliedAlpha?c.base.b*c.a:c.base.b);
 							fbuf[idx+3]=static_cast<float>(c.a);
-							if(bPremultipliedAlpha) {
-								fbuf[idx]*=fbuf[idx+3];fbuf[idx+1]*=fbuf[idx+3];fbuf[idx+2]*=fbuf[idx+3];
-							}
 						}
 					}
 					pObj.OutputImageRGBA32F(fbuf.data(),width,height,rc.top,rc.left,rc.bottom,rc.right);

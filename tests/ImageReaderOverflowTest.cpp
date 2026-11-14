@@ -241,7 +241,8 @@ static void TestCallbackExportBounds()
 		}
 	} receiver;
 	struct Image final : RISERasterImage {
-		unsigned int w=1,h=1;bool hdr=false,stop=false;
+		unsigned int w=1,h=1;bool hdr=false,stop=false,custom=false;
+		RISEColor customColor{0,0,0,1};
 		// Instrumentation on this fake does not mutate its image semantics.
 		mutable size_t reads=0;mutable bool outside=false;
 		Image():RISERasterImage(1,1,RISEColor(0,0,0,1)){}
@@ -250,11 +251,12 @@ static void TestCallbackExportBounds()
 		RISEColor GetPEL(unsigned int x,unsigned int y) const override {
 			++reads;outside |= x>=w || y>=h;
 			if(stop)throw std::runtime_error("callback image read canary");
+			if(custom)return customColor;
 			const double alpha[]={0,.5,1};const auto i=(static_cast<size_t>(y)*w+x)%3;
 			return hdr?RISEColor(4,-2,.5,alpha[i]):RISEColor(1,.5,.25,alpha[i]);
 		}
 		void Reset(unsigned int width,unsigned int height,bool floating,bool canary=false) {
-			w=width;h=height;hdr=floating;stop=canary;reads=0;outside=false;
+			w=width;h=height;hdr=floating;stop=canary;custom=false;reads=0;outside=false;
 		}
 	};
 	const auto release=[](auto* p){if(p)p->release();};
@@ -332,6 +334,21 @@ static void TestCallbackExportBounds()
 			dimensionsGuarded &= rejected;
 		}
 		healthy(3,1,"healthy retry recovers after invalid dimensions and regions");
+	}
+	// Runtime source values exercise both narrowing hazards through the
+	// actual adapter. Expected IEEE binary32 bytes come from exact powers.
+	receiver.floats=true;receiver.premultiplied=true;
+	struct RangeCase {const char* rgb;const char* alpha;std::uint32_t product,opacity;};
+	for(const auto& item : {RangeCase{"0x1p129","0x1p-2",0x7f000000U,0x3e800000U},
+		RangeCase{"0x1p120","0x1p-150",0x30800000U,0}}) {
+		const double rgb=std::strtod(item.rgb,nullptr),alpha=std::strtod(item.alpha,nullptr);
+		image->Reset(1,1,true);image->custom=true;image->customColor=RISEColor(rgb,-rgb,rgb,alpha);
+		const auto before=receiver.calls32;output->OutputIntermediateImage(*image,nullptr);
+		const std::uint32_t bits[]={item.product,item.product|0x80000000U,item.product,item.opacity};
+		float expected[4];std::memcpy(expected,bits,sizeof(expected));
+		Check(receiver.calls32==before+1 && image->reads==1 && receiver.values.size()==4 &&
+			std::memcmp(receiver.values.data(),expected,sizeof(expected))==0,
+			"callback source precision: runtime RGB and alpha multiply before binary32 narrowing");
 	}
 	// Old normal RED must stop before exercising its known unsynchronized
 	// shared buffer. The new preflight canary establishes this guard first.
@@ -472,10 +489,11 @@ static void TestHDRWriterBounds()
 		buffer->release();
 		return;
 	}
-	writer->BeginWrite( 65536, 65536 );
+	bool rejected=false;
+	try{writer->BeginWrite(65536,65536);}catch(const std::exception&){rejected=true;}
 	writer->WriteColor( RISEColor(1, 0, 0, 1), 0, 0 );
 	writer->EndWrite();
-	Check( buffer->getCurPos() == 0, "invalid HDR dimensions emit no partial header or pixels" );
+	Check( rejected && buffer->getCurPos() == 0, "invalid HDR dimensions throw and emit no partial header or pixels" );
 	writer->BeginWrite( 1, 1 );
 	writer->WriteColor( RISEColor(1, 0, 0, 1), 0, 0 );
 	writer->EndWrite();
@@ -489,6 +507,60 @@ static void TestHDRWriterBounds()
 		"HDR writer recovers with one independently specified RGBE pixel" );
 	writer->release();
 	buffer->release();
+}
+
+static void TestSharedExponentWriteFailures()
+{
+	const auto release=[](auto* p){if(p)p->release();};
+	for(bool alpha : {false,true}) {
+		const auto create=[alpha](IWriteBuffer& buffer) {
+			IRasterImageWriter* writer=nullptr;
+			if(alpha)RISE_API_CreateRGBEAWriter(&writer,buffer);
+			else RISE_API_CreateHDRWriter(&writer,buffer,eColorSpace_Rec709RGB_Linear);
+			return writer;
+		};
+		const RISEColor color(.6,.3,.15,.5);
+		const std::vector<unsigned char> pixel=alpha?
+			std::vector<unsigned char>{0x24,0xe0,0x87,0xa6,0xc0,0x59,127,127}:
+			std::vector<unsigned char>{153,76,38,127};
+		std::unique_ptr<MemoryBuffer,decltype(release)> valid(new MemoryBuffer(),release);
+		std::unique_ptr<IRasterImageWriter,decltype(release)> writer(create(*valid),release);
+		if(alpha) {
+			bool reported=false;
+			try{writer->BeginWrite(65536,65536);}catch(const std::exception&){reported=true;}
+			writer->WriteColor(color,0,0);writer->EndWrite();
+			Check(reported && valid->getCurPos()==0,"shared exponent failure RGBEA: invalid dimensions throw before sink mutation");
+		}
+		writer->BeginWrite(1,1);writer->WriteColor(color,0,0);writer->EndWrite();
+		const std::string bytes(valid->Pointer(),valid->getCurPos()),resolution="-Y 1 +X 1\n";
+		const auto offset=bytes.find(resolution);
+		const size_t header=offset==std::string::npos?0:offset+resolution.size();
+		const bool fixture=header && bytes.size()==header+pixel.size() &&
+			std::memcmp(bytes.data()+header,pixel.data(),pixel.size())==0;
+		for(bool headerFailure : {true,false}) {
+			// A 2x1 payload does not fit. Starting later also makes its header
+			// fail; seek back to zero and retry 1x1 in the same borrowed sink.
+			const auto capacity=static_cast<unsigned int>(header+pixel.size()*2-1);
+			std::vector<char> storage(capacity,'!');
+			std::unique_ptr<MemoryBuffer,decltype(release)> sink(new MemoryBuffer(storage.data(),capacity,false),release);
+			std::unique_ptr<IRasterImageWriter,decltype(release)> failed(create(*sink),release);
+			const auto start=headerFailure?static_cast<unsigned int>(pixel.size()*2):0U;
+			sink->seek(IReadBuffer::START,static_cast<int>(start));
+			bool reported=false;
+			try{failed->BeginWrite(2,1);failed->WriteColor(color,0,0);failed->WriteColor(color,1,0);failed->EndWrite();}
+			catch(const std::exception&){reported=true;}
+			const auto stopped=sink->getCurPos();const auto saved=storage;
+			failed->WriteColor(RISEColor(1,0,0,1),0,0);failed->EndWrite();
+			Check(fixture && reported && stopped==(headerFailure?start:header) && sink->getCurPos()==stopped && storage==saved,
+				(std::string("shared exponent failure ")+(alpha?"RGBEA: ":"HDR: ")+
+				(headerFailure?"borrowed header failure throws and deactivates pixels":"borrowed payload failure throws and deactivates pixels")).c_str());
+			sink->seek(IReadBuffer::START,0);failed->BeginWrite(1,1);failed->WriteColor(color,0,0);failed->EndWrite();
+			Check(fixture && sink->getCurPos()==bytes.size() && std::memcmp(storage.data(),bytes.data(),header)==0 &&
+				std::memcmp(storage.data()+header,pixel.data(),pixel.size())==0,
+				(std::string("shared exponent failure ")+(alpha?"RGBEA: ":"HDR: ")+
+				(headerFailure?"healthy retry after header failure matches independent wire bytes":"healthy retry after payload failure matches independent wire bytes")).c_str());
+		}
+	}
 }
 
 static void TestSharedExponentPacking()
@@ -2188,6 +2260,7 @@ static int RunTests()
 #endif
 	TestRasterStorage();
 	TestHDRWriterBounds();
+	TestSharedExponentWriteFailures();
 	TestSharedExponentPacking();
 	TestHDRRawScanlineMarker();
 	TestPPMWriterBounds();
