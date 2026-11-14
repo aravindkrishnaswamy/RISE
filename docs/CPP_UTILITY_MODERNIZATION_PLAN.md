@@ -99,7 +99,7 @@ additional decisions explicit:
   files, as with other externally interrupted tests.
 
 
-Second-pass host validation passed 15 focused executables: 135 buffer checks,
+At `f5f5488e1`, second-pass host validation passed 15 focused executables: 135 buffer checks,
 93 photon checks, 172 CST/command checks, 131 frame-encoder checks, 89 viewport
 checks, 438 template checks, and 480 exact corpus matches with zero drift,
 plus the image, output, source-hygiene, spectral and mesh suites. The large
@@ -114,6 +114,34 @@ and returned exit 1 without termination. Clean make, Xcode Deployment/Opto,
 and Blender native LTO builds passed without compiler warnings; only the
 expected Xcode AppIntents metadata notices were discounted. Native Windows
 verification remains outstanding.
+
+
+### Fresh review follow-up after `f5f5488e1`
+
+Three independent reviewers found three additional P1 defects and one P2
+fixture collision. Each finding was confirmed and fixed:
+
+| Finding | Correction |
+| --- | --- |
+| Existing-target probe required read permission | Open an existing-only write descriptor without creating or truncating the target. Write-only targets retain both staging policies, including direct image writes in restricted parents. |
+| Partial thumbnail accepted as a cache | Encode the known 4x4 default PNG once, validate cached bytes against that complete payload, regenerate partial/foreign entries, and return an empty path after failed publication. A limited direct-write fixture verifies partial data cannot become a usable cache and a later call repairs it. |
+| Repeated JPEG reads leaked decoded pixels | Reset and release the previous decode before each `BeginRead`, including failed reloads; reset output dimensions and internal image state. Valid reloads preserve every pixel. |
+| Concurrent parser fixtures collided | Parser and template tests run inside parent-owned scratch directories, extending the existing buffer/photon isolation. |
+
+
+The review fixes passed nine focused executables (including 139 buffer,
+62 image, 448 template and 172 parser checks), five targeted ASan/UBSan
+runs, and repeated clean make, Xcode Deployment/Opto and Blender LTO builds.
+There were no unexpected warnings. The new write-only, failed JPEG reload
+and partial-thumbnail regressions failed normally against `f5f5488e1` and
+passed with their fixes. Two concurrent parser copies sharing a parent
+`TMPDIR` each completed all 172 checks and removed their owned directories.
+A 10,000-reload JPEG allocator probe no longer retained growth after reader
+cleanup (the final snapshot was 1,936 bytes below the initial decode
+snapshot; the unfixed probe grew by 8,958,064 bytes). The four CLI write
+failure probes still reached TIFF/EXR finalization and exited cleanly.
+Multi-GiB sparse cases remain explicitly skipped on this host, and native
+Windows execution remains outstanding.
 
 
 ### Host measurements and decisions

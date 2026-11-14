@@ -20,6 +20,7 @@ source assets with the corrected build.
   Render output, viewport Save As, and thumbnails permit direct writes on
   staging or rename permission failures, including through dangling symlinks.
   Rename fallback copies the completed image without repeating encoding.
+  Existing output files need write access; read permission is not required.
   Other staging errors remain failures. A failed direct write can
   leave a partial image.
 - Spectral and piecewise-function tables accept their leading finite
@@ -37,6 +38,10 @@ source assets with the corrected build.
 - JPEG inputs above `INT_MAX` bytes and 3DS inputs above `UINT_MAX` bytes
   are explicitly rejected before reading payloads; these readers have
   narrower format/library limits than the disk buffer.
+- JPEG reloads release previous decoded pixels and clear failed-read state.
+  Template thumbnail caches are reused only when their bytes match the
+  generated default PNG. Partial or foreign entries are regenerated, and
+  failed writes return no usable texture path.
 - TIFF decoding rejects damaged strips. The older partial-decoding mode
   could report success while inserting opaque-black rows.
 - Media existence checks use the native narrow filename convention shared
