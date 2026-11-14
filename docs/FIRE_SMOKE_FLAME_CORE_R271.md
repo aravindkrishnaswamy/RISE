@@ -1670,6 +1670,17 @@ The ramp arms are §39; its reading of the step is corrected there.
 - Both cases agree on the size of what the 0.5 m zone leaves: about 15% of FDS's mass flux, set in the first metre and then held.
 - The candidate stays as adopted; it was chosen on the reacting case, which is the production target.
 
+## 42. The negative zero: GPU subnormal flush at the scalar commit; proposed one-line fix (2026-11-14)
+
+Evidence: `s42_runs.txt`.
+
+- **Mechanism.** In the inert case the ambient temperature equals the sensible-energy reference (300 K), so untouched ambient cells hold energy exactly 0 and the plume's leading edge decays through dozens of orders of magnitude. The Apple GPU flushes an arithmetic result below about 1.2e-38 to zero and keeps its sign (standalone Metal test on the M4 Max: `-1e-34 * 1e-5` gives `0x80000000` on the GPU, `-1e-39` on the CPU; an exact cancellation gives +0 on both).
+- **The cell.** `res_t6_lc_zone12_e` (extended `RISE_FIRE_NONCANONICAL_DETAIL`): cell 109423 = (15, 24, 40) of 52×52×80, at the plume's edge at 1.65 m. Energy one step earlier `+1.0120065e-34`; the cell above went `-5.56e-34` → `-1.31e-37`; neighbours one cell out are 3e-11 to 1e3. One negative zero and 277 positive zeros in the field.
+- **Write site.** `fct_commit_scalar` (`FireProductionAdvectionMac.mm`) is the only GPU kernel that writes the accepted scalar state, and it stores the value without the `value==0.0f?0.0f:value` normalisation that `evaluate_resident_target_terms`, `finalize_resident_target` and `owner_compose_target` already apply.
+- **Proposed patch (uncommitted, in `s29_optins.patch`; production change, pending owner approval):** `if(value[component]==0.0f)value[component]=0.0f;` before the store. The canonical-state check is unchanged.
+- **Verification.** `res_t6_lc_zone12_f`, patched driver, no accept switch: passes the former stop (step 2563, t = 4.146 s) with no failure; frames 10, 20 and 34 are byte-identical to `res_t6_lc_zone12_d`.
+- **Open.** Whether the sign arises in this kernel or arrives in its input is not separated (the patch covers both). The CPU reference path keeps the subnormal where the GPU writes zero, so the two already differ in this regime; which tests compare them is unchecked. Test suite not run.
+
 ## Next (owner decisions)
 
 1. **Plan agreed 2026-11-10 (owner):** stop the open-ended floor-mechanism hunt (§30 closes it) and judge a candidate package against physical targets.
@@ -1685,4 +1696,4 @@ The ramp arms are §39; its reading of the step is corrected there.
    - The limited momentum carrier (§29) stays the one identified numerics contributor: 2–3× base unsteadiness with an FDS-like spectrum aloft. Superbee on top adds only 6–9% at k7–k16.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
 3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
-4. The zone ramp form (§38), the noncanonical-state detail and negative-zero switches (§40.3), the seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman and advective-CFL opt-ins, and the §29.9 diagnostic switches, stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.
+4. The zone ramp form (§38), the noncanonical-state detail and negative-zero switches (§40.3), the proposed `fct_commit_scalar` zero normalisation (§42), the seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman and advective-CFL opt-ins, and the §29.9 diagnostic switches, stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.

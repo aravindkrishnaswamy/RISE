@@ -128,7 +128,7 @@ index 920e90ad7..029e7d99d 100644
  		double PilotCommandMaximumStepS(const DerivedV1&);
  		bool BuildMethaneV1(
 diff --git a/src/Library/Utilities/FireProductionAdvectionMac.mm b/src/Library/Utilities/FireProductionAdvectionMac.mm
-index 86707bf9e..22fc2de3e 100644
+index 86707bf9e..4b0b4ca25 100644
 --- a/src/Library/Utilities/FireProductionAdvectionMac.mm
 +++ b/src/Library/Utilities/FireProductionAdvectionMac.mm
 @@ -647,13 +647,20 @@ bool PackMetalResidentTransport(
@@ -163,7 +163,16 @@ index 86707bf9e..22fc2de3e 100644
  #include <metal_stdlib>
  using namespace metal;
  struct FCTParams {
-@@ -2239,6 +2246,16 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
+@@ -1991,6 +1998,8 @@ kernel void fct_commit_scalar(device const float* lowState [[buffer(0)]],
+     alpha[upper]*fluxDelta[component*all+upper];volatile float correction=
+     lowerCorrection-upperCorrection;volatile float scaled=scale*correction;
+     value[component]+=scaled;}
++  // The GPU flushes a subnormal result to a signed zero; publish the canonical positive zero.
++  if(value[component]==0.0f)value[component]=0.0f;
+   accepted[component*p.cells+gid]=value[component];
+   if(!isfinite(value[component]))atomic_fetch_or_explicit(failure,8u,memory_order_relaxed);}
+  for(uint inequality=0u;inequality<p.inequalities;++inequality){float rowScale=1.0f;
+@@ -2239,6 +2248,16 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
   atomic_fetch_max_explicit(maximumScaleBits,as_type<uint>(scale),memory_order_relaxed);
  }
  )METAL";
@@ -180,7 +189,7 @@ index 86707bf9e..22fc2de3e 100644
  		}
  
  			bool Valid() const
-@@ -2445,7 +2462,7 @@ inline float tr_phi(float mui,float muj,float wi,float wj){float numerator=1.0f+
+@@ -2445,7 +2464,7 @@ inline float tr_phi(float mui,float muj,float wi,float wj){float numerator=1.0f+
  inline void resident_transport_cell(device const float* state,device const float* temperature,
   device const float* velocity,device const float* thermo,device const float* transport,
   device float* output,device atomic_uint* failure,device atomic_uint* obligations,
@@ -189,7 +198,7 @@ index 86707bf9e..22fc2de3e 100644
   float T=temperature[gid];bool valid=isfinite(T);float rho=0.0f,mass[6];
   for(uint species=0u;species<6u;++species){float q=state[(species+1u)*p.cells+gid];
    if(!isfinite(q))valid=false;mass[species]=max(0.0f,q);rho+=mass[species];}
-@@ -2488,7 +2505,19 @@ inline void resident_transport_cell(device const float* state,device const float
+@@ -2488,7 +2507,19 @@ inline void resident_transport_cell(device const float* state,device const float
   if(abs(rawB)<=32.0f*0x1p-24f*max(1.0f,rawScale))atomic_fetch_or_explicit(obligations,1u<<11u,memory_order_relaxed);
   atomic_fetch_or_explicit(obligations,1u<<(alpha2==0.0f?12u:13u),memory_order_relaxed);
   atomic_fetch_or_explicit(obligations,1u<<(rawB<0.0f?14u:15u),memory_order_relaxed);
@@ -210,7 +219,7 @@ index 86707bf9e..22fc2de3e 100644
   float mole[6],mu[6],conductivity[6],moleTotal=0.0f,cp=0.0f;
   for(uint species=0u;species<6u;++species){float fraction=mass[species]/rho;
    float weight=thermo[32u*species];mole[species]=fraction/weight;moleTotal+=mole[species];
-@@ -2519,6 +2548,14 @@ kernel void evaluate_resident_transport_compact(device const float* state [[buff
+@@ -2519,6 +2550,14 @@ kernel void evaluate_resident_transport_compact(device const float* state [[buff
   device const uchar* inflow [[buffer(9)]],
   uint gid [[thread_position_in_grid]]){resident_transport_cell(state,temperature,velocity,thermo,
   transport,output,failure,obligations,p,inflow,gid,true);}
@@ -225,7 +234,7 @@ index 86707bf9e..22fc2de3e 100644
  kernel void identify_resident_transport(device const float* state [[buffer(0)]],
   device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
   device const float* output [[buffer(3)]],device const float* thermo [[buffer(4)]],
-@@ -4001,7 +4038,36 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
+@@ -4001,7 +4040,36 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
   hash^=l2[0];hash*=1099511628211ul;
   hash^=p.attempt;hash*=1099511628211ul;output[0]=hash==0ul?1ul:hash;}
  )METAL";
@@ -263,7 +272,7 @@ index 86707bf9e..22fc2de3e 100644
  			}
  
  			explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),queue(nil),evaluate(nil),identify(nil),
-@@ -4047,7 +4113,8 @@ explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),que
+@@ -4047,7 +4115,8 @@ explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),que
  						return function?NameProducerKernel([device newComputePipelineStateWithFunction:function error:&metalError],name):nil;};
  					evaluate=pipeline("evaluate_resident_transport");identify=pipeline("identify_resident_transport");
  					// r271 A/B: heat and species take the compact-stencil nu_t with the momentum.
@@ -273,7 +282,7 @@ index 86707bf9e..22fc2de3e 100644
  					physicalFlux=pipeline("evaluate_resident_physical_flux");
  					advectivePair=pipeline("evaluate_resident_advective_pair");
  					finalizeAdvective=pipeline("finalize_resident_advective_high");
-@@ -8487,7 +8554,8 @@ bool Project(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> momentum
+@@ -8487,7 +8556,8 @@ bool Project(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> momentum
  						output.projectionDiagnostics,error))return false;
  					++projectionInvocations_;deviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
  					projectionDeviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
@@ -480,13 +489,53 @@ index 152b24a3e..3d2a17432 100644
  	bool BuildFireProductionFrozenForceFieldsMetal(
  		const FireProductionFrozenForceRequest&,
 diff --git a/src/Library/Utilities/FireProductionSource.cpp b/src/Library/Utilities/FireProductionSource.cpp
-index ddf51eb75..e23295597 100644
+index ddf51eb75..03dc189ed 100644
 --- a/src/Library/Utilities/FireProductionSource.cpp
 +++ b/src/Library/Utilities/FireProductionSource.cpp
-@@ -165,15 +165,18 @@ namespace RISE
+@@ -10,6 +10,8 @@
+ #include "FireProductionSourceKernel.h"
+ #include "FireCase.h"
+ 
++#include <cstdio>
++#include <cmath>
+ #include <new>
+ #include <system_error>
+ 
+@@ -165,15 +167,49 @@ namespace RISE
  					request.eligibilityBeginningConservativeValues.empty()?
  					request.beginningConservativeValues:
  					request.eligibilityBeginningConservativeValues;
++				// r271 diagnostic (opt-in RISE_FIRE_NONCANONICAL_DETAIL=1): context for a negative-zero sensible energy.
++				if(std::getenv("RISE_FIRE_NONCANONICAL_DETAIL")){
++					static std::vector<float> previousEnergy,currentEnergy;static double currentTimeS=-1.0;
++					const float* energy=request.beginningConservativeValues.data()+8u*cells;
++					if(request.beginningTimeS!=currentTimeS){previousEnergy.swap(currentEnergy);
++						currentEnergy.assign(energy,energy+cells);currentTimeS=request.beginningTimeS;}
++					std::size_t negativeZeros=0u,positiveZeros=0u,tiny=0u,first=cells;
++					float smallestPositive=0.0f,smallestNegative=0.0f;
++					for(std::size_t cell=0u;cell<cells;++cell){const float v=energy[cell];
++						if(v==0.0f){if(std::signbit(v)){if(first==cells)first=cell;++negativeZeros;}else ++positiveZeros;continue;}
++						if(std::fabs(v)<1.0e-30f)++tiny;
++						if(v>0.0f&&(smallestPositive==0.0f||v<smallestPositive))smallestPositive=v;
++						if(v<0.0f&&(smallestNegative==0.0f||v>smallestNegative))smallestNegative=v;}
++					if(first!=cells){
++						const std::size_t nx=request.shape.nx,ny=request.shape.ny,nz=request.shape.nz;
++						const std::size_t x=first%nx,y=(first/nx)%ny,z=first/(nx*ny);
++						std::fprintf(stderr,"NEGATIVE_ZERO_DETAIL time=%.17g cell=%zu x=%zu y=%zu z=%zu of %zux%zux%zu negative_zeros=%zu "
++							"positive_zeros=%zu tiny_nonzero=%zu smallest_positive=%.9g smallest_negative=%.9g previous=%.9g previous_signbit=%d\n",
++							request.beginningTimeS,first,x,y,z,nx,ny,nz,negativeZeros,positiveZeros,tiny,
++							static_cast<double>(smallestPositive),static_cast<double>(smallestNegative),
++							previousEnergy.size()==cells?static_cast<double>(previousEnergy[first]):0.0,
++							previousEnergy.size()==cells?static_cast<int>(std::signbit(previousEnergy[first])):-1);
++						for(int dz=-2;dz<=2;++dz)for(int dy=-2;dy<=2;++dy)for(int dx=-2;dx<=2;++dx){
++							const long long X=static_cast<long long>(x)+dx,Y=static_cast<long long>(y)+dy,Z=static_cast<long long>(z)+dz;
++							if(X<0||Y<0||Z<0||X>=static_cast<long long>(nx)||Y>=static_cast<long long>(ny)||Z>=static_cast<long long>(nz))continue;
++							const std::size_t n=static_cast<std::size_t>(X)+nx*(static_cast<std::size_t>(Y)+ny*static_cast<std::size_t>(Z));
++							std::fprintf(stderr,"NEGATIVE_ZERO_NEIGHBOUR d=%d,%d,%d now=%.9g previous=%.9g rho=%.9g\n",dx,dy,dz,
++								static_cast<double>(energy[n]),previousEnergy.size()==cells?static_cast<double>(previousEnergy[n]):0.0,
++								static_cast<double>(request.beginningConservativeValues[n]));}
++					}
++				}
 +				// r271 diagnostic (opt-in RISE_FIRE_ALLOW_NEGATIVE_ZERO=1): accept a negative zero in the beginning state.
 +				const bool allowNegativeZero=std::getenv("RISE_FIRE_ALLOW_NEGATIVE_ZERO")!=nullptr;
  				for(std::size_t cell=0u;cell<cells;++cell){
@@ -505,7 +554,7 @@ index ddf51eb75..e23295597 100644
  							"production canonical source eligibility state is noncanonical");
  						tuple[component]=static_cast<double>(value);
  						eligibilityTuple[component]=static_cast<double>(eligibilityValue);
-@@ -271,6 +274,9 @@ namespace RISE
+@@ -271,6 +307,9 @@ namespace RISE
  						if(passes)eligible[cell]=true;
  					}
  				}
@@ -515,7 +564,7 @@ index ddf51eb75..e23295597 100644
  				std::vector<MethaneReactionStep> reactions(cells);
  				for(std::size_t cell=0u;cell<cells;++cell){
  					reactions[cell].deltaTimeS=static_cast<double>(request.timeStepS);
-@@ -278,7 +284,7 @@ namespace RISE
+@@ -278,7 +317,7 @@ namespace RISE
  					reactions[cell].maximumAcceptedTemperatureK=
  						fireCase.derived.maximumAcceptedTemperatureK;
  					reactions[cell].primaryEligible=eligible[cell];
@@ -524,7 +573,7 @@ index ddf51eb75..e23295597 100644
  					if(!FireCase::EvaluatePilotSetpointTemperatureK(fireCase.derived,
  						request.pilotCommandMask[cell]!=0u,request.beginningTimeS,
  						request.beginningTimeS+static_cast<double>(request.timeStepS),
-@@ -295,7 +301,7 @@ namespace RISE
+@@ -295,7 +334,7 @@ namespace RISE
  					fireCase.derived.pilotAmbientTemperatureK,
  					fireCase.derived.referenceHeatReleaseRateW,
  					fireCase.derived.effectiveRadiativeFraction,request.predictiveRadiation,
@@ -533,7 +582,7 @@ index ddf51eb75..e23295597 100644
  				// r270: the radiatively adiabatic floor returns its convective flux
  				// to the first gas layer as a frozen energy dose, q/dz, before the
  				// expansion target is derived from the packet.
-@@ -359,6 +365,38 @@ namespace RISE
+@@ -359,6 +398,38 @@ namespace RISE
  							"production canonical source floor dose failed its Binary32 certificate");
  					}
  				}
@@ -572,7 +621,7 @@ index ddf51eb75..e23295597 100644
  				FireProductionFrozenSourcePacketSeal candidate;
  				candidate.shape_=request.shape;candidate.timeStepS_=request.timeStepS;
  				candidate.beginningTimeS_=request.beginningTimeS;
-@@ -468,6 +506,15 @@ namespace RISE
+@@ -468,6 +539,15 @@ namespace RISE
  					HashByteValues(candidate.sourceInputIdentity_,request.floorAbsorbingFaceMask);
  					HashFloatValues(candidate.sourceInputIdentity_,request.floorTangentialSpeedMPerS);
  				}
