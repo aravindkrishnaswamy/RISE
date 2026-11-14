@@ -146,3 +146,9 @@ same_34
 Run: 243 passed, 25 failed, 0 skipped (of 247 run)
 baseline (patch line removed), four failing programs: Calibration 13 / Solver 12 / Sequence / SimulationSolver 1 failures, lists identical to patched (Solver patched on idle machine: 12)
 res_t6_lc_zone12_f: 129 frames, all checkpoint files cmp-identical to res_t6_lc_zone12_d
+
+# failure separation 2026-11-14: FAIL counts Calibration / Solver / Sequence / SimulationSolver, lists identical in all three states
+with opt-ins: 13 / 12 / 1 / 1
+head 40f884266, opt-ins lifted: 13 / 12 / 1 / 1
+aeec35076 (pre-r271) + FireSequence.cpp from c11870504: 13 / 12 / 1 / 1
+Production resident full-step cap under_bytes=3147349560 over_bytes=3163224232 (test expects 2143321656 / 2154313896) in all three
