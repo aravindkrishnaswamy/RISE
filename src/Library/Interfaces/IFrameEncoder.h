@@ -126,9 +126,10 @@ namespace RISE
 
 		//! Encode the FrameStore's beauty + alpha channels into
 		//! `dst` using the per-format byte production rules and
-		//! the supplied options.  Throws no exceptions: write
-		//! errors are reported via the underlying IWriteBuffer
-		//! (which already has its own error semantics).
+		//! the supplied options. Writer creation, allocation, codec or sink
+		//! failures may throw. Callers must contain exceptions and check
+		//! destination-specific failure reporting before accepting the bytes;
+		//! a failed encoding may leave partial output in `dst`.
 		//!
 		//! The encoder may NOT take ownership of `dst` — caller
 		//! retains the IWriteBuffer reference.  Caller is also

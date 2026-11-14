@@ -20,6 +20,8 @@
 #include "../../Interfaces/IReadBuffer.h"
 #include "../FiniteMath.h"
 #include <cmath>
+#include <cstdint>
+#include <type_traits>
 
 
 namespace RISE
@@ -180,13 +182,36 @@ namespace RISE
 			);
 
 		//! Premultiplies RGB Pel
+		//! Integral RGB/alpha inputs must be in [0,max_val]. Floating RGB
+		//! must be finite and alpha in [0,max_val]; RGB may retain HDR range.
+		//! Alpha is preserved. The positive normalization maximum is explicit.
 		template< class T, int max_val >
 		T PremultiplyAlphaRGB( const T& rgba )
 		{
+			static_assert(max_val>0,"alpha normalization maximum must be positive");
+			using Channel=decltype(rgba.r);
 			T ret;
-			ret.r = rgba.r * max_val / rgba.a;
-			ret.g = rgba.g * max_val / rgba.a;
-			ret.b = rgba.b * max_val / rgba.a;
+			if constexpr(std::is_integral<Channel>::value) {
+				const auto multiply=[&rgba](Channel value) {
+					return static_cast<Channel>((static_cast<std::uint64_t>(value)*static_cast<std::uint64_t>(rgba.a))/
+						static_cast<std::uint64_t>(max_val));
+				};
+				ret.r=multiply(rgba.r);ret.g=multiply(rgba.g);ret.b=multiply(rgba.b);
+			} else {
+				// Normalize bounded mantissas, then restore the combined exponent.
+				// Forming alpha/max first can erase a tiny alpha; multiplying RGB
+				// by alpha first can overflow despite a representable final result.
+				int alphaPower=0;
+				const long double alphaMantissa=std::frexp(static_cast<long double>(rgba.a),&alphaPower);
+				const long double normalizedAlpha=alphaMantissa/static_cast<long double>(max_val);
+				const auto multiply=[normalizedAlpha,alphaPower](Channel value) {
+					int rgbPower=0;
+					const long double rgbMantissa=std::frexp(static_cast<long double>(value),&rgbPower);
+					return static_cast<Channel>(std::ldexp(rgbMantissa*normalizedAlpha,rgbPower+alphaPower));
+				};
+				ret.r=multiply(rgba.r);ret.g=multiply(rgba.g);ret.b=multiply(rgba.b);
+			}
+			ret.a=rgba.a;
 			return ret;
 		}
 	}

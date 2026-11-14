@@ -14,6 +14,7 @@
 #include "pch.h"
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include "PhotonMapping/GlobalPelPhotonMap.h"
 #include "PhotonMapping/GlobalSpectralPhotonMap.h"
 #include "PhotonMapping/CausticSpectralPhotonMap.h"
@@ -10988,25 +10989,27 @@ namespace RISE {
 			unsigned int			height;
 			bool					bPremultipliedAlpha;
 			COLOR_SPACE				color_space;
+			std::mutex				dispatchMutex;
 
-			virtual ~CallbackRasterizerOutputDispatch()
+			void ClearBuffer_()
 			{
 				if( pBuffer ) {
 					GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-					// Array allocation (`new RGBA16[...]`) requires
-					// matching `delete[]`; the historical `delete pBuffer`
-					// was undefined behaviour that happened to work on
-					// trivial element types under most allocators.
 					delete[] pBuffer;
-					pBuffer = 0;
+					pBuffer = nullptr;
 				}
+				width = height = 0;
 			}
+
+			virtual ~CallbackRasterizerOutputDispatch() { ClearBuffer_(); }
 
 		public:
 
 			CallbackRasterizerOutputDispatch( const CallbackRasterizerOutputDispatch& o ) :
-			  pObj( o.pObj ), pBuffer( 0 ), width( o.width ), height( o.height ), bPremultipliedAlpha( o.bPremultipliedAlpha ), color_space( o.color_space )
+			  pObj( o.pObj ), pBuffer( 0 ), width( 0 ), height( 0 ), bPremultipliedAlpha( false ), color_space( eColorSpace_sRGB )
 			{
+				// The copy owns a fresh mutex/cache; do not read a live adapter's
+				// mutable conversion state while its render workers may use it.
 			}
 
 			CallbackRasterizerOutputDispatch( IJobRasterizerOutput& pObj_ ) :
@@ -11020,134 +11023,80 @@ namespace RISE {
 				const Rect* pRegion							///< [in] Rasterized region, if its NULL then the entire image should be output
 				)
 			{
-				// Reallocate the dispatch buffer whenever the image
-				// dimensions change, not only on first call.  Without
-				// this, an output dispatcher reused across renders with
-				// different image dims would either:
-				//   - underflow pBuffer (if cached dims < current dims):
-				//     the y*width+x indexing uses cached width and the
-				//     loop iterates current dims, so writes overrun
-				//     pBuffer.
-				//   - read-OOB on GetPEL (if cached dims > current dims):
-				//     the loop iterates cached dims, but pImage is only
-				//     `current dims` big — GetPEL(x>=current_w, y>=current_h)
-				//     reads garbage, GetPEL's virtual call may dispatch
-				//     through a corrupted vtable on freed pages, and the
-				//     downstream Integerize crashes with a PAC fault on
-				//     a wild far-address (matching the production-render
-				//     crash report).
-				// The cheap path (dims match) is unchanged: no realloc,
-				// no work.
-				const unsigned int curW = pImage.GetWidth();
-				const unsigned int curH = pImage.GetHeight();
-				if( !pBuffer || curW != width || curH != height ) {
-					if( pBuffer ) {
-						GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-						delete[] pBuffer;
-						pBuffer = 0;
-					}
-					width = curW;
-					height = curH;
-					pBuffer = new RGBA16[ width*height ];
-					GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
-					bPremultipliedAlpha = pObj.PremultipliedAlpha();
-					int cp = pObj.GetColorSpace();
-					switch( cp )
-					{
-					case 0:
-						color_space = eColorSpace_Rec709RGB_Linear;
-						break;
-					case 1:
-					default:
-						color_space = eColorSpace_sRGB;
-						break;
-					case 2:
-						color_space = eColorSpace_ROMMRGB_Linear;
-						break;
-					case 3:
-						color_space = eColorSpace_ProPhotoRGB;
-						break;
-					};
+				// Rasterizer workers may deliver distinct tiles concurrently.
+				// Keep conversion storage and receiver access serialized while
+				// the caller's tile bracket (if any) continues to protect pixels.
+				std::lock_guard<std::mutex> lock(dispatchMutex);
+				const unsigned int curW=pImage.GetWidth(),curH=pImage.GetHeight();
+				// Legacy callback addressing cannot represent more than UINT_MAX
+				// pixels. Check counts before products, allocations, or height-1.
+				const size_t maxCount=std::min<size_t>(
+					std::numeric_limits<unsigned int>::max(),std::numeric_limits<size_t>::max());
+				if(!curW || !curH || curW>maxCount/curH) {
+					ClearBuffer_();return;
 				}
-
-				// Set the appropriate bytes
-				Rect rc( 0, 0, height-1, width-1 );
-				if( pRegion ) {
-					rc.left = pRegion->left;
-					rc.top = pRegion->top;
-					rc.right = pRegion->right;
-					rc.bottom = pRegion->bottom;
+				Rect rc(0,0,curH-1,curW-1);
+				if(pRegion) {
+					if(pRegion->left>pRegion->right || pRegion->top>pRegion->bottom ||
+						pRegion->left>=curW || pRegion->top>=curH)return;
+					rc.left=pRegion->left;rc.top=pRegion->top;
+					rc.right=std::min(pRegion->right,curW-1);
+					rc.bottom=std::min(pRegion->bottom,curH-1);
 				}
-
-				// HDR-aware fast path: outputs that opt into 32-bit
-				// float receive the raw linear `RISEColor.base` values
-				// directly, skipping the Integerize quantize-to-uint16
-				// step (which would clamp any value > 1.0).  Required
-				// for the Blender bridge so Filmic + exposure can
-				// tonemap real HDR data instead of seeing a [0, 1]
-				// clipped image.  Falls through to the legacy 16-bit
-				// path for every existing consumer that doesn't
-				// override `WantsFloat32`.
-				if( pObj.WantsFloat32() ) {
-					std::vector<float> fbuf( static_cast<size_t>( width ) * height * 4, 0.0f );
-					for( unsigned int y=rc.top; y<=rc.bottom; y++ ) {
-						for( unsigned int x=rc.left; x<= rc.right; x++ ) {
-							const RISEColor c = pImage.GetPEL( x, y );
-							const size_t idx = ( static_cast<size_t>( y ) * width + x ) * 4;
-							// RISEPel == Rec709RGBPel since Stage B of
-							// the colour-space migration.  Members are
-							// `.base.r/g/b` (Chel = double), `.a`.
-							// We deliver them verbatim — the consumer
-							// (Blender bridge) declares colour space
-							// via GetColorSpace and applies any further
-							// transform downstream.
-							fbuf[idx+0] = static_cast<float>( c.base.r );
-							fbuf[idx+1] = static_cast<float>( c.base.g );
-							fbuf[idx+2] = static_cast<float>( c.base.b );
-							fbuf[idx+3] = static_cast<float>( c.a );
-							if( bPremultipliedAlpha ) {
-								const float aa = fbuf[idx+3];
-								fbuf[idx+0] *= aa;
-								fbuf[idx+1] *= aa;
-								fbuf[idx+2] *= aa;
+				const bool wantsFloat=pObj.WantsFloat32();
+				const size_t pixelBytes=wantsFloat?4*sizeof(float):sizeof(RGBA16);
+				const size_t count=static_cast<size_t>(curW)*curH;
+				if(count>std::numeric_limits<size_t>::max()/pixelBytes) { ClearBuffer_();return; }
+				bPremultipliedAlpha=pObj.PremultipliedAlpha();
+				switch(pObj.GetColorSpace()) {
+				case 0: color_space=eColorSpace_Rec709RGB_Linear;break;
+				case 2: color_space=eColorSpace_ROMMRGB_Linear;break;
+				case 3: color_space=eColorSpace_ProPhotoRGB;break;
+				case 1:
+				default: color_space=eColorSpace_sRGB;break;
+				}
+				if(wantsFloat) {
+					// Float delivery owns only its chosen format, not an unused
+					// cached RGBA16 image alongside it.
+					ClearBuffer_();width=curW;height=curH;
+					std::vector<float> fbuf(count*4,0.0f);
+					for(unsigned int y=rc.top;y<=rc.bottom;++y) {
+						for(unsigned int x=rc.left;x<=rc.right;++x) {
+							const RISEColor c=pImage.GetPEL(x,y);
+							const size_t idx=(static_cast<size_t>(y)*width+x)*4;
+							fbuf[idx]=static_cast<float>(c.base.r);
+							fbuf[idx+1]=static_cast<float>(c.base.g);
+							fbuf[idx+2]=static_cast<float>(c.base.b);
+							fbuf[idx+3]=static_cast<float>(c.a);
+							if(bPremultipliedAlpha) {
+								fbuf[idx]*=fbuf[idx+3];fbuf[idx+1]*=fbuf[idx+3];fbuf[idx+2]*=fbuf[idx+3];
 							}
 						}
 					}
-					pObj.OutputImageRGBA32F( fbuf.data(), width, height, rc.top, rc.left, rc.bottom, rc.right );
+					pObj.OutputImageRGBA32F(fbuf.data(),width,height,rc.top,rc.left,rc.bottom,rc.right);
 					return;
 				}
-
-				for( unsigned int y=rc.top; y<=rc.bottom; y++ ) {
-					for( unsigned int x=rc.left; x<= rc.right; x++ ) {
-
+				if(!pBuffer || width!=curW || height!=curH) {
+					ClearBuffer_();
+					pBuffer=new RGBA16[count]();
+					width=curW;height=curH;
+					GlobalLog()->PrintNew(pBuffer,__FILE__,__LINE__,"callback pixels");
+				}
+				for(unsigned int y=rc.top;y<=rc.bottom;++y) {
+					for(unsigned int x=rc.left;x<=rc.right;++x) {
+						const RISEColor c=pImage.GetPEL(x,y);
 						RGBA16 conv;
-
-						switch( color_space )
-						{
-						case eColorSpace_sRGB:
-							conv = pImage.GetPEL(x,y).Integerize<sRGBPel,unsigned short>( 65535.0 );
-							break;
-						case eColorSpace_Rec709RGB_Linear:
-							conv = pImage.GetPEL(x,y).Integerize<Rec709RGBPel,unsigned short>( 65535.0 );
-							break;
-						case eColorSpace_ROMMRGB_Linear:
-							conv = pImage.GetPEL(x,y).Integerize<ROMMRGBPel,unsigned short>( 65535.0 );
-							break;
-						case eColorSpace_ProPhotoRGB:
-							conv = pImage.GetPEL(x,y).Integerize<ProPhotoRGBPel,unsigned short>( 65535.0 );
-							break;
-						};
-
-						if( bPremultipliedAlpha ) {
-							pBuffer[y*width+x] = ColorUtils::PremultiplyAlphaRGB<RGBA16,0xFFFF>( conv );
-						} else {
-							pBuffer[y*width+x] = conv;
+						switch(color_space) {
+						case eColorSpace_sRGB: conv=c.Integerize<sRGBPel,unsigned short>(65535.0);break;
+						case eColorSpace_Rec709RGB_Linear: conv=c.Integerize<Rec709RGBPel,unsigned short>(65535.0);break;
+						case eColorSpace_ROMMRGB_Linear: conv=c.Integerize<ROMMRGBPel,unsigned short>(65535.0);break;
+						case eColorSpace_ProPhotoRGB: conv=c.Integerize<ProPhotoRGBPel,unsigned short>(65535.0);break;
 						}
+						const size_t idx=static_cast<size_t>(y)*width+x;
+						pBuffer[idx]=bPremultipliedAlpha?ColorUtils::PremultiplyAlphaRGB<RGBA16,0xFFFF>(conv):conv;
 					}
 				}
-
-				// Send the data off
-				pObj.OutputImageRGBA16(	(unsigned short*)pBuffer, width, height, rc.top, rc.left, rc.bottom, rc.right );
+				pObj.OutputImageRGBA16(reinterpret_cast<const unsigned short*>(pBuffer),width,height,rc.top,rc.left,rc.bottom,rc.right);
 			}
 
 			//! A full rasterization was complete, and the full image should be output
@@ -11160,6 +11109,20 @@ namespace RISE {
 				OutputIntermediateImage( pImage, pRegion );
 			}
 		};
+
+		static IRasterizerOutput* CreateCallbackRasterizerOutputDispatch_(IJobRasterizerOutput& receiver)
+		{
+			auto* output=new CallbackRasterizerOutputDispatch(receiver);
+			GlobalLog()->PrintNew(output,__FILE__,__LINE__,"callback rasterizer output dispatch");
+			return output;
+		}
+
+		// Test-only construction seam; uses the same actual dispatcher factory
+		// as Job without exposing its cpp-local type or changing any interface.
+		IRasterizerOutput* ForTest_CreateCallbackRasterizerOutput(IJobRasterizerOutput& receiver)
+		{
+			return CreateCallbackRasterizerOutputDispatch_(receiver);
+		}
 	}
 }
 
@@ -11175,8 +11138,7 @@ bool Job::AddCallbackRasterizerOutput(
 		return false;
 	}
 
-	IRasterizerOutput* pRo = new CallbackRasterizerOutputDispatch( *pObj );
-	GlobalLog()->PrintNew( pRo, __FILE__, __LINE__, "callback rasterizer output dispatch" );
+	IRasterizerOutput* pRo = CreateCallbackRasterizerOutputDispatch_( *pObj );
 
 	pRasterizer->AddRasterizerOutput( pRo );
 	safe_release( pRo );

@@ -52,10 +52,14 @@
 #include <filesystem>
 #include <stdexcept>
 #include <cmath>
+#include <atomic>
+#include <thread>
+#include <chrono>
 
 #include <zlib.h>						// crc32 for the crafted PNG chunks
 
 #include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/RasterImages/TGAReader.h"
 #include "../src/Library/RasterImages/HDRReader.h"
@@ -71,7 +75,10 @@
 #include <OpenEXR/ImfChannelList.h>
 #endif
 #include "../src/Library/RasterImages/TGAWriter.h"
+#include "../src/Library/RasterImages/PPMWriter.h"
 #include "../src/Library/RasterImages/RasterImage.h"
+#include "../src/Library/Interfaces/IJobRasterizerOutput.h"
+#include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "TestTempDir.h"
 
 #ifndef NO_TIFF_SUPPORT
@@ -80,6 +87,11 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace RISE { namespace Implementation {
+	// Cpp-only delegate to the factory used by Job::AddCallbackRasterizerOutput.
+	IRasterizerOutput* ForTest_CreateCallbackRasterizerOutput(IJobRasterizerOutput& receiver);
+} }
 
 static int passCount = 0;
 static int failCount = 0;
@@ -127,6 +139,257 @@ static void TestNormalizedIntegerize()
 	const auto scaled=raw.ScaleRGBPelValuesAndIncludeAlpha<double>(pel,2);
 	Check(scaled.r==4 && scaled.g==-2 && scaled.b==0.5 && scaled.a==1,
 		"normalized Integerize: public raw scaling helper preserves its unnormalized representable products");
+}
+
+static void TestPremultiplyAlphaRGB()
+{
+	const auto byteHalf=ColorUtils::PremultiplyAlphaRGB<RGBA8,255>({200,100,50,128});
+	const bool validated=byteHalf.r==100 && byteHalf.g==50 && byteHalf.b==25 && byteHalf.a==128;
+	Check(validated,
+		"premultiply alpha: 8-bit fractional RGB multiplies and alpha is preserved");
+	// The old helper divides by alpha and overflows signed 16-bit products.
+	// First prove its operation is fixed, so RED exits via an ordinary failed
+	// assertion instead of executing those known divide-by-zero/overflow sites.
+	if(!validated)return;
+	const auto byteZero=ColorUtils::PremultiplyAlphaRGB<RGBA8,255>({200,100,50,0});
+	Check(byteZero.r==0 && byteZero.g==0 && byteZero.b==0 && byteZero.a==0,
+		"premultiply alpha: 8-bit transparent RGB becomes zero without division");
+	const auto byteFull=ColorUtils::PremultiplyAlphaRGB<RGBA8,255>({200,100,50,255});
+	Check(byteFull.r==200 && byteFull.g==100 && byteFull.b==50 && byteFull.a==255,
+		"premultiply alpha: 8-bit opaque RGBA is unchanged");
+	const auto wordZero=ColorUtils::PremultiplyAlphaRGB<RGBA16,65535>({65535,50000,32768,0});
+	Check(wordZero.r==0 && wordZero.g==0 && wordZero.b==0 && wordZero.a==0,
+		"premultiply alpha: 16-bit transparent RGB becomes zero without division");
+	const auto wordHalf=ColorUtils::PremultiplyAlphaRGB<RGBA16,65535>({65535,50000,32768,32768});
+	Check(wordHalf.r==32768 && wordHalf.g==25000 && wordHalf.b==16384 && wordHalf.a==32768,
+		"premultiply alpha: large 16-bit samples use exact wide products and preserve alpha");
+	const auto wordFull=ColorUtils::PremultiplyAlphaRGB<RGBA16,65535>({65535,65534,60000,65535});
+	Check(wordFull.r==65535 && wordFull.g==65534 && wordFull.b==60000 && wordFull.a==65535,
+		"premultiply alpha: maximum 16-bit alpha has no signed product overflow");
+	const auto floatZero=ColorUtils::PremultiplyAlphaRGB<RGBA_T<double>,1>({2,-4,.5,0});
+	Check(floatZero.r==0 && floatZero.g==0 && floatZero.b==0 && floatZero.a==0,
+		"premultiply alpha: floating transparent RGB becomes zero");
+	const auto floatHalf=ColorUtils::PremultiplyAlphaRGB<RGBA_T<double>,1>({2,-4,.5,.5});
+	Check(floatHalf.r==1 && floatHalf.g==-2 && floatHalf.b==.25 && floatHalf.a==.5,
+		"premultiply alpha: floating RGB retains signed HDR values and fractional alpha");
+	const auto floatFull=ColorUtils::PremultiplyAlphaRGB<RGBA_T<double>,1>({2,-4,.5,1});
+	Check(floatFull.r==2 && floatFull.g==-4 && floatFull.b==.5 && floatFull.a==1,
+		"premultiply alpha: floating opaque RGBA is unchanged");
+	// Keep RGB and alpha runtime inputs so fast-math/LTO must execute the
+	// arithmetic instead of folding this overflow-sensitive oracle away.
+	const double hugeRed=std::strtod("0x1p1020",nullptr);
+	const double hugeGreen=std::strtod("0x1p1018",nullptr);
+	const double halfAlpha=std::strtod("32767.5",nullptr);
+	const auto huge=ColorUtils::PremultiplyAlphaRGB<RGBA_T<double>,65535>(
+		{hugeRed,hugeGreen,-.5,halfAlpha});
+	Check(huge.r==std::ldexp(1.0,1019) && huge.g==std::ldexp(1.0,1017) && huge.b==-.25 && huge.a==32767.5,
+		"premultiply alpha: bounded floating mantissas avoid intermediate overflow");
+	const auto doubleBits=[](const double& actual,std::uint64_t bits) {
+		double expected;std::memcpy(&expected,&bits,sizeof(expected));
+		return std::memcmp(&actual,&expected,sizeof(expected))==0;
+	};
+	const auto floatBits=[](const float& actual,std::uint32_t bits) {
+		float expected;std::memcpy(&expected,&bits,sizeof(expected));
+		return std::memcmp(&actual,&expected,sizeof(expected))==0;
+	};
+	const double smallestAlpha=std::strtod("0x1p-1074",nullptr);
+	const auto tinyProduct=ColorUtils::PremultiplyAlphaRGB<RGBA_T<double>,65535>(
+		{hugeRed,hugeRed,hugeRed,smallestAlpha});
+	// 2^1020 * 2^-1074 / 65535 rounds to 0x1.0001000100010p-70.
+	Check(doubleBits(tinyProduct.r,0x3b90001000100010ULL) && doubleBits(tinyProduct.g,0x3b90001000100010ULL) &&
+		doubleBits(tinyProduct.b,0x3b90001000100010ULL) && doubleBits(tinyProduct.a,1),
+		"premultiply alpha range: huge runtime RGB and subnormal alpha retain a normal result and exact alpha bits");
+	const double opaqueAlpha=std::strtod("65535",nullptr);
+	const double minimumNormal=std::strtod("0x1p-1022",nullptr);
+	const auto opaqueNormal=ColorUtils::PremultiplyAlphaRGB<RGBA_T<double>,65535>(
+		{minimumNormal,minimumNormal,minimumNormal,opaqueAlpha});
+	Check(doubleBits(opaqueNormal.r,0x0010000000000000ULL) && doubleBits(opaqueNormal.g,0x0010000000000000ULL) &&
+		doubleBits(opaqueNormal.b,0x0010000000000000ULL) && std::memcmp(&opaqueNormal.a,&opaqueAlpha,sizeof(opaqueAlpha))==0,
+		"premultiply alpha range: opaque runtime minimum-normal RGB preserves every bit");
+	const double minimumSubnormal=std::strtod("0x1p-1074",nullptr);
+	const auto opaqueSubnormal=ColorUtils::PremultiplyAlphaRGB<RGBA_T<double>,65535>(
+		{minimumSubnormal,minimumSubnormal,minimumSubnormal,opaqueAlpha});
+	Check(doubleBits(opaqueSubnormal.r,1) && doubleBits(opaqueSubnormal.g,1) && doubleBits(opaqueSubnormal.b,1) &&
+		std::memcmp(&opaqueSubnormal.a,&opaqueAlpha,sizeof(opaqueAlpha))==0,
+		"premultiply alpha range: opaque runtime minimum-subnormal RGB preserves every bit");
+	const float floatRGB=std::strtof("0x1p120",nullptr),floatAlpha=std::strtof("0x1p-149",nullptr);
+	const auto floatTiny=ColorUtils::PremultiplyAlphaRGB<RGBA_T<float>,65536>({floatRGB,floatRGB,floatRGB,floatAlpha});
+	// 2^120 * 2^-149 / 2^16 is exactly 2^-45 (binary32 0x29000000).
+	Check(floatBits(floatTiny.r,0x29000000U) && floatBits(floatTiny.g,0x29000000U) && floatBits(floatTiny.b,0x29000000U) &&
+		floatBits(floatTiny.a,1),"premultiply alpha range: runtime float32 subnormal alpha retains the exact normal product");
+}
+
+static void TestCallbackExportBounds()
+{
+	struct Receiver final : IJobRasterizerOutput {
+		bool floats=false,premultiplied=true;
+		unsigned int calls16=0,calls32=0,policies=0,w=0,h=0;
+		Rect region{0,0,0,0};
+		std::vector<unsigned short> words;std::vector<float> values;
+		bool PremultipliedAlpha() override{++policies;return premultiplied;}
+		int GetColorSpace() override{++policies;return 0;}
+		bool WantsFloat32() override{++policies;return floats;}
+		void OutputImageRGBA16(const unsigned short* pixels,unsigned int width,unsigned int height,
+			unsigned int top,unsigned int left,unsigned int bottom,unsigned int right) override {
+			++calls16;w=width;h=height;region=Rect(top,left,bottom,right);
+			words.assign(pixels,pixels+static_cast<size_t>(width)*height*4);
+		}
+		void OutputImageRGBA32F(const float* pixels,unsigned int width,unsigned int height,
+			unsigned int top,unsigned int left,unsigned int bottom,unsigned int right) override {
+			++calls32;w=width;h=height;region=Rect(top,left,bottom,right);
+			values.assign(pixels,pixels+static_cast<size_t>(width)*height*4);
+		}
+	} receiver;
+	struct Image final : RISERasterImage {
+		unsigned int w=1,h=1;bool hdr=false,stop=false;
+		// Instrumentation on this fake does not mutate its image semantics.
+		mutable size_t reads=0;mutable bool outside=false;
+		Image():RISERasterImage(1,1,RISEColor(0,0,0,1)){}
+		unsigned int GetWidth() const override{return w;}
+		unsigned int GetHeight() const override{return h;}
+		RISEColor GetPEL(unsigned int x,unsigned int y) const override {
+			++reads;outside |= x>=w || y>=h;
+			if(stop)throw std::runtime_error("callback image read canary");
+			const double alpha[]={0,.5,1};const auto i=(static_cast<size_t>(y)*w+x)%3;
+			return hdr?RISEColor(4,-2,.5,alpha[i]):RISEColor(1,.5,.25,alpha[i]);
+		}
+		void Reset(unsigned int width,unsigned int height,bool floating,bool canary=false) {
+			w=width;h=height;hdr=floating;stop=canary;reads=0;outside=false;
+		}
+	};
+	const auto release=[](auto* p){if(p)p->release();};
+	std::unique_ptr<IRasterizerOutput,decltype(release)> output(ForTest_CreateCallbackRasterizerOutput(receiver),release);
+	std::unique_ptr<Image,decltype(release)> image(new Image(),release);
+	Check(output && output->refcount()==1,"callback export: production factory delegate returns one owned dispatcher reference");
+	if(!output)return;
+	const unsigned short premul16[][4]={{0,0,0,0},{32767,16383,8191,32767},{65535,32767,16383,65535}};
+	const unsigned short straight16[][4]={{65535,32767,16383,0},{65535,32767,16383,32767},{65535,32767,16383,65535}};
+	const float premul32[][4]={{0,0,0,0},{2,-1,.25f,.5f},{4,-2,.5f,1}};
+	const float straight32[][4]={{4,-2,.5f,0},{4,-2,.5f,.5f},{4,-2,.5f,1}};
+	const auto pixelMatches=[&](size_t index) {
+		for(unsigned int c=0;c<4;++c) {
+			if(receiver.floats) {
+				if(receiver.values[index*4+c]!=(receiver.premultiplied?premul32:straight32)[index%3][c])return false;
+			} else if(receiver.words[index*4+c]!=(receiver.premultiplied?premul16:straight16)[index%3][c])return false;
+		}
+		return true;
+	};
+	const auto healthy=[&](unsigned int width,unsigned int height,const char* label) {
+		image->Reset(width,height,receiver.floats);
+		const auto old16=receiver.calls16,old32=receiver.calls32;bool escaped=false;
+		try{output->OutputIntermediateImage(*image,nullptr);}catch(...){escaped=true;}
+		const size_t count=static_cast<size_t>(width)*height;
+		bool exact=!escaped && image->reads==count && !image->outside && receiver.w==width && receiver.h==height &&
+			receiver.calls16==old16+(receiver.floats?0:1) && receiver.calls32==old32+(receiver.floats?1:0) &&
+			(receiver.floats?receiver.values.size():receiver.words.size())==count*4;
+		if(exact)for(size_t i=0;i<count;++i)exact &= pixelMatches(i);
+		Check(exact,(std::string("callback export ")+(receiver.floats?"32F: ":"16-bit: ")+label).c_str());
+	};
+	bool dimensionsGuarded=true;
+	for(bool floating : {false,true}) {
+		// The old float path allocates 68 GiB before GetPEL on the overflow
+		// fixture. Establish its shared dimension gate using the 16-bit path.
+		if(floating && !dimensionsGuarded)break;
+		receiver.floats=floating;receiver.premultiplied=true;
+		healthy(3,1,"zero fractional and opaque alpha match independent premultiplied pixels");
+		receiver.premultiplied=false;
+		healthy(3,1,"same-size policy change preserves independent straight RGBA pixels");
+		receiver.premultiplied=true;
+		healthy(2,2,"growth preserves every pixel and alpha");
+		healthy(1,1,"shrink preserves every pixel and alpha");
+		healthy(2,2,"replacement restores the complete coordinate fixture");
+		image->Reset(2,2,floating);
+		unsigned int before=receiver.calls16+receiver.calls32;bool escaped=false;
+		const Rect outside(0,2,0,2);
+		try{output->OutputIntermediateImage(*image,&outside);}catch(...){escaped=true;}
+		const bool regionsGuarded=!escaped && image->reads==0 && receiver.calls16+receiver.calls32==before;
+		Check(regionsGuarded,"callback export: wholly outside region performs no source reads or receiver output");
+		// Old x=2,y=0 aliases pixel2 inside the allocated 2x2 buffer. Only
+		// after that safe canary succeeds do we try formerly unsafe endpoints.
+		if(regionsGuarded) {
+			image->Reset(2,2,floating);before=receiver.calls16+receiver.calls32;
+			const Rect clipped(0,1,std::numeric_limits<unsigned int>::max(),std::numeric_limits<unsigned int>::max());
+			output->OutputIntermediateImage(*image,&clipped);
+			const bool sizeOK=(floating?receiver.values.size():receiver.words.size())==16;
+			Check(image->reads==2 && !image->outside && receiver.calls16+receiver.calls32==before+1 &&
+				receiver.region.top==0 && receiver.region.left==1 && receiver.region.bottom==1 && receiver.region.right==1 &&
+				sizeOK && pixelMatches(1) && pixelMatches(3),"callback export: region endpoints clip to image bounds before indexing");
+			image->Reset(2,2,floating);before=receiver.calls16+receiver.calls32;
+			const Rect inverted(1,1,0,0);output->OutputIntermediateImage(*image,&inverted);
+			Check(image->reads==0 && receiver.calls16+receiver.calls32==before,
+				"callback export: inverted region performs no source reads or receiver output");
+		}
+		const unsigned int invalid[][2]={{0,1},{1,0},{65536,65536},
+			{std::numeric_limits<unsigned int>::max(),std::numeric_limits<unsigned int>::max()}};
+		for(const auto& dims:invalid) {
+			image->Reset(dims[0],dims[1],floating,true);before=receiver.calls16+receiver.calls32;
+			const auto policies=receiver.policies;escaped=false;
+			// If old 16-bit allocation wraps to zero, GetPEL throws before its
+			// result can be written into that zero-sized allocation.
+			try{output->OutputIntermediateImage(*image,nullptr);}catch(...){escaped=true;}
+			const bool rejected=!escaped && image->reads==0 && receiver.calls16+receiver.calls32==before && receiver.policies==policies;
+			Check(rejected,"callback export: zero and overflowing dimensions reject before allocation source reads or receiver calls");
+			dimensionsGuarded &= rejected;
+		}
+		healthy(3,1,"healthy retry recovers after invalid dimensions and regions");
+	}
+	// Old normal RED must stop before exercising its known unsynchronized
+	// shared buffer. The new preflight canary establishes this guard first.
+	if(!dimensionsGuarded)return;
+	struct ConcurrentReceiver final : IJobRasterizerOutput {
+		const bool floats;
+		const unsigned short (*expected16)[4];const float (*expected32)[4];
+		std::atomic<unsigned int> active{0},maximum{0},calls{0},badPixels{0};
+		ConcurrentReceiver(bool floating,const unsigned short (&words)[3][4],const float (&values)[3][4]):
+			floats(floating),expected16(words),expected32(values){}
+		bool PremultipliedAlpha() override{return true;}
+		int GetColorSpace() override{return 0;}
+		bool WantsFloat32() override{return floats;}
+		void Enter() {
+			const auto current=active.fetch_add(1)+1;auto prior=maximum.load();
+			while(prior<current && !maximum.compare_exchange_weak(prior,current)){}
+		}
+		void Leave() {
+			// A bounded scheduling window makes concurrent receiver entry
+			// observable without any actual rendering or frame-store access.
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			++calls;--active;
+		}
+		void OutputImageRGBA16(const unsigned short* data,unsigned int w,unsigned int h,
+			unsigned int top,unsigned int left,unsigned int bottom,unsigned int right) override {
+			Enter();bool exact=!floats && w==2 && h==2 && top==0 && left==0 && bottom==1 && right==1;
+			if(exact)for(unsigned int i=0;i<4;++i)for(unsigned int c=0;c<4;++c)exact &= data[i*4+c]==expected16[i%3][c];
+			if(!exact)++badPixels;
+			Leave();
+		}
+		void OutputImageRGBA32F(const float* data,unsigned int w,unsigned int h,
+			unsigned int top,unsigned int left,unsigned int bottom,unsigned int right) override {
+			Enter();bool exact=floats && w==2 && h==2 && top==0 && left==0 && bottom==1 && right==1;
+			if(exact)for(unsigned int i=0;i<4;++i)for(unsigned int c=0;c<4;++c)exact &= data[i*4+c]==expected32[i%3][c];
+			if(!exact)++badPixels;
+			Leave();
+		}
+	};
+	for(bool floating : {false,true}) {
+		ConcurrentReceiver concurrent(floating,premul16,premul32);
+		std::unique_ptr<IRasterizerOutput,decltype(release)> dispatcher(ForTest_CreateCallbackRasterizerOutput(concurrent),release);
+		std::atomic<bool> start{false};std::atomic<unsigned int> escaped{0},reads{0};
+		std::vector<std::thread> workers;
+		for(unsigned int worker=0;worker<3;++worker)workers.emplace_back([&]() {
+			Image local;local.Reset(2,2,floating);
+			while(!start.load())std::this_thread::yield();
+			try{for(unsigned int iteration=0;iteration<4;++iteration)dispatcher->OutputIntermediateImage(local,nullptr);}
+			catch(...){++escaped;}
+			reads.fetch_add(static_cast<unsigned int>(local.reads));
+		});
+		start.store(true);for(auto& worker:workers)worker.join();
+		Check(escaped.load()==0 && concurrent.calls.load()==12 && concurrent.badPixels.load()==0 && reads.load()==48,
+			floating?"callback export concurrent 32F: independent source images deliver exact pixels and call count":
+			"callback export concurrent 16-bit: independent source images deliver exact pixels and call count");
+		Check(concurrent.maximum.load()==1 && concurrent.active.load()==0,
+			floating?"callback export concurrent 32F: receiver entry is serialized per adapter":
+			"callback export concurrent 16-bit: receiver entry is serialized per adapter");
+	}
 }
 
 static void TestRasterStorage()
@@ -325,6 +588,78 @@ static void TestHDRRawScanlineMarker()
 	}
 	Check(exact,"HDR raw scanline: exact scale avoids false RLE marker and matches independent pixel expectations");
 	reader->release();buffer->release();
+}
+
+static void TestPPMWriterBounds()
+{
+	const auto reject=[](unsigned int width,unsigned int height) {
+		auto* output=new MemoryBuffer();output->setBytes("keep",4);
+		auto* writer=new PPMWriter(*output,eColorSpace_Rec709RGB_Linear);
+		bool rejected=false;
+		try{writer->BeginWrite(width,height);}
+		catch(const std::invalid_argument&){rejected=true;}
+		catch(const std::length_error&){rejected=true;}
+		Check(rejected && output->getCurPos()==4 && output->Size()==4 && std::memcmp(output->Pointer(),"keep",4)==0,
+			"PPM writer bounds: invalid dimensions reject before any output mutation");
+		writer->release();output->release();return rejected;
+	};
+	const bool validated=reject(65536,65536);
+	reject(0,1);reject(1,0);
+	// This product fits UINT_MAX, but its P6 header does not. Avoid the old
+	// multi-GiB allocation until ordinary overflow rejection is established.
+	if(validated)reject(std::numeric_limits<unsigned int>::max()/3,1);
+	const auto wire=[](const MemoryBuffer& output,unsigned int width,unsigned int height,
+		const std::vector<unsigned char>& pixels) {
+		const std::string header="P6\n"+std::to_string(width)+" "+std::to_string(height)+"\n255\n";
+		return output.getCurPos()==header.size()+pixels.size() && output.Size()==output.getCurPos() &&
+			std::memcmp(output.Pointer(),header.data(),header.size())==0 &&
+			std::memcmp(output.Pointer()+header.size(),pixels.data(),pixels.size())==0;
+	};
+	auto* output=new MemoryBuffer();auto* writer=new PPMWriter(*output,eColorSpace_Rec709RGB_Linear);
+	if(validated) {
+		writer->EndWrite();writer->WriteColor(RISEColor(1,1,1,1),0,0);
+		Check(output->getCurPos()==0,"PPM writer bounds: no active image emits no bytes");
+	}
+	const std::vector<unsigned char> expected={255,0,0, 0,255,0, 0,0,255, 63,127,191};
+	for(unsigned int mode=0;mode<3;++mode) {
+		output->Resize(0,true);output->seek(IBuffer::START,0);
+		writer->BeginWrite(2,2);
+		writer->WriteColor(RISEColor(1,0,0,.5),0,0);
+		writer->WriteColor(RISEColor(0,1,0,1),1,0);
+		// The old ignored helper call also divides by alpha. Its zero-alpha
+		// case is exercised only after the new bounds gate is established.
+		writer->WriteColor(RISEColor(0,0,1,validated?0:1),0,1);
+		writer->WriteColor(RISEColor(.25,.5,.75,.25),1,1);
+		// Both old-code writes alias initialized in-bounds pixels; neither
+		// deliberately performs an out-of-allocation write during RED proof.
+		if(mode==1)writer->WriteColor(RISEColor(1,1,1,1),2,0);
+		if(mode==2)writer->WriteColor(RISEColor(1,1,1,1),0,0x80000000U);
+		writer->EndWrite();
+		Check(wire(*output,2,2,expected),mode==0?
+			"PPM writer bounds: independent P6 bytes preserve RGB truncation and ignore zero fractional opaque alpha":mode==1?
+			"PPM writer bounds: x at width cannot alias a pixel on the following row":
+			"PPM writer bounds: huge y cannot wrap the index onto an existing pixel");
+	}
+	output->Resize(0,true);output->seek(IBuffer::START,0);
+	writer->BeginWrite(1,1);writer->WriteColor(RISEColor(.5,.25,1,.5),0,0);writer->EndWrite();
+	Check(wire(*output,1,1,{127,63,255}),"PPM writer bounds: repeated BeginWrite replaces dimensions and pixels");
+	const auto before=output->getCurPos();bool rejected=false;
+	try{writer->BeginWrite(0,1);}catch(const std::invalid_argument&){rejected=true;}
+	if(rejected){writer->WriteColor(RISEColor(1,1,1,1),0,0);writer->EndWrite();}
+	Check(rejected && output->getCurPos()==before,"PPM writer bounds: rejected replacement deactivates previous pixels without output");
+	output->Resize(0,true);output->seek(IBuffer::START,0);
+	writer->BeginWrite(1,1);writer->WriteColor(RISEColor(.5,.25,1,validated?0:1),0,0);writer->EndWrite();
+	Check(wire(*output,1,1,{127,63,255}),"PPM writer bounds: healthy retry recovers after an invalid replacement");
+	writer->release();output->release();
+	for(unsigned int capacity : {10u,12u}) {
+		char storage[12]={};auto* borrowed=new MemoryBuffer(storage,capacity,false);
+		auto* failed=new PPMWriter(*borrowed,eColorSpace_Rec709RGB_Linear);bool reported=false;
+		try{failed->BeginWrite(1,1);failed->WriteColor(RISEColor(1,0,0,1),0,0);failed->EndWrite();}
+		catch(const std::runtime_error&){reported=true;}
+		Check(reported && borrowed->getCurPos()==(capacity==10?0u:11u),
+			"PPM writer bounds: header and final pixel failures surface as exceptions");
+		failed->release();borrowed->release();
+	}
 }
 
 static void TestTGAWriterBounds()
@@ -1839,6 +2174,8 @@ static void TestEXROffsetWindow()
 static int RunTests()
 {
 	TestNormalizedIntegerize();
+	TestPremultiplyAlphaRGB();
+	TestCallbackExportBounds();
 	TestReaderFamilyReload();
 #ifndef NO_EXR_SUPPORT
 	TestEXRStraightAlpha();
@@ -1853,6 +2190,7 @@ static int RunTests()
 	TestHDRWriterBounds();
 	TestSharedExponentPacking();
 	TestHDRRawScanlineMarker();
+	TestPPMWriterBounds();
 	TestTGAWriterBounds();
 	TestJPEGReload();
 	TestJPEGCompleteStream();
@@ -1877,7 +2215,12 @@ static int RunTests()
 	return failCount == 0 ? 0 : 1;
 }
 
-int main()
+int main(int argc,char** argv)
 {
+	if(argc==2 && std::strcmp(argv[1],"--callback-only")==0) {
+		TestCallbackExportBounds();
+		std::cout << "CallbackExportTest\nPassed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount==0?0:1;
+	}
 	return RISE::TestSupport::WithOwnedScratch(RunTests);
 }
