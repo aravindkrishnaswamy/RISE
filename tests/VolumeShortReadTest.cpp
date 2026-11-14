@@ -58,6 +58,9 @@
 #include <csignal>
 #include <sys/resource.h>
 #include <sys/wait.h>
+#ifdef __APPLE__
+#include <sys/acl.h>
+#endif
 #if defined(__APPLE__) || defined(__linux__)
 #include <sys/xattr.h>
 #endif
@@ -938,6 +941,93 @@ static void TestStagedOutputFallback()
 		return buffer.setBytes("complete", 8);
 	}) && read(path) == "complete", "successful staged write replaces the file" );
 #ifndef _WIN32
+	for( const bool unsafeAncestor : { false, true } ) {
+		const auto unsafe = root / "untrusted-staging-parent";
+		fs::create_directory(unsafe);
+		fs::permissions(unsafe, fs::perms::all);
+		const auto targetParent = unsafeAncestor ? unsafe / "private-child" : unsafe;
+		if( unsafeAncestor ) {
+			fs::create_directory(targetParent);
+			fs::permissions(targetParent, fs::perms::owner_all);
+		}
+		const auto unsafeTarget = targetParent / "explicit-image.bin";
+		std::ofstream(unsafeTarget) << "original";
+		unsigned int calls = 0;
+		DiskFileWriteBuffer::WriteDiagnostics refusal;
+		const bool required = DiskFileWriteBuffer::WriteAtomically(unsafeTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+			++calls;
+			return buffer.setBytes("unexpected stage", 16);
+		}, DiskFileWriteBuffer::StagingPolicy::Required, &refusal);
+		Check(!required && calls == 0 && refusal.error == std::errc::permission_denied &&
+			refusal.operation == "trust staging parent" && read(unsafeTarget) == "original" &&
+			std::distance(fs::directory_iterator(targetParent), fs::directory_iterator()) == 1,
+			"unsafe-parent staging refuses nonsticky writable parent or ancestor before callback or temporary creation");
+		bool noStaging = false;
+		const bool direct = DiskFileWriteBuffer::WriteAtomically(unsafeTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+			++calls;
+			noStaging = std::distance(fs::directory_iterator(targetParent), fs::directory_iterator()) == 1;
+			return buffer.setBytes("explicit direct", 15);
+		}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace);
+		Check(direct && calls == 1 && noStaging && read(unsafeTarget) == "explicit direct",
+			"unsafe-parent image policy encodes explicit output once without creating automatic staging");
+		fs::remove_all(unsafe);
+	}
+	const auto stickyParent = root / "trusted-sticky-parent";
+	fs::create_directory(stickyParent);
+	Check(::chmod(stickyParent.string().c_str(), 01777) == 0,
+		"trusted-sticky staging fixture permits foreign writes while protecting owned entries");
+	const auto stickyTarget = stickyParent / "published.bin";
+	Check(DiskFileWriteBuffer::WriteAtomically(stickyTarget.string(), [](DiskFileWriteBuffer& buffer) {
+		return buffer.setBytes("sticky safe", 11);
+	}) && read(stickyTarget) == "sticky safe", "trusted-sticky owner directory retains required staged publication");
+	fs::remove_all(stickyParent);
+#ifdef __APPLE__
+	const auto aclParent = root / "allow-acl-staging-parent";
+	fs::create_directory(aclParent);
+	fs::permissions(aclParent, fs::perms::owner_all);
+	acl_t originalAcl = ::acl_get_file(aclParent.string().c_str(), ACL_TYPE_EXTENDED);
+	const pid_t aclChild = ::fork();
+	if( aclChild == 0 ) {
+		::execl("/bin/chmod", "chmod", "+a",
+			"everyone allow list,search,add_file,add_subdirectory,delete_child,file_inherit,directory_inherit",
+			aclParent.string().c_str(), static_cast<char*>(nullptr));
+		::_exit(127);
+	}
+	int aclStatus = 0;
+	const bool aclInstalled = aclChild > 0 && ::waitpid(aclChild, &aclStatus, 0) == aclChild &&
+		WIFEXITED(aclStatus) && WEXITSTATUS(aclStatus) == 0;
+	struct stat aclParentInfo{};
+	Check(aclInstalled && ::stat(aclParent.string().c_str(), &aclParentInfo) == 0 &&
+		(aclParentInfo.st_mode & 0077) == 0,
+		"inherited-ACL staging fixture installs everyone ALLOW despite restrictive mode bits");
+	if( aclInstalled ) {
+		const auto aclTarget = aclParent / "explicit-image.bin";
+		std::ofstream(aclTarget) << "original ACL image";
+		unsigned int calls = 0;
+		DiskFileWriteBuffer::WriteDiagnostics refusal;
+		const bool required = DiskFileWriteBuffer::WriteAtomically(aclTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+			++calls;
+			return buffer.setBytes("unexpected ACL stage", 20);
+		}, DiskFileWriteBuffer::StagingPolicy::Required, &refusal);
+		Check(!required && calls == 0 && refusal.error == std::errc::permission_denied &&
+			refusal.operation == "trust staging parent" && read(aclTarget) == "original ACL image" &&
+			std::distance(fs::directory_iterator(aclParent), fs::directory_iterator()) == 1,
+			"inherited-ACL staging refuses ALLOW parent before temporary creation or encoder invocation");
+		bool noStaging = false;
+		const bool direct = DiskFileWriteBuffer::WriteAtomically(aclTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+			++calls;
+			noStaging = std::distance(fs::directory_iterator(aclParent), fs::directory_iterator()) == 1;
+			return buffer.setBytes("explicit ACL direct", 19);
+		}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace);
+		Check(direct && calls == 1 && noStaging && read(aclTarget) == "explicit ACL direct",
+			"inherited-ACL image policy writes explicit output once without automatic staging");
+	}
+	acl_t restoreAcl = originalAcl ? originalAcl : ::acl_init(0);
+	Check(restoreAcl && ::acl_set_file(aclParent.string().c_str(), ACL_TYPE_EXTENDED, restoreAcl) == 0,
+		"inherited-ACL staging fixture restores its original directory ACL");
+	if( restoreAcl ) ::acl_free(restoreAcl);
+	fs::remove_all(aclParent);
+#endif
 	for( const auto policy : { DiskFileWriteBuffer::StagingPolicy::Required,
 		DiskFileWriteBuffer::StagingPolicy::AllowInPlace } ) {
 		const auto newTarget = root / "private-stage-new-output.bin";

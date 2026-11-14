@@ -84,6 +84,9 @@ namespace RISE
 			// AllowInPlace copies completed staging bytes into existing files,
 			// preserving their inode, hardlinks and metadata. New files use rename.
 			// Permission-denied staging creation/open permits direct encoding.
+			// POSIX staging also requires trusted parent/ancestor ownership and
+			// permissions; macOS extended ALLOW ACLs require direct image output.
+			// Required rejects these unsafe automatic staging locations.
 			// Failed in-place publication retains completed staging bytes for recovery;
 			// the destination may be partial. Required always publishes by rename.
 			static bool WriteAtomically( const std::string& path,

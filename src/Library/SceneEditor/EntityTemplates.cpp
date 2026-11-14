@@ -35,6 +35,9 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <sys/acl.h>
+#endif
 #endif
 
 namespace RISE
@@ -879,14 +882,6 @@ namespace
 		{ "composite_function2d_painter", "child_b",    true, "Second operand: any colour painter in this scene" },
 		{ "function2d_painter",           "function2d", true, "The named painter to wrap as a greyscale colour" },
 
-		// voronoi2d/3d `border`: its Finalize maps the `none` sentinel to
-		// a NULL pointer (`border=="none" ? 0 : ...`), and
-		// Job::AddVoronoi{2,3}DPainter then fails the null border lookup.
-		// So unlike every other optional painter slot, this one has no
-		// usable "unbound" value at all -- it is a required reference the
-		// descriptor never marked.
-		{ "voronoi2d_painter",            "border",     true, "Border colour painter (the `none` sentinel is not accepted here)" },
-		{ "voronoi3d_painter",            "border",     true, "Border colour painter (the `none` sentinel is not accepted here)" },
 	};
 
 	// True iff `args` mentions `param` at all.
@@ -1170,14 +1165,72 @@ public:
 	~TextureDescriptor() { if( fd >= 0 ) close( fd ); }
 	TextureDescriptor( const TextureDescriptor& ) = delete;
 	TextureDescriptor& operator=( const TextureDescriptor& ) = delete;
-	const int fd;
+	int fd;
 };
+
+bool HasSafeTextureACL( int fd )
+{
+#ifdef __APPLE__
+	// macOS extended ALLOW entries can bypass mode bits and can propagate
+	// onto newly created children. Refuse them rather than editing any ACL.
+	// On an existing opened inode, ENOENT means there is no extended ACL.
+	acl_t acl = acl_get_fd_np( fd, ACL_TYPE_EXTENDED );
+	if( !acl ) return errno == ENOENT;
+	bool safe = acl_valid( acl ) == 0;
+	if( safe ) {
+		acl_entry_t entry;
+		int next = ACL_FIRST_ENTRY;
+		for( ;; ) {
+			if( acl_get_entry( acl, next, &entry ) != 0 ) {
+				// Darwin reports end-of-ACL as -1/EINVAL, including an
+				// empty ACL. The ACL itself was validated above.
+				safe = errno == EINVAL;
+				break;
+			}
+			acl_tag_t tag;
+			if( acl_get_tag_type( entry, &tag ) != 0 || tag != ACL_EXTENDED_DENY ) {
+				safe = false;
+				break;
+			}
+			next = ACL_NEXT_ENTRY;
+		}
+	}
+	acl_free( acl );
+	return safe;
+#else
+	return fd >= 0;
+#endif
+}
 
 bool IsOwnedTextureFile( int fd )
 {
 	struct stat info{};
 	return fd >= 0 && fstat( fd, &info ) == 0 && S_ISREG( info.st_mode ) &&
-		info.st_uid == geteuid() && info.st_nlink == 1 && (info.st_mode & 0022) == 0;
+		info.st_uid == geteuid() && info.st_nlink == 1 && (info.st_mode & 0022) == 0 && HasSafeTextureACL( fd );
+}
+
+bool IsTrustedTextureDirectory( int fd )
+{
+	struct stat info{};
+	return fd >= 0 && fstat( fd, &info ) == 0 && S_ISDIR( info.st_mode ) &&
+		(info.st_uid == geteuid() || info.st_uid == 0) &&
+		((info.st_mode & 0022) == 0 || (info.st_mode & S_ISVTX) != 0) && HasSafeTextureACL( fd );
+}
+
+int OpenTrustedTextureRoot( const std::string& canonicalParent )
+{
+	TextureDescriptor current( open( "/", O_RDONLY | O_DIRECTORY | O_CLOEXEC ) );
+	if( !IsTrustedTextureDirectory( current.fd ) ) return -1;
+	for( const auto& component : std::filesystem::path( canonicalParent ).relative_path() ) {
+		if( component.empty() ) continue;
+		const int next = openat( current.fd, component.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC );
+		if( current.fd >= 0 ) close( current.fd );
+		current.fd = next;
+		if( !IsTrustedTextureDirectory( current.fd ) ) return -1;
+	}
+	const int result = current.fd;
+	current.fd = -1;
+	return result;
 }
 
 bool TextureMatches( int fd, const std::vector<unsigned char>& encoded )
@@ -1202,7 +1255,7 @@ bool EnsurePrivateTexture( const std::string& parent, std::string& path,
 {
 	// Anchor every operation to opened directories. An lstat(path) followed
 	// by an ordinary pathname write would still follow a substituted link.
-	const TextureDescriptor parentDir( open( parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC ) );
+	const TextureDescriptor parentDir( OpenTrustedTextureRoot( parent ) );
 	if( parentDir.fd < 0 ) return false;
 	const std::string cacheName = "rise_entity_templates_" + std::to_string( geteuid() );
 	if( mkdirat( parentDir.fd, cacheName.c_str(), 0700 ) != 0 && errno != EEXIST ) return false;
@@ -1210,7 +1263,7 @@ bool EnsurePrivateTexture( const std::string& parent, std::string& path,
 		O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC ) );
 	struct stat info{};
 	if( cacheDir.fd < 0 || fstat( cacheDir.fd, &info ) != 0 || !S_ISDIR( info.st_mode ) ||
-		info.st_uid != geteuid() || (info.st_mode & 0077) != 0 ) return false;
+		info.st_uid != geteuid() || (info.st_mode & 0077) != 0 || !HasSafeTextureACL( cacheDir.fd ) ) return false;
 	constexpr const char* filename = "rise_entity_template_default_texture.png";
 	path = parent + cacheName + "/" + filename;
 	{
@@ -1330,8 +1383,14 @@ std::string EntityTemplates::EnsureDefaultTextureFile()
 	const char* tmpEnv = std::getenv( "TMPDIR" );
 	if( !tmpEnv || !tmpEnv[0] ) tmpEnv = std::getenv( "TEMP" );
 	if( !tmpEnv || !tmpEnv[0] ) tmpEnv = std::getenv( "TMP" );
-	std::string dir = ( tmpEnv && tmpEnv[0] ) ? tmpEnv : "/tmp";
-	if( dir.back() != '/' && dir.back() != '\\' ) dir += '/';
+	std::error_code pathError;
+	const auto absoluteRoot = std::filesystem::absolute( (tmpEnv && tmpEnv[0]) ? tmpEnv : "/tmp", pathError );
+	if( pathError ) return std::string();
+	const auto canonicalRoot = std::filesystem::canonical( absoluteRoot, pathError );
+	if( pathError ) return std::string();
+	std::string dir = canonicalRoot.generic_string();
+	if( dir.empty() ) return std::string();
+	if( dir.back() != '/' ) dir += '/';
 
 	const std::vector<unsigned char>* encodedPointer = nullptr;
 	try {

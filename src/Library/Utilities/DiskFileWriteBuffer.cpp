@@ -26,6 +26,9 @@
 #include <io.h>
 #else
 #include <unistd.h>
+#ifdef __APPLE__
+#include <sys/acl.h>
+#endif
 #endif
 #include <string.h>
 #include "DiskFileWriteBuffer.h"
@@ -37,6 +40,90 @@
 #include "MediaPathLocator.h"
 
 using namespace RISE::Implementation;
+
+#ifndef _WIN32
+namespace
+{
+	bool IsTrustedStagingDirectory( int descriptor, std::error_code& error )
+	{
+		struct stat info{};
+		if( ::fstat(descriptor, &info) != 0 ) {
+			error = std::error_code(errno, std::generic_category());
+			return false;
+		}
+		// A sticky directory owned by this user or root protects our new entry
+		// from other users. A writable nonsticky directory cannot protect it.
+		if( !S_ISDIR(info.st_mode) || (info.st_uid != ::geteuid() && info.st_uid != 0) ||
+			((info.st_mode & 0022) != 0 && (info.st_mode & S_ISVTX) == 0) ) {
+			error = std::make_error_code(std::errc::permission_denied);
+			return false;
+		}
+#ifdef __APPLE__
+		// Extended ALLOW entries can grant deletion despite mode 0700, and
+		// inheritable entries can expose a newly created staging directory.
+		// Keep deny-only ACLs; never rewrite a caller's directory ACL.
+		acl_t acl = ::acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED);
+		if( !acl ) {
+			// Darwin uses ENOENT when this opened object has no extended ACL.
+			if( errno == ENOENT ) return true;
+			error = std::error_code(errno, std::generic_category());
+			return false;
+		}
+		if( ::acl_valid(acl) != 0 ) {
+			error = std::error_code(errno, std::generic_category());
+			::acl_free(acl);
+			return false;
+		}
+		for( int entryId = ACL_FIRST_ENTRY; ; entryId = ACL_NEXT_ENTRY ) {
+			acl_entry_t entry;
+			errno = 0;
+			if( ::acl_get_entry(acl, entryId, &entry) != 0 ) {
+				const int failure = errno;
+				::acl_free(acl);
+				// Darwin reports end of a valid ACL as EINVAL.
+				if( failure == EINVAL ) break;
+				error = std::error_code(failure, std::generic_category());
+				return false;
+			}
+			acl_tag_t tag;
+			if( ::acl_get_tag_type(entry, &tag) != 0 ) {
+				error = std::error_code(errno, std::generic_category());
+				::acl_free(acl);
+				return false;
+			}
+			if( tag != ACL_EXTENDED_DENY ) {
+				::acl_free(acl);
+				error = std::make_error_code(std::errc::permission_denied);
+				return false;
+			}
+		}
+#endif
+		return true;
+	}
+
+	bool CheckStagingParents( const std::filesystem::path& parent, std::error_code& error )
+	{
+		// Later staging operations use this canonical path. Check every ancestor
+		// too: an unsafe ancestor could otherwise let another user substitute an
+		// apparently private child directory after we inspect it.
+		for( auto directory = parent; ; directory = directory.parent_path() ) {
+			const int descriptor = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+			if( descriptor < 0 ) {
+				error = std::error_code(errno, std::generic_category());
+				return false;
+			}
+			const bool trusted = IsTrustedStagingDirectory(descriptor, error);
+			const int closed = ::close(descriptor);
+			if( !trusted ) return false;
+			if( closed != 0 ) {
+				error = std::error_code(errno, std::generic_category());
+				return false;
+			}
+			if( directory == directory.root_path() ) return true;
+		}
+	}
+}
+#endif
 
 DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name ) :
 	DiskFileWriteBuffer(file_name, nullptr, false)
@@ -329,6 +416,18 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		if( ::close(probe) != 0 ) return fail("close destination probe", target, std::error_code(errno, std::generic_category()));
 #endif
 	}
+
+#ifndef _WIN32
+	// Automatic temporary names are safe only beneath trusted directories.
+	// Explicit image output can retain its historical direct-write semantics
+	// when staging is unsafe; Required must fail before invoking the encoder.
+	const auto parent = fs::canonical(target.has_parent_path() ? target.parent_path() : fs::path("."), error);
+	if( error || !CheckStagingParents(parent, error) ) {
+		if( policy == StagingPolicy::AllowInPlace && permissionFailure(error) ) return writeFile(target, write);
+		return fail("trust staging parent", target.parent_path(), error);
+	}
+	target = parent / target.filename();
+#endif
 	error.clear();
 	fs::path directory;
 	for( unsigned int attempt = 0; attempt < 16; ++attempt ) {

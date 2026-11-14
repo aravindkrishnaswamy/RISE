@@ -179,6 +179,10 @@ namespace RISE
 		//! an owner-only directory under the configured temp directory;
 		//! the former shared cache path is left untouched. Links and
 		//! foreign-owned files are refused without changing their contents.
+		//! POSIX temp roots and their canonical ancestors must belong to
+		//! this user or root; writable shared directories require the sticky
+		//! bit. macOS extended ACL ALLOW entries on those directories,
+		//! the cache directory, or the file are refused.
 		//! Returns an absolute path, or an empty string on write
 		//! failure (disk full, unwritable temp dir, etc.).
 		static std::string EnsureDefaultTextureFile();
