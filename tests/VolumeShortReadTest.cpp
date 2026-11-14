@@ -972,6 +972,31 @@ static void TestStagedOutputFallback()
 			"unsafe-parent image policy encodes explicit output once without creating automatic staging");
 		fs::remove_all(unsafe);
 	}
+	// Static ownership-policy topology: a trusted sticky descendant cannot
+	// make an unsafe nonsticky ancestor suitable for automatic staging. All
+	// fixture directories belong to this process; no foreign-owner chown or
+	// concurrent directory substitution is needed to exercise that contract.
+	const auto unsafeComponent = root / "unsafe-component";
+	const auto stickyDescendant = unsafeComponent / "trusted-sticky-descendant";
+	const auto privateLeaf = stickyDescendant / "private-leaf";
+	fs::create_directories(privateLeaf);
+	Check(::chmod(unsafeComponent.string().c_str(), 0777) == 0 &&
+		::chmod(stickyDescendant.string().c_str(), 01777) == 0 &&
+		::chmod(privateLeaf.string().c_str(), 0700) == 0,
+		"component-policy fixture combines an unsafe ancestor with trusted sticky and private descendants");
+	const auto componentTarget = privateLeaf / "explicit-image.bin";
+	std::ofstream(componentTarget) << "component original";
+	unsigned int componentCalls = 0;
+	DiskFileWriteBuffer::WriteDiagnostics componentRefusal;
+	const bool componentSaved = DiskFileWriteBuffer::WriteAtomically(componentTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+		++componentCalls;
+		return buffer.setBytes("unexpected component stage", 26);
+	}, DiskFileWriteBuffer::StagingPolicy::Required, &componentRefusal);
+	Check(!componentSaved && componentCalls == 0 && componentRefusal.error == std::errc::permission_denied &&
+		componentRefusal.operation == "trust staging parent" && read(componentTarget) == "component original" &&
+		std::distance(fs::recursive_directory_iterator(unsafeComponent), fs::recursive_directory_iterator()) == 3,
+		"component-policy rejects unsafe ancestor before staging despite trusted sticky and private descendants");
+	fs::remove_all(unsafeComponent);
 	const auto stickyParent = root / "trusted-sticky-parent";
 	fs::create_directory(stickyParent);
 	Check(::chmod(stickyParent.string().c_str(), 01777) == 0,

@@ -114,24 +114,44 @@ namespace
 
 	bool CheckStagingParents( const std::filesystem::path& parent, std::error_code& error )
 	{
-		// Later staging operations use this canonical path. Check every ancestor
-		// too: an unsafe ancestor could otherwise let another user substitute an
-		// apparently private child directory after we inspect it.
-		for( auto directory = parent; ; directory = directory.parent_path() ) {
-			const int descriptor = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-			if( descriptor < 0 ) {
+		// Validate one connected tree from the root down. Reopening complete
+		// paths from the leaf upward could inspect different trees if an unsafe
+		// ancestor were substituted between checks. Descend only through the
+		// descriptor of a directory that has already passed the trust policy.
+		struct Directory {
+			int descriptor;
+			~Directory() { if( descriptor >= 0 ) ::close(descriptor); }
+		} current{ ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC) };
+		if( current.descriptor < 0 ) {
+			error = std::error_code(errno, std::generic_category());
+			return false;
+		}
+		if( !IsTrustedStagingDirectory(current.descriptor, error) ) return false;
+		for( const auto& component : parent.relative_path() ) {
+			if( component.empty() ) continue;
+			Directory next{ ::openat(current.descriptor, component.c_str(),
+				O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) };
+			if( next.descriptor < 0 ) {
 				error = std::error_code(errno, std::generic_category());
 				return false;
 			}
-			const bool trusted = IsTrustedStagingDirectory(descriptor, error);
-			const int closed = ::close(descriptor);
-			if( !trusted ) return false;
+			if( !IsTrustedStagingDirectory(next.descriptor, error) ) return false;
+			const int closed = ::close(current.descriptor);
+			current.descriptor = -1;
 			if( closed != 0 ) {
 				error = std::error_code(errno, std::generic_category());
 				return false;
 			}
-			if( directory == directory.root_path() ) return true;
+			current.descriptor = next.descriptor;
+			next.descriptor = -1;
 		}
+		const int closed = ::close(current.descriptor);
+		current.descriptor = -1;
+		if( closed != 0 ) {
+			error = std::error_code(errno, std::generic_category());
+			return false;
+		}
+		return true;
 	}
 }
 #endif
