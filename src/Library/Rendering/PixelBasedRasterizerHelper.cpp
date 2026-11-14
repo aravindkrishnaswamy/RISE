@@ -918,6 +918,7 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		return !dispatcher.WasCancelled() &&
 			!( pProgressFunc && pProgressFunc->IsCancelled() );
 	} else {
+		ThreadLocalSplatBufferTaskScope splatTask;
 
 		// Legacy "render in the background" mode: the SP branch runs
 		// the entire render on THIS thread (typically the CLI main
@@ -1569,6 +1570,7 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 			!( pProgressFunc && pProgressFunc->IsCancelled() );
 
 	} else {
+		ThreadLocalSplatBufferTaskScope splatTask;
 
 		// Legacy low-priority: lower this caller thread too so it
 		// joins the rest of the render at reduced priority.  See

@@ -41,6 +41,16 @@ ThreadLocalSplatBuffer& RISE::Implementation::GetThreadLocalSplatBuffer()
 	return buf;
 }
 
+ThreadLocalSplatBufferTaskScope::ThreadLocalSplatBufferTaskScope()
+	: buffer_(GetThreadLocalSplatBuffer())
+{
+}
+
+ThreadLocalSplatBufferTaskScope::~ThreadLocalSplatBufferTaskScope() noexcept
+{
+	buffer_.DiscardAndUnbind();
+}
+
 void RISE::Implementation::FlushCallingThreadSplatBuffer()
 {
 	// Flush AND drop the binding — prevents a use-after-free when

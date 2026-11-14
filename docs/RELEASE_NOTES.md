@@ -69,6 +69,8 @@ source assets with the corrected build.
   readback. Full render failures release temporary resources and restore pass
   state; authored sampler configuration stays separate from per-pass kernels.
   Clients constructing/subclassing PixelBasedRasterizerHelper must rebuild.
+  Failed caller/worker splat tasks discard pending TLS records and bindings
+  before film teardown or reuse; normal batching and flushes are preserved.
 - HDR and RGBEA writers report invalid sizes and header/payload write failures
   by exception, with failed writer state deactivated for safe retries.
 - Spectral and piecewise-function tables accept their leading finite

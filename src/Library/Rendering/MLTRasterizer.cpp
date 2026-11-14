@@ -1071,6 +1071,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 			RenderParallelScope renderParallelScope;
 			pool.ParallelFor( static_cast<unsigned int>( threads ),
 				[&]( unsigned int /*workerIdx*/ ) {
+					ThreadLocalSplatBufferTaskScope splatTask;
 					for( ;; ) {
 						const unsigned int c = nextChain.fetch_add(
 							1, std::memory_order_relaxed );
@@ -1086,6 +1087,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 		}
 		else
 		{
+			ThreadLocalSplatBufferTaskScope splatTask;
 			// Legacy low-priority mode: lower the caller to match
 			// the rest of the render.  Only apply once — QoS on
 			// macOS is lower-only, and we're on the same thread

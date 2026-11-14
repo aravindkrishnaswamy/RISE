@@ -867,7 +867,7 @@ fixture checks full-frame pixels, generations and bracket reuse. Observer
 comments now describe shared tile locks and synchronous delivery rather than
 the retired seqlock model.
 
-The final host gate passes clean make, Xcode Deployment/Opto and native
+The render-lifetime checkpoint passes clean make, Xcode Deployment/Opto and native
 Blender LTO builds with zero compiler warnings (apart from the previously
 excluded AppIntents tooling notice). Thirteen selected test executables pass;
 Blender's full suite has 41 checks and FrameStore has 220, including its
@@ -887,18 +887,57 @@ production code change. This is focused TSan coverage, not a full-render claim.
 Actual Opto objects under full LTO and fast-math pass seven focused programs
 and all 12 selected animation parity runs. The Blender Opto program covers
 buffer arithmetic/previews; the later C export fault probe is verified
-separately in normal and sanitizer builds. The final test-only addition and
+separately in normal and sanitizer builds. The C-export test-only addition and
 stale lock-comment corrections pass an additional make/test warning check.
 
 Source-isolated old implementations fail normally with two float-range,
 six HDR/RGBEA write-error and 18 tile-cleanup assertions. Disabling only
-recovery adoption cleanup fails four leaked-leaf assertions. For the final
-lifetime step, the old helper fails 44 image-reference, sampler-state and
+recovery adoption cleanup fails four leaked-leaf assertions. For the render-lifetime
+step, the old helper fails 44 image-reference, sampler-state and
 retry assertions; the old publication guard fails three bounded synchronous
 readback assertions. These proofs retain current headers and other library
 objects, and do not count a process crash or harness timeout as success.
 Native Windows/Android and the previously disclosed privileged/filesystem
 exclusions remain unverified.
+
+### Splat-task exception cleanup
+
+The fresh round on `0bcd191cb` returned clean export and filesystem/fidelity
+reviews, but identified one P1 in the renderer. A post-pixel exception could
+bypass trailing TLS splat flushing/unbinding. Persistent worker storage then
+retained pending records and a pointer to a film that training cleanup or a
+retry could destroy. The next binding could access freed storage or merge
+old records into a newly allocated film at the same address.
+
+Caller-thread passes and still/animation dispatch workers now scope their
+TLS binding. Exceptional exit discards pending records and forgets the film
+without allocation, locking or film access. Existing successful flushes and
+batching remain; flush failure also unbinds before rethrowing. The sibling
+sweep covers the specialized BDPT caller path and both MLT task variants;
+Pel and shared NM/HWSS consumers use those same boundaries. The buffer layout
+and per-splat body are unchanged. Retained vector capacity is implementation-
+dependent; 65,536 is an auto-flush record threshold, not a fixed byte budget.
+Already committed partial splats are not rolled back after an aborted pass.
+
+The regression emits real pending splats before a post-pixel observer throws.
+It checks null binding and zero pending records on the same caller/worker
+thread, destroys the failed 4x4 film, replaces it with a 5x5 film, and verifies
+exact healthy retry sums and normal flushes. Cases cover full caller still
+and animation entry points, actual still/animation dispatcher tasks on a
+persistent local pool worker, and specialized BDPT single/progressive paths.
+Unsafe old retry is gated by the cleanup canary and safely discarded in the
+counterfactual tests. Focused FrameStore coverage is now 122 checks.
+
+The splat-task checkpoint passes clean make, Xcode Deployment/Opto and native
+Blender builds without compiler warnings, thirteen selected executables and
+fourteen serial animation parity runs including MLT RGB/spectral. Five
+targeted ASan/UBSan suites pass; FrameStore has 245 checks. Focused TSan passes
+33 callback and 122 exception/splat checks with the pool, TLS buffer and splat
+film synchronization dependencies instrumented. Thirty actual Opto objects
+pass seven focused programs and all fourteen parity runs under full LTO and
+fast-math. Disabling only task-scope destructor cleanup in an isolated copy
+fails eighteen expected same-thread cleanup/discard/retry assertions normally,
+with no source mutation or unsafe film dereference.
 
 ### Host measurements and decisions
 

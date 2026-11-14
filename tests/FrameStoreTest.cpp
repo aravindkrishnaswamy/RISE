@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -49,6 +50,11 @@
 #include "../src/Library/Interfaces/IJobRasterizerOutput.h"
 #include "../src/Library/Rendering/FilteredFilm.h"
 #include "../src/Library/Rendering/SplatFilm.h"
+#include "../src/Library/Rendering/ThreadLocalSplatBuffer.h"
+#include "../src/Library/Rendering/RasterizeDispatchers.h"
+#include "../src/Library/Rendering/MortonRasterizeSequence.h"
+#include "../src/Library/Rendering/BDPTRasterizerBase.h"
+#include "../src/Library/Utilities/ThreadPool.h"
 #include "../src/Library/Rendering/ProgressiveFilm.h"
 #include "../src/Library/Rendering/BidirectionalRasterizerBase.h"
 #include "../src/Library/Rendering/OIDNDenoiser.h"
@@ -77,7 +83,7 @@ namespace
 	{
 		if ( cond ) {
 			++gPassCount;
-			if(label.find("tile exception:")==0 || label.find("full entry exception:")==0)std::cout << "PASS: " << label << "\n";
+			if(label.find("tile exception:")==0 || label.find("full entry exception:")==0 || label.find("splat task exception:")==0)std::cout << "PASS: " << label << "\n";
 		} else {
 			++gFailCount;
 			std::cerr << "FAIL: " << label << "\n";
@@ -478,6 +484,139 @@ namespace
 				output.exactFinal && output.finalCalls==(final?2u:1u) && probe.sawThreaded.load()==pooled,
 				label+"healthy retry uses exact pass sample counts and releases cloned kernels and image references");
 			probe.FreeRasterizerOutputs();
+		}
+	}
+
+	void TestSplatTaskExceptions()
+	{
+		using namespace RISE::Implementation;
+		struct Source {
+			SplatFilm* film=nullptr;
+			unsigned int emitted=0;
+			void Emit(unsigned int x,unsigned int y) {
+				film->Splat(x,y,RISEPel(.5,.25,.125));++emitted;
+			}
+		};
+		struct Probe final : PixelBasedRasterizerHelper {
+			Source& source;
+			Probe(IRayCaster* caster,FrameStore* store,Source& value):
+				Rasterizer(store),PixelBasedRasterizerHelper(caster,store),source(value) {ForTest_SetThreadCountOverride(1);}
+			bool TakeSingleSample(const RuntimeContext&,const RasterizerState&,const Ray&,RISEPel&) const override{return false;}
+			bool ShouldFireToggleObserverEvents() const override{return false;}
+			void PrepareImageForNewRender(IRasterImage&,const Rect*) const override{}
+			void IntegratePixel(const RuntimeContext&,unsigned int x,unsigned int y,unsigned int,const IScene&,
+				RISEColor& color,bool,Scalar,Scalar) const override {source.Emit(x,y);color=RISEColor(0,0,0,1);}
+		};
+		struct BidirectionalProbe final : BDPTRasterizerBase {
+			Source& source;
+			BidirectionalProbe(IRayCaster* caster,FrameStore* store,Source& value):
+				Rasterizer(store),PixelBasedRasterizerHelper(caster,store),
+				BDPTRasterizerBase(caster,3,3,PathGuidingConfig(),StabilityConfig(),store),source(value) {ForTest_SetThreadCountOverride(1);}
+			bool TakeSingleSample(const RuntimeContext&,const RasterizerState&,const Ray&,RISEPel&) const override{return false;}
+			bool ShouldFireToggleObserverEvents() const override{return false;}
+			const char* GetProgressTitle() const override{return "Splat task probe: ";}
+			void PreRenderSetup(const IScene&,const Rect*) const override{}
+			void IntegratePixel(const RuntimeContext&,unsigned int x,unsigned int y,unsigned int,const IScene&,
+				RISEColor& color,bool,Scalar,Scalar) const override {source.Emit(x,y);color=RISEColor(0,0,0,1);}
+		};
+		struct Observer final : IRenderObserver {
+			Source& source;bool fail=true,exact=true;unsigned int calls=0;
+			explicit Observer(Source& value):source(value){}
+			void OnTileComplete(const Rect&,uint64_t) override {
+				auto& tls=GetThreadLocalSplatBuffer();
+				if(fail && tls.Size()!=0) {
+					exact &= tls.GetBoundFilm()==source.film && tls.Size()==16 && source.emitted==16;
+					++calls;throw std::runtime_error("postpixel splat failure");
+				}
+			}
+		};
+		struct Result {bool failure=false,clean=false,discarded=false,fresh=false,normalClean=false,onWorker=false;};
+		const auto release=[](auto* p){if(p)p->release();};
+		std::unique_ptr<Job,decltype(release)> job(new Job(),release);
+		const double location[]={0,0,2},lookAt[]={0,0,0},up[]={0,1,0},orientation[]={0,0,0},target[]={0,0};
+		std::unique_ptr<StandardShader,decltype(release)> shader(new StandardShader(std::vector<IShaderOp*>()),release);
+		IRayCaster* rawCaster=nullptr;RISE_API_CreateRayCaster(&rawCaster,false,10,*shader,true);
+		std::unique_ptr<IRayCaster,decltype(release)> caster(rawCaster,release);
+		const bool setup=caster && job->SetFilm(4,4,1) &&
+			job->AddPinholeCamera("splat-task-exception",location,lookAt,up,1,0,0,0,orientation,target);
+		Check(setup,"splat task exception: initialized four-by-four constant-probe scene");
+		if(!setup)return;
+		const auto caller=std::this_thread::get_id();
+		const auto exercise=[&](unsigned int mode) {
+			Result result;result.onWorker=std::this_thread::get_id()!=caller;
+			const bool pool=mode==2 || mode==3,animation=mode==1 || mode==3,bdpt=mode>=4,progressive=mode==5;
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(4,4,2),release);
+			std::unique_ptr<SplatFilm,decltype(release)> film(new SplatFilm(4,4),release);
+			Source source;source.film=film.get();Observer observer(source);store->AddObserver(&observer);
+			std::unique_ptr<PixelBasedRasterizerHelper,decltype(release)> probe(
+				bdpt?static_cast<PixelBasedRasterizerHelper*>(new BidirectionalProbe(caster.get(),store.get(),source)):
+				static_cast<PixelBasedRasterizerHelper*>(new Probe(caster.get(),store.get(),source)),release);
+			ProgressiveConfig config;config.enabled=progressive;config.samplesPerPass=2;probe->SetProgressiveConfig(config);
+			if(progressive) {
+				ISampling2D* sampling=nullptr;RISE_API_CreateUniformSampling2D(&sampling,1,1);
+				sampling->SetNumSamples(3);probe->SubSampleRays(sampling,nullptr);sampling->release();
+			}
+			const auto run=[&]() {
+				if(pool) {
+					std::unique_ptr<MortonRasterizeSequence,decltype(release)> sequence(new MortonRasterizeSequence(8),release);
+					sequence->Begin(0,3,0,3);
+					if(animation) {
+						const PixelBasedRasterizerHelper::AnimFrameData data{PixelBasedRasterizerHelper::FIELD_BOTH,0,0,0,0};
+						RasterizeBlockAnimationDispatcher dispatcher(RuntimeContext::PASS_NORMAL,
+							store->AsBeautyRasterImage(),*job->GetScene(),*sequence,*probe,nullptr,data,0,0,0);
+						dispatcher.DoAnimWork();
+					} else {
+						RasterizeBlockDispatcher dispatcher(RuntimeContext::PASS_NORMAL,
+							store->AsBeautyRasterImage(),*job->GetScene(),*sequence,*probe,nullptr,0,0,0);
+						dispatcher.DoWork();
+					}
+				} else if(animation)probe->RasterizeSceneAnimation(*job->GetScene(),0,0,1,false,false,nullptr,nullptr,nullptr);
+				else probe->RasterizeScene(*job->GetScene(),nullptr,nullptr);
+			};
+			std::string error;try{run();}catch(const std::exception& e){error=e.what();}
+			auto& tls=GetThreadLocalSplatBuffer();
+			result.failure=error=="postpixel splat failure" && observer.exact && observer.calls==4;
+			// Inspect the actual rendering thread before destroying its film.
+			// Never dereference a stale binding, even in the intentional RED.
+			result.clean=tls.GetBoundFilm()==nullptr && tls.Size()==0;
+			std::unique_ptr<RISERasterImage,decltype(release)> discarded(new RISERasterImage(4,4,RISEColor(0,0,0,1)),release);
+			film->Resolve(*discarded,1);
+			result.discarded=true;
+			for(unsigned int y=0;y<4;++y)for(unsigned int x=0;x<4;++x) {
+				const auto pixel=discarded->GetPEL(x,y);
+				result.discarded &= pixel.base.r==0 && pixel.base.g==0 && pixel.base.b==0;
+			}
+			if(!result.clean)tls.DiscardAndUnbind(); // Safe RED cleanup; retry stays gated.
+			film.reset(); // Training-style immediate release before reuse of this same TLS.
+			film.reset(new SplatFilm(5,5));source.film=film.get();source.emitted=0;observer.fail=false;
+			if(result.clean)run();
+			result.normalClean=result.clean && tls.GetBoundFilm()==nullptr && tls.Size()==0;
+			std::unique_ptr<RISERasterImage,decltype(release)> fresh(new RISERasterImage(5,5,RISEColor(0,0,0,1)),release);
+			film->Resolve(*fresh,1);
+			const unsigned int passes=progressive?2:1;
+			result.fresh=result.clean && source.emitted==16*passes;
+			for(unsigned int y=0;y<5;++y)for(unsigned int x=0;x<5;++x) {
+				const auto pixel=fresh->GetPEL(x,y);const double scale=(x<4 && y<4)?passes:0;
+				result.fresh &= pixel.base.r==.5*scale && pixel.base.g==.25*scale && pixel.base.b==.125*scale;
+			}
+			store->RemoveObserver(&observer);return result;
+		};
+		const char* labels[]={"caller static","caller animation","pool static dispatcher","pool animation dispatcher",
+			"BDPT bespoke caller","BDPT progressive caller"};
+		for(unsigned int mode=0;mode<6;++mode) {
+			Result result;
+			if(mode==2 || mode==3) {
+				// Submit (not ParallelFor) ensures failure inspection, film death
+				// and retry all run on this one real persistent worker thread.
+				ThreadPool pool(1,{});std::promise<Result> promise;auto future=promise.get_future();
+				pool.Submit([&]{try{promise.set_value(exercise(mode));}catch(...){promise.set_exception(std::current_exception());}});
+				result=future.get();
+			} else result=exercise(mode);
+			const std::string label=std::string("splat task exception: ")+labels[mode]+" ";
+			Check(result.failure,label+"throws only after sixteen real pending splats reach the postpixel observer");
+			Check(result.clean && (mode<2 || mode>3 || result.onWorker),label+"same-thread catch sees no binding or pending records before film destruction");
+			Check(result.discarded && result.fresh,label+"discarded film stays black and fresh differently-sized film has exact uncontaminated batch sums");
+			Check(result.normalClean,label+"healthy retry flushes all normal splats and unbinds before task exit");
 		}
 	}
 
@@ -1573,7 +1712,7 @@ namespace
 int main(int argc,char** argv)
 {
 	if(argc==2 && std::strcmp(argv[1],"--tile-exception-only")==0) {
-		TestTileBracketExceptions();TestRasterizerBlockExceptions();TestTileBracketSynchronousReadback();TestFullEntryExceptions();
+		TestTileBracketExceptions();TestRasterizerBlockExceptions();TestTileBracketSynchronousReadback();TestFullEntryExceptions();TestSplatTaskExceptions();
 		std::cout << "FrameStore tile exceptions: passed " << gPassCount << ", failed " << gFailCount << "\n";
 		return gFailCount==0?0:1;
 	}
@@ -1584,6 +1723,7 @@ int main(int argc,char** argv)
 	TestTileBracketSynchronousReadback();
 	TestRasterizerBlockExceptions();
 	TestFullEntryExceptions();
+	TestSplatTaskExceptions();
 	TestConstructionAndGeometry();
 	TestAOVChannels();
 	TestPlannedAOVBridge();

@@ -913,6 +913,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 			RenderParallelScope renderParallelScope;
 			pool.ParallelFor( static_cast<unsigned int>( threads ),
 				[&]( unsigned int /*workerIdx*/ ) {
+					ThreadLocalSplatBufferTaskScope splatTask;
 					for( ;; ) {
 						const unsigned int c = nextChain.fetch_add(
 							1, std::memory_order_relaxed );
@@ -928,6 +929,7 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 		}
 		else
 		{
+			ThreadLocalSplatBufferTaskScope splatTask;
 			// Legacy low-priority mode: see MLTRasterizer.cpp SP
 			// branch for the rationale.
 			if( round == 0 &&

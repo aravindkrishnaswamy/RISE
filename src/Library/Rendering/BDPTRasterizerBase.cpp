@@ -1175,6 +1175,8 @@ void BDPTRasterizerBase::RasterizeScene(
 		}
 		else
 		{
+			ThreadLocalSplatBufferTaskScope splatTask;
+
 			// Legacy low-priority mode: lower this caller thread to
 			// match the rest of the render.  Mirrors the fix in
 			// PixelBasedRasterizerHelper::RasterizeScenePass.
