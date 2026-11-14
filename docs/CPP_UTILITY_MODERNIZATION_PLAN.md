@@ -699,6 +699,111 @@ repeat of all 19 suites after the final size-type/preflight changes.
 The live-race, privileged-owner, sparse-file and native Windows/Android
 verification limitations recorded above remain unchanged.
 
+### PPM bounds and exclusive emergency recovery
+
+The fresh round on `2f2dcfa28` found two P1s: PPM pixel allocation/indexing
+still used unchecked unsigned products and unguarded coordinates, and the
+observer's generated `fro_temp_...` emergency name inherited explicit-output
+symlink semantics. PPM now checks nonzero dimensions and the complete
+`UINT_MAX` header/payload budget before output mutation, owns its allocation
+before writing the header, clears replacement state, guards coordinates and
+uses `size_t` indices. Header/final write failures throw. Fixed P6 oracles
+preserve the historical straight RGB bytes: PPM still drops alpha rather than
+compositing it. The former ignored-return alpha-helper call is removed.
+
+The same helper is actively used by the job's 16-bit premultiplied callback.
+It divided instead of multiplying, could divide by zero or overflow signed
+products, and left returned alpha uninitialized. It now uses exact wide
+integral products/division for normalized integer channels, preserves alpha,
+and combines bounded mantissas with exponent scaling for floating HDR
+channels, avoiding both premature underflow and overflow. Its input
+preconditions and positive normalization maximum are explicit. Direct 8/16-bit
+and floating oracles cover zero/fractional/maximum alpha, large integer
+samples and runtime large floating inputs. The 32-bit float callback already
+multiplied alpha; that formula is unchanged.
+
+Automatic emergency files now use exclusive no-follow creation under trusted
+parents, requesting POSIX 0600 permissions reduced by umask. Existing symbolic
+links, hardlinks and ordinary files are never followed, reused or overwritten.
+A collision selects a monotonic suffix before the extension, with at most
+16 exclusive attempts; only `EEXIST` retries, before encoding begins. Successful
+recovery reports its actual absolute path. An existing completed primary
+stage is reported directly without replaying the encoder. If no complete
+stage exists, the historical emergency encode attempt remains available.
+The observer also rejects bound zero dimensions before touching output.
+Sentinel tests require both unchanged planted names and a separate complete
+recovery image, and cover repeated emergency renders and retained-stage reuse.
+Explicit user-authored output symlink semantics remain unchanged.
+
+The `IFrameEncoder` comment now permits encoding exceptions and requires
+callers to contain them and check destination-specific failure reporting;
+failed direct encoding can leave partial bytes. No interface vtable or
+publicly constructible layout change was needed for these follow-ups.
+
+The active callback consumer had the same unchecked pixel product. Callback
+exports now reject zero dimensions or pixel counts above `UINT_MAX`, check
+the selected format's byte product against `size_t`, and bound regions before
+indexing. The pixel limit preserves the legacy integer-addressable domain;
+there is no additional 2 GiB callback ceiling. Only the selected 16-bit or
+32-bit storage is allocated. Valid exports read current receiver policy,
+including same-size mode changes, and support resizing/recovery.
+
+Parallel render workers can call the adapter concurrently. Its private
+cache, conversion and receiver delivery now share one per-adapter mutex;
+separate adapters remain independent. The public receiver contract states
+worker-thread delivery, borrowed-buffer lifetime, prompt return and the
+existing no-reentry/lock-order requirements. The order is caller-held tile
+locks, then adapter, then receiver; receiver-side locks must not lead back
+into the current FrameStore/render/job or wait for render completion.
+The copied adapter gets an independent mutex and empty cache. This mutex
+changes only the cpp-local implementation type, not a public interface or
+publicly constructible layout.
+
+A cpp-only factory delegate constructs the same adapter used by Job for tests
+without a render, extra header API or `const_cast`. Fixed 16/32F pixel oracles,
+resize/mode/region tests and bounded three-worker delivery checks cover the
+actual dispatcher. Invalid-image canaries throw before any old zero-array
+write, and old-unsafe large float allocations/concurrency tests are gated
+behind the new preflight proof. The focused callback mode contains 31 checks.
+
+At the PPM/recovery checkpoint, all 19 normal executables and eight targeted
+ASan/UBSan suites pass (325 image and 77 output-shim checks). Isolating the
+old PPM and observer implementations while retaining current headers and
+other compiled code fails eight and nine assertions respectively, with
+normal exit 1. Those source-isolated runs avoid incompatible template
+headers and unsafe old out-of-allocation writes.
+
+The callback checkpoint passes 356 image checks, its 31-check focused mode
+under ThreadSanitizer (Job and the test instrumented), and the Job-instrumented
+image/CST ASan/UBSan runs. Isolating the old callback body with only its test
+construction delegate added fails six assertions normally; the test skips
+old unsafe large float allocations and parallel races after a failed canary.
+Actual Opto Job and codec/output objects also pass the five focused programs.
+This is a targeted callback concurrency check, not a full-render TSan claim.
+
+Four additional runtime bit oracles cover floating premultiplication range.
+The original ratio-first candidate loses tiny alpha in strict arithmetic;
+fast-math reassociation can instead lose opaque subnormal RGB. Bounded
+mantissas plus exponent restoration preserve the final representable result.
+A standalone strict-build check of the actual header passes the huge/tiny
+and opaque minimum-normal/subnormal cases without relying on fast-math
+reassociation. The full image suite now contains 360 checks.
+
+The resulting shared-header state passes clean make, Xcode Deployment/Opto
+and Blender native LTO builds with zero compiler warnings, excluding the
+expected AppIntents tooling notice. Six selected programs pass: 360 image,
+199 frame-encoder, 104 viewport, 77 output-shim, eight focused agent PNG and
+172 CST checks. The image/CST ASan/UBSan reruns include instrumented Job
+code; the current 31-check callback mode passes targeted ThreadSanitizer.
+Actual Opto codec, output, observer, disk and Job objects pass the five
+focused image/frame/viewport/shim/agent programs under full LTO and fast-math,
+linked with the canonical make archive. These are focused runtime checks,
+not a full GUI runtime or full-render TSan verification. The broader
+19-program/eight-sanitizer checkpoint and eight CLI failure paths above are
+not claimed to have been repeated after the final callback/range changes.
+Native Windows/Android, privileged owner changes, live cross-user directory
+substitution and sparse-file exclusions remain as previously recorded.
+
 ### Host measurements and decisions
 
 - A 50,000-scalar append probe reduced backing allocations from 50,000 to 28, with identical logical size, cursor and checksum. Four warm host trials measured 75.33 ± 3.26 ms for exact-growth storage and 0.2245 ± 0.0065 ms for geometric capacity. These are append-probe measurements. A sanitizer differential review also exercised 192,000 buffer operations against a shadow model.

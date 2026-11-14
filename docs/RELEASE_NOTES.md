@@ -47,6 +47,20 @@ source assets with the corrected build.
   count as successful images. Agent PNG helpers contain these failures.
   Null writer factories and disabled PNG encoders report failure by exception;
   viewport saves reject empty frames before opening or changing output.
+- Automatic emergency images are created exclusively with owner-only POSIX
+  permissions; existing names are skipped using bounded collision suffixes.
+  Completed retained stages are reused without another encode. Explicit output
+  paths retain their documented symlink behavior.
+- PPM output validates complete sizes, bounds pixel coordinates and reports
+  write failures. Its historical straight RGB bytes still ignore alpha.
+  The shared premultiplication helper used by 16-bit callbacks now multiplies
+  correctly, preserves alpha, and avoids zero division/signed overflow.
+- Callback exports reject zero dimensions and more than `UINT_MAX` pixels,
+  check native byte counts and regions before allocation, use wide indices,
+  and allocate only the selected 16-bit/32-bit format.
+  Delivery and cache access are serialized per adapter. Receiver policy is
+  refreshed on each valid export; callbacks must copy borrowed data and avoid
+  render/FrameStore re-entry or reverse lock waits.
 - Spectral and piecewise-function tables accept their leading finite
   columns, skip file headers and malformed rows, and ignore extra columns.
   Inline control points require two whitespace-separated values: replace
