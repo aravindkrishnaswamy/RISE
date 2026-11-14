@@ -19,6 +19,7 @@
 #include <new>
 #include "../Interfaces/ILog.h"
 #include "../Version.h"
+#include "../Utilities/Color/ColorUtils.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -83,45 +84,21 @@ void RGBEAWriter::BeginWrite( const unsigned int width, const unsigned int heigh
 
 void RGBEAWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y )
 {
-	const unsigned char RGBEBase = 128;
-
 	if( pBuffer && x < bufW && y < bufH ) {
 		// Unlike the RGBE and HDR formats, our RGBEA format is in the ROMM RGB color space
 		ROMMRGBPel p = c.base;
-		Scalar v = ColorMath::MaxValue(p);
-		int e;
+		unsigned int samples[3];unsigned char exponent;
+		ColorUtils::PackSharedExponentRGB<16>(p,samples,exponent);
 
 		const size_t idx = (static_cast<size_t>(y)*bufW+x)*8;
 
-		if( v < 1e-32 ) {
-			//R
-			pBuffer[idx] = 0;
-			pBuffer[idx+1] = 0;
-			//G
-			pBuffer[idx+2] = 0;
-			pBuffer[idx+3] = 0;
-			//B
-			pBuffer[idx+4] = 0;
-			pBuffer[idx+5] = 0;
-			//E
-			pBuffer[idx+6] = 0;
-			//A
-			pBuffer[idx+7] = 0;
-		} else {
-			v = frexp(v,&e) * 65536.0/v;
-			// RISE RGBEA stores its mantissas least significant byte first.
-			const unsigned short samples[] = {
-				static_cast<unsigned short>(p.r*v),
-				static_cast<unsigned short>(p.g*v),
-				static_cast<unsigned short>(p.b*v)
-			};
-			for( unsigned int i = 0; i < 3; ++i ) {
-				pBuffer[idx + i*2] = static_cast<unsigned char>(samples[i]);
-				pBuffer[idx + i*2 + 1] = static_cast<unsigned char>(samples[i] >> 8);
-			}
-			pBuffer[idx+6] = (e + RGBEBase);
-			pBuffer[idx+7] = (unsigned char)(c.a*255.0);
+		// RISE RGBEA stores its mantissas least significant byte first.
+		for( unsigned int i = 0; i < 3; ++i ) {
+			pBuffer[idx + i*2] = static_cast<unsigned char>(samples[i]);
+			pBuffer[idx + i*2 + 1] = static_cast<unsigned char>(samples[i] >> 8);
 		}
+		pBuffer[idx+6] = exponent;
+		pBuffer[idx+7] = c.IntegerizeAlpha<unsigned char>(255.0);
 	}
 }
 

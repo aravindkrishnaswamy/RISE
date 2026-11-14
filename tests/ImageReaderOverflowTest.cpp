@@ -94,6 +94,41 @@ static void Check( bool cond, const char* name )
 	else { ++failCount; std::cout << "  FAIL: " << name << std::endl; }
 }
 
+static void TestNormalizedIntegerize()
+{
+	// Runtime libc parsing keeps nonfinite inputs real under production
+	// fast-math flags, following FiniteMathTest's value-boundary convention.
+	const double nan=std::strtod("nan",nullptr);
+	const double pinf=std::strtod("1e999",nullptr);
+	const double ninf=std::strtod("-1e999",nullptr);
+	struct Case { double value; unsigned int byte,word; const char* label; };
+	const Case cases[]={
+		{-0.25,0,0,"negative"},{0,0,0,"zero"},{0.25,63,16383,"quarter truncation"},
+		{0.5,127,32767,"half truncation"},{1,255,65535,"one"},{2,255,65535,"above one"},
+		{nan,0,0,"runtime NaN"},{pinf,255,65535,"runtime positive infinity"},{ninf,0,0,"runtime negative infinity"}
+	};
+	for(const auto& item : cases) {
+		const ColorRec709RGB color(item.value,item.value,item.value,item.value);
+		const auto bytes=color.Integerize<Rec709RGBPel,unsigned char>(255);
+		const auto words=color.Integerize<Rec709RGBPel,unsigned short>(65535);
+		Check(bytes.r==item.byte && bytes.g==item.byte && bytes.b==item.byte && bytes.a==item.byte,
+			(std::string("normalized Integerize 8-bit: all RGBA channels saturate ")+item.label).c_str());
+		Check(words.r==item.word && words.g==item.word && words.b==item.word && words.a==item.word,
+			(std::string("normalized Integerize 16-bit: all RGBA channels saturate ")+item.label).c_str());
+	}
+	const ColorRec709RGB mixed(nan,pinf,ninf,0.5);
+	const auto bytes=mixed.Integerize<Rec709RGBPel,unsigned char>(255);
+	const auto words=mixed.Integerize<Rec709RGBPel,unsigned short>(65535);
+	Check(bytes.r==0 && bytes.g==255 && bytes.b==0 && bytes.a==127,
+		"normalized Integerize 8-bit: nonfinite RGB channels saturate independently of valid alpha");
+	Check(words.r==0 && words.g==65535 && words.b==0 && words.a==32767,
+		"normalized Integerize 16-bit: nonfinite RGB channels saturate independently of valid alpha");
+	const ColorRec709RGB raw(2,-1,0.25,0.5);Rec709RGBPel pel=raw.base;
+	const auto scaled=raw.ScaleRGBPelValuesAndIncludeAlpha<double>(pel,2);
+	Check(scaled.r==4 && scaled.g==-2 && scaled.b==0.5 && scaled.a==1,
+		"normalized Integerize: public raw scaling helper preserves its unnormalized representable products");
+}
+
 static void TestRasterStorage()
 {
 	struct Reader final : IRasterImageReader, Reference
@@ -184,13 +219,112 @@ static void TestHDRWriterBounds()
 	const std::string bytes( buffer->Pointer(), buffer->getCurPos() );
 	const std::string dimensions = "-Y 1 +X 1\n";
 	const auto offset = bytes.find( dimensions );
-	// The existing encoder scales the frexp mantissa by 255.9999, then truncates.
-	const unsigned char expected[] = { 127, 0, 0, 129 };
+	// Exact binary RGBE scaling stores 1.0 as mantissa128 at exponent129.
+	const unsigned char expected[] = { 128, 0, 0, 129 };
 	Check( offset != std::string::npos && bytes.size() == offset + dimensions.size() + sizeof(expected) &&
 		std::memcmp( bytes.data() + offset + dimensions.size(), expected, sizeof(expected) ) == 0,
 		"HDR writer recovers with one independently specified RGBE pixel" );
 	writer->release();
 	buffer->release();
+}
+
+static void TestSharedExponentPacking()
+{
+	const double nan=std::strtod("nan",nullptr),pinf=std::strtod("1e999",nullptr),ninf=std::strtod("-1e999",nullptr);
+	const double ceiling=std::ldexp(255.0,119);
+	const double below=std::ldexp(1.0,-107),above=std::ldexp(1.0,-106);
+	struct Case {const char* name;RISEColor color;std::vector<unsigned char> expected;};
+	const std::vector<Case> hdr={
+		{"ordinary truncation",RISEColor(.6,.3,.15,1),{153,76,38,128}},
+		{"fractional alpha composites over black",RISEColor(.6,.3,.15,.5),{153,76,38,127}},
+		{"above-one alpha retains HDR range",RISEColor(.6,.3,.15,2),{153,76,38,129}},
+		{"mixed negative clips only that channel",RISEColor(-1,.5,1,1),{0,64,128,129}},
+		{"mixed NaN clips only that channel",RISEColor(nan,.5,1,1),{0,64,128,129}},
+		{"positive infinity reaches format endpoint",RISEColor(pinf,.5,1,1),{255,0,0,255}},
+		{"NaN RGB becomes black",RISEColor(nan,nan,nan,1),{0,0,0,0}},
+		{"negative infinity RGB becomes black",RISEColor(ninf,ninf,ninf,1),{0,0,0,0}},
+		{"huge finite RGB saturates exponent",RISEColor(1e300,1e300,1e300,1),{255,255,255,255}},
+		{"derived upper endpoint is exact",RISEColor(ceiling,0,0,1),{255,0,0,255}},
+		{"legacy below-floor black",RISEColor(below,0,0,1),{0,0,0,0}},
+		{"above-floor power of two",RISEColor(above,0,0,1),{128,0,0,23}},
+		{"NaN alpha composites to black",RISEColor(.6,.3,.15,nan),{0,0,0,0}},
+		{"positive infinity alpha saturates after compositing",RISEColor(.6,.3,.15,pinf),{255,255,255,255}},
+		{"negative infinity alpha composites to black",RISEColor(.6,.3,.15,ninf),{0,0,0,0}}
+	};
+	// These RGBEA bytes independently include Rec709->ROMM conversion:
+	// (.6,.3,.15) -> (.437778673333857,.325255616690958,.175295367053433),
+	// giving mantissas E024/A687/59C0 at exponent127. RGB is not alpha-scaled.
+	const std::vector<Case> rgbea={
+		{"ROMM conversion and independent fractional alpha",RISEColor(.6,.3,.15,.5),{0x24,0xe0,0x87,0xa6,0xc0,0x59,127,127}},
+		{"opaque black preserves opacity",RISEColor(0,0,0,1),{0,0,0,0,0,0,0,255}},
+		{"mixed negatives clip after ROMM conversion",RISEColor(1,-2,.5,.5),{0,0,0,0,0x49,0xdb,126,127}},
+		{"NaN propagates through ROMM then clips",RISEColor(nan,.3,.15,.5),{0,0,0,0,0,0,0,127}},
+		{"positive infinity ROMM channels saturate",RISEColor(pinf,.3,.15,.5),{255,255,255,255,255,255,255,127}},
+		{"negative infinity ROMM channels clip",RISEColor(ninf,ninf,ninf,.5),{0,0,0,0,0,0,0,127}},
+		{"huge finite RGB saturates exponent",RISEColor(1e300,1e300,1e300,.5),{255,255,255,255,255,255,255,127}},
+		{"below-floor black retains alpha",RISEColor(below,below,below,.5),{0,0,0,0,0,0,0,127}},
+		{"negative alpha clips independently",RISEColor(.6,.3,.15,-.25),{0x24,0xe0,0x87,0xa6,0xc0,0x59,127,0}},
+		{"above-one alpha clips independently",RISEColor(.6,.3,.15,2),{0x24,0xe0,0x87,0xa6,0xc0,0x59,127,255}},
+		{"NaN alpha clips independently",RISEColor(.6,.3,.15,nan),{0x24,0xe0,0x87,0xa6,0xc0,0x59,127,0}},
+		{"positive infinity alpha saturates independently",RISEColor(.6,.3,.15,pinf),{0x24,0xe0,0x87,0xa6,0xc0,0x59,127,255}},
+		{"negative infinity alpha clips independently",RISEColor(.6,.3,.15,ninf),{0x24,0xe0,0x87,0xa6,0xc0,0x59,127,0}},
+		{"zero alpha retains unassociated HDR RGB",RISEColor(.6,.3,.15,0),{0x24,0xe0,0x87,0xa6,0xc0,0x59,127,0}}
+	};
+	for(bool alpha : {false,true}) for(const auto& item : alpha?rgbea:hdr) {
+		auto* buffer=new MemoryBuffer();IRasterImageWriter* writer=nullptr;
+		if(alpha)RISE_API_CreateRGBEAWriter(&writer,*buffer);
+		else RISE_API_CreateHDRWriter(&writer,*buffer,eColorSpace_Rec709RGB_Linear);
+		bool exact=writer!=nullptr;
+		if(writer){writer->BeginWrite(1,1);writer->WriteColor(item.color,0,0);writer->EndWrite();writer->release();}
+		const std::string bytes(buffer->Pointer(),buffer->getCurPos());
+		const std::string resolution="-Y 1 +X 1\n";
+		const auto header=bytes.find(resolution);
+		exact &= header!=std::string::npos && bytes.size()==header+resolution.size()+item.expected.size();
+		if(exact) {
+			const auto* pixel=reinterpret_cast<const unsigned char*>(bytes.data()+header+resolution.size());
+			exact=std::memcmp(pixel,item.expected.data(),item.expected.size())==0;
+			// Independently decode wire mantissas at their quantization-bin
+			// lower edge; do not call either production reader/packing helper.
+			const unsigned int bits=alpha?16:8,exponent=pixel[alpha?6:3];
+			for(unsigned int channel=0;channel<3;++channel) {
+				const unsigned int m=alpha?unsigned(pixel[channel*2])+(unsigned(pixel[channel*2+1])<<8):pixel[channel];
+				const double decoded=exponent?std::ldexp(double(m),int(exponent)-128-int(bits)):0;
+				const double largest=std::ldexp(double((1u<<bits)-1u),127-int(bits));
+				exact &= IsFiniteDouble(decoded) && decoded>=0 && decoded<=largest;
+			}
+			if(alpha)exact &= pixel[7]/255.0==item.expected[7]/255.0;
+		}
+		Check(exact,(std::string("shared exponent packing ")+(alpha?"RGBEA: ":"HDR: ")+item.name).c_str());
+		buffer->release();
+	}
+}
+
+static void TestHDRRawScanlineMarker()
+{
+	auto* buffer=new MemoryBuffer();IRasterImageWriter* writer=nullptr;
+	RISE_API_CreateHDRWriter(&writer,*buffer,eColorSpace_Rec709RGB_Linear);
+	if(!writer){Check(false,"HDR raw scanline: exact scale avoids false RLE marker and matches independent pixel expectations");buffer->release();return;}
+	writer->BeginWrite(8,1);
+	for(unsigned int x=0;x<8;++x)writer->WriteColor(RISEColor(.02,.02,1,1),x,0);
+	writer->EndWrite();writer->release();
+	const std::string bytes(buffer->Pointer(),buffer->getCurPos());
+	const std::string resolution="-Y 1 +X 8\n";
+	const auto offset=bytes.find(resolution);
+	const unsigned char expected[]={2,2,128,129};
+	bool exact=offset!=std::string::npos && bytes.size()==offset+resolution.size()+8*sizeof(expected);
+	if(exact)for(unsigned int x=0;x<8;++x)
+		exact &= std::memcmp(bytes.data()+offset+resolution.size()+x*sizeof(expected),expected,sizeof(expected))==0;
+	buffer->seek(IBuffer::START,0);auto* reader=new HDRReader(*buffer);
+	unsigned int width=0,height=0;const bool decoded=reader->BeginRead(width,height);
+	exact &= decoded && width==8 && height==1;
+	if(decoded && width==8 && height==1)for(unsigned int x=0;x<8;++x) {
+		RISEColor actual;reader->ReadColor(actual,x,0);
+		// HDRReader reconstructs bin centers; these expectations are
+		// independently specified as (m+.5)*2^-7.
+		exact &= actual.base.r==0.01953125 && actual.base.g==0.01953125 && actual.base.b==1.00390625 && actual.a==1;
+	}
+	Check(exact,"HDR raw scanline: exact scale avoids false RLE marker and matches independent pixel expectations");
+	reader->release();buffer->release();
 }
 
 static void TestTGAWriterBounds()
@@ -1419,15 +1553,26 @@ static void TestEXRStraightAlpha()
 static void TestEXRAlphaAcrossFormats()
 {
 	auto* source=new MemoryBuffer();
-	WriteSDKAssociatedEXR(*source,{0.25f,0.125f,0.5f,0.5f, 0.0625f,0.125f,0.1875f,0.25f, 0.125f,0.5f,1,0});
+	const float nan=static_cast<float>(std::strtod("nan",nullptr));
+	const float pinf=static_cast<float>(std::strtod("1e999",nullptr));
+	const float ninf=static_cast<float>(std::strtod("-1e999",nullptr));
+	WriteSDKAssociatedEXR(*source,{0.25f,0.125f,0.5f,0.5f, 0.0625f,0.125f,0.1875f,0.25f, 0.125f,0.5f,1,0,
+		-0.0625f,-0.125f,-0.1875f,-0.25f, 0.5f,1,1.5f,2,
+		0.25f,0.5f,0.75f,nan, 0.25f,0.5f,0.75f,pinf, 0.25f,0.5f,0.75f,ninf});
+	constexpr unsigned int pixelCount=8;
 	source->seek(IBuffer::START,0);auto* sourceReader=new EXRReader(*source,eColorSpace_Rec709RGB_Linear);
 	unsigned int width=0,height=0;const bool opened=sourceReader->BeginRead(width,height);
-	Check(opened && width==3 && height==1,"EXR straight alpha: independent associated fixture opens for format conversion");
-	if(!opened || width!=3 || height!=1) {sourceReader->release();source->release();return;}
-	RISEColor straight[3];for(unsigned int i=0;i<3;++i)sourceReader->ReadColor(straight[i],i,0);
+	Check(opened && width==pixelCount && height==1,"EXR straight alpha: independent associated fixture opens for format conversion");
+	if(!opened || width!=pixelCount || height!=1) {sourceReader->release();source->release();return;}
+	RISEColor straight[pixelCount];for(unsigned int i=0;i<pixelCount;++i)sourceReader->ReadColor(straight[i],i,0);
+	Check(straight[3].a==-0.25 && straight[4].a==2 &&
+		!IsFiniteDouble(straight[5].a) && !IsPositiveInfinityDouble(straight[5].a) && !IsPositiveInfinityDouble(-straight[5].a) &&
+		IsPositiveInfinityDouble(straight[6].a) && IsPositiveInfinityDouble(-straight[7].a),
+		"normalized Integerize: EXR input retains negative above-one and nonfinite alpha before LDR conversion");
 	sourceReader->release();source->release();
 	// The established 8-bit writers truncate quantization: .5->127, .25->63.
-	const RGBA8 expected[]={{127,63,255,127},{63,127,191,63},{31,127,255,0}};
+	const RGBA8 expected[]={{127,63,255,127},{63,127,191,63},{31,127,255,0},
+		{63,127,191,0},{63,127,191,255},{0,0,0,0},{0,0,0,255},{0,0,0,0}};
 	std::vector<const char*> formats={"tga"};
 #ifndef NO_PNG_SUPPORT
 	formats.push_back("png");
@@ -1439,34 +1584,34 @@ static void TestEXRAlphaAcrossFormats()
 		else RISE_API_CreateTGAWriter(&writer,*encoded,eColorSpace_Rec709RGB_Linear);
 		Check(writer!=nullptr,"EXR straight alpha: target straight-RGBA writer exists");
 		if(!writer){encoded->release();continue;}
-		writer->BeginWrite(3,1);for(unsigned int i=0;i<3;++i)writer->WriteColor(straight[i],i,0);
+		writer->BeginWrite(pixelCount,1);for(unsigned int i=0;i<pixelCount;++i)writer->WriteColor(straight[i],i,0);
 		writer->EndWrite();writer->release();encoded->seek(IBuffer::START,0);
 		IRasterImageReader* decoder=nullptr;
 		if(png) RISE_API_CreatePNGReader(&decoder,*encoded,eColorSpace_Rec709RGB_Linear);
 		else RISE_API_CreateTGAReader(&decoder,*encoded,eColorSpace_Rec709RGB_Linear);
-		bool exact=decoder && decoder->BeginRead(width,height) && width==3 && height==1;
-		RISEColor recovered[3];
-		if(exact) for(unsigned int i=0;i<3;++i) {
+		bool exact=decoder && decoder->BeginRead(width,height) && width==pixelCount && height==1;
+		RISEColor recovered[pixelCount];
+		if(exact) for(unsigned int i=0;i<pixelCount;++i) {
 			decoder->ReadColor(recovered[i],i,0);RISEColor wanted;
 			wanted.SetFromIntegerized<Rec709RGBPel,unsigned char>(expected[i],255.0);
 			exact &= SameStraightEXRColor(recovered[i],wanted.base,wanted.a);
 		}
-		Check(exact,png?"EXR straight alpha: PNG preserves expected quantized straight RGB and alpha":
-			"EXR straight alpha: TGA preserves expected quantized straight RGB and alpha");
+		Check(exact,png?"EXR straight alpha: normalized Integerize PNG saturates invalid alpha and preserves expected RGBA bytes":
+			"EXR straight alpha: normalized Integerize TGA saturates invalid alpha and preserves expected RGBA bytes");
 		if(decoder)decoder->release();encoded->release();
 		if(!exact)continue;
 		auto* roundTrip=new MemoryBuffer();auto* exr=new EXRWriter(*roundTrip,eColorSpace_Rec709RGB_Linear,eExrCompression_None,true,true);
-		exr->BeginWrite(3,1);for(unsigned int i=0;i<3;++i)exr->WriteColor(recovered[i],i,0);
+		exr->BeginWrite(pixelCount,1);for(unsigned int i=0;i<pixelCount;++i)exr->WriteColor(recovered[i],i,0);
 		exr->EndWrite();exr->release();roundTrip->seek(IBuffer::START,0);
-		float associated[12]={};
+		float associated[pixelCount*4]={};
 		{
 			IStreamWrapper stream(*roundTrip);Imf::InputFile file(stream);Imf::FrameBuffer frame;
 			const char* channels[]={"R","G","B","A"};
 			for(unsigned int c=0;c<4;++c)frame.insert(channels[c],Imf::Slice::Make(Imf::FLOAT,associated+c,
-				file.header().dataWindow(),4*sizeof(float),12*sizeof(float)));
+				file.header().dataWindow(),4*sizeof(float),pixelCount*4*sizeof(float)));
 			file.setFrameBuffer(frame);file.readPixels(0,0);exact=!stream.Failed();
 		}
-		for(unsigned int i=0;i<3;++i) {
+		for(unsigned int i=0;i<pixelCount;++i) {
 			const double alpha=expected[i].a*(1.0/255.0);
 			const unsigned char rgb[]={expected[i].r,expected[i].g,expected[i].b};
 			for(unsigned int c=0;c<3;++c)
@@ -1693,6 +1838,7 @@ static void TestEXROffsetWindow()
 
 static int RunTests()
 {
+	TestNormalizedIntegerize();
 	TestReaderFamilyReload();
 #ifndef NO_EXR_SUPPORT
 	TestEXRStraightAlpha();
@@ -1705,6 +1851,8 @@ static int RunTests()
 #endif
 	TestRasterStorage();
 	TestHDRWriterBounds();
+	TestSharedExponentPacking();
+	TestHDRRawScanlineMarker();
 	TestTGAWriterBounds();
 	TestJPEGReload();
 	TestJPEGCompleteStream();

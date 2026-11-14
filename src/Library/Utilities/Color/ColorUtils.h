@@ -18,12 +18,44 @@
 #include "../../Interfaces/IFunction1D.h"
 #include "../../Interfaces/IWriteBuffer.h"
 #include "../../Interfaces/IReadBuffer.h"
+#include "../FiniteMath.h"
+#include <cmath>
 
 
 namespace RISE
 {
 	namespace ColorUtils
 	{
+		// RGBE/RGBEA share an 8-bit exponent biased by 128. The largest
+		// channel is (2^bits-1)*2^(255-128-bits). Clamp before frexp/casts;
+		// retain the established low floor and truncate exact binary-scaled mantissas.
+		template< unsigned int bits, class Pel >
+		inline void PackSharedExponentRGB( const Pel& p, unsigned int (&samples)[3], unsigned char& exponent )
+		{
+			static_assert(bits==8 || bits==16,"shared-exponent mantissas must have 8 or 16 bits");
+			constexpr unsigned int maxSample=(1u<<bits)-1u;
+			const double ceiling=std::ldexp(double(maxSample),127-int(bits));
+			const auto clip=[ceiling](double value) {
+				if(!IsFiniteDouble(value))return IsPositiveInfinityDouble(value)?ceiling:0.0;
+				if(value<=0)return 0.0;
+				return value>ceiling?ceiling:value;
+			};
+			const double channels[]={clip(p.r),clip(p.g),clip(p.b)};
+			double peak=channels[0];
+			for(unsigned int i=1;i<3;++i)if(channels[i]>peak)peak=channels[i];
+			samples[0]=samples[1]=samples[2]=0;exponent=0;
+			if(peak<1e-32)return;
+			int power=0;
+			std::frexp(peak,&power);
+			// A power-of-two scale avoids cancellation and ensures the peak
+			// mantissa has its high bit set, disambiguating raw RGBE from RLE.
+			const double scale=std::ldexp(1.0,int(bits)-power);
+			for(unsigned int i=0;i<3;++i) {
+				const double scaled=channels[i]*scale;
+				samples[i]=scaled>=maxSample?maxSample:static_cast<unsigned int>(scaled);
+			}
+			exponent=static_cast<unsigned char>(power+128);
+		}
 
 		//! Applies the SRGB non-linearization transfer function
 		/// \return SRGB result

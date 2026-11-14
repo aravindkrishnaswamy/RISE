@@ -18,6 +18,8 @@
 #include "../Interfaces/IRasterImageWriter.h"
 #include "../Interfaces/IWriteBuffer.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/Color/ColorUtils.h"
+#include <cstddef>
 
 namespace RISE
 {
@@ -36,25 +38,11 @@ namespace RISE
 			template< typename T >
 			void WriteHDRPixelToBuffer( const unsigned int x, const unsigned int y, const T& p )
 			{
-				const unsigned char RGBEBase = 128;
-
-				Scalar v = ColorMath::MaxValue(p);
-
-				const unsigned int idx = y*bufW*4+x*4;
-
-				if( v < 1e-32 ) {
-					pBuffer[idx] = 0;
-					pBuffer[idx+1] = 0;
-					pBuffer[idx+2] = 0;
-					pBuffer[idx+3] = 0;
-				} else {
-					int e;
-					v = frexp(v,&e) * 255.9999/v;
-					pBuffer[idx] = (unsigned char)(p.r<0?0:p.r*v);
-					pBuffer[idx+1] = (unsigned char)(p.g<0?0:p.g*v);
-					pBuffer[idx+2] = (unsigned char)(p.b<0?0:p.b*v);
-					pBuffer[idx+3] = (e + RGBEBase);
-				}
+				unsigned int samples[3];unsigned char exponent;
+				ColorUtils::PackSharedExponentRGB<8>(p,samples,exponent);
+				const std::size_t idx=(static_cast<std::size_t>(y)*bufW+x)*4;
+				for(unsigned int i=0;i<3;++i)pBuffer[idx+i]=static_cast<unsigned char>(samples[i]);
+				pBuffer[idx+3]=exponent;
 			}
 
 		public:
