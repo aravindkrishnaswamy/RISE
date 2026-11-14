@@ -41,6 +41,17 @@
 
 using namespace RISE::Implementation;
 
+#ifdef _WIN32
+namespace
+{
+#ifdef _MSC_VER
+	using NativeFileStatus = struct __stat64;
+#else
+	using NativeFileStatus = struct _stat64;
+#endif
+}
+#endif
+
 #ifndef _WIN32
 namespace
 {
@@ -126,37 +137,65 @@ namespace
 #endif
 
 DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name ) :
-	DiskFileWriteBuffer(file_name, nullptr, false)
+	DiskFileWriteBuffer(file_name, nullptr, OpenPolicy::Direct)
 {
 }
 
-DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, bool exclusiveCreate )
+DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, OpenPolicy policy )
 {
 	if( openFailure ) openFailure->clear();
 	if( !file_name ) return;
 	filename = file_name;
 	int openError = 0;
-	if( exclusiveCreate ) {
-		// The staging leaf must be newly created. Never truncate or follow an
-		// entry planted between directory creation and this open. POSIX uses a
-		// private directory and 0666 & ~umask to preserve new-output modes.
+	if( policy != OpenPolicy::Direct ) {
+		// Staging requires a newly created leaf. Regular destination opens
+		// defer truncation until the opened descriptor has been validated.
+		// POSIX staging uses a private directory and 0666 & ~umask to preserve
+		// new-output modes.
 #ifdef _WIN32
-		const int descriptor = ::_open(filename.c_str(),
-			_O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT, _S_IREAD | _S_IWRITE);
+		const int flags = _O_WRONLY | _O_CREAT | _O_BINARY | _O_NOINHERIT |
+			(policy == OpenPolicy::ExclusiveStaging ? _O_EXCL : 0);
+		const int descriptor = ::_open(filename.c_str(), flags, _S_IREAD | _S_IWRITE);
 		if( descriptor >= 0 ) {
-			hFile.reset(::_fdopen(descriptor, "wb"));
-			if( !hFile ) {
-				openError = errno;
-				::_close(descriptor);
+			if( policy == OpenPolicy::RegularOutput ) {
+				NativeFileStatus info{};
+				if( ::_fstat64(descriptor, &info) != 0 ) openError = errno;
+				else if( (info.st_mode & _S_IFMT) != _S_IFREG ) openError = EINVAL;
+			}
+			if( !openError ) {
+				hFile.reset(::_fdopen(descriptor, "wb"));
+				if( !hFile ) openError = errno;
+			}
+			if( !hFile ) ::_close(descriptor);
+			else if( policy == OpenPolicy::RegularOutput ) {
+				const auto truncated = ::_chsize_s(descriptor, 0);
+				if( truncated != 0 ) {
+					openError = truncated;
+					hFile.reset();
+				}
 			}
 		} else openError = errno;
 #else
-		const int descriptor = ::open(filename.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);
+		// Regular destinations may change type after the initial path probe.
+		// Do not block on a FIFO or truncate anything before validating the
+		// opened descriptor; preserve user-authored symlink destinations.
+		const int flags = O_WRONLY | O_CREAT | O_CLOEXEC |
+			(policy == OpenPolicy::ExclusiveStaging ? O_EXCL | O_NOFOLLOW : O_NONBLOCK);
+		const int descriptor = ::open(filename.c_str(), flags, 0666);
 		if( descriptor >= 0 ) {
-			hFile.reset(::fdopen(descriptor, "wb"));
-			if( !hFile ) {
+			if( policy == OpenPolicy::RegularOutput ) {
+				struct stat info{};
+				if( ::fstat(descriptor, &info) != 0 ) openError = errno;
+				else if( !S_ISREG(info.st_mode) ) openError = EINVAL;
+			}
+			if( !openError ) {
+				hFile.reset(::fdopen(descriptor, "wb"));
+				if( !hFile ) openError = errno;
+			}
+			if( !hFile ) ::close(descriptor);
+			else if( policy == OpenPolicy::RegularOutput && ::ftruncate(descriptor, 0) != 0 ) {
 				openError = errno;
-				::close(descriptor);
+				hFile.reset();
 			}
 		} else openError = errno;
 #endif
@@ -359,10 +398,10 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		return false;
 	};
 	const auto writeFile = [&]( const fs::path& file, const std::function<bool(DiskFileWriteBuffer&)>& encode,
-		std::error_code* openFailure = nullptr, bool exclusiveCreate = false ) {
+		std::error_code* openFailure = nullptr, OpenPolicy openPolicy = OpenPolicy::RegularOutput ) {
 		const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
 		std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer(
-			new DiskFileWriteBuffer( file.string().c_str(), openFailure, exclusiveCreate ), release );
+			new DiskFileWriteBuffer( file.string().c_str(), openFailure, openPolicy ), release );
 		GlobalLog()->PrintNew( buffer.get(), __FILE__, __LINE__, "disk file write buffer" );
 		if( !buffer->ReadyToWrite() ) return fail("open output", file, buffer->writeError);
 		bool encoded = false;
@@ -409,10 +448,26 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 #ifdef _WIN32
 		const int probe = ::_open(target.string().c_str(), _O_WRONLY | _O_BINARY | _O_NOINHERIT);
 		if( probe < 0 ) return fail("probe destination write access", target, std::error_code(errno, std::generic_category()));
+		NativeFileStatus opened{};
+		const int inspected = ::_fstat64(probe, &opened);
+		const auto probeError = inspected != 0 ? std::error_code(errno, std::generic_category()) :
+			((opened.st_mode & _S_IFMT) != _S_IFREG ? std::make_error_code(std::errc::invalid_argument) : std::error_code{});
+		if( probeError ) {
+			::_close(probe);
+			return fail("inspect opened destination", target, probeError);
+		}
 		if( ::_close(probe) != 0 ) return fail("close destination probe", target, std::error_code(errno, std::generic_category()));
 #else
-		const int probe = ::open(target.string().c_str(), O_WRONLY | O_CLOEXEC);
+		const int probe = ::open(target.string().c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
 		if( probe < 0 ) return fail("probe destination write access", target, std::error_code(errno, std::generic_category()));
+		struct stat opened{};
+		const int inspected = ::fstat(probe, &opened);
+		const auto probeError = inspected != 0 ? std::error_code(errno, std::generic_category()) :
+			(!S_ISREG(opened.st_mode) ? std::make_error_code(std::errc::invalid_argument) : std::error_code{});
+		if( probeError ) {
+			::close(probe);
+			return fail("inspect opened destination", target, probeError);
+		}
 		if( ::close(probe) != 0 ) return fail("close destination probe", target, std::error_code(errno, std::generic_category()));
 #endif
 	}
@@ -483,7 +538,7 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		}
 	} cleanup{ staging, directory, result };
 	std::error_code stagingOpenFailure;
-	if( !writeFile( staging, write, &stagingOpenFailure, true ) ) {
+	if( !writeFile( staging, write, &stagingOpenFailure, OpenPolicy::ExclusiveStaging ) ) {
 		// No callback ran if opening the staging file failed. Permission-only
 		// fallback is safe here; encoding/flush failures must never replay it.
 		if( policy == StagingPolicy::AllowInPlace && permissionFailure(stagingOpenFailure) ) return writeFile(target, write);

@@ -34,7 +34,7 @@ namespace RISE
 			// Constructors
 			//
 
-			// There is only one constructor
+			// Direct construction retains legacy stream/device output semantics.
 			DiskFileWriteBuffer( const char * file_name );
 			// Legacy IBuffer queries saturate at UINT_MAX for large files.
 			unsigned int Size() const override;
@@ -83,6 +83,8 @@ namespace RISE
 				const std::function<bool(DiskFileWriteBuffer&)>& write );
 			// AllowInPlace copies completed staging bytes into existing files,
 			// preserving their inode, hardlinks and metadata. New files use rename.
+			// Helper destination opens validate a regular file before truncating;
+			// a concurrent FIFO replacement cannot block POSIX publication.
 			// Permission-denied staging creation/open permits direct encoding.
 			// POSIX staging also requires trusted parent/ancestor ownership and
 			// permissions; macOS extended ALLOW ACLs require direct image output.
@@ -101,7 +103,8 @@ namespace RISE
 			virtual ~DiskFileWriteBuffer( );
 
 		private:
-			DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, bool exclusiveCreate );
+			enum class OpenPolicy { Direct, ExclusiveStaging, RegularOutput };
+			DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, OpenPolicy policy );
 			bool hasWritten = false;
 			bool writeFailed = false;
 			std::error_code writeError;

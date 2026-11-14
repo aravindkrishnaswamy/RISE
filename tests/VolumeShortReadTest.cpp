@@ -1089,6 +1089,79 @@ static void TestStagedOutputFallback()
 			"in-place staged publication preserves extended attributes");
 	} else std::cout << "SKIP: scratch filesystem cannot store the publication xattr fixture" << std::endl;
 #endif
+	const auto initialFifo = root / "initial-output-fifo";
+	const bool madeInitialFifo = ::mkfifo(initialFifo.string().c_str(), 0600) == 0;
+	unsigned int fifoCalls = 0;
+	DiskFileWriteBuffer::WriteDiagnostics fifoRefusal;
+	const bool initialSaved = madeInitialFifo && DiskFileWriteBuffer::WriteAtomically(initialFifo.string(), [&](DiskFileWriteBuffer& buffer) {
+		++fifoCalls;
+		return buffer.setBytes("unexpected FIFO", 15);
+	}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace, &fifoRefusal);
+	Check(madeInitialFifo && !initialSaved && fifoCalls == 0 && fifoRefusal.error == std::errc::invalid_argument &&
+		fifoRefusal.operation == "inspect regular destination" && fs::is_fifo(initialFifo),
+		"initial FIFO output is refused without invoking the staged encoder");
+	// The public direct constructor intentionally remains a stream/device API.
+	// A nonblocking reader permits its historical FIFO write without waiting.
+	const int streamReader = madeInitialFifo ? ::open(initialFifo.string().c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC) : -1;
+	bool directStream = false;
+	if( streamReader >= 0 ) {
+		auto* stream = new DiskFileWriteBuffer(initialFifo.string().c_str());
+		directStream = stream->ReadyToWrite() && stream->setBytes("legacy stream", 13) && stream->Finish(true);
+		stream->release();
+		char bytes[13] = {};
+		directStream = directStream && ::read(streamReader, bytes, sizeof(bytes)) == static_cast<ssize_t>(sizeof(bytes)) &&
+			std::memcmp(bytes, "legacy stream", sizeof(bytes)) == 0;
+		::close(streamReader);
+	}
+	Check(directStream, "public direct output constructor preserves legacy FIFO stream writes");
+	fs::remove(initialFifo);
+	for( const bool hasReader : { false, true } ) {
+		const auto changedTarget = root / "changed-output-fifo";
+		std::ofstream(changedTarget) << "before type change";
+		const pid_t fifoChild = ::fork();
+		if( fifoChild == 0 ) {
+			// The old fopen("wb") blocks indefinitely when there is no reader.
+			// A bounded child converts that behavior into an ordinary assertion
+			// failure in the parent while allowing all other test cases to finish.
+			std::signal(SIGALRM, SIG_DFL);
+			::alarm(3);
+			const std::string payload = "completed before FIFO change";
+			unsigned int calls = 0;
+			bool changed = false;
+			int reader = -1;
+			struct stat fifoBefore{};
+			DiskFileWriteBuffer::WriteDiagnostics failure;
+			const bool saved = DiskFileWriteBuffer::WriteAtomically(changedTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+				++calls;
+				if( !buffer.setBytes(payload.data(), static_cast<unsigned int>(payload.size())) ) return false;
+				fs::remove(changedTarget);
+				changed = ::mkfifo(changedTarget.string().c_str(), 0600) == 0 && ::stat(changedTarget.string().c_str(), &fifoBefore) == 0;
+				if( hasReader && changed ) reader = ::open(changedTarget.string().c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+				return changed && (!hasReader || reader >= 0);
+			}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace, &failure);
+			struct stat fifoAfter{};
+			const bool sameFifo = ::stat(changedTarget.string().c_str(), &fifoAfter) == 0 && S_ISFIFO(fifoAfter.st_mode) &&
+				fifoBefore.st_dev == fifoAfter.st_dev && fifoBefore.st_ino == fifoAfter.st_ino;
+			bool noStreamBytes = true;
+			if( reader >= 0 ) {
+				char byte;
+				noStreamBytes = ::read(reader, &byte, 1) == 0;
+				::close(reader);
+			}
+			const auto cause = hasReader ? std::errc::invalid_argument : std::errc::no_such_device_or_address;
+			const bool recovered = !saved && changed && calls == 1 && failure.error == cause &&
+				failure.operation == "open output" && sameFifo && noStreamBytes &&
+				!failure.recoveryPath.empty() && read(failure.recoveryPath) == payload;
+			::_exit(recovered ? 0 : 1);
+		}
+		int fifoStatus = 0;
+		const bool waitedForFifo = fifoChild > 0 && ::waitpid(fifoChild, &fifoStatus, 0) == fifoChild;
+		Check(waitedForFifo && WIFEXITED(fifoStatus) && WEXITSTATUS(fifoStatus) == 0,
+			hasReader ? "FIFO type change with reader is rejected before writes and retains completed stage with cause" :
+			"FIFO type change without reader returns promptly and retains completed stage with cause");
+		fs::remove(changedTarget);
+		for( const auto& entry : fs::directory_iterator(root) ) if( entry.is_directory() ) fs::remove_all(entry.path());
+	}
 	// A seek flushes the completed staging stream before arming the process
 	// size limit. Only the subsequent in-place copy encounters EFBIG. Running
 	// in a child isolates both the resource limit and SIGXFSZ disposition.
