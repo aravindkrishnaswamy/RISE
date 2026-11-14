@@ -24,6 +24,12 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <cstdint>
+#include <array>
+#include <cmath>
+#include <cstdlib>
+#ifndef NO_PNG_SUPPORT
+#include <png.h>
+#endif
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -52,10 +58,152 @@ namespace
 	{
 		if ( cond ) {
 			++gPassCount;
+			if( std::getenv("RISE_RED_PROVE_MARKER") ) std::cout << "PASS: " << label << "\n";
 		} else {
 			++gFailCount;
 			std::cerr << "FAIL: " << label << "\n";
 		}
+	}
+
+#ifndef NO_PNG_SUPPORT
+	struct RawPNGPixelRow
+	{
+		bool decoded = false;
+		bool hasGamma = false;
+		double gamma = 0;
+		unsigned int depth = 0;
+		std::array<unsigned char, 16> samples{};
+	};
+
+	RawPNGPixelRow ReadRawPNGPixelRow( const IMemoryBuffer& buffer )
+	{
+		struct Input
+		{
+			const char* bytes;
+			std::size_t size;
+			std::size_t position;
+		} input{ buffer.Pointer(), buffer.Size(), 0 };
+		RawPNGPixelRow result;
+		png_structp png = png_create_read_struct( PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr );
+		if( !png ) return result;
+		png_infop info = png_create_info_struct( png );
+		if( !info ) {
+			png_destroy_read_struct( &png, nullptr, nullptr );
+			return result;
+		}
+		if( setjmp( png_jmpbuf( png ) ) ) {
+			png_destroy_read_struct( &png, &info, nullptr );
+			return {};
+		}
+		// No gamma, alpha or endian transforms: inspect the file's actual
+		// RGBA samples in PNG network order, independently of RISE's reader.
+		png_set_read_fn( png, &input, []( png_structp state, png_bytep data, png_size_t size ) {
+			auto* source = static_cast<Input*>( png_get_io_ptr( state ) );
+			if( size > source->size - source->position ) png_error( state, "truncated fixture" );
+			std::memcpy( data, source->bytes + source->position, size );
+			source->position += size;
+		} );
+		png_read_info( png, info );
+		result.depth = png_get_bit_depth( png, info );
+		result.hasGamma = png_get_gAMA( png, info, &result.gamma ) != 0;
+		if( png_get_image_width( png, info ) != 2 || png_get_image_height( png, info ) != 1 ||
+			png_get_color_type( png, info ) != PNG_COLOR_TYPE_RGBA ||
+			(result.depth != 8 && result.depth != 16) ||
+			png_get_rowbytes( png, info ) != 2u * 4u * (result.depth / 8u) ) {
+			png_destroy_read_struct( &png, &info, nullptr );
+			return {};
+		}
+		png_read_row( png, result.samples.data(), nullptr );
+		png_read_end( png, info );
+		png_destroy_read_struct( &png, &info, nullptr );
+		result.decoded = true;
+		return result;
+	}
+
+	std::array<double, 3> PNGReferenceChannels( const RISEColor& color, COLOR_SPACE space )
+	{
+		std::array<double, 3> rgb{ color.base.r, color.base.g, color.base.b };
+		if( space == eColorSpace_ROMMRGB_Linear || space == eColorSpace_ProPhotoRGB ) {
+			// Independent sequential Rec.709 D65 -> XYZ D65 -> Bradford D50
+			// -> ROMM D50 reference, rather than the production composite matrix.
+			const auto multiply = []( const std::array<double, 3>& value, const double (&matrix)[3][3] ) {
+				std::array<double, 3> transformed{};
+				for( std::size_t row = 0; row < 3; ++row )
+					for( std::size_t column = 0; column < 3; ++column )
+						transformed[row] += matrix[row][column] * value[column];
+				return transformed;
+			};
+			constexpr double toXYZ[3][3] = {
+				{0.412453, 0.357580, 0.180423}, {0.212671, 0.715160, 0.072169}, {0.019334, 0.119193, 0.950227}
+			};
+			constexpr double toD50[3][3] = {
+				{1.0479, 0.0229, -0.0502}, {0.0296, 0.9904, -0.0171}, {-0.0092, 0.0151, 0.7519}
+			};
+			constexpr double toROMM[3][3] = {
+				{1.3460, -0.2556, -0.0511}, {-0.5446, 1.5082, 0.0205}, {0, 0, 1.2123}
+			};
+			rgb = multiply( multiply( multiply( rgb, toXYZ ), toD50 ), toROMM );
+		}
+		for( double& channel : rgb ) {
+			if( space == eColorSpace_sRGB )
+				channel = channel <= 0.003040247678 ? 12.92 * channel : 1.055 * std::pow( channel, 1.0 / 2.4 ) - 0.055;
+			else if( space == eColorSpace_ProPhotoRGB )
+				channel = channel <= 0.001953 ? 16.0 * channel : std::pow( channel, 1.0 / 1.8 );
+			channel = std::max( 0.0, std::min( 1.0, channel ) );
+		}
+		return rgb;
+	}
+#endif
+
+	void TestPNGTransferMetadata()
+	{
+#ifndef NO_PNG_SUPPORT
+		const std::array<RISEColor, 2> colors = {
+			RISEColor( RISEPel( 0.018, 0.271, 0.673 ), 0.37 ),
+			RISEColor( RISEPel( 0.0005, 0.001, 0.0015 ), 0.8 )
+		};
+		struct Encoding { COLOR_SPACE space; const char* name; double gamma; };
+		const Encoding encodings[] = {
+			{ eColorSpace_Rec709RGB_Linear, "linear709", 1.0 },
+			{ eColorSpace_ROMMRGB_Linear, "linearROMM", 1.0 },
+			{ eColorSpace_sRGB, "sRGB", 1.0 / 2.2 },
+			{ eColorSpace_ProPhotoRGB, "ProPhoto", 1.0 / 1.8 }
+		};
+		for( const auto& encoding : encodings ) {
+			for( unsigned char depth : { 8, 16 } ) {
+				auto* buffer = new MemoryBuffer();
+				IRasterImageWriter* writer = nullptr;
+				RISE_API_CreatePNGWriter( &writer, *buffer, depth, encoding.space );
+				if( writer ) {
+					writer->BeginWrite( 2, 1 );
+					for( unsigned int x = 0; x < colors.size(); ++x ) writer->WriteColor( colors[x], x, 0 );
+					writer->EndWrite();
+					writer->release();
+				}
+				const auto png = ReadRawPNGPixelRow( *buffer );
+				buffer->release();
+				const std::string label = std::string("PNGGamma: ") + encoding.name + " " + std::to_string(depth);
+				Check( png.decoded && png.depth == depth, label + " independent libpng decode" );
+				const double quantizedGamma = std::round( encoding.gamma * 100000.0 ) / 100000.0;
+				Check( png.decoded && png.hasGamma && std::abs(png.gamma - quantizedGamma) < 1.0e-10,
+					label + " metadata matches the selected space's legacy gamma approximation" );
+				bool samplesMatch = png.decoded;
+				const unsigned int maximum = depth == 8 ? 255 : 65535;
+				for( std::size_t x = 0; x < colors.size() && samplesMatch; ++x ) {
+					const auto rgb = PNGReferenceChannels( colors[x], encoding.space );
+					for( std::size_t channel = 0; channel < 4; ++channel ) {
+						const double value = channel == 3 ? colors[x].a : rgb[channel];
+						const unsigned int expected = static_cast<unsigned int>( value * maximum );
+						const std::size_t offset = (x * 4u + channel) * (depth / 8u);
+						const unsigned int actual = depth == 8 ? png.samples[offset] :
+							(static_cast<unsigned int>(png.samples[offset]) << 8) | png.samples[offset + 1u];
+						samplesMatch &= actual == expected;
+					}
+				}
+				Check( samplesMatch, label + " raw RGB and alpha match analytic conversion and truncation" );
+			}
+		}
+#endif
 	}
 
 	// ─── Pixel pattern ────────────────────────────────────────────
@@ -986,6 +1134,7 @@ int main()
 	std::cout << "------------------------------------------------------------\n";
 
 	TestRegistry();
+	TestPNGTransferMetadata();
 	TestEncoderFailureOwnership();
 	TestByteIdentityAllFormats();
 	TestHDRFormatsIgnoreViewTransform();

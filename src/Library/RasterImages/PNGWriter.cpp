@@ -206,25 +206,20 @@ void PNGWriter::EndWrite( )
 		png_set_compression_level(png_ptr, Z_BEST_COMPRESSION);
 		png_set_bgr(png_ptr);
 
-		if( bpp == 16 ) {
+		// WriteColor applies the selected transfer function at either depth.
+		// Preserve the existing approximate gAMA convention for that space.
+		switch( color_space )
+		{
+		case eColorSpace_ROMMRGB_Linear:
+		case eColorSpace_Rec709RGB_Linear:
 			png_set_gAMA(png_ptr, info_ptr, 1.0);
-		} else {
-			switch( color_space )
-			{
-			case eColorSpace_ROMMRGB_Linear:
-			case eColorSpace_Rec709RGB_Linear:
-				{
-					png_set_gAMA(png_ptr, info_ptr, 1.0);
-				} break;
-			case eColorSpace_sRGB:
-				{
-					png_set_gAMA(png_ptr, info_ptr, 1.0/2.2);
-				} break;
-			case eColorSpace_ProPhotoRGB:
-				{
-					png_set_gAMA(png_ptr, info_ptr, 1.0/1.8);
-				} break;
-			}
+			break;
+		case eColorSpace_sRGB:
+			png_set_gAMA(png_ptr, info_ptr, 1.0/2.2);
+			break;
+		case eColorSpace_ProPhotoRGB:
+			png_set_gAMA(png_ptr, info_ptr, 1.0/1.8);
+			break;
 		}
 
 		png_set_IHDR(png_ptr, info_ptr,
