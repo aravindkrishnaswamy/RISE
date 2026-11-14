@@ -46,7 +46,10 @@ source assets with the corrected build.
   straight alpha (or opaque padding when no alpha bits are declared);
   extended TGA 2.0 metadata is not interpreted. Alpha and orientation can
   therefore differ from the former shifted-header decode.
-- JPEG reloads release previous decoded pixels and clear failed-read state.
+- JPEG, TGA, HDR, PNG, TIFF, and EXR reader reloads clear previous active
+  images, publish dimensions only after success, and check pixel coordinates.
+  EXR data errors now return failure with an inactive image; FLOAT range and
+  offset data windows remain supported.
   Template thumbnail caches are reused only when their bytes match the
   generated default PNG. Partial or foreign entries are regenerated, and
   failed writes return no usable texture path. Failed initial PNG encoding
@@ -64,7 +67,8 @@ source assets with the corrected build.
   file resolution, UV mapping, and derived scene contents in existing scripts.
 - Concrete implementation types changed layout during this series.
   Clients constructing or subclassing them need rebuilding; this includes
-  `TGAReader`, which now retains image height for coordinate bounds checks.
+  `TGAReader`, `HDRReader`, `PNGReader`, and `TIFFReader`, which now retain
+  image height for coordinate bounds checks.
 
 See [the modernization plan](CPP_UTILITY_MODERNIZATION_PLAN.md) for the
 implementation checkpoint, measurements, and remaining platform gates.

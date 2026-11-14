@@ -238,6 +238,51 @@ unchanged from the fully rebuilt `8e70540df` checkpoint. The Windows wrapper
 still requires the already-deferred native fixture-isolation work.
 
 
+### Reader-family closure after `aa62da0df`
+
+The next source review confirmed repeated TIFF decoding still overwrote an
+old raster and retained stale pixels after an empty reload. A sibling sweep
+found the corresponding HDR reset gap, PNG failed-dimension/bounds gaps,
+and EXR failed-frame/bounds gaps. The remaining family is now handled
+uniformly: clear the previous active image first, leave output dimensions
+zero until a complete decode, permit healthy reuse after failure, make
+`EndRead` inactive and repeatable, and leave caller colors unchanged for
+inactive or out-of-range reads. JPEG gains the same coordinate guards.
+
+TIFF handles and temporary pixels are scoped through failure; strict
+stop-on-error and straight-alpha conversion remain unchanged. HDR keeps
+its established RLE and orientation rules. PNG keeps its transforms and
+scanline/interlace loop without introducing automatic C++ objects across
+libpng's longjmp boundary. EXR decodes transactionally into reusable owned
+storage, checks widened window extents and a 2 GiB decoded RGBA-float budget,
+uses the SDK's `Slice::Make` for offset addressing, and returns diagnosed
+failure on data errors. FLOAT values above half range and missing-channel
+fill remain covered. HDR/PNG/TIFF now also retain height for coordinate
+checks; concrete implementation clients must rebuild alongside TGA clients.
+
+One regression spans all six reader formats, exercising repeated success,
+empty-source failure, recovery, repeated end, input-reference teardown and
+coordinate bounds. It fails normally against the earlier reader code and
+passes with the corrections. An independent R-only FLOAT EXR fixture with
+a shifted negative-X/positive-Y data window verifies values above 65,504,
+zero missing RGB channels and opaque missing alpha. The image suite passes
+177 checks at this checkpoint.
+
+The `07dcf4dee` host gate passed all 15 selected executables (including
+480 exact scene-corpus matches), clean make and Xcode Deployment/Opto
+builds, the Blender native LTO link, four CLI TIFF/EXR write-failure paths,
+and independent TGA boundary/orientation checks. No compiler warnings were
+reported apart from the expected Xcode AppIntents metadata notice. Six
+targeted ASan/UBSan executables passed with container checks enabled.
+The sanitizer harness also instruments the mesh-bake object that shares
+libc++'s out-of-line float-vector assignment; mixing that uninstrumented
+instantiation with instrumented EXR storage caused an initial annotation
+mismatch. Three trials of eight concurrent image-suite copies passed all
+177 checks per copy and left no owned scratch directories. Multi-GiB sparse
+fixtures remain skipped on this host after the filesystem allocation probe;
+Windows/Android gates remain outside this host continuation.
+
+
 ### Host measurements and decisions
 
 - A 50,000-scalar append probe reduced backing allocations from 50,000 to 28, with identical logical size, cursor and checksum. Four warm host trials measured 75.33 ± 3.26 ms for exact-growth storage and 0.2245 ± 0.0065 ms for geometric capacity. These are append-probe measurements. A sanitizer differential review also exercised 192,000 buffer operations against a shadow model.
