@@ -12973,6 +12973,16 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
 
+					// MLT normalizes by the bootstrap mean: zero samples is invalid
+					// (division by zero, empty CDF).  Hard error, DL-32 convention.
+					if( bootstrapSamples == 0 ) {
+						static const char* const msg =
+							"bootstrap_samples must be at least 1 (got 0)";
+						GlobalLog()->PrintEx( eLog_Error, "mlt_rasterizer:: %s", msg );
+						RISE::SetFinalizeDiagIfEmpty( msg );
+						return false;
+					}
+
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						defaultshader.c_str(), showLuminaires, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
@@ -13046,6 +13056,16 @@ namespace RISE
 
 					StabilityConfig stabilityConfig;
 					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
+
+					// MLT normalizes by the bootstrap mean: zero samples is invalid
+					// (division by zero, empty CDF).  Hard error, DL-32 convention.
+					if( bootstrapSamples == 0 ) {
+						static const char* const msg =
+							"bootstrap_samples must be at least 1 (got 0)";
+						GlobalLog()->PrintEx( eLog_Error, "mlt_spectral_rasterizer:: %s", msg );
+						RISE::SetFinalizeDiagIfEmpty( msg );
+						return false;
+					}
 
 					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,

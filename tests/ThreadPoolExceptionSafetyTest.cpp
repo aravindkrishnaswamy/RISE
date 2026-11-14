@@ -285,6 +285,7 @@ static void TestSubmissionAllocationFailureIsTransactional()
 	bool healthyOk = true;
 	bool unrelatedOk = true;
 	bool wrongException = false;
+	bool terminated = false;
 	long lastK = 0;
 
 	for( long k = 1; k < 4000; ++k ) {
@@ -363,6 +364,7 @@ static void TestSubmissionAllocationFailureIsTransactional()
 
 		// Done once the countdown outlived the whole submission.
 		if( !threw && !fired ) {
+			terminated = true;
 			break;
 		}
 	}
@@ -370,10 +372,13 @@ static void TestSubmissionAllocationFailureIsTransactional()
 	std::printf( "  swept k=1..%ld: %u submissions threw, %u completed\n",
 		lastK, throws, completes );
 	Check( !wrongException, "a failed submission surfaces std::bad_alloc, not another type" );
-	// make_shared latch (1) + one heap std::function per task (n) + at least
-	// one deque block growth: more than n + 1 distinct failure points.
-	Check( throws > n + 1, "the sweep reached failures at the first push, every mid-loop push and deque growth" );
-	Check( completes >= 1, "the sweep terminated with an unfailed submission" );
+	// How many allocations a submission makes is library-specific
+	// (std::function's small-buffer size, deque block size), so the number
+	// of failure points is observed, not assumed: the sweep must hit at
+	// least one, every one of them is held to the checks below, and the
+	// sweep must reach a k past the submission's last allocation.
+	Check( throws >= 1, "the sweep reached at least one failing allocation inside the submission" );
+	Check( terminated && completes >= 1, "the sweep terminated with an unfailed, uninjected submission" );
 	Check( allZeroOnThrow, "no task of a failed submission ever ran (after settle and after a healthy call)" );
 	Check( allFullOnComplete, "an unfailed submission ran all n bodies" );
 	Check( healthyOk, "a healthy ParallelFor after each failure ran every index exactly once" );

@@ -20,8 +20,13 @@
 //       vs Resolve/Unresolve: every resolved row is a whole-batch snapshot.
 //    D  scratch preparation: the real BDPT PreRenderSetup prepares the
 //       scratch before any worker; concurrent getters never allocate.
-//    E  real multi-threaded BDPT (pel + spectral) renders with a wide
-//       filter, a capturing output that reads only its rect.
+//    E  real multi-threaded renders through RasterizeScene /
+//       RasterizeSceneAnimation with a wide filter: BDPT (pel + spectral,
+//       single-pass + progressive, one animation frame), VCM (single-pass,
+//       progressive, animation frame) and PT.  Each must deliver composed
+//       previews (an image that is not the primary), and the composition
+//       scratch must be released when the render returns; each job renders
+//       twice to show a released scratch is rebuilt for the next render.
 //
 //  Modes: (none) = all; --oracle, --compose, --films, --scratch, --render.
 //  Build flag ICT_HEAD_API compiles against the pre-fix one-argument
@@ -545,12 +550,37 @@ namespace
 	}
 
 	// E ------------------------------------------------------------------
+	// Captures every delivery.  Every distinct intermediate image is
+	// referenced on first sight (so an address cannot be reused by a later
+	// allocation and alias another image), and the final images
+	// (OutputImage = the rasterizer's primary) are recorded.  A post-block
+	// delivery whose image is NOT a final image is a composed preview: if
+	// production silently fell back to delivering the primary, there would
+	// be none.  After the render, refcount()==1 on a composed image means the
+	// rasterizer released its composition scratch.
 	class CaptureOutput : public virtual IRasterizerOutput, public virtual Reference
 	{
 	public:
 		std::mutex m;
 		std::vector<Rect> rects;
+		std::vector<const IRasterImage*> rectImages;	///< per intermediate delivery
+		std::vector<const IRasterImage*> held;			///< distinct non-final, referenced
+		std::vector<const IRasterImage*> finalsSeen;
 		unsigned long nonFinite = 0, finals = 0;
+		void Hold( const IRasterImage& img )
+		{
+			if( IsFinal( &img ) ) return;
+			for( const IRasterImage* h : held ) if( h == &img ) return;
+			img.addref(); held.push_back( &img );
+		}
+		//! The primary may be a FrameStore view the store owns outright, so
+		//! no reference to it is kept past the moment it is identified.
+		void Unhold( const IRasterImage& img )
+		{
+			for( size_t i = 0; i < held.size(); ++i ) if( held[i] == &img ) {
+				held.erase( held.begin() + i ); img.release(); return;
+			}
+		}
 		void OutputIntermediateImage( const IRasterImage& img, const Rect* r ) override
 		{
 			Rect rc( 0, 0, img.GetHeight() - 1, img.GetWidth() - 1 );
@@ -562,7 +592,8 @@ namespace
 					if( !std::isfinite( c.base.r ) || !std::isfinite( c.base.g ) || !std::isfinite( c.base.b ) ) ++bad;
 				}
 			std::lock_guard<std::mutex> lk( m );
-			rects.push_back( rc ); nonFinite += bad;
+			rects.push_back( rc ); rectImages.push_back( &img ); nonFinite += bad;
+			Hold( img );
 		}
 		void OutputImage( const IRasterImage& img, const Rect*, const unsigned int ) override
 		{
@@ -573,13 +604,41 @@ namespace
 			}
 			std::lock_guard<std::mutex> lk( m );
 			nonFinite += bad; ++finals;
+			if( !IsFinal( &img ) ) finalsSeen.push_back( &img );
+			Unhold( img );
+		}
+		bool IsFinal( const IRasterImage* p ) const
+		{
+			for( const IRasterImage* f : finalsSeen ) if( f == p ) return true;
+			return false;
+		}
+		//! Deliveries [from, end) whose image is not a final (primary) image.
+		unsigned long ComposedDeliveries( size_t from = 0 ) const
+		{
+			unsigned long n = 0;
+			for( size_t i = from; i < rectImages.size(); ++i ) if( !IsFinal( rectImages[i] ) ) ++n;
+			return n;
+		}
+		//! Composed images still referenced by someone other than us.
+		unsigned long RetainedComposed() const
+		{
+			unsigned long n = 0;
+			for( const IRasterImage* h : held ) if( !IsFinal( h ) && h->refcount() != 1 ) ++n;
+			return n;
+		}
+		unsigned long DistinctComposed() const
+		{
+			unsigned long n = 0;
+			for( const IRasterImage* h : held ) if( !IsFinal( h ) ) ++n;
+			return n;
 		}
 	protected:
-		~CaptureOutput() override {}
+		~CaptureOutput() override { for( const IRasterImage* h : held ) h->release(); }
 	};
 
 	std::string RenderSceneText( const char* rasterizer, bool progressive )
 	{
+		const bool bidi = std::strncmp( rasterizer, "pathtracing", 11 ) != 0;
 		return std::string( "RISE ASCII SCENE 7\n\n" ) +
 			"film\n{\n\twidth 96\n\theight 64\n}\n\n"
 			"pinhole_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40\n}\n\n"
@@ -592,20 +651,36 @@ namespace
 			"clippedplane_geometry\n{\n\tname geo_e\n\tpta -0.5 -0.5 0\n\tptb 0.5 -0.5 0\n\tptc 0.5 0.5 0\n\tptd -0.5 0.5 0\n\tdoublesided TRUE\n}\n\n"
 			"standard_object\n{\n\tname e\n\tgeometry geo_e\n\tmaterial lum\n\tposition 0.3 0.2 1.5\n}\n\n"
 			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" +
-			std::string( rasterizer ) + "\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 4\n"
+			std::string( rasterizer ) + "\n{\n" + ( bidi ? "\tmax_eye_depth 4\n\tmax_light_depth 4\n" : "" ) + "\tsamples 4\n"
 			"\tpixel_sampler uniform\n\toidn_denoise FALSE\n\tpixel_filter mitchell-netravali\n" +
 			( progressive ? "\tprogressive_rendering TRUE\n\tprogressive_samples_per_pass 2\n" : "\tprogressive_rendering FALSE\n" ) +
 			"}\n\n";
 	}
 
+	struct RenderCase { const char* ras; bool progressive; bool animation; };
+
 	void TestRealRenders()
 	{
-		std::cout << "E: real multi-threaded BDPT renders\n";
-		const char* rasts[] = { "bdpt_pel_rasterizer", "bdpt_spectral_rasterizer" };
-		for( const char* ras : rasts ) for( int progressive = 0; progressive < 2; ++progressive ) {
-			const std::string label = std::string( ras ) + ( progressive ? " progressive" : " single-pass" );
-			const std::string path = RISE::TestSupport::ScratchBaseDir() + "/ict_" + ras + ( progressive ? "_p" : "_s" ) + ".RISEscene";
-			{ std::ofstream ofs( path ); ofs << RenderSceneText( ras, progressive != 0 ); }
+		std::cout << "E: real multi-threaded renders (BDPT, VCM, PT) through RasterizeScene\n";
+		const RenderCase cases[] = {
+			{ "bdpt_pel_rasterizer", false, false },
+			{ "bdpt_pel_rasterizer", true, false },
+			{ "bdpt_spectral_rasterizer", false, false },
+			{ "bdpt_spectral_rasterizer", true, false },
+			// Animation per-block previews deliver the primary by design
+			// (SPRasterizeSingleBlockOfAnimation composes nothing), so the
+			// BDPT animation row is progressive: its pass-end previews are
+			// composed through the scratch PreRenderSetup prepares per frame.
+			{ "bdpt_pel_rasterizer", true, true },
+			{ "vcm_pel_rasterizer", false, false },
+			{ "vcm_pel_rasterizer", true, false },
+			{ "vcm_pel_rasterizer", false, true },
+			{ "pathtracing_pel_rasterizer", false, false },
+		};
+		for( const RenderCase& rc : cases ) {
+			const std::string label = std::string( rc.ras ) + ( rc.animation ? ( rc.progressive ? " progressive animation frame" : " animation frame" ) : rc.progressive ? " progressive" : " single-pass" );
+			const std::string path = RISE::TestSupport::ScratchBaseDir() + "/ict_" + rc.ras + ( rc.animation ? "_a" : rc.progressive ? "_p" : "_s" ) + ".RISEscene";
+			{ std::ofstream ofs( path ); ofs << RenderSceneText( rc.ras, rc.progressive ); }
 			IJobPriv* pJob = nullptr;
 			const bool loaded = RISE_CreateJobPriv( &pJob ) && pJob && pJob->LoadAsciiSceneViaCst( path.c_str() );
 			Check( loaded, label + ": scene loads" );
@@ -614,21 +689,38 @@ namespace
 			CaptureOutput* cap = new CaptureOutput();
 			pJob->GetRasterizer()->AddRasterizerOutput( cap );
 			if( Rasterizer* pRas = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() ) ) pRas->ForTest_SetThreadCountOverride( 6 );
-			pJob->Rasterize();
-			// Pre-block (DrawToggles) + post-block deliveries share each
-			// block rect; count area per distinct delivery.
-			unsigned long long area = 0;
-			for( const Rect& r : cap->rects ) area += 1ull * ( r.right - r.left + 1 ) * ( r.bottom - r.top + 1 );
-			Check( cap->finals >= 1, label + ": render completed with a final image" );
-			Check( cap->nonFinite == 0, label + ": every delivered pixel is finite" );
-			if( !progressive ) {
-				// One full-frame delivery after the initial clear, then each
-				// block's rect twice (pre-block border + post-block result).
-				Check( !cap->rects.empty() && area == 3ull * 96 * 64,
-					label + ": deliveries = initial frame + each block twice, " +
-					std::to_string( cap->rects.size() ) + " callbacks, area " + std::to_string( area ) );
-			} else {
-				Check( !cap->rects.empty(), label + ": progressive deliveries observed (" + std::to_string( cap->rects.size() ) + ")" );
+			// Two renders on the same rasterizer: the second must still
+			// compose previews after the first released its scratch.
+			for( int pass = 0; pass < 2; ++pass ) {
+				const std::string pl = label + ( pass ? " (second render)" : "" );
+				const size_t firstDelivery = cap->rects.size();
+				const unsigned long finalsBefore = cap->finals;
+				if( rc.animation ) pJob->RasterizeAnimation( 0, 0, 1, false, false );
+				else pJob->Rasterize();
+				// Pre-block (DrawToggles) + post-block deliveries share each
+				// block rect; count area per distinct delivery.
+				unsigned long long area = 0;
+				for( size_t i = firstDelivery; i < cap->rects.size(); ++i ) {
+					const Rect& r = cap->rects[i];
+					area += 1ull * ( r.right - r.left + 1 ) * ( r.bottom - r.top + 1 );
+				}
+				const unsigned long composed = cap->ComposedDeliveries( firstDelivery );
+				std::cout << "  " << pl << ": " << composed << " composed of " << ( cap->rects.size() - firstDelivery )
+					<< " deliveries; composed images still referenced by the rasterizer: " << cap->RetainedComposed()
+					<< " of " << cap->DistinctComposed() << "\n";
+				Check( cap->finals > finalsBefore, pl + ": render completed with a final image" );
+				Check( cap->nonFinite == 0, pl + ": every delivered pixel is finite" );
+				Check( composed > 0, pl + ": composed previews were delivered (not the primary) -- " +
+					std::to_string( composed ) + " of " + std::to_string( cap->rects.size() - firstDelivery ) + " deliveries" );
+				if( !rc.progressive && !rc.animation ) {
+					// One full-frame delivery after the initial clear, then each
+					// block's rect twice (pre-block border + post-block result).
+					Check( cap->rects.size() > firstDelivery && area == 3ull * 96 * 64,
+						pl + ": deliveries = initial frame + each block twice, " +
+						std::to_string( cap->rects.size() - firstDelivery ) + " callbacks, area " + std::to_string( area ) );
+				}
+				Check( cap->RetainedComposed() == 0, pl + ": the composition scratch was released when the render returned (" +
+					std::to_string( cap->RetainedComposed() ) + " of " + std::to_string( cap->DistinctComposed() ) + " composed images still referenced)" );
 			}
 			safe_release( cap );
 			safe_release( pJob );

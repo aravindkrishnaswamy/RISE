@@ -371,9 +371,11 @@ void BDPTRasterizerBase::RasterizeScene(
 	// member AOV planes, while the successful tail may retain only the
 	// documented OIDN cache.
 	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
+	// Filtered film and every preview composition scratch (including the
+	// bidirectional splat-composition scratch) are render-scoped: released
+	// here on success, cancel and unwind, after all workers have joined.
 	RasterizerScopeExit renderScratch( [this]() {
-		safe_release( pFilteredFilm );
-		safe_release( pFilteredScratch );
+		ReleaseRenderScopedPreviewResources();
 	} );
 	RasterizerScopeExit renderProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
 		mProgressBase = base;
@@ -930,11 +932,12 @@ void BDPTRasterizerBase::RasterizeScene(
 	// estimator into a proper filter-weighted reconstruction.  When
 	// UseFilteredFilm() returns false (narrow / no filter configured),
 	// IntegratePixel falls back to per-pixel accumulation.
+	// No pFilteredScratch: the bidirectional preview getter composes the
+	// filtered film into pScratchImage (UsesFilteredPreviewScratch).
 	safe_release( pFilteredFilm );
 	safe_release( pFilteredScratch );
 	if( UseFilteredFilm() ) {
 		pFilteredFilm = new FilteredFilm( width, height );
-		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
 	}
 
 	{

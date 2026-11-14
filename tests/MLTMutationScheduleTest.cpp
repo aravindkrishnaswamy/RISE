@@ -75,6 +75,8 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Rendering/MLTRasterizer.h"
+#include "../src/Library/Job.h"
+#include "../src/Library/Cst/Cst.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -445,6 +447,83 @@ static void TestNormalization()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// 4. Zero bootstrap samples: rejected at parse time; a rasterizer
+//    constructed with 0 through the API fails the render cleanly.
+//    (Before the guard the bootstrap mean was 0/0 and the CDF read
+//    cdf[-1] of an empty vector.)
+//////////////////////////////////////////////////////////////////////
+static void TestZeroBootstrap()
+{
+	std::cout << "\n-- 4: bootstrap_samples 0 --" << std::endl;
+	for( int f = kRGB; f <= kHWSS; f += 1 ) {
+		const std::string path = Fmt( "%s/mlt_schedule_zero_%d_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), f, int( getpid() ) );
+		{ std::ofstream ofs( path.c_str() ); ofs << Scene( f, 4, 1, 0 ); }
+		IJobPriv* pJob = nullptr;
+		bool loaded = true;
+		if( RISE_CreateJobPriv( &pJob ) && pJob ) {
+			loaded = pJob->LoadAsciiSceneViaCst( path.c_str() );
+		}
+		Check( pJob && !loaded, Fmt( "%s: a scene with bootstrap_samples 0 fails to load", FamilyName( f ) ) );
+		safe_release( pJob );
+		std::remove( path.c_str() );
+
+		// The derive diagnostic names the parameter (not the generic
+		// "apply failed").
+		Job* job = new Job();
+		job->addref();
+		RISE::Cst::Document doc = RISE::Cst::ParseToCst( Scene( f, 4, 1, 0 ) );
+		std::vector<std::string> diags;
+		RISE::Cst::DeriveToJob( doc, *job, &diags );
+		job->release();
+		std::string joined;
+		for( const std::string& d : diags ) joined += d + "\n";
+		std::printf( "    %-14s bootstrap_samples 0 diagnostic: %s", FamilyName( f ), joined.empty() ? "(none)\n" : joined.c_str() );
+		Check( joined.find( "bootstrap_samples" ) != std::string::npos,
+			Fmt( "%s: the load diagnostic names bootstrap_samples", FamilyName( f ) ) );
+	}
+
+	// API construction with 0: load a valid scene, then replace its
+	// rasterizer through IJob with nBootstrap = 0 and render.
+	for( int f = kRGB; f <= kHWSS; f++ ) {
+		const std::string path = Fmt( "%s/mlt_schedule_zeroapi_%d_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), f, int( getpid() ) );
+		{ std::ofstream ofs( path.c_str() ); ofs << Scene( f, 4, 1, 16 ); }
+		IJobPriv* pJob = nullptr;
+		bool set = false, rendered = true;
+		unsigned int outW = 0;
+		if( RISE_CreateJobPriv( &pJob ) && pJob && pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+			PixelFilterConfig filter;
+			filter.filter = String( "box" );
+			if( f == kRGB ) {
+				set = pJob->SetMLTRasterizer( 4, 4, 0, 4, 1, 0.3, "global", false, false,
+					OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast, filter, StabilityConfig() );
+			} else {
+				SpectralConfig spectral;
+				spectral.useHWSS = f == kHWSS;
+				set = pJob->SetMLTSpectralRasterizer( 4, 4, 0, 4, 1, 0.3, "global", false, spectral, false,
+					OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast, filter, StabilityConfig() );
+			}
+			if( set && pJob->GetRasterizer() ) {
+				pJob->RemoveRasterizerOutputs();
+				CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+				GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+				pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+				pJob->Rasterize();
+				// The animation entry point takes the same refusal (logged
+				// as a failure, not as a user cancel).
+				pJob->RasterizeAnimation( 0, 0, 1, false, false );
+				rendered = pCap->width != 0;
+				outW = pCap->width;
+				safe_release( pCap );
+			}
+		}
+		std::printf( "    %-14s API nBootstrap 0: rasterizer set %d, final image width %u\n", FamilyName( f ), int( set ), outW );
+		Check( set && !rendered, Fmt( "%s: nBootstrap 0 through the API (still and animation) renders nothing and returns cleanly", FamilyName( f ) ) );
+		safe_release( pJob );
+		std::remove( path.c_str() );
+	}
+}
+
 int main( int argc, char** argv )
 {
 	std::cout << "=== MLTMutationScheduleTest ===" << std::endl;
@@ -453,6 +532,7 @@ int main( int argc, char** argv )
 	if( !helpersOnly ) {
 		TestTinyRenders();
 		TestNormalization();
+		TestZeroBootstrap();
 	}
 	std::cout << "\n=== MLTMutationScheduleTest: " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;

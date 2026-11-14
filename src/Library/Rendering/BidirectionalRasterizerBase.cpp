@@ -169,6 +169,12 @@ void BidirectionalRasterizerBase::EnsureCompositionScratch(
 	}
 }
 
+void BidirectionalRasterizerBase::ReleaseRenderScopedPreviewResources() const
+{
+	PixelBasedRasterizerHelper::ReleaseRenderScopedPreviewResources();
+	safe_release( pScratchImage );
+}
+
 IRasterImage& BidirectionalRasterizerBase::GetIntermediateOutputImage(
 	IRasterImage& primary,
 	const Rect* region

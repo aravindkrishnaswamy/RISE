@@ -261,6 +261,12 @@ IRasterImage& PixelBasedRasterizerHelper::GetIntermediateOutputImage( IRasterIma
 	return *pFilteredScratch;
 }
 
+void PixelBasedRasterizerHelper::ReleaseRenderScopedPreviewResources() const
+{
+	safe_release( pFilteredFilm );
+	safe_release( pFilteredScratch );
+}
+
 void PixelBasedRasterizerHelper::ConfigureOutputRegion(
 	const Rect* region,
 	unsigned int width,
@@ -1073,8 +1079,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
 	RasterizerScopeExit renderScratch( [this]() {
-		safe_release( pFilteredFilm );
-		safe_release( pFilteredScratch );
+		ReleaseRenderScopedPreviewResources();
 	} );
 	RasterizerScopeExit renderProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
 		mProgressBase = base;
@@ -1130,7 +1135,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	safe_release( pFilteredScratch );
 	if( UseFilteredFilm() ) {
 		pFilteredFilm = new FilteredFilm( width, height );
-		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+		if( UsesFilteredPreviewScratch() ) {
+			pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+		}
 	}
 
 	PrepareImageForNewRender( *pImage, pRect );
@@ -2293,8 +2300,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	}
 	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
 	RasterizerScopeExit renderScratch( [this]() {
-		safe_release( pFilteredFilm );
-		safe_release( pFilteredScratch );
+		ReleaseRenderScopedPreviewResources();
 	} );
 	RasterizerScopeExit renderProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
 		mProgressBase = base;
@@ -2361,7 +2367,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	safe_release( pFilteredScratch );
 	if( UseFilteredFilm() ) {
 		pFilteredFilm = new FilteredFilm( width, height );
-		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+		if( UsesFilteredPreviewScratch() ) {
+			pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+		}
 	}
 
 	// Get the ray caster ready to roll

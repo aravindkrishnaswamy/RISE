@@ -547,6 +547,21 @@ namespace RISE
 				return mHasActiveOutputRegion ? &mActiveOutputRegion : 0;
 			}
 
+			/// Release the render-scoped preview composition resources
+			/// (filtered film + its scratch here; subclasses add their own
+			/// composition scratch).  Called by every top-level render
+			/// entry point's scope guard -- on success, cancel and unwind --
+			/// on the dispatching thread after all workers have joined and
+			/// the last preview consumer has returned, so no frame-sized
+			/// buffer outlives the render.  Must be idempotent.
+			virtual void ReleaseRenderScopedPreviewResources() const;
+
+			/// Whether GetIntermediateOutputImage composes into
+			/// pFilteredScratch.  True for the base getter; a subclass whose
+			/// getter composes elsewhere returns false so the render entry
+			/// points do not allocate an unread frame-sized scratch.
+			virtual bool UsesFilteredPreviewScratch() const { return true; }
+
 			// Our own functions
 			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 

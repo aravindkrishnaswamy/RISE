@@ -316,6 +316,55 @@ static void TestCallbackExportBounds()
 			Check(image->reads==2 && !image->outside && receiver.calls16+receiver.calls32==before+1 &&
 				receiver.region.top==0 && receiver.region.left==1 && receiver.region.bottom==1 && receiver.region.right==1 &&
 				sizeOK && pixelMatches(1) && pixelMatches(3),"callback export: region endpoints clip to image bounds before indexing");
+			// Per-tile deliveries keep the FULL-FRAME layout the receivers
+			// index ((y*width+x)*4, rect passed alongside): two successive
+			// column tiles each arrive in a frame-sized buffer at their
+			// full-frame offsets (the buffer is reused between calls).
+			image->Reset(2,2,floating);before=receiver.calls16+receiver.calls32;
+			const Rect leftColumn(0,0,1,0),rightColumn(0,1,1,1);
+			output->OutputIntermediateImage(*image,&leftColumn);
+			const bool leftOK=receiver.w==2 && receiver.h==2 && receiver.region.left==0 && receiver.region.right==0 &&
+				(floating?receiver.values.size():receiver.words.size())==16 && pixelMatches(0) && pixelMatches(2);
+			output->OutputIntermediateImage(*image,&rightColumn);
+			const bool rightOK=receiver.w==2 && receiver.h==2 && receiver.region.left==1 && receiver.region.right==1 &&
+				(floating?receiver.values.size():receiver.words.size())==16 && pixelMatches(1) && pixelMatches(3);
+			Check(leftOK && rightOK && image->reads==4 && !image->outside && receiver.calls16+receiver.calls32==before+2,
+				"callback export: successive tile deliveries keep the full-frame layout at full-frame offsets");
+			// Reuse-independent behaviour across a final delivery, a dimension
+			// change and a format switch: pixels inside each delivered rect are
+			// exact, and a buffer that is new for the render (after a final
+			// OutputImage, a resize or a format switch) is zero outside the rect,
+			// never the previous render's pixels.
+			const auto zeroAt=[&](size_t index) {
+				for(unsigned int c=0;c<4;++c) {
+					if(receiver.floats) { if(receiver.values[index*4+c]!=0.0f)return false; }
+					else if(receiver.words[index*4+c]!=0)return false;
+				}
+				return true;
+			};
+			image->Reset(2,2,floating);
+			output->OutputImage(*image,nullptr,0);
+			bool finalOK=receiver.w==2 && receiver.h==2;
+			for(size_t i=0;i<4;++i)finalOK &= pixelMatches(i);
+			image->Reset(3,1,floating);
+			const Rect firstPixel(0,0,0,0),middlePixel(0,1,0,1);
+			output->OutputIntermediateImage(*image,&firstPixel);
+			const bool resizeOK=receiver.w==3 && receiver.h==1 &&
+				(floating?receiver.values.size():receiver.words.size())==12 && pixelMatches(0) && zeroAt(1) && zeroAt(2);
+			receiver.floats=!floating;image->Reset(3,1,receiver.floats);
+			output->OutputIntermediateImage(*image,&middlePixel);
+			const bool switchOK=receiver.w==3 && receiver.h==1 &&
+				(receiver.floats?receiver.values.size():receiver.words.size())==12 && pixelMatches(1) && zeroAt(0) && zeroAt(2);
+			image->Reset(3,1,receiver.floats);
+			output->OutputImage(*image,nullptr,0);
+			bool afterFinalOK=true;
+			for(size_t i=0;i<3;++i)afterFinalOK &= pixelMatches(i);
+			image->Reset(3,1,receiver.floats);
+			output->OutputIntermediateImage(*image,&middlePixel);
+			afterFinalOK=afterFinalOK && pixelMatches(1) && zeroAt(0) && zeroAt(2);
+			receiver.floats=floating;
+			Check(finalOK && resizeOK && switchOK && afterFinalOK,
+				"callback export: final delivery, resize and format switch keep rect pixels exact and start new storage zeroed");
 			image->Reset(2,2,floating);before=receiver.calls16+receiver.calls32;
 			const Rect inverted(1,1,0,0);output->OutputIntermediateImage(*image,&inverted);
 			Check(image->reads==0 && receiver.calls16+receiver.calls32==before,

@@ -111,6 +111,15 @@ namespace RISE
 			/// frame) and RasterizeScene.
 			void EnsureCompositionScratch( const unsigned int w, const unsigned int h ) const;
 
+			/// Adds pScratchImage to the render-scoped release (the base
+			/// releases the filtered film).  Reuse across animation frames
+			/// with unchanged dimensions still holds within one render.
+			void ReleaseRenderScopedPreviewResources() const override;
+
+			/// The bidirectional getter composes into pScratchImage, never
+			/// into pFilteredScratch.
+			bool UsesFilteredPreviewScratch() const override { return false; }
+
 			/// Final flush: composite the t==1 splat film onto the
 			/// image before forwarding to the outputs.  Shared by VCM
 			/// and BDPT (DL-458) so still renders and every animation

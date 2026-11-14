@@ -833,6 +833,14 @@ bool MLTRasterizer::RenderFrameOfMLT(
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap samples: %u, Chains: %u, Mutations/pixel: %u, Large step prob: %.2f",
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb );
 
+	// The bootstrap mean divides by nBootstrap and the CDF reads
+	// cdf[nBootstrap-1]: zero samples cannot render.  The parser rejects
+	// bootstrap_samples 0; this covers construction through the API.
+	if( nBootstrap == 0 ) {
+		GlobalLog()->PrintEasyError( "MLTRasterizer:: bootstrap sample count is 0 -- at least 1 is required; nothing rendered" );
+		return false;
+	}
+
 	//////////////////////////////////////////////////////////////////
 	// Phase 1: Bootstrap
 	//
@@ -1523,10 +1531,18 @@ void MLTRasterizer::RasterizeSceneAnimation(
 			// prior completed frames play back correctly after
 			// the caller finalize()s the writer.
 			cancelled = true;
-			GlobalLog()->PrintEx( eLog_Event,
-				"MLTRasterizer:: Animation cancelled during frame %u of %u; "
-				"skipping remaining frames",
-				frameIdx + 1, num_frames );
+			if( nBootstrap == 0 ) {
+				// Not a cancel: RenderFrameOfMLT refuses zero bootstrap samples.
+				GlobalLog()->PrintEx( eLog_Error,
+					"MLTRasterizer:: Animation failed at frame %u of %u: bootstrap sample count is 0; "
+					"skipping remaining frames",
+					frameIdx + 1, num_frames );
+			} else {
+				GlobalLog()->PrintEx( eLog_Event,
+					"MLTRasterizer:: Animation cancelled during frame %u of %u; "
+					"skipping remaining frames",
+					frameIdx + 1, num_frames );
+			}
 			break;
 		}
 
@@ -1567,7 +1583,9 @@ void MLTRasterizer::RasterizeSceneAnimation(
 		}
 	}
 
-	if( cancelled ) {
+	if( cancelled && nBootstrap == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "MLTRasterizer:: Animation failed: bootstrap sample count is 0" );
+	} else if( cancelled ) {
 		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Animation cancelled by user" );
 	} else {
 		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Animation complete" );

@@ -25,23 +25,6 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		static unsigned int g_width;
-		static unsigned int g_height;
-
-		inline static bool CompDistanceCenter( const Rect& lhs, const Rect& rhs )
-		{
-			const unsigned int lhsx = (lhs.right+lhs.left)/2-g_width/2;
-			const unsigned int lhsy = (lhs.bottom+lhs.top)/2-g_height/2;
-
-			const unsigned int rhsx = (rhs.right+rhs.left)/2-g_width/2;
-			const unsigned int rhsy = (rhs.bottom+rhs.top)/2-g_height/2;
-
-			const unsigned int dlhs = lhsx*lhsx+lhsy*lhsy; 
-			const unsigned int drhs = rhsx*rhsx+rhsy*rhsy;
-
-			return dlhs < drhs;
-		}
-
 		inline static bool CompDistanceTopLeft( const Rect& lhs, const Rect& rhs )
 		{
 			const unsigned int lhsx = (lhs.right+lhs.left)/2;
@@ -154,57 +137,84 @@ namespace RISE
 			{
 			}
 
+			//! Inclusive spans [s,e] of one axis.  Boundaries sit on absolute
+			//! multiples of the block size (as for a full frame, where the
+			//! range starts at 0), clipped to the range: a crop with an
+			//! unaligned origin gets a narrower first span, and no two blocks
+			//! share a block-aligned cell -- in particular no FrameStore tile
+			//! when the block size is a multiple of the FrameStore tile edge
+			//! (AlignTileSizeToFrameStore).  A block size of 0, or one at least
+			//! the range, gives one span.
+			static void AxisSpans( const unsigned int s, const unsigned int e, const unsigned int block,
+				std::vector<unsigned int>& starts, std::vector<unsigned int>& ends )
+			{
+				starts.clear();
+				ends.clear();
+				unsigned long long pos = s;
+				for(;;) {
+					unsigned long long last = e;
+					if( block > 0 ) {
+						const unsigned long long boundary = ( pos / block + 1 ) * block - 1;
+						if( boundary < last ) {
+							last = boundary;
+						}
+					}
+					starts.push_back( static_cast<unsigned int>( pos ) );
+					ends.push_back( static_cast<unsigned int>( last ) );
+					if( last >= e ) {
+						break;
+					}
+					pos = last + 1;
+				}
+			}
+
 			void Begin( const unsigned int startx, const unsigned int endx, const unsigned int starty, const unsigned int endy )
 			{
 				blocks.clear();
-				// Precompute and store all the blocks, then we can just easily return them
+				cur = 0;
+				if( endx < startx || endy < starty ) {
+					return;
+				}
 
-				// Just return the blocks left to right
-				const unsigned int w = bwidth <= (endx-startx) ? bwidth-1 : (endx-startx)-1;
-				const unsigned int h = bheight <= (endy-starty) ? bheight-1 : (endy-starty)-1;
-
-				unsigned int nLastY = 0;
-				unsigned int nLastX = 0;
-
-				for(;;)
-				{
-					unsigned int nEndy = nLastY+h;
-					unsigned int nEndx = nLastX+w;
-
-					if( nEndy > endy ) {
-						nEndy = endy;
-					}
-
-					if( nEndx > endx ) {
-						nEndx = endx;
-					}
-
-					blocks.push_back( Rect( nLastY, nLastX, nEndy, nEndx ) );
-
-					if( nEndy == endy && 
-						nEndx == endx ) {
-						// very last block was just done, so break
-						break;
-					}
-
-					if( nEndx == endx ) {
-						// Last column in some row
-						nLastY = nEndy+1;
-						nLastX = 0;
-					} else {
-						nLastX = nEndx+1;
+				// Precompute and store all the blocks, row by row, left to
+				// right (type 4 returns them in this order).
+				std::vector<unsigned int> xs, xe, ys, ye;
+				AxisSpans( startx, endx, bwidth, xs, xe );
+				AxisSpans( starty, endy, bheight, ys, ye );
+				blocks.reserve( xs.size() * ys.size() );
+				for( size_t j = 0; j < ys.size(); ++j ) {
+					for( size_t i = 0; i < xs.size(); ++i ) {
+						blocks.push_back( Rect( ys[j], xs[i], ye[j], xe[i] ) );
 					}
 				}
 
-				g_width = endx-startx;
-				g_height = endy-starty;
+				// Centre of the range.  For a full frame this is the old
+				// (width-1)/2, (height-1)/2 with the same unsigned arithmetic, so
+				// the centre-out order is unchanged; for a crop it is the crop's
+				// own centre (it used to be the frame-relative offset, i.e. off
+				// the crop).  Captured per call: no shared state between
+				// sequences.
+				const unsigned int cx = startx + ( endx - startx ) / 2;
+				const unsigned int cy = starty + ( endy - starty ) / 2;
+				const auto compCenter = [cx, cy]( const Rect& lhs, const Rect& rhs ) {
+					const unsigned int lhsx = (lhs.right+lhs.left)/2-cx;
+					const unsigned int lhsy = (lhs.bottom+lhs.top)/2-cy;
+
+					const unsigned int rhsx = (rhs.right+rhs.left)/2-cx;
+					const unsigned int rhsy = (rhs.bottom+rhs.top)/2-cy;
+
+					const unsigned int dlhs = lhsx*lhsx+lhsy*lhsy;
+					const unsigned int drhs = rhsx*rhsx+rhsy*rhsy;
+
+					return dlhs < drhs;
+				};
 
 				// Order the blocks
 				switch( type )
 				{
 				default:
 				case 0:
-					std::sort( blocks.begin(), blocks.end(), CompDistanceCenter );
+					std::sort( blocks.begin(), blocks.end(), compCenter );
 					break;
 				case 1:
 					{ std::mt19937 rng{std::random_device{}()}; std::shuffle( blocks.begin(), blocks.end(), rng ); }
@@ -230,8 +240,6 @@ namespace RISE
 					std::sort( blocks.begin(), blocks.end(), CompDistanceBottomToTop );
 					break;
 				}
-
-				cur = 0;
 			}
 
 			virtual int  NumRegions()

@@ -705,6 +705,14 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Bootstrap: %u, Chains: %u, Mutations/pixel: %u, Large step: %.2f",
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb );
 
+	// The bootstrap mean divides by nBootstrap and the CDF reads
+	// cdf[nBootstrap-1]: zero samples cannot render.  The parser rejects
+	// bootstrap_samples 0; this covers construction through the API.
+	if( nBootstrap == 0 ) {
+		GlobalLog()->PrintEasyError( "MLTSpectralRasterizer:: bootstrap sample count is 0 -- at least 1 is required; nothing rendered" );
+		return false;
+	}
+
 	//////////////////////////////////////////////////////////////////
 	// Phase 1: Bootstrap (spectral)
 	//////////////////////////////////////////////////////////////////
@@ -1249,10 +1257,18 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 		if( !completed )
 		{
 			cancelled = true;
-			GlobalLog()->PrintEx( eLog_Event,
-				"MLTSpectralRasterizer:: Animation cancelled during frame %u of %u; "
-				"skipping remaining frames",
-				frameIdx + 1, num_frames );
+			if( nBootstrap == 0 ) {
+				// Not a cancel: RenderFrameOfMLT refuses zero bootstrap samples.
+				GlobalLog()->PrintEx( eLog_Error,
+					"MLTSpectralRasterizer:: Animation failed at frame %u of %u: bootstrap sample count is 0; "
+					"skipping remaining frames",
+					frameIdx + 1, num_frames );
+			} else {
+				GlobalLog()->PrintEx( eLog_Event,
+					"MLTSpectralRasterizer:: Animation cancelled during frame %u of %u; "
+					"skipping remaining frames",
+					frameIdx + 1, num_frames );
+			}
 			break;
 		}
 
@@ -1289,7 +1305,9 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 		}
 	}
 
-	if( cancelled ) {
+	if( cancelled && nBootstrap == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "MLTSpectralRasterizer:: Animation failed: bootstrap sample count is 0" );
+	} else if( cancelled ) {
 		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Animation cancelled by user" );
 	} else {
 		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Animation complete" );

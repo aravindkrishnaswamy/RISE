@@ -10,10 +10,21 @@
 - A failed parallel task submission under memory pressure can no longer run
   stale tasks.
 
-These fixes are in the working tree, uncommitted and reviewed for one round
-only; the modernization plan ("Resolution of the snapshot, MLT budget and
-submission blockers") records the evidence and the open P2s. The branch is
-still not signed off.
+- Scanline, block and Hilbert raster sequences no longer render a row twice,
+  skip a one-row range, render outside a crop, or (Hilbert) read past their
+  block list. Interactive region-of-interest renders now render only the
+  region (they used to re-render from the frame origin), centre-out on the
+  region. The default Morton sequence is unchanged.
+- MLT rejects `bootstrap_samples 0` at load with a named error; it used to
+  read and write past empty arrays and could crash.
+- Tile-preview delivery to callback outputs (Blender bridge) no longer
+  allocates a frame per tile, and its buffers are freed after each render.
+
+The first three fixes are in commit `2566595ae`, reviewed for one round only;
+the follow-up fixes for the P2s that round recorded have had one review round
+and their corrections are not yet re-reviewed. The
+modernization plan ("Resolution of the snapshot, MLT budget and submission
+blockers") records the evidence. The branch is still not signed off.
 
 Regenerate photon maps, irradiance caches, serialized meshes, and other
 binary assets written through RISE’s scalar serializers by the historical

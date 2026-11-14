@@ -10990,6 +10990,13 @@ namespace RISE {
 			bool					bPremultipliedAlpha;
 			COLOR_SPACE				color_space;
 			std::mutex				dispatchMutex;
+			// Float delivery buffer, reused across intermediate deliveries
+			// like pBuffer (both guarded by dispatchMutex, both freed after a
+			// final OutputImage).  The receiver contract is a FULL-FRAME
+			// array indexed (y*width+x)*4 with the valid rect passed
+			// alongside, so the buffer is frame-sized.  Outside the delivered
+			// rect it holds zeros or earlier tiles of the same render.
+			std::vector<float>		floatBuffer;
 
 			void ClearBuffer_()
 			{
@@ -10998,6 +11005,7 @@ namespace RISE {
 					delete[] pBuffer;
 					pBuffer = nullptr;
 				}
+				std::vector<float>().swap( floatBuffer );
 				width = height = 0;
 			}
 
@@ -11027,6 +11035,42 @@ namespace RISE {
 				// Keep conversion storage and receiver access serialized while
 				// the caller's tile bracket (if any) continues to protect pixels.
 				std::lock_guard<std::mutex> lock(dispatchMutex);
+				Deliver_( pImage, pRegion );
+			}
+
+			//! A full rasterization was complete, and the full image should be output
+			void OutputImage(
+				const IRasterImage& pImage,					///< [in] Rasterized image
+				const Rect* pRegion,						///< [in] Rasterized region, if its NULL then the entire image should be output
+				const unsigned int /*frame*/
+				)
+			{
+				// A final delivery ends the render: the frame-sized conversion
+				// buffers are held only while a render is delivering tiles, and
+				// the next render starts from freshly zeroed storage, so a
+				// receiver reading the whole buffer never sees the previous
+				// render's pixels.  Freed on unwind too.
+				std::lock_guard<std::mutex> lock(dispatchMutex);
+				try {
+					Deliver_( pImage, pRegion );
+				} catch( ... ) {
+					ClearBuffer_();
+					throw;
+				}
+				ClearBuffer_();
+			}
+
+		private:
+			//! Converts the clamped region and calls the receiver.  Caller
+			//! holds dispatchMutex.  The buffers are frame-sized because the
+			//! receiver contract is a full-frame array with the valid rect
+			//! alongside; they are reused between intermediate deliveries and
+			//! zeroed whenever (re)allocated.
+			void Deliver_(
+				const IRasterImage& pImage,
+				const Rect* pRegion
+				)
+			{
 				const unsigned int curW=pImage.GetWidth(),curH=pImage.GetHeight();
 				// Legacy callback addressing cannot represent more than UINT_MAX
 				// pixels. Check counts before products, allocations, or height-1.
@@ -11057,9 +11101,14 @@ namespace RISE {
 				}
 				if(wantsFloat) {
 					// Float delivery owns only its chosen format, not an unused
-					// cached RGBA16 image alongside it.
-					ClearBuffer_();width=curW;height=curH;
-					std::vector<float> fbuf(count*4,0.0f);
+					// cached RGBA16 image alongside it.  Reallocate only when the
+					// format or the dimensions change (per-tile calls reuse it).
+					if(pBuffer || width!=curW || height!=curH || floatBuffer.size()!=count*4) {
+						ClearBuffer_();
+						floatBuffer.assign(count*4,0.0f);
+						width=curW;height=curH;
+					}
+					std::vector<float>& fbuf=floatBuffer;
 					for(unsigned int y=rc.top;y<=rc.bottom;++y) {
 						for(unsigned int x=rc.left;x<=rc.right;++x) {
 							const RISEColor c=pImage.GetPEL(x,y);
@@ -11099,15 +11148,6 @@ namespace RISE {
 				pObj.OutputImageRGBA16(reinterpret_cast<const unsigned short*>(pBuffer),width,height,rc.top,rc.left,rc.bottom,rc.right);
 			}
 
-			//! A full rasterization was complete, and the full image should be output
-			void OutputImage(
-				const IRasterImage& pImage,					///< [in] Rasterized image
-				const Rect* pRegion,						///< [in] Rasterized region, if its NULL then the entire image should be output
-				const unsigned int frame
-				)
-			{
-				OutputIntermediateImage( pImage, pRegion );
-			}
 		};
 
 		static IRasterizerOutput* CreateCallbackRasterizerOutputDispatch_(IJobRasterizerOutput& receiver)

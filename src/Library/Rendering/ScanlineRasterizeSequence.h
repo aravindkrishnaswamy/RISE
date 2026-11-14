@@ -56,15 +56,21 @@ namespace RISE
 				cur = 0;
 			}
 
+			// Begin's ends are INCLUSIVE (BoundsFromRect), and Rect is
+			// inclusive: one region per row, rows starty..endy.  The region
+			// must be exactly one row -- neighbouring regions sharing a row
+			// would render it twice with concurrent writes to the same
+			// pixels, and overlapping preview regions break the
+			// disjoint-region contract of GetIntermediateOutputImage.
 			virtual int  NumRegions()
 			{
-				return endy-starty;
+				return static_cast<int>( endy - starty + 1 );
 			}
 
 			Rect GetNextRegion()
 			{
-				const unsigned int start = cur++ + starty;
-				return Rect( start, startx, start+1, endx );
+				const unsigned int row = cur++ + starty;
+				return Rect( row, startx, row, endx );
 			}
 
 			void End()

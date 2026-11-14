@@ -1,6 +1,6 @@
 # C++ utility modernization plan
 
-**Status:** Host follow-up work on `codex/cpp-utility-modernization` reached a major roadblock (parallel BDPT intermediate output needed a synchronized snapshot contract). That roadblock and the two further P1s recorded with it (MLT small budgets, thread-pool submission failure) are fixed in the working tree after `680f0c44b`, uncommitted, and have had one fresh review round (see "Resolution of the snapshot, MLT budget and submission blockers"). The branch is not ready for final sign-off: there is no whole-branch zero-P1 claim, Xcode Opto and Blender builds were not rerun for these fixes, and native Windows and Android verification remain outstanding. Completed increments have host verification. Audit baseline `5fc6acaef`.
+**Status:** Host follow-up work on `codex/cpp-utility-modernization` reached a major roadblock (parallel BDPT intermediate output needed a synchronized snapshot contract). That roadblock and the two further P1s recorded with it (MLT small budgets, thread-pool submission failure) are fixed in commit `2566595ae` and have had one fresh review round (see "Resolution of the snapshot, MLT budget and submission blockers"); the P2s that round recorded are addressed in a follow-up (part (e) of that subsection). The branch is not ready for final sign-off: there is no whole-branch zero-P1 claim, Xcode Opto and Blender builds were not rerun for these fixes, and native Windows and Android verification remain outstanding. Completed increments have host verification. Audit baseline `5fc6acaef`.
 
 ## Implementation checkpoint
 
@@ -1061,14 +1061,14 @@ Three fresh reviewers covered MLT ownership/progress, film/snapshot contracts,
 and design/cost/documentation fidelity. They found no newly introduced defect
 in this bounded increment, confirmed the snapshot roadblock below, and
 identified the additional small-budget and submission-failure defects recorded
-there (all three are since fixed in the working tree; see the resolution
+there (all three are since fixed in `2566595ae`; see the resolution
 subsection that follows the roadblock). The review has not converged to
 whole-branch zero P1s.
 
 ### Major roadblock: parallel BDPT intermediate snapshots (resolved; kept as history)
 
 Status: the text below is the record as written at the roadblock. The three
-defects it names are fixed in the uncommitted working tree; see "Resolution
+defects it names are fixed in commit `2566595ae`; see "Resolution
 of the snapshot, MLT budget and submission blockers" after this section.
 
 The host continuation stops here under the user's instruction to continue until
@@ -1172,8 +1172,8 @@ resolution subsection below supersedes this limitation.
 ### Resolution of the snapshot, MLT budget and submission blockers
 
 All three defects were present on master before this branch. They are fixed
-in the working tree after `680f0c44b`. The changes are uncommitted and have
-had one fresh review round; this is not a whole-branch zero-P1 claim.
+in commit `2566595ae` (on top of `680f0c44b`). The changes have had one
+fresh review round; this is not a whole-branch zero-P1 claim.
 Evidence below is as reported by the implementing worker and was not
 independently re-run unless stated.
 
@@ -1262,28 +1262,131 @@ thread-local countdown in a replaced global `operator new`; 14/1 with HEAD
 Xcode Deployment clean build (RISE-GUI): succeeded, zero warnings. One fresh round of three independent
 reviewers (thread pool and MLT; preview concurrency; film locking and
 `FrameStore` clip) found no P0 or P1, by code reading, not by running. This is
-one review round on uncommitted changes, not a whole-branch zero-P1 claim.
+one review round on those changes (now commit `2566595ae`), not a whole-branch zero-P1 claim.
 Windows, Android, Xcode Opto and Blender builds were not rerun for these
 changes.
 
-**(e) Open P2s recorded by that review.**
+**(e) P2s recorded by that review, and their follow-up.** The follow-up
+is not committed at the time of writing and has had one review round, whose
+findings (a Hilbert regression among them) are addressed below but not
+re-reviewed. Numbers are from the implementing worker's runs. Both clean
+builds (make and Xcode Deployment RISE-GUI) were warning-free on the tree
+BEFORE this follow-up and must be rerun; for the follow-up only the make
+build was run (zero warnings). Windows, Android, Xcode Opto and Blender were
+not rebuilt.
 
-- `ScanlineRasterizeSequence::GetNextRegion` returns rects two rows tall
-  under inclusive bounds, so neighbouring regions share a row. Pre-existing;
-  reachable only with `raster_sequence_type 0` on non-progressive renders;
-  it violates the disjoint-region contract. Not fixed.
-- The composition scratch is now always allocated for VCM and after BDPT
-  animation, and is kept until the rasterizer is destroyed (32 bytes/pixel,
-  about 265 MB at 4K).
-- `IntermediateCompositionTest`'s real-render rows would also pass on HEAD
-  and do not prove that the scratch (rather than the primary fallback) was
-  delivered; there are no PT, VCM or animation render rows.
-- `CallbackRasterizerOutputDispatch` allocates a full-frame float buffer per
-  tile delivery.
-- `nBootstrap == 0` in MLT may divide by zero (pre-existing, not traced).
-- `Win32WindowRasterizerOutput` does not clamp its region.
-- The new `ThreadPool` test assumes one heap allocation per pushed task
-  (true for libc++/libstdc++, unverified for MSVC).
+- Fixed: raster sequences overlapped, escaped their range or read out of
+  bounds. Morton (the default for ordinary renders, `raster_sequence_type`
+  4, and every rasterizer's internal default) is untouched.
+  - `ScanlineRasterizeSequence` returned rects two rows tall (inclusive
+    bounds), so neighbouring regions shared a row, and a one-row range
+    produced no regions; it now returns one row per region.
+  - `BlockRasterizeSequence` started its blocks at (0,0) instead of the
+    range origin, so a crop rendered outside itself. Interactive
+    region-of-interest renders (the editor's region box, which uses this
+    sequence through `InteractivePelRasterizer`) therefore re-rendered
+    every block from (0,0) up to the region; they now render only the
+    region. Block boundaries now sit on absolute multiples of the block
+    size, clipped to the range, so a crop with an unaligned origin keeps
+    the same block grid as the full frame and no two blocks share a
+    FrameStore tile when the block size is a multiple of 32. The
+    centre-out order (type 0, the interactive default) now centres on the
+    crop (it centred on a frame-relative offset), and the unsynchronised
+    file-scope `g_width`/`g_height` globals are gone (the comparator
+    captures the centre). Full-frame tiling changes only when the block is
+    at least as large as a frame dimension: one block instead of block-1
+    plus a 1-pixel sliver. Against a HEAD copy over 117,450 full-frame
+    configurations (9 block sizes, 9 orders), every differing list is such
+    a case; all others are identical, order included.
+  - Shared FrameStore tiles were checked, not assumed harmful: the
+    `bufferMutex_` inversion `AdaptiveTileSizer.h` describes no longer
+    exists in the source (the name survives only in comments), each block
+    takes its FrameStore tile locks in one global (row, column) order
+    (`FrameStoreTileBracket::Acquire`) and releases them all before
+    dispatching observers, and `Render` holds one shared tile lock at a
+    time. Two blocks sharing a tile therefore serialize but cannot
+    deadlock (inferred from reading the locking, not from a stress run).
+    Morton crops with an unaligned origin share tiles the same way; Morton
+    was not changed.
+  - `HilbertRasterizeSequence` walked a num x num grid that its block
+    split often did not produce. At HEAD about 2,455 of 7,975 full-frame
+    configurations read past the block list (a 1x1 frame aborts under
+    ASan) before logging a fallback; the first follow-up's extent change
+    moved another 1,500 (any odd dimension at depth 1, up to 1920; depth 4,
+    the type-3 default, at sizes up to 49) from clean to out of bounds.
+    `Begin` also decremented `depth` permanently on a reused instance, and
+    depth 0 recursed forever. The walk now runs on an exactly num x num
+    grid with bounds-checked indexing and no member mutation: the
+    historical split is used when it yields exactly num columns and rows
+    (so every full-frame configuration that was clean at HEAD returns the
+    identical list, 5,520 of 5,520), otherwise each axis is split into num
+    near-equal spans with the depth reduced until 2^depth fits; depth 0
+    returns one block. The fallback remains only as a guard and is never
+    taken in the test sweep.
+  - `tests/RasterizeSequenceCoverageTest.cpp` (228 full-frame ranges incl.
+    1x1, 9x100, 17x3, 101x100, 1920x1080, 1919x1080, plus 6 crops; Hilbert depths 0-5;
+    every range through one reused and a fresh instance; Hilbert fallback is
+    a failure; block-crop tile sharing and centre order): 25,994/0, and
+    25,994/0 compiled with `-fsanitize=address,undefined`. Against the
+    first follow-up's headers: 705 failures without sanitizers (694
+    reused-vs-fresh mismatches from the depth mutation, 10 tile-sharing,
+    1 centre) and an ASan heap-buffer-overflow in `move()` at depth 1;
+    against HEAD: 1,255 failures (500 coverage, 17 empty, 733 reuse, 5
+    block-crop) and the same ASan abort. No shipped scene selects these
+    sequences (only the `raster_sequence_type` option and the interactive
+    rasterizer's block orders do); no render was compared.
+- Fixed: the composition scratch outlived the render. A virtual
+  `ReleaseRenderScopedPreviewResources` (filtered film + its scratch, plus
+  `pScratchImage` in `BidirectionalRasterizerBase`) runs from every
+  top-level entry point's scope guard (helper still and animation, BDPT
+  still) on success, cancel and unwind; frames of one animation still reuse
+  the buffer. BDPT/VCM no longer allocate the unread `pFilteredScratch`
+  (`UsesFilteredPreviewScratch`). `IntermediateCompositionTest` row E: 0 of
+  1 composed images still referenced after every render, vs 1 of 1 for VCM
+  still/progressive/animation and BDPT animation with the HEAD files
+  (81/8 red).
+- Fixed: row E now proves composed delivery. The capture output counts
+  previews whose image is not the primary and checks the scratch is
+  released; rows cover BDPT pel/spectral single-pass and progressive, a
+  BDPT progressive animation frame, VCM single-pass, progressive and
+  animation, and PT with a wide filter through `RasterizeScene`, each
+  rendered twice on one job. With both getters mutated to return the
+  primary: 71/18 red. Animation per-block previews deliver the primary by
+  design (`SPRasterizeSingleBlockOfAnimation` composes nothing); only
+  pass-end previews of a progressive animation are composed.
+- Fixed: `CallbackRasterizerOutputDispatch` no longer allocates a float
+  frame per tile. The receiver contract is a full-frame array indexed by the
+  rect (the Blender bridge reads it that way), so the layout is kept. The
+  frame-sized float and 16-bit buffers are owned by the dispatcher, reused
+  between intermediate deliveries under its mutex, zeroed whenever
+  (re)allocated, and freed after each final `OutputImage` (also on unwind),
+  so they are held only while a render delivers tiles (about 133 MB float
+  at 4K) and a whole-buffer reader never sees a previous render's pixels.
+  Outside the delivered rect the buffer holds zeros or earlier tiles of the
+  same render. New `ImageReaderOverflowTest` assertions (375/0): successive
+  tile deliveries keep the full-frame layout, and across a final delivery,
+  a resize and a format switch the rect pixels are exact and new storage
+  is zero outside the rect.
+- Fixed: MLT with `bootstrap_samples 0` (reachable from a scene): the 0/0
+  mean is NaN, the `<= 0` guard is then false, and the code read
+  `bootstrapSamples[0]` and wrote `cdf[0]` on empty vectors (out-of-bounds
+  read and write); the implementing worker observed a crash (exit 139,
+  arm64 macOS). The parser now rejects 0 with a diagnostic naming
+  `bootstrap_samples`, and both rasterizers fail the render with a logged
+  error when constructed with 0 through the API; the animation entry
+  points log that as a failure, not as a user cancel.
+  `MLTMutationScheduleTest` 37/0 (diagnostic text checked for RGB,
+  spectral and HWSS; API still and animation renders for all three);
+  with the HEAD files the three load checks fail and the API render
+  crashes. `chains 0` and `mutations_per_pixel 0` are clamped to 1 by the
+  schedule and remain accepted.
+- Fixed, uncompiled: `Win32WindowRasterizerOutput::OutputIntermediateImage`
+  clamps the inclusive region to the image and its own buffer (empty,
+  inverted and outside regions write nothing). Windows was not built.
+- Fixed: the `ThreadPool` allocation-failure case no longer assumes one
+  allocation per pushed task; it requires at least one failing point and
+  that the sweep reaches an uninjected submission.
+- `VCMPelRasterizer.h` now marks all of its overrides `override`.
 
 ### Host measurements and decisions
 
