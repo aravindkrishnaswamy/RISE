@@ -415,14 +415,28 @@ static bool RunTIFF( std::vector<char>& bytes, unsigned int& w, unsigned int& h,
 					 RISEColor* px0 = 0 )
 {
 	w = h = 0;
-	MemoryBuffer* mb = new MemoryBuffer( bytes.data(), static_cast<unsigned int>( bytes.size() ), false );
-	mb->addref();
-	TIFFReader* reader = new TIFFReader( *mb, eColorSpace_Rec709RGB_Linear );
-	reader->addref();
+	struct DriverBuffer final : MemoryBuffer {
+		bool& destroyed;
+		DriverBuffer(std::vector<char>& data, bool& flag) :
+			MemoryBuffer(data.data(), static_cast<unsigned int>(data.size()), false), destroyed(flag) {}
+		~DriverBuffer() override { destroyed = true; }
+	};
+	struct DriverReader final : TIFFReader {
+		bool& destroyed;
+		DriverReader(IReadBuffer& input, bool& flag) :
+			TIFFReader(input, eColorSpace_Rec709RGB_Linear), destroyed(flag) {}
+		~DriverReader() override { destroyed = true; }
+	};
+	bool bufferDestroyed = false, readerDestroyed = false;
+	auto* mb = new DriverBuffer(bytes, bufferDestroyed);
+	auto* reader = new DriverReader(*mb, readerDestroyed);
 	const bool ok = reader->BeginRead( w, h );
 	if( ok && px0 && w >= 1 && h >= 1 )           reader->ReadColor( *px0, 0, 0 );
 	reader->release();
+	Check(readerDestroyed && mb->refcount() == 1,
+		"TIFF driver teardown: reader destruction releases its buffer reference");
 	mb->release();
+	Check(bufferDestroyed, "TIFF driver teardown: borrowed buffer wrapper is destroyed");
 	return ok;
 }
 #endif
@@ -993,7 +1007,7 @@ static void TestTIFF()
 }
 #endif
 
-int main( int /*argc*/, char* /*argv*/[] )
+static int RunTests()
 {
 	TestRasterStorage();
 	TestHDRWriterBounds();
@@ -1018,4 +1032,9 @@ int main( int /*argc*/, char* /*argv*/[] )
 	std::cout << "Passed: " << passCount << std::endl;
 	std::cout << "Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
+}
+
+int main()
+{
+	return RISE::TestSupport::WithOwnedScratch(RunTests);
 }
