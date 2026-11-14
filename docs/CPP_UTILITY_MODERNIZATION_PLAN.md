@@ -939,6 +939,63 @@ fast-math. Disabling only task-scope destructor cleanup in an isolated copy
 fails eighteen expected same-thread cleanup/discard/retry assertions normally,
 with no source mutation or unsafe film dereference.
 
+### Dense film storage and footprint validation
+
+The direct-consumer sweep found unchecked `w*h` allocation products in
+SplatFilm, FilteredFilm and ProgressiveFilm, plus a native-size product in
+Channel. Oversized dimensions could wrap to a small allocation; later accesses
+or accumulation then used the original dimensions. SplatFilm and FilteredFilm
+also held raw row-mutex pointers that leaked a constructed prefix if a later
+allocation threw. FilteredFilm could retain its row lock when a virtual kernel
+evaluation threw.
+
+These dense containers share header-only `Utilities/CheckedSize.h`: multiplication
+is checked against native bytes and vector capacity before allocation. Bulk
+operations on empty extents remain no-ops; direct pixel access still requires
+valid coordinates. SplatFilm additionally respects its 32-bit batch-record
+index domain (up to 2^32 pixels on capable native targets); the other containers
+use native-sized storage/index arithmetic without an arbitrary byte cap.
+Progressive aggregate counters were already 64-bit. These are representability
+checks, not a memory quota; representable allocations can still fail normally.
+
+Row mutexes now use `unique_ptr`, and scoped row locks release during unwinding.
+SplatFilm and FilteredFilm are explicitly noncopyable. Their concrete headers
+and protected ownership details changed, so clients/subclasses must rebuild
+and update direct protected-field uses. Public construction interfaces and
+virtual signatures remain unchanged. Manual SplatFilm clients must finish
+producer work and flush/unbind (or use the task scope) before film teardown;
+Resolve flushes contributions but does not end the TLS binding.
+
+Both footprint paths intersect floored Scalar bounds with the valid pixel
+range before unsigned conversion. They ignore invalid/nonfinite support and
+nonfinite positions, preserve FilteredFilm's overlapping off-image footprints,
+and preserve SplatFilm's existing home-pixel membership rule. No tolerance was
+widened. Independent small-image oracles cover ordinary and DBL_MAX support,
+nonfinite/negative inputs, throwing kernel evaluation, unlocked rows and retry.
+Pure size validators cover huge boundaries without backing allocations; actual
+old-wrap constructor canaries allocate at most small wrapped storage in the
+counterfactual. The focused storage/footprint mode contains 38 checks.
+
+The storage checkpoint passes clean make, Xcode Deployment/Opto and native
+Blender builds with zero compiler warnings, thirteen selected executables,
+and fourteen serial default/batched animation parity runs. FrameStore now
+passes 283 checks. Five targeted ASan/UBSan suites pass. Focused TSan passes
+33 callback, 122 exception/splat and 38 storage/footprint checks. Thirty-one
+actual Opto objects pass seven focused programs and all fourteen parity runs
+under full LTO and fast-math. Source hygiene confirms the new header across
+the five authoritative build projects; no `.cpp` source was added.
+
+A detached-worktree counterfactual rebuilt the whole library and test with
+consistent headers, unchecked constructor products and the former manual
+FilteredFilm row lock. It exits normally with four direct failures: three
+actual constructor guards and row-lock release after a throwing evaluation.
+Twenty-three additional failures are dependent gated checks, not independent
+footprint negatives. FilteredFilm's huge-count check remains a pure validator;
+no giant backing allocation or unsafe old footprint conversion was run.
+Partial-construction cleanup follows standard `unique_ptr` ownership; forced
+mutex-allocation failure was not injected. Native Windows/Android and the
+previously recorded filesystem privilege exclusions remain outstanding.
+
 ### Host measurements and decisions
 
 - A 50,000-scalar append probe reduced backing allocations from 50,000 to 28, with identical logical size, cursor and checksum. Four warm host trials measured 75.33 ± 3.26 ms for exact-growth storage and 0.2245 ± 0.0065 ms for geometric capacity. These are append-probe measurements. A sanitizer differential review also exercised 192,000 buffer operations against a shadow model.

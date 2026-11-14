@@ -71,6 +71,11 @@ source assets with the corrected build.
   Clients constructing/subclassing PixelBasedRasterizerHelper must rebuild.
   Failed caller/worker splat tasks discard pending TLS records and bindings
   before film teardown or reuse; normal batching and flushes are preserved.
+- Dense film/channel allocations validate native storage before multiplication;
+  SplatFilm also validates its batch index domain. Film mutexes have scoped
+  ownership and release when filter evaluation throws. Footprints clip before
+  integer conversion; invalid supports/positions are ignored. SplatFilm and
+  FilteredFilm clients must rebuild; these owning types are noncopyable.
 - HDR and RGBEA writers report invalid sizes and header/payload write failures
   by exception, with failed writer state deactivated for safe retries.
 - Spectral and piecewise-function tables accept their leading finite
