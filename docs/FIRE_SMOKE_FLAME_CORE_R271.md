@@ -1608,7 +1608,50 @@ The ramp arms are §39; its reading of the step is corrected there.
 - **Trade-off, now mapped in both directions:** more reduced-C_v height improves the first metre and degrades 1.5–3 m. The adopted step at 0.5 m with 0.02 is the most balanced arm tested: 81–87% of FDS's plume mass flux at every height. No arm matches FDS at both ends.
 - The ramp switch stays an uncommitted diagnostic.
 
-**Running:** `ab_lc_zone16_10s` (10 s confirmation of the candidate) and `r271_inert/res_t6_lc_zone12` (inert plume at tier 6 with the 0.5 m zone, `below:12:0.2857`), to check the adopted zone against inert FDS as §35 did for the 1 m zone.
+## 40. Candidate over 10 s: confirmed; and a negative-zero stop in the inert check (2026-11-14)
+
+`r271_compact_stencil/ab_lc_zone16_10s`: the adopted candidate (carrier, compact, `below:16:0.2857`) for 10 s from r270 step 9223 (driver `ab_build_lc10`, exit 0). Its first 4 s reproduce `ab_lc_zone16` (§37). Evidence: `s40_runs.txt`.
+
+**40.1 The 10 s window confirms §37.**
+
+| | McCaffrey | FDS | 0–4 s | 4–10 s | 0–10 s | 1 m zone, 0–10 s (§36) |
+|---|---|---|---|---|---|---|
+| 90% / 99% heat-release height (m) | — | 0.43 / 0.77 | 0.46 / 0.80 | 0.46 / 0.83 | 0.46 / 0.80 | 0.43 / 0.73 |
+| centre excess T at 0.29 m (K) | 873 | 926 | 1051 | 1042 | 1045 | 1057 |
+| 0.50 m | 551 | 631 | 764 | 762 | 763 | 757 |
+| 0.75 m | 367 | 355 | 467 | 487 | 479 | 448 |
+| 0.99 m | 247 | 228 | 311 | 321 | 317 | 285 |
+| 1.51 m | 122 | 114 | 156 | 156 | 156 | 157 |
+| 2.00 m | 76 | 72 | 89 | 89 | 89 | 101 |
+| 3.01 m | 39 | 39 | 48 | 44 | 46 | 48 |
+| centre w at 0.99 / 2.00 / 3.01 m (m/s) | 3.60 / 2.85 / 2.48 | 3.47 / 2.68 / 2.33 | 3.61 / 2.73 / 2.42 | 3.68 / 2.77 / 2.35 | 3.65 / 2.76 / 2.38 | 3.45 / 3.05 / 2.49 |
+
+- Over 10 s the centre excess T is 31% / 28% above McCaffrey at 0.75 / 0.99 m, 28% at 1.5 m and 17–18% at 2–3 m (1 m zone: 22% / 15%, then 23–33%). Centre w is within 6% of FDS at every height.
+- 2 s blocks spread by 8–20% in mass flux and 4–13% in centre excess T up to 1 m (20–42% above 1.5 m, where the last block is cool); no trend.
+
+**40.2 Plume mass flux and fluctuations, 10 s, RISE / FDS.**
+
+| RISE / FDS | 0.29 m | 0.50 m | 0.75 m | 0.99 m | 1.51 m | 2.00 m | 2.49 m | 3.01 m |
+|---|---|---|---|---|---|---|---|---|
+| mass flux inside the plume, 0.5 m zone | 0.86 | 0.85 | 0.84 | 0.83 | 0.82 | 0.84 | 0.88 | 0.91 |
+| same, 1 m zone (§36) | 0.86 | 0.86 | 0.92 | 0.93 | 0.83 | 0.76 | 0.76 | 0.78 |
+| velocity width b_w, 0.5 m zone | 0.95 | 0.95 | 0.93 | 0.91 | 0.90 | 0.91 | 0.93 | 0.95 |
+| centre rms w / w_c, 0.5 m zone | 0.92 | 0.87 | 0.83 | 0.87 | 0.89 | 0.90 | 0.93 | 1.06 |
+| same, 1 m zone | 0.95 | 0.92 | 0.87 | 0.88 | 0.73 | 0.79 | 0.87 | 0.95 |
+| turbulent / mean heat flux, 0.5 m zone | 0.73 | 0.68 | 0.68 | 0.75 | 0.88 | 0.98 | 1.08 | 1.05 |
+| same, 1 m zone | 0.70 | 0.64 | 0.55 | 0.53 | 0.63 | 0.78 | 0.99 | 1.09 |
+| grid-scale share of w′, 0.5 m zone | 1.52 | 1.69 | 1.26 | 1.10 | 1.09 | 1.01 | 0.95 | 1.01 |
+
+- **The candidate holds 82–91% of FDS's plume mass flux at every height over 10 s** and gains 92% of FDS's mass flux from 1 to 3 m (1 m zone: 75%). No dip above the zone: fluctuation 0.83–0.93 throughout, turbulent heat flux at FDS's level from 2 m.
+- What remains is a uniform 15% mass-flux deficit already present at 0.29 m, a turbulent heat flux of 0.68–0.75 of FDS's below 1 m, and a centre 13–39% hotter than FDS.
+
+**40.3 Inert check of the 0.5 m zone: stopped by a negative zero, not an instability.** `r271_inert/res_t6_lc_zone12` (tier 6, `below:12:0.2857`) stopped at step 2563, t = 4.146 s, with `production canonical source beginning state is noncanonical`. Two reruns stopped at the same step.
+
+- With a new diagnostic (`RISE_FIRE_NONCANONICAL_DETAIL=1`, appends component, cell and value) the cause is a negative zero in the sensible energy (component 8) of one cell (109423). Nothing is non-finite; the fields 20 ms earlier are normal (T max about 1270 K, |w| under 6 m/s).
+- The check (`FireProductionSource.cpp`) rejects a negative zero as well as a non-finite value. Sensible energy is signed, so a zero is a legitimate value; which operation yields the negative sign is not established. First occurrence in any r271 run.
+- A second diagnostic, `RISE_FIRE_ALLOW_NEGATIVE_ZERO=1`, lets the check accept a negative zero. Both are uncommitted and in `s29_optins.patch`; default behaviour is unchanged.
+
+**Running:** `r271_inert/res_t6_lc_zone12_d`, the same inert arm with the negative zero accepted (driver `inert_build_diag`).
 
 ## Next (owner decisions)
 
@@ -1624,4 +1667,4 @@ The ramp arms are §39; its reading of the step is corrected there.
    - The limited momentum carrier (§29) stays the one identified numerics contributor: 2–3× base unsteadiness with an FDS-like spectrum aloft. Superbee on top adds only 6–9% at k7–k16.
 2. **The C_v 0.02 calibration is not adopted.** It is good for the inert plume, but in the reacting flame it either leaves the base unchanged (compact) or works through grid noise (default).
 3. **Robustness:** multigrid projection fails on domain-wide high-contrast states (300–1000 K and up). This does not affect r271.
-4. The zone ramp form (§38), the seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman and advective-CFL opt-ins, and the §29.9 diagnostic switches, stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.
+4. The zone ramp form (§38), the noncanonical-state detail and negative-zero switches (§40.3), the seed, inert-plume, scalar-C_v, near-wall WALE, projection-trace, hyper-Vreman and advective-CFL opt-ins, and the §29.9 diagnostic switches, stay uncommitted pending owner review, along with the inert harness tools (`s29_optins.patch` supersedes `s28_optins.patch`). The §16 small fixes stay optional.

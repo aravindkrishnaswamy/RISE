@@ -480,10 +480,32 @@ index 152b24a3e..3d2a17432 100644
  	bool BuildFireProductionFrozenForceFieldsMetal(
  		const FireProductionFrozenForceRequest&,
 diff --git a/src/Library/Utilities/FireProductionSource.cpp b/src/Library/Utilities/FireProductionSource.cpp
-index ddf51eb75..c9c2fd9a2 100644
+index ddf51eb75..e23295597 100644
 --- a/src/Library/Utilities/FireProductionSource.cpp
 +++ b/src/Library/Utilities/FireProductionSource.cpp
-@@ -271,6 +271,9 @@ namespace RISE
+@@ -165,15 +165,18 @@ namespace RISE
+ 					request.eligibilityBeginningConservativeValues.empty()?
+ 					request.beginningConservativeValues:
+ 					request.eligibilityBeginningConservativeValues;
++				// r271 diagnostic (opt-in RISE_FIRE_ALLOW_NEGATIVE_ZERO=1): accept a negative zero in the beginning state.
++				const bool allowNegativeZero=std::getenv("RISE_FIRE_ALLOW_NEGATIVE_ZERO")!=nullptr;
+ 				for(std::size_t cell=0u;cell<cells;++cell){
+ 					ConservativeVector tuple,eligibilityTuple;
+ 					for(std::size_t component=0u;component<9u;++component){
+ 						const float value=request.beginningConservativeValues[component*cells+cell];
+ 						const float eligibilityValue=eligibilityValues[component*cells+cell];
+-						if(!std::isfinite(value)||(value==0.0f&&std::signbit(value)))return Fail(error,
+-							"production canonical source beginning state is noncanonical");
++						if(!std::isfinite(value)||(value==0.0f&&std::signbit(value)&&!allowNegativeZero))return Fail(error,
++							"production canonical source beginning state is noncanonical"+(std::getenv("RISE_FIRE_NONCANONICAL_DETAIL")?
++							" (component "+std::to_string(component)+" cell "+std::to_string(cell)+" value "+std::to_string(value)+")":std::string()));
+ 						if(!std::isfinite(eligibilityValue)||(eligibilityValue==0.0f&&
+-							std::signbit(eligibilityValue)))return Fail(error,
++							std::signbit(eligibilityValue)&&!allowNegativeZero))return Fail(error,
+ 							"production canonical source eligibility state is noncanonical");
+ 						tuple[component]=static_cast<double>(value);
+ 						eligibilityTuple[component]=static_cast<double>(eligibilityValue);
+@@ -271,6 +274,9 @@ namespace RISE
  						if(passes)eligible[cell]=true;
  					}
  				}
@@ -493,7 +515,7 @@ index ddf51eb75..c9c2fd9a2 100644
  				std::vector<MethaneReactionStep> reactions(cells);
  				for(std::size_t cell=0u;cell<cells;++cell){
  					reactions[cell].deltaTimeS=static_cast<double>(request.timeStepS);
-@@ -278,7 +281,7 @@ namespace RISE
+@@ -278,7 +284,7 @@ namespace RISE
  					reactions[cell].maximumAcceptedTemperatureK=
  						fireCase.derived.maximumAcceptedTemperatureK;
  					reactions[cell].primaryEligible=eligible[cell];
@@ -502,7 +524,7 @@ index ddf51eb75..c9c2fd9a2 100644
  					if(!FireCase::EvaluatePilotSetpointTemperatureK(fireCase.derived,
  						request.pilotCommandMask[cell]!=0u,request.beginningTimeS,
  						request.beginningTimeS+static_cast<double>(request.timeStepS),
-@@ -295,7 +298,7 @@ namespace RISE
+@@ -295,7 +301,7 @@ namespace RISE
  					fireCase.derived.pilotAmbientTemperatureK,
  					fireCase.derived.referenceHeatReleaseRateW,
  					fireCase.derived.effectiveRadiativeFraction,request.predictiveRadiation,
@@ -511,7 +533,7 @@ index ddf51eb75..c9c2fd9a2 100644
  				// r270: the radiatively adiabatic floor returns its convective flux
  				// to the first gas layer as a frozen energy dose, q/dz, before the
  				// expansion target is derived from the packet.
-@@ -359,6 +362,38 @@ namespace RISE
+@@ -359,6 +365,38 @@ namespace RISE
  							"production canonical source floor dose failed its Binary32 certificate");
  					}
  				}
@@ -550,7 +572,7 @@ index ddf51eb75..c9c2fd9a2 100644
  				FireProductionFrozenSourcePacketSeal candidate;
  				candidate.shape_=request.shape;candidate.timeStepS_=request.timeStepS;
  				candidate.beginningTimeS_=request.beginningTimeS;
-@@ -468,6 +503,15 @@ namespace RISE
+@@ -468,6 +506,15 @@ namespace RISE
  					HashByteValues(candidate.sourceInputIdentity_,request.floorAbsorbingFaceMask);
  					HashFloatValues(candidate.sourceInputIdentity_,request.floorTangentialSpeedMPerS);
  				}
