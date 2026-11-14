@@ -27,6 +27,10 @@ using namespace RISE::Implementation;
 PNGReader::PNGReader( IReadBuffer& buffer, const COLOR_SPACE color_space_ ) :
   pReadBuffer( buffer ),
   pBuffer( 0 ),
+  bufW( 0 ),
+  bufH( 0 ),
+  bAlphaInfo( false ),
+  bpp( 0 ),
   color_space( color_space_ )
 {
 	pReadBuffer.addref();
@@ -34,19 +38,16 @@ PNGReader::PNGReader( IReadBuffer& buffer, const COLOR_SPACE color_space_ ) :
 
 PNGReader::~PNGReader( )
 {
+	EndRead();
 	pReadBuffer.release();
-
-	if( pBuffer ) {
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;
-		pBuffer = 0;
-	}
 }
 
 #ifdef NO_PNG_SUPPORT
 
 bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 {
+	EndRead();
+	width = height = 0;
 	GlobalLog()->PrintSourceError( "PNGReader::BeginRead NO PNG SUPPORT was compiled!  Nothing will be read", __FILE__, __LINE__ );
 	return false;
 }
@@ -67,7 +68,8 @@ png_read_data(png_structp png_ptr, png_bytep data, png_size_t length)
 bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 {
 	EndRead();
-	if( pReadBuffer.Size() == 0 ) {
+	width = height = 0;
+	if( BufferBytesAvailable( pReadBuffer ) == 0 ) {
 		GlobalLog()->PrintSourceError( "PNGReader::BeginRead:: Passed empty buffer to read from", __FILE__, __LINE__ );
 		return false;
 	}
@@ -113,7 +115,6 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 	png_get_IHDR(png_ptr, info_ptr,	&pngwidth, &pngheight,
 				&bit_depth, &color_type, &interlace_method, NULL, NULL);
 
-	bpp = bit_depth;
 
 	if (color_type == PNG_COLOR_TYPE_GRAY ||
 		color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
@@ -132,16 +133,12 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 
 	const int passes = png_set_interlace_handling( png_ptr );
 	png_read_update_info(png_ptr, info_ptr);
-	bpp = png_get_bit_depth( png_ptr, info_ptr );
+	const int decodedDepth = png_get_bit_depth( png_ptr, info_ptr );
 	const int channels = png_get_channels( png_ptr, info_ptr );
-	bAlphaInfo = channels == 4;
 
 	// Get the gamma from the file
 //	png_get_gAMA(png_ptr, info_ptr, &png_file_gamma);
 	// We don't care about the file gamma, PNG's whole imlementation of this is bullshit
-
-	width = pngwidth;
-	height = pngheight;
 
 	// Guard the destination-buffer sizing against a header-driven integer
 	// overflow: width/height come from the PNG IHDR and libpng's default
@@ -152,14 +149,16 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 	// libpng structs) before allocating on overflow or unsupported layout.
 	const auto image_stride = png_get_rowbytes( png_ptr, info_ptr );
 	static const unsigned long long kMaxImageBytes = 2ULL * 1024 * 1024 * 1024; // 2 GiB ceiling
-	if( (bpp != 8 && bpp != 16) || (channels != 3 && channels != 4) || height == 0 ||
-		image_stride != static_cast<unsigned long long>(width) * channels * (bpp/8) ||
-		image_stride == 0 || image_stride > kMaxImageBytes / height ) {
+	if( (decodedDepth != 8 && decodedDepth != 16) || (channels != 3 && channels != 4) ||
+		pngwidth == 0 || pngheight == 0 ||
+		image_stride != static_cast<unsigned long long>(pngwidth) * channels * (decodedDepth/8) ||
+		image_stride == 0 || image_stride > kMaxImageBytes / pngheight ||
+		image_stride > std::numeric_limits<size_t>::max() / pngheight ) {
 		GlobalLog()->Print( eLog_Error, "PNGReader: Invalid or too-large image dimensions" );
 		png_destroy_read_struct( &png_ptr, &info_ptr, (png_infopp)NULL );
 		return false;
 	}
-	const size_t nBytes = image_stride * height;
+	const size_t nBytes = image_stride * pngheight;
 
 	pBuffer = new (std::nothrow) unsigned char[nBytes];
 	if( !pBuffer ) {
@@ -170,9 +169,11 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 	memset( pBuffer, 0, nBytes );          // full allocation (was width*height*nPngChannels — undersized for 16-bit depth)
 
-	// Read scanline by scanline
+	// Read scanline by scanline. Keep this setjmp region free of automatic
+	// objects with non-trivial destructors: libpng errors longjmp directly
+	// to the cleanup above. Pending pixels live in the reader until commit.
 	for( int pass=0; pass<passes; ++pass ) {
-		for( unsigned int y=0; y<height; y++ ) {
+		for( unsigned int y=0; y<pngheight; y++ ) {
 			png_read_row(png_ptr, &pBuffer[(size_t)y*image_stride], NULL);
 		}
 	}
@@ -181,8 +182,10 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 	png_read_end( png_ptr, info_ptr );
 	png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp)NULL);
 
-	bufW = width;
-
+	bufW = width = pngwidth;
+	bufH = height = pngheight;
+	bpp = static_cast<unsigned char>( decodedDepth );
+	bAlphaInfo = channels == 4;
 	return true;
 }
 
@@ -190,11 +193,11 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 
 void PNGReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned int y )
 {
-	if( pBuffer ) {
+	if( pBuffer && x < bufW && y < bufH ) {
 		switch( bpp ) {
 		case 8:
 			{
-				const unsigned int idx = bAlphaInfo?(y*bufW*4+x*4):(y*bufW*3+x*3);
+				const size_t idx = (static_cast<size_t>(y) * bufW + x) * (bAlphaInfo ? 4 : 3);
 				RGBA8 p = {0};
 				p.b = pBuffer[idx];
 				p.g = pBuffer[idx+1];
@@ -234,10 +237,10 @@ void PNGReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned in
 			{
 				RGBA16	p = {0};
 
-				const unsigned int idx = bAlphaInfo?(y*bufW*8+x*8):(y*bufW*6+x*6);
+				const size_t idx = (static_cast<size_t>(y) * bufW + x) * (bAlphaInfo ? 8 : 6);
 
 				// libpng leaves 16-bit samples in PNG's network byte order.
-				const auto readSample = [this]( unsigned int offset ) {
+				const auto readSample = [this]( size_t offset ) {
 					return static_cast<unsigned short>( (pBuffer[offset] << 8) | pBuffer[offset+1] );
 				};
 				p.b = readSample( idx );
@@ -280,4 +283,7 @@ void PNGReader::EndRead( )
 		delete [] pBuffer;
 		pBuffer = 0;
 	}
+	bufW = bufH = 0;
+	bAlphaInfo = false;
+	bpp = 0;
 }

@@ -90,8 +90,8 @@ bool JPEGReader::BeginRead( unsigned int& width, unsigned int& height )
 
 void JPEGReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned int y )
 {
-	if( pBuffer ) {
-		const unsigned int idx = ( y * bufW + x ) * nChannels;
+	if( pBuffer && x < bufW && y < bufH ) {
+		const auto idx = (static_cast<size_t>(y) * bufW + x) * nChannels;
 		RGBA8 p = {0};
 		p.r = pBuffer[idx + 0];
 		p.g = pBuffer[idx + 1];

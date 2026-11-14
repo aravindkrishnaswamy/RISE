@@ -26,6 +26,9 @@
 #include "EXRReader.h"
 #include "../Interfaces/ILog.h"
 #include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <algorithm>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -49,61 +52,70 @@ EXRReader::~EXRReader( )
 
 bool EXRReader::BeginRead( unsigned int& width, unsigned int& height )
 {
+	EndRead();
+	width = height = 0;
 #ifndef NO_EXR_SUPPORT
-	if( buffer_start_pos > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
-		!BufferSeek(pReadBuffer, IBuffer::START, static_cast<std::int64_t>(buffer_start_pos)) ) return false;
+	// Decode with no active image. Moving the cleared storage into a local
+	// transaction reuses capacity while keeping failed reads inaccessible.
+	std::vector<float> decoded;
+	decoded.swap( floatbuffer );
+	try {
+		if( buffer_start_pos > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+			!BufferSeek(pReadBuffer, IBuffer::START, static_cast<std::int64_t>(buffer_start_pos)) )
+			throw std::runtime_error( "EXR input rewind failed" );
 
-	IStreamWrapper inbuf( pReadBuffer );
-	// General InputFile + FLOAT framebuffer slices (NOT RgbaInputFile,
-	// whose Imf::Rgba half storage overflows any channel > 65504 to
-	// +Inf on read).  OpenEXR converts a half-stored file to FLOAT
-	// losslessly and reads a 32-bit FLOAT file at full range.
-	Imf::InputFile	in( inbuf );
+		IStreamWrapper inbuf( pReadBuffer );
+		// FLOAT slices preserve the full channel range, including files
+		// stored as FLOAT instead of the narrower historical half format.
+		Imf::InputFile in( inbuf );
+		const Imf::Header& hdr = in.header();
+		const Imath::Box2i dw = hdr.dataWindow();
+		const std::int64_t w = static_cast<std::int64_t>( dw.max.x ) - dw.min.x + 1;
+		const std::int64_t h = static_cast<std::int64_t>( dw.max.y ) - dw.min.y + 1;
+		constexpr std::uint64_t bytesPerPixel = 4u * sizeof(float);
+		const std::uint64_t maxBytes = std::min<std::uint64_t>(
+			2ULL * 1024 * 1024 * 1024, std::numeric_limits<std::size_t>::max() );
+		if( w <= 0 || h <= 0 || static_cast<std::uint64_t>( w ) >
+			maxBytes / bytesPerPixel / static_cast<std::uint64_t>( h ) )
+			throw std::runtime_error( "EXR invalid or too-large decoded image dimensions" );
 
-	const Imf::Header& hdr = in.header();
-	Imath::Box2i dw = hdr.dataWindow();
-	const int w = dw.max.x - dw.min.x + 1;
-	const int h = dw.max.y - dw.min.y + 1;
+		const auto imageWidth = static_cast<unsigned int>( w );
+		const auto imageHeight = static_cast<unsigned int>( h );
+		decoded.assign( static_cast<std::size_t>( imageWidth ) * imageHeight * 4u, 0.0f );
+		const std::size_t xstride = bytesPerPixel;
+		const std::size_t ystride = static_cast<std::size_t>( imageWidth ) * xstride;
+		char* const pixels = reinterpret_cast<char*>( decoded.data() );
 
-	img_width  = static_cast<unsigned int>( w );
-	img_height = static_cast<unsigned int>( h );
+		// Let OpenEXR compute offset-window addressing without forming an
+		// out-of-array pointer in application code. Missing RGB channels are
+		// zero and missing alpha is one, matching the previous reader.
+		Imf::FrameBuffer fb;
+		fb.insert( "R", Imf::Slice::Make( Imf::FLOAT, pixels, dw, xstride, ystride, 1, 1, 0.0 ) );
+		fb.insert( "G", Imf::Slice::Make( Imf::FLOAT, pixels + sizeof(float), dw, xstride, ystride, 1, 1, 0.0 ) );
+		fb.insert( "B", Imf::Slice::Make( Imf::FLOAT, pixels + 2u * sizeof(float), dw, xstride, ystride, 1, 1, 0.0 ) );
+		fb.insert( "A", Imf::Slice::Make( Imf::FLOAT, pixels + 3u * sizeof(float), dw, xstride, ystride, 1, 1, 1.0 ) );
+		in.setFrameBuffer( fb );
+		in.readPixels( dw.min.y, dw.max.y );
 
-	// Interleaved R,G,B,A.  Missing channels fall back to 0 (R/G/B) or
-	// 1 (A) via the Slice fillValue, matching the historical Imf::Rgba
-	// defaults.
-	floatbuffer.assign(
-		static_cast<std::size_t>( w ) * static_cast<std::size_t>( h ) * 4u, 0.0f );
-
-	const bool hasA = ( hdr.channels().findChannel( "A" ) != 0 );
-
-	const std::size_t xstride = 4u * sizeof( float );
-	const std::size_t ystride = static_cast<std::size_t>( w ) * 4u * sizeof( float );
-
-	// Offset the slice base so data-window origin (dw.min) maps to
-	// floatbuffer[0] — mirrors the historical Rgba framebuffer offset.
-	char* const base = reinterpret_cast<char*>( floatbuffer.data() )
-		- ( static_cast<std::ptrdiff_t>( dw.min.y ) * static_cast<std::ptrdiff_t>( w )
-		  + static_cast<std::ptrdiff_t>( dw.min.x ) )
-		  * static_cast<std::ptrdiff_t>( xstride );
-
-	Imf::FrameBuffer fb;
-	fb.insert( "R", Imf::Slice( Imf::FLOAT, base + 0u * sizeof( float ), xstride, ystride, 1, 1, 0.0 ) );
-	fb.insert( "G", Imf::Slice( Imf::FLOAT, base + 1u * sizeof( float ), xstride, ystride, 1, 1, 0.0 ) );
-	fb.insert( "B", Imf::Slice( Imf::FLOAT, base + 2u * sizeof( float ), xstride, ystride, 1, 1, 0.0 ) );
-	fb.insert( "A", Imf::Slice( Imf::FLOAT, base + 3u * sizeof( float ), xstride, ystride, 1, 1, hasA ? 0.0 : 1.0 ) );
-
-	in.setFrameBuffer( fb );
-	in.readPixels( dw.min.y, dw.max.y );
-
-	width = img_width;
-	height = img_height;
+		floatbuffer.swap( decoded );
+		img_width = width = imageWidth;
+		img_height = height = imageHeight;
+		return true;
+	} catch( const std::exception& failure ) {
+		decoded.clear();
+		floatbuffer.swap( decoded );
+		GlobalLog()->PrintEx( eLog_Error, "EXRReader::BeginRead: %s", failure.what() );
+		return false;
+	}
+#else
+	return false;
 #endif
-	return true;
 }
 
 void EXRReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned int y )
 {
 #ifndef NO_EXR_SUPPORT
+	if( x >= img_width || y >= img_height || floatbuffer.empty() ) return;
 	const std::size_t idx =
 		( static_cast<std::size_t>( y ) * img_width + x ) * 4u;
 	const float pr = floatbuffer[idx + 0u];
@@ -139,4 +151,8 @@ void EXRReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned in
 
 void EXRReader::EndRead( )
 {
+#ifndef NO_EXR_SUPPORT
+	floatbuffer.clear();
+	img_width = img_height = 0;
+#endif
 }

@@ -47,6 +47,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstdint>
+#include <functional>
 #include <filesystem>
 #include <stdexcept>
 
@@ -59,6 +60,14 @@
 #include "../src/Library/RasterImages/PNGReader.h"
 #include "../src/Library/RasterImages/TIFFReader.h"
 #include "../src/Library/RasterImages/JPEGReader.h"
+#include "../src/Library/RasterImages/EXRReader.h"
+#include "../src/Library/RasterImages/EXRWriter.h"
+#ifndef NO_EXR_SUPPORT
+#include <OpenEXR/ImfFrameBuffer.h>
+#include <OpenEXR/ImfOutputFile.h>
+#include <OpenEXR/ImfHeader.h>
+#include <OpenEXR/ImfChannelList.h>
+#endif
 #include "../src/Library/RasterImages/TGAWriter.h"
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "TestTempDir.h"
@@ -1007,8 +1016,144 @@ static void TestTIFF()
 }
 #endif
 
+static void TestReaderFamilyReload()
+{
+	using Factory = std::function<IRasterImageReader*(IReadBuffer&)>;
+	struct Case { const char* name; std::vector<char> bytes; Factory create; };
+	const auto encoded = [](const char* format) {
+		auto* output = new MemoryBuffer();
+		IRasterImageWriter* writer = nullptr;
+		if( std::strcmp(format, "tga") == 0 ) RISE_API_CreateTGAWriter(&writer, *output, eColorSpace_Rec709RGB_Linear);
+		if( std::strcmp(format, "png") == 0 ) RISE_API_CreatePNGWriter(&writer, *output, 8, eColorSpace_Rec709RGB_Linear);
+		if( std::strcmp(format, "tiff") == 0 ) RISE_API_CreateTIFFWriter(&writer, *output, eColorSpace_Rec709RGB_Linear);
+		if( std::strcmp(format, "exr") == 0 ) RISE_API_CreateEXRWriter(&writer, *output, eColorSpace_Rec709RGB_Linear, eExrCompression_Piz, true, true);
+		std::vector<char> result;
+		if( writer ) {
+			writer->BeginWrite(2, 2);
+			for( unsigned int y = 0; y < 2; ++y ) for( unsigned int x = 0; x < 2; ++x )
+				writer->WriteColor(RISEColor(0.25 + 0.25*x, 0.5, 0.75 - 0.25*y, 1), x, y);
+			writer->EndWrite();
+			result.assign(reinterpret_cast<const char*>(output->Pointer()),
+				reinterpret_cast<const char*>(output->Pointer()) + output->Size());
+			writer->release();
+		}
+		output->release();
+		return result;
+	};
+	std::vector<Case> cases;
+	cases.push_back({"TGA", encoded("tga"), [](IReadBuffer& b) { IRasterImageReader* r=nullptr; RISE_API_CreateTGAReader(&r,b,eColorSpace_Rec709RGB_Linear); return r; }});
+	auto hdr = MakeHDRHeader("-Y 2 +X 2\n");
+	for( int i=0; i<4; ++i ) for( unsigned char v : {128,64,32,129} ) AppendByte(hdr,v);
+	cases.push_back({"HDR", hdr, [](IReadBuffer& b) { IRasterImageReader* r=nullptr; RISE_API_CreateHDRReader(&r,b); return r; }});
+	std::filesystem::path jpeg;
+	const std::filesystem::path relative="scenes/Tests/Painters/textures/test_pattern.jpg";
+	if( const char* media=std::getenv("RISE_MEDIA_PATH") ) {
+		if( std::filesystem::is_regular_file(std::filesystem::path(media)/relative) ) jpeg=std::filesystem::path(media)/relative;
+	}
+	for( auto root=std::filesystem::current_path(); jpeg.empty(); root=root.parent_path() ) {
+		if( std::filesystem::is_regular_file(root/relative) ) jpeg=root/relative;
+		if( root==root.parent_path() ) break;
+	}
+	cases.push_back({"JPEG", jpeg.empty()?std::vector<char>{}:ReadFileBytes(jpeg.string()), [](IReadBuffer& b) { IRasterImageReader* r=nullptr; RISE_API_CreateJPEGReader(&r,b,eColorSpace_Rec709RGB_Linear); return r; }});
+#ifndef NO_PNG_SUPPORT
+	cases.push_back({"PNG", encoded("png"), [](IReadBuffer& b) { IRasterImageReader* r=nullptr; RISE_API_CreatePNGReader(&r,b,eColorSpace_Rec709RGB_Linear); return r; }});
+#endif
+#ifndef NO_TIFF_SUPPORT
+	cases.push_back({"TIFF", encoded("tiff"), [](IReadBuffer& b) { IRasterImageReader* r=nullptr; RISE_API_CreateTIFFReader(&r,b,eColorSpace_Rec709RGB_Linear); return r; }});
+#endif
+#ifndef NO_EXR_SUPPORT
+	cases.push_back({"EXR", encoded("exr"), [](IReadBuffer& b) { IRasterImageReader* r=nullptr; RISE_API_CreateEXRReader(&r,b,eColorSpace_Rec709RGB_Linear); return r; }});
+#endif
+	const auto same = [](const RISEColor& a,const RISEColor& b) {
+		return a.base.r==b.base.r && a.base.g==b.base.g && a.base.b==b.base.b && a.a==b.a;
+	};
+	const RISEColor poison(-1000,-2000,-3000,-4000);
+	bool allReset = true;
+	for( auto& item : cases ) {
+		const auto check = [&](bool ok,const char* suffix) { Check(ok,(std::string("reader family ")+item.name+": "+suffix).c_str()); };
+		check(!item.bytes.empty(), "valid fixture exists");
+		if( item.bytes.empty() ) { allReset=false; continue; }
+		auto* input = new MemoryBuffer(static_cast<unsigned int>(item.bytes.size()));
+		input->setBytes(item.bytes.data(),static_cast<unsigned int>(item.bytes.size())); input->seek(IBuffer::START,0);
+		auto* reader = item.create(*input);
+		unsigned int width=0,height=0;
+		bool opened = reader && reader->BeginRead(width,height);
+		check(opened && width>=2 && height>=2, "initial decode has complete dimensions");
+		if( !opened ) { allReset=false; if(reader)reader->release();input->release();continue; }
+		const auto expectedWidth=width,expectedHeight=height;
+		RISEColor expected;reader->ReadColor(expected,0,0);
+		for( int i=0; i<3; ++i ) {
+			input->seek(IBuffer::START,0);
+			const bool reloaded=reader->BeginRead(width,height);
+			RISEColor pixel=poison;if(reloaded)reader->ReadColor(pixel,0,0);
+			check(reloaded && width==expectedWidth && height==expectedHeight && same(pixel,expected), "repeated decode preserves pixels and dimensions");
+		}
+		check(input->Resize(0,true), "empty replacement input installed");
+		width=123;height=456;bool threw=false,failed=false;
+		try { failed=!reader->BeginRead(width,height); } catch(const std::exception&) { threw=true; }
+		RISEColor stale=poison;reader->ReadColor(stale,0,0);
+		const bool reset=!threw && failed && width==0 && height==0 && same(stale,poison);
+		check(reset, "failed reload clears dimensions and previous pixels without throwing");
+		allReset &= reset;
+		input->Resize(static_cast<unsigned int>(item.bytes.size()),true);input->seek(IBuffer::START,0);
+		input->setBytes(item.bytes.data(),static_cast<unsigned int>(item.bytes.size()));input->seek(IBuffer::START,0);
+		const bool recovered=reader->BeginRead(width,height);
+		check(recovered && width==expectedWidth && height==expectedHeight, "healthy input recovers after failed reload");
+		reader->EndRead();reader->EndRead();stale=poison;reader->ReadColor(stale,0,0);
+		check(same(stale,poison), "repeated EndRead leaves no active image");
+		reader->release();check(input->refcount()==1, "reader teardown releases its input");input->release();
+	}
+	// The unfixed readers fail the reset contract above; avoid invoking their
+	// old unchecked pixel methods out of range during a normal-assertion RED run.
+	if( !allReset ) return;
+	for( auto& item : cases ) {
+		auto* input=new MemoryBuffer(item.bytes.data(),static_cast<unsigned int>(item.bytes.size()),false);
+		auto* reader=item.create(*input);unsigned int width=0,height=0;
+		const bool opened=reader->BeginRead(width,height);
+		RISEColor pixel=poison;
+		if(opened){reader->ReadColor(pixel,width,0);reader->ReadColor(pixel,0,height);}
+		Check(opened && same(pixel,poison),(std::string("reader family ")+item.name+": invalid coordinates preserve caller color").c_str());
+		reader->release();input->release();
+	}
+}
+
+#ifndef NO_EXR_SUPPORT
+static void TestEXROffsetWindow()
+{
+	auto* buffer=new MemoryBuffer();
+	const Imath::Box2i window(Imath::V2i(-3,7), Imath::V2i(-2,8));
+	const float red[] = {100000,200000,300000,400000};
+	{
+		OStreamWrapper output(*buffer);
+		Imf::Header header(2,2);header.dataWindow()=window;
+		header.channels().insert("R",Imf::Channel(Imf::FLOAT));
+		Imf::OutputFile file(output,header);
+		Imf::FrameBuffer frame;
+		frame.insert("R",Imf::Slice::Make(Imf::FLOAT,red,window,sizeof(float),2*sizeof(float)));
+		file.setFrameBuffer(frame);file.writePixels(2);
+	}
+	buffer->seek(IBuffer::START,0);
+	auto* reader=new EXRReader(*buffer,eColorSpace_Rec709RGB_Linear);
+	unsigned int width=0,height=0;
+	bool exact=reader->BeginRead(width,height) && width==2 && height==2;
+	if(exact) for(unsigned int i=0;i<4;++i) {
+		RISEColor actual;reader->ReadColor(actual,i%2,i/2);
+		const RISEPel expected(Rec709RGBPel(red[i],0,0));
+		const auto close=[](double a,double b){return std::fabs(a-b)<=1e-12*std::max(1.0,std::fabs(b));};
+		exact &= close(actual.base.r,expected.r) && close(actual.base.g,expected.g) &&
+			close(actual.base.b,expected.b) && actual.a==1;
+	}
+	Check(exact,"reader family EXR: offset data window preserves FLOAT range and fills missing channels");
+	reader->release();buffer->release();
+}
+#endif
+
 static int RunTests()
 {
+	TestReaderFamilyReload();
+#ifndef NO_EXR_SUPPORT
+	TestEXROffsetWindow();
+#endif
 	TestRasterStorage();
 	TestHDRWriterBounds();
 	TestTGAWriterBounds();

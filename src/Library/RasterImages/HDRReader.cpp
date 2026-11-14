@@ -15,6 +15,7 @@
 #include <charconv>
 #include <sstream>
 #include <string_view>
+#include <new>
 #include <string.h>					// for strlen and strncmp
 #include "HDRReader.h"
 #include "../Interfaces/ILog.h"
@@ -24,32 +25,31 @@ using namespace RISE::Implementation;
 
 HDRReader::HDRReader( IReadBuffer& buffer ) :
   pReadBuffer( buffer ),
-  pBuffer( 0 )
+  pBuffer( 0 ),
+  bufW( 0 ),
+  bufH( 0 )
 {
 	pReadBuffer.addref();
 }
 
 HDRReader::~HDRReader( )
 {
+	EndRead();
 	pReadBuffer.release();
-
-	if( pBuffer ) {
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;
-		pBuffer = 0;
-	}
 }
 
-bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
+bool HDRReader::BeginRead( unsigned int& outputWidth, unsigned int& outputHeight )
 {
+	EndRead();
+	outputWidth = outputHeight = 0;
+	unsigned int width = 0, height = 0;
 	// Verify the RADIANCE signature
 	static const char * szSignature = "#?RADIANCE";
 	char szSigFromBuf[11] = {0};
 
-	pReadBuffer.seek( IBuffer::START, 0 );
-	pReadBuffer.getBytes( szSigFromBuf, static_cast<unsigned int>(strlen(szSignature)) );
-
-	if( strcmp(szSignature, szSigFromBuf) != 0 ) {
+	if( !BufferSeek(pReadBuffer, IBuffer::START, 0) ||
+		!pReadBuffer.getBytes(szSigFromBuf, static_cast<unsigned int>(strlen(szSignature))) ||
+		strcmp(szSignature, szSigFromBuf) != 0 ) {
 		GlobalLog()->PrintSourceError( "HDRReader::BeginRead:: RADIANCE signature not found!", __FILE__, __LINE__ );
 		return false;
 	}
@@ -126,7 +126,11 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 	}
 	const size_t nBytes = static_cast<size_t>( pixels * 4 );
 
-	pBuffer = new unsigned char[nBytes];
+	pBuffer = new (std::nothrow) unsigned char[nBytes];
+	if( !pBuffer ) {
+		GlobalLog()->PrintEasyError( "HDRReader: Failed to allocate image pixels" );
+		return false;
+	}
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 	memset( pBuffer, 0, nBytes );
 
@@ -140,9 +144,7 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 	const long long nBytesSigned = (long long)nBytes;
 	auto RejectMalformed = [this]() -> bool {
 		GlobalLog()->Print( eLog_Error, "HDRReader: Malformed / out-of-bounds RLE scanline data; rejecting file" );
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;
-		pBuffer = 0;
+		EndRead();
 		return false;
 	};
 
@@ -306,14 +308,15 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 		}
 	}
 
-	bufW = width;
+	bufW = outputWidth = width;
+	bufH = outputHeight = height;
 
 	return true;
 }
 
 void HDRReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned int y )
 {
-	if( pBuffer ) {
+	if( pBuffer && x < bufW && y < bufH ) {
 		// The HDR format is always Rec709 with non-linearity in e?  Yea that kinda makes sense
 		// If we used some other format like ROMM, there wouldn't be enough bits in the r, g & b
 		// What we need is 16 bit RGBE to pull this off
@@ -321,7 +324,7 @@ void HDRReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned in
 
 		const unsigned char RGBEBase = 128;
 
-		const unsigned int idx = y*bufW*4+x*4;
+		const auto idx = (static_cast<size_t>(y) * bufW + x) * 4;
 
 		unsigned char r = pBuffer[idx];
 		unsigned char g = pBuffer[idx+1];
@@ -349,4 +352,5 @@ void HDRReader::EndRead( )
 		delete [] pBuffer;
 		pBuffer = 0;
 	}
+	bufW = bufH = 0;
 }
