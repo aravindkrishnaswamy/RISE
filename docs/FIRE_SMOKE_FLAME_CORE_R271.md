@@ -1651,7 +1651,24 @@ The ramp arms are §39; its reading of the step is corrected there.
 - The check (`FireProductionSource.cpp`) rejects a negative zero as well as a non-finite value. Sensible energy is signed, so a zero is a legitimate value; which operation yields the negative sign is not established. First occurrence in any r271 run.
 - A second diagnostic, `RISE_FIRE_ALLOW_NEGATIVE_ZERO=1`, lets the check accept a negative zero. Both are uncommitted and in `s29_optins.patch`; default behaviour is unchanged.
 
-**Running:** `r271_inert/res_t6_lc_zone12_d`, the same inert arm with the negative zero accepted (driver `inert_build_diag`).
+## 41. Inert check of the 0.5 m zone: completes, and the inert plume prefers the 1 m zone (2026-11-14)
+
+`r271_inert/res_t6_lc_zone12_d` (tier 6, carrier, compact, `below:12:0.2857`, driver `inert_build_diag` with `RISE_FIRE_ALLOW_NEGATIVE_ZERO=1`): 10 s complete, 129 frames, no solver failure (exit 98 by design). So the §40.3 stop was only the negative zero. Window 5–10 s against inert FDS at D*/6 (`res_compare.py`). Evidence: `s41_runs.txt`.
+
+| RISE / FDS, inert, D*/6 | 0.31 m | 0.51 m | 0.75 m | 1.00 m | 1.53 m | 2.02 m | 2.51 m | 3.00 m |
+|---|---|---|---|---|---|---|---|---|
+| mass flux, no zone (§33) | 0.78 | 0.73 | 0.71 | 0.71 | 0.70 | 0.69 | 0.68 | 0.67 |
+| mass flux, zone to 0.5 m | 0.92 | 0.87 | 0.86 | 0.84 | 0.85 | 0.87 | 0.88 | 0.88 |
+| mass flux, zone to 1 m (§35) | 0.98 | 0.98 | 1.01 | 1.00 | 0.97 | 0.96 | 0.95 | 0.96 |
+| centre excess T, zone to 0.5 m | 1.07 | 1.06 | 1.12 | 1.17 | 1.13 | 1.05 | 1.04 | 0.98 |
+| centre excess T, zone to 1 m | 1.02 | 0.99 | 0.98 | 0.95 | 0.98 | 1.05 | 1.12 | 1.03 |
+| centre rms w / w_c, zone to 0.5 m | 0.92 | 0.77 | 0.73 | 0.83 | 1.04 | 1.08 | 1.01 | 1.02 |
+| centre rms w / w_c, zone to 1 m | 1.09 | 0.91 | 0.91 | 1.03 | 0.91 | 0.94 | 0.90 | 1.01 |
+
+- **With the 0.5 m zone the inert plume carries 84–92% of FDS's mass flux** (no zone: 67–78%; 1 m zone: 95–101%) and the centre is 4–17% hot up to 1.5 m, within 5% above 2 m.
+- **The inert and reacting plumes disagree on the zone top.** Inert, the 1 m zone matches FDS throughout and the 0.5 m zone is too quiet at 0.5–1 m (0.73–0.83). Reacting, the 1 m zone costs the plume above it (76–78% from 2 m, §36) and the 0.5 m zone does not (82–91%, §40).
+- Both cases agree on the size of what the 0.5 m zone leaves: about 15% of FDS's mass flux, set in the first metre and then held.
+- The candidate stays as adopted; it was chosen on the reacting case, which is the production target.
 
 ## Next (owner decisions)
 
