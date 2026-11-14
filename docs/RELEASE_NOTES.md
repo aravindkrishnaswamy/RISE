@@ -39,10 +39,18 @@ source assets with the corrected build.
 - JPEG inputs above `INT_MAX` bytes and 3DS inputs above `UINT_MAX` bytes
   are explicitly rejected before reading payloads; these readers have
   narrower format/library limits than the disk buffer.
+- TGA output rejects dimensions outside 1–65,535 before writing a header;
+  CLI validation also preserves existing output for invalid dimensions.
+  TGA import reads the complete header, IDs, BGRA channels and both origin
+  axes correctly. Supported input is uncompressed 32-bit truecolor with
+  straight alpha (or opaque padding when no alpha bits are declared);
+  extended TGA 2.0 metadata is not interpreted. Alpha and orientation can
+  therefore differ from the former shifted-header decode.
 - JPEG reloads release previous decoded pixels and clear failed-read state.
   Template thumbnail caches are reused only when their bytes match the
   generated default PNG. Partial or foreign entries are regenerated, and
-  failed writes return no usable texture path.
+  failed writes return no usable texture path. Failed initial PNG encoding
+  is retried after allocation recovers.
 - TIFF decoding rejects damaged strips. The older partial-decoding mode
   could report success while inserting opaque-black rows.
 - Media existence checks use the native narrow filename convention shared
@@ -55,7 +63,8 @@ source assets with the corrected build.
   3D painters accept the default `border none`. These corrections can change
   file resolution, UV mapping, and derived scene contents in existing scripts.
 - Concrete implementation types changed layout during this series.
-  Clients constructing or subclassing them need rebuilding.
+  Clients constructing or subclassing them need rebuilding; this includes
+  `TGAReader`, which now retains image height for coordinate bounds checks.
 
 See [the modernization plan](CPP_UTILITY_MODERNIZATION_PLAN.md) for the
 implementation checkpoint, measurements, and remaining platform gates.

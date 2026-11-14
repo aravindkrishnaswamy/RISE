@@ -179,6 +179,48 @@ termination. Sparse multi-GiB cases remain explicitly skipped on this scratch
 filesystem.
 
 
+### Third fresh review follow-up after `f4ee9ef82`
+
+The next round reported two further edge cases: TGA output truncated
+16-bit dimensions, and an initial failed thumbnail encoding permanently
+initialized its static payload as empty. The TGA writer now checks format
+and storage limits before emitting a header, safely replaces prior pixel
+storage, bounds pixel writes, and reports failed header/pixel output. CLI
+preflight rejects oversized TGA dimensions before opening the destination.
+The thumbnail initializer now throws internally on incomplete encoding;
+its caller returns an empty path, and C++ static initialization retries on
+the next healthy call. A targeted one-shot PNG allocation failure verifies
+recovery rather than a permanently poisoned cache.
+
+The sibling audit also confirmed that the TGA reader consumed only 17
+header bytes, omitting the descriptor and shifting alpha into the pixel
+stream. It now reads 18 bytes, safely skips the image ID, decodes BGRA,
+normalizes both origin axes, and handles declared alpha versus opaque
+padding. It retains the supported uncompressed 32-bit truecolor subset;
+compressed, paletted, 24-bit and interleaved inputs are diagnosed as
+unsupported. TGA 2.0 extension metadata is not interpreted; supported alpha
+is straight. The [Truevision specification](https://raw.githubusercontent.com/DEAKSoftware/Truevision-TGA/master/truevision-tga.pdf)
+and the local stb/Pillow decoders were used to cross-check byte order and
+origin fields. Independent handcrafted fixtures cover these cases, plus a
+writer/reader RGBA round trip. `TGAReader` gains stored height for bounds
+checking, so concrete implementation clients must rebuild. The public
+C-style construction boundary remains unchanged.
+
+
+This follow-up passed all 15 focused executables, including 102 image
+checks, 156 frame-encoder checks, 449 template checks, and 480 exact corpus
+matches with zero drift, plus six targeted ASan/UBSan runs. Clean make,
+Xcode Deployment/Opto and Blender LTO builds passed without unexpected
+warnings. New TGA bounds/layout and thumbnail encode-retry fixtures failed
+normally against `f4ee9ef82` and passed with the corrections. Pillow
+independently decoded 65,535-by-1 and 1-by-65,535 CLI outputs, a
+Pillow-authored TGA converted to matching PNG RGBA/orientation within 8-bit
+quantization, and both 65,536-axis CLI cases failed while preserving the
+previous destination. Existing TIFF/EXR limited-write checks still passed.
+Sparse multi-GiB cases and native Windows/Android work retain their stated
+limits and deferrals.
+
+
 ### Host measurements and decisions
 
 - A 50,000-scalar append probe reduced backing allocations from 50,000 to 28, with identical logical size, cursor and checksum. Four warm host trials measured 75.33 ± 3.26 ms for exact-growth storage and 0.2245 ± 0.0065 ms for geometric capacity. These are append-probe measurements. A sanitizer differential review also exercised 192,000 buffer operations against a shadow model.
