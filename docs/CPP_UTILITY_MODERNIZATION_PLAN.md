@@ -1,6 +1,6 @@
 # C++ utility modernization plan
 
-**Status:** Host implementation verified on `codex/cpp-utility-modernization`. Native Windows and Android verification remain outstanding. Audit baseline `5fc6acaef`.
+**Status:** Host follow-up work on `codex/cpp-utility-modernization` has reached a major roadblock: parallel BDPT intermediate output needs a synchronized snapshot contract. The branch is not ready for final sign-off. Completed increments have host verification; native Windows and Android verification remain outstanding. Audit baseline `5fc6acaef`.
 
 ## Implementation checkpoint
 
@@ -964,7 +964,10 @@ and protected ownership details changed, so clients/subclasses must rebuild
 and update direct protected-field uses. Public construction interfaces and
 virtual signatures remain unchanged. Manual SplatFilm clients must finish
 producer work and flush/unbind (or use the task scope) before film teardown;
-Resolve flushes contributions but does not end the TLS binding.
+Resolve only reads committed pixels. `FlushCallingThreadBuffer` commits this
+thread's pending contributions while retaining its binding;
+`FlushCallingThreadSplatBuffer` commits and unbinds. Manual clients must flush
+all producer tasks before resolving.
 
 Both footprint paths intersect floored Scalar bounds with the valid pixel
 range before unsigned conversion. They ignore invalid/nonfinite support and
@@ -995,6 +998,169 @@ no giant backing allocation or unsafe old footprint conversion was run.
 Partial-construction cleanup follows standard `unique_ptr` ownership; forced
 mutex-allocation failure was not injected. Native Windows/Android and the
 previously recorded filesystem privilege exclusions remain outstanding.
+
+### MLT frame references and explicit progress routing
+
+The next fresh round confirmed the TLS and dense-storage fixes, but found
+MLT's local film and chain samplers still depended on normal-tail releases.
+Throwing phase-three title/progress callbacks or sample evaluation could leak
+those references. Both MLT implementations now scope frame resources, including
+partial chain initialization, and scope temporary bootstrap samplers. Normal
+cleanup still releases chains before film; image transfer and RNG behavior are
+preserved.
+
+The sibling animation path also temporarily pointed the authored progress
+member at a stack frame adapter. The frame helpers now accept that borrowed
+callback explicitly. Existing nonvirtual helper signatures/symbols forward to
+additive overloads; public factory signatures, vtables and object layouts stay
+unchanged. Animation never swaps the member, so exceptions cannot leave it
+pointing at a dead frame adapter. No `mutable` or `const_cast` escape was added;
+the four existing progress-member casts were removed.
+
+CPP-only, calling-thread test observations retain actual chain/film references
+after ownership is established. RGB, single-wavelength and hero-wavelength
+cases throw on phase-three title and progress callbacks in still and animation
+entry points, verify that only tester references remain, and retry twice
+without reinstalling the progress callback. Tiny scenes use two chains and
+finite environment bounds; all render invocations are serial. The focused
+mode has 77 checks including manual flush and normalization oracles. The
+inactive observation path adds no per-mutation or bootstrap-loop work.
+
+Manual guidance now distinguishes committed film pixels from pending TLS
+records: Resolve does not flush. A three-step oracle verifies explicit commit,
+retained binding, and unbinding. A separate independent nine-pixel oracle shows
+finite positive kernel rescaling leaves normalized splats unchanged. The stale
+continuous-unit-integral requirement was removed; the finite positive discrete
+sum requirement and legacy centre-value fallback are described explicitly.
+
+Host verification for this increment (`1d8223fbd`, logs under
+`/tmp/rise-third-pass/round19`): clean make, Xcode Deployment and shipping Opto,
+plus the native Blender link, passed the compiler-warning gate (excluding
+the known AppIntents tooling message). Thirteen selected regression programs
+passed, including FrameStore's 360 checks; fourteen still/animation parity
+cases ran sequentially across PT, BDPT, VCM and MLT with their spectral paths
+and supported uneven-batch cases. Five ASan/UBSan suites passed. Focused TSan
+checks passed for callback exports (33), tile exceptions (122), film bounds
+(38) and MLT ownership (77). Thirty-one actual shipping Opto objects carrying
+full LTO, fast math and finite-math protection also passed seven focused
+programs and the same fourteen parity cases. These are selected regression
+and instrumented-path checks, not evidence that every renderer path is safe.
+
+An isolated normal-build counterfactual removed only the frame-resource guard
+releases, retaining bootstrap ownership, explicit progress routing and the
+observation hooks. It exited normally with status 1: 41 checks passed and 36
+ownership checks failed. Each of the twelve callback scenarios failed its
+post-throw and two retry reference-balance assertions. The unchanged fixed
+build passed all 77. This demonstrates that the ownership oracle detects the
+cleanup regression without restoring the old dangling animation adapter or
+executing a known-invalid counterfactual under sanitizers. Exact sources,
+hashes, commands and results are in `mlt-resource-red-*` under the same log
+directory. Probe compile/link warning scans were empty.
+
+Three fresh reviewers covered MLT ownership/progress, film/snapshot contracts,
+and design/cost/documentation fidelity. They found no newly introduced defect
+in this bounded increment, confirmed the snapshot roadblock below, and
+identified the additional small-budget and submission-failure defects recorded
+there. The review has not converged to whole-branch zero P1s.
+
+### Major roadblock: parallel BDPT intermediate snapshots
+
+The host continuation stops here under the user's instruction to continue until
+completion or a major roadblock. This is an unresolved P1, not a documented
+acceptance of the race. The completed cache, publication, codec and lifetime
+fixes remain available for branch review; there is no whole-branch zero-P1 claim.
+
+After a tile finishes, `PixelBasedRasterizerHelper::SPRasterizeSingleBlock`
+releases its tile locks and calls `GetIntermediateOutputImage` before iterating
+the output list. BDPT permits per-block output, and its implementation copies
+the entire changing primary image and resolves changing films into one shared
+`pScratchImage`. Multiple workers can allocate or write that scratch image
+concurrently, and another worker can overwrite it while an output callback
+reads the returned reference. This path also executes with only file outputs
+or an empty output list. Adapter-level delivery locks are downstream and do
+not protect composition or source reads. VCM suppresses per-block output, so
+this particular entry path does not establish the same VCM defect.
+
+An isolated no-ray TSan diagnostic reproduced concurrent writes from the real
+getter into an already allocated 8x8 scratch image, with a constant primary
+and empty film. To expose the stores to TSan, the temporary probe subclasses
+the scratch image and overrides `SetPEL` with the inherited pixel assignment;
+the immutable LTO archive's original setter was uninstrumented and initially
+hid the report. The production getter and film were unchanged. The instrumented
+diagnostic reported the same eight-byte store from both threads and exited by
+SIGABRT on this host. This corroborates the shared-scratch race; it is not a
+fully instrumented production-render test or a proof of the separate source
+read races. Probe sources, exact commands and logs are under
+`/tmp/rise-third-pass/round19/scratch-snapshot-*` and
+`scratch_snapshot_probe.cpp`; these temporary artifacts are not shipped tests.
+
+A getter-local lock would expire before the callback consumes the reference;
+preallocation would fix only the pointer race. Per-worker full-frame images
+would multiply frame memory by worker count. Suppressing tile previews would
+change visible behavior, including Blender updates. Neither trade-off has
+been selected as the fix.
+
+Proposed work after review:
+
+1. Map the intermediate-output contract through the CLI, macOS GUI, Windows
+   GUI, Android and Blender adapters. Specify the valid region, precision,
+   lifetime and callback re-entry rules, including callbacks that retain or
+   copy data. Public interface compatibility remains a requirement.
+2. Prefer an owned region snapshot if consumers can honor region-only
+   validity. Add region-aware internal composition and retain the snapshot
+   through all synchronous consumers. Synchronize reads of primary pixels,
+   filtered-film rows and splat-film rows against producers, including TLS
+   flushes. Establish a single lock order; initial callbacks can run while
+   tile locks are held, so an output lock followed by all tile locks can
+   deadlock. Cover canonical FrameStore and private/raw image paths.
+3. If full-image validity is required, design a shared full-frame snapshot
+   whose guard spans composition through consumption and whose source reads
+   are synchronized. Preserve native precision; the existing exported float
+   buffers alone do not establish equivalent native-image semantics. Compare
+   its copy cost and contention with owned region snapshots before choosing.
+4. Add focused concurrent composition/consumption tests with deterministic
+   pixel oracles and TSan instrumentation of every participating image/film
+   producer. Exercise RGB, NM and HWSS, still/animation, canonical/private
+   stores, no-output/file-only/live-output configurations, callback failures
+   and retry, and stable preview cadence. Run actual renders sequentially.
+5. Measure time, peak memory and preview latency against the current path at
+   several frame/tile/worker sizes, using fixed seeds and
+   `render_thread_reserve_count 0`. Gate clean make, Deployment, shipping Opto,
+   Blender, sanitizers and fresh independent reviewers. Native Windows and
+   Android follow-up is required for their consumer contracts.
+
+Fresh source review also identified two unresolved P1s to handle when work
+resumes. These were present before the latest MLT ownership increment; their
+provenance does not make them acceptable. Neither was executed as a crashing
+or multi-billion-mutation counterfactual:
+
+- **MLT small mutation budgets:** both frame implementations allow a positive
+  total budget smaller than the chain count to produce zero mutations per
+  chain. A measured bootstrap then clamps `numRounds` to zero before dividing
+  by it. With an unmeasurably short bootstrap, the fixed 20-round fallback can
+  exceed a small per-chain budget; the last round's unsigned subtraction
+  underflows. For a 2x2 frame, eight chains and one mutation/pixel reach the
+  zero-budget case; two chains and one mutation/pixel give two per chain but
+  can schedule 19 before the last round. Public API, Job and scene paths do
+  not reject these configurations. Define zero-work-chain behavior, bound
+  rounds by available work in both timing branches, and partition mutations
+  without unsigned subtraction underflow. Test exact mutation counts and
+  normalization across timing branches, RGB/NM/HWSS and still/animation.
+  The 77-check ownership fixture uses 32 mutations per chain and does not
+  validate small-budget scheduling.
+- **Thread-pool submission failure:** `ThreadPool::ParallelFor` appends tasks
+  capturing its stack `body` by reference. If a later queue allocation throws,
+  earlier entries remain queued while the stack function and render resources
+  unwind. The normal task-exception barrier does not cover submission failure.
+  Make enqueue transactional under the queue lock or drain every submitted
+  task before propagating a submission error; preserve concurrent unrelated
+  submissions, priority and caller participation. Add deterministic enqueue
+  allocation-failure tests that verify no escaped closure, no hanging latch,
+  exact completion/cancellation and a healthy subsequent call under sanitizers.
+
+Accordingly, the latest resource tests establish cleanup for the exercised
+callback failures and normal task execution, not safety under failed task
+submission or correctness of every accepted MLT budget.
 
 ### Host measurements and decisions
 

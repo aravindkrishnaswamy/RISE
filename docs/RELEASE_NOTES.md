@@ -2,6 +2,15 @@
 
 ## C++ utility modernization, unreleased
 
+Known unresolved issue: parallel BDPT tile previews compose into a shared
+scratch image without synchronized snapshot ownership or source reads.
+Concurrent composition and callback consumption can race. This branch still
+requires the snapshot work described in the modernization plan before final
+sign-off; output-adapter serialization alone does not fix it. Fresh review also
+found unresolved small-budget MLT scheduling errors and unsafe unwinding if
+thread-pool task submission fails partway. The plan records their fixes and
+required regression coverage.
+
 Regenerate photon maps, irradiance caches, serialized meshes, and other
 binary assets written through RISE’s scalar serializers by the historical
 Xcode `rise` CLI target. That
@@ -66,11 +75,14 @@ source assets with the corrected build.
   Blender uses checked native-sized full-frame and preview storage/indexing.
   Still/animation tile locks are released when callbacks or observers throw.
   Whole-region unlock precedes notification, allowing synchronous observer
-  readback. Full render failures release temporary resources and restore pass
-  state; authored sampler configuration stays separate from per-pass kernels.
+  readback. Handled worker/callback failures release temporary resources and
+  restore pass state; authored sampler configuration stays separate from
+  per-pass kernels.
   Clients constructing/subclassing PixelBasedRasterizerHelper must rebuild.
   Failed caller/worker splat tasks discard pending TLS records and bindings
   before film teardown or reuse; normal batching and flushes are preserved.
+  MLT frame/bootstrap references unwind on failure, and animation passes its
+  frame progress adapter explicitly so retries retain the authored callback.
 - Dense film/channel allocations validate native storage before multiplication;
   SplatFilm also validates its batch index domain. Film mutexes have scoped
   ownership and release when filter evaluation throws. Footprints clip before
