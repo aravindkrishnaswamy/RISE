@@ -2,6 +2,11 @@
 // The real bridge producer functions are included below; no warning replicas.
 
 #include <cmath>
+#include <thread>
+#include <stdexcept>
+#include <memory>
+#include <chrono>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -121,6 +126,139 @@ void TestOutputBufferSizing()
 		std::memcmp(result.rgba + 4, nonfiniteBits, sizeof(nonfiniteBits)) == 0,
 		"BlenderBufferSize: invalid receiver rectangles neither invoke preview nor corrupt the image" );
 	rise_blender_free_render_result( &result );
+}
+
+void TestExportCallbackFailure()
+{
+	struct State
+	{
+		rise_blender_camera camera{};
+		rise_blender_painter painter{};
+		rise_blender_material material{};
+		rise_blender_mesh mesh{};
+		rise_blender_object object{};
+		rise_blender_scene scene{};
+		rise_blender_render_settings settings{};
+		rise_blender_render_result result{};
+		float vertices[9] = {-10,-10,0, 10,-10,0, 0,10,0};
+		uint32_t indices[3] = {0,1,2};
+		char error[1024]{};
+		std::atomic<bool> failCallback{true};
+		std::atomic<unsigned int> failureCalls{0};
+		std::atomic<unsigned int> healthyCalls{0};
+		std::atomic<bool> sawCompleteRegion{false};
+		std::atomic<bool> done{false};
+		bool escaped = false;
+		bool failedReturn = false;
+		bool originalCause = false;
+		bool clearedResult = false;
+		bool healthyRetry = false;
+		State()
+		{
+			camera.projection_type = RISE_BLENDER_CAMERA_PERSPECTIVE;
+			camera.location[2] = 3;
+			camera.forward[2] = -1;
+			camera.up[1] = 1;
+			camera.fov_y_radians = 0.7f;
+			camera.width = camera.height = 2;
+			camera.pixel_aspect = 1;
+			painter.name = "bridge_callback_fixture_color";
+			painter.kind = RISE_BLENDER_PAINTER_UNIFORM;
+			painter.color_space = RISE_BLENDER_COLOR_LINEAR;
+			painter.color[0] = 0.2f; painter.color[1] = 0.4f; painter.color[2] = 0.6f;
+			material.name = "bridge_callback_fixture_material";
+			material.model = RISE_BLENDER_MATERIAL_LAMBERT;
+			material.diffuse_painter_name = painter.name;
+			material.emission_painter_name = painter.name;
+			mesh.name = "bridge_callback_fixture_mesh";
+			mesh.vertices = vertices;
+			mesh.vertex_indices = indices;
+			mesh.num_vertices = 3; mesh.num_triangles = 1;
+			mesh.use_face_normals = 1;
+			mesh.double_sided = 1;
+			object.name = "bridge_callback_fixture_object";
+			object.geometry_name = mesh.name;
+			object.material_name = material.name;
+			object.visible = 1;
+			for( unsigned int i = 0; i < 16; ++i ) object.transform[i] = i % 5 == 0 ? 1.0f : 0.0f;
+			scene.camera = &camera;
+			scene.painters = &painter; scene.num_painters = 1;
+			scene.materials = &material; scene.num_materials = 1;
+			scene.meshes = &mesh; scene.num_meshes = 1;
+			scene.objects = &object; scene.num_objects = 1;
+			settings.width = settings.height = 2;
+			settings.pixel_samples = settings.light_samples = settings.max_recursion = 1;
+			settings.show_lights = 1;
+			settings.rasterizer_kind = RISE_BLENDER_RASTERIZER_PT_PEL;
+			settings.pixel_filter = RISE_BLENDER_PIXEL_FILTER_NONE;
+		}
+		~State() { rise_blender_free_render_result( &result ); }
+	};
+	auto state = std::make_shared<State>();
+	// The worker and C callback own/use only heap state. A broken exception
+	// cleanup can time out normally without a dangling stack pointer.
+	std::thread worker( [state] {
+		const auto callback = []( void* user, const unsigned short* pixels,
+			uint32_t width, uint32_t height, uint32_t fullWidth, uint32_t fullHeight,
+			uint32_t top, uint32_t left ) -> int {
+			auto& current = *static_cast<State*>( user );
+			if( current.failCallback.load() ) {
+				++current.failureCalls;
+				throw std::runtime_error( "bridge callback fixture failure" );
+			}
+			++current.healthyCalls;
+			if( pixels && width == 2 && height == 2 && fullWidth == 2 && fullHeight == 2 && top == 0 && left == 0 )
+				current.sawCompleteRegion.store( true );
+			return 1;
+		};
+		try {
+			int returned = -1;
+			try {
+				returned = rise_blender_render_scene( &state->scene, &state->settings, nullptr,
+					callback, state.get(), &state->result, state->error, sizeof(state->error) );
+			} catch( ... ) {
+				state->escaped = true;
+			}
+			state->failedReturn = returned == 0;
+			state->originalCause = std::strstr( state->error, "bridge callback fixture failure" ) != nullptr;
+			state->clearedResult = state->result.rgba == nullptr && state->result.width == 0 &&
+				state->result.height == 0 && state->result.warnings[0] == 0;
+			rise_blender_free_render_result( &state->result );
+			state->failCallback.store( false );
+			returned = rise_blender_render_scene( &state->scene, &state->settings, nullptr,
+				callback, state.get(), &state->result, state->error, sizeof(state->error) );
+			bool complete = returned == 1 && state->result.rgba && state->result.width == 2 &&
+				state->result.height == 2 && state->error[0] == 0 && state->result.warnings[0] == 0;
+			for( unsigned int i = 0; i < 4 && complete; ++i ) {
+				const float* pixel = state->result.rgba + i * 4;
+				complete &= pixel[0] > 0 && pixel[1] > pixel[0] && pixel[2] > pixel[1] &&
+					std::isfinite(pixel[0]) && std::isfinite(pixel[1]) && std::isfinite(pixel[2]) &&
+					std::isfinite(pixel[3]);
+			}
+			state->healthyRetry = complete && state->healthyCalls.load() > 0 && state->sawCompleteRegion.load();
+			rise_blender_free_render_result( &state->result );
+		} catch( ... ) {
+			state->escaped = true;
+		}
+		state->done.store( true, std::memory_order_release );
+	} );
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while( !state->done.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline )
+		std::this_thread::sleep_for( std::chrono::milliseconds(1) );
+	const bool completed = state->done.load( std::memory_order_acquire );
+	if( completed ) worker.join();
+	else worker.detach(); // RED only; its capture owns every input/output object.
+	Check( completed, "BlenderExportFailure: failing and healthy four-pixel renders complete within deadline" );
+	Check( completed && !state->escaped && state->failureCalls.load() > 0 && state->failedReturn && state->originalCause,
+		"BlenderExportFailure: C export contains callback exception and reports its original cause" );
+	Check( completed && state->clearedResult,
+		"BlenderExportFailure: failed C export clears its result buffer, dimensions and warnings" );
+	Check( completed && state->healthyRetry,
+		"BlenderExportFailure: healthy C export retry delivers all four emissive pixels and complete preview" );
+	// A stuck render can own global pool workers. Do not let static pool
+	// destruction turn the deadline's normal assertion failure into a hang.
+	// All Check failures above use std::endl, so diagnostics are flushed.
+	if( !completed ) std::_Exit(1); // RED only; GREEN joins and cleans up normally.
 }
 
 //! Row-major (Blender mathutils convention) identity + translation,
@@ -550,9 +688,11 @@ int main( int argc, char** argv )
 {
 	std::cout << "=== Blender bridge Alpha test (DL-193) ===" << std::endl;
 
-	TestOutputBufferSizing();
 	const bool bufferOnly = argc == 2 && std::strcmp(argv[1], "--buffer-only") == 0;
-	if( !bufferOnly ) {
+	const bool exportOnly = argc == 2 && std::strcmp(argv[1], "--export-failure-only") == 0;
+	if( !exportOnly ) TestOutputBufferSizing();
+	if( !bufferOnly ) TestExportCallbackFailure();
+	if( !bufferOnly && !exportOnly ) {
 		TestConstantAlphaPrecision();
 		TestAbiVersionAndAlphaFields();
 		TestOpaqueMaterialUnaffected();
