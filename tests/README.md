@@ -1454,6 +1454,12 @@ and ABI marshalling coverage. `test_tangent_blender_runtime.py` is a separate
 Blender integration script, run with `blender --background --factory-startup
 --python-exit-code 1 --python ...`; it executes actual exporter/bake production
 code and a RenderEngine render context, including injected-error restoration.
+`test_graph_walk_blender_runtime.py` (same invocation) pins the shader-graph
+walkers to the RNA pointer. Blender builds a fresh Python wrapper per node access,
+so a visited-set keyed on `id(node)` (or an `is` between two nodes) treats
+unvisited nodes as seen. Five cases (classifier, Principled behind reroutes, Bump
+behind reroutes, image behind pass-through nodes, a cyclic world graph), each with
+a control that swaps `id` back in and requires the wrong answer to reappear.
 The production addon must be rebuilt with native/Python ABI v16 together.
 `BlenderShaderDirectionTest` adds independent coat/base normal-map UV separation,
 canonical mirror/front/back rotation, RGB/NM value/Pdf/Scatter, nested CSG, hit
