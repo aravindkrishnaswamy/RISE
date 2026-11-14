@@ -31,18 +31,26 @@
 #include "LittleEndian.h"
 #include <cstdint>
 #include <exception>
+#include <cerrno>
 #include "../Interfaces/ILog.h"
 #include "MediaPathLocator.h"
 
 using namespace RISE::Implementation;
 
-DiskFileWriteBuffer::DiskFileWriteBuffer( const char * file_name ) 
+DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name ) :
+	DiskFileWriteBuffer(file_name, nullptr)
 {
+}
+
+DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure )
+{
+	if( openFailure ) openFailure->clear();
 	if( !file_name ) return;
 	filename = file_name;
 	hFile.reset( fopen( filename.c_str(), "wb" ) );
 
 	if( !hFile ) {
+		if( openFailure ) *openFailure = std::error_code(errno, std::generic_category());
 		GlobalLog()->PrintEx( eLog_Warning, "DiskFileWriteBuffer:: Failed to open file \'%s\'", file_name );
 	}
 }
@@ -201,10 +209,10 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy )
 {
 	namespace fs = std::filesystem;
-	const auto writeFile = [&]( const fs::path& file, const std::function<bool(DiskFileWriteBuffer&)>& encode ) {
+	const auto writeFile = [&]( const fs::path& file, const std::function<bool(DiskFileWriteBuffer&)>& encode, std::error_code* openFailure = nullptr ) {
 		const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
 		std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer(
-			new DiskFileWriteBuffer( file.string().c_str() ), release );
+			new DiskFileWriteBuffer( file.string().c_str(), openFailure ), release );
 		GlobalLog()->PrintNew( buffer.get(), __FILE__, __LINE__, "disk file write buffer" );
 		if( !buffer->ReadyToWrite() ) return false;
 		bool encoded = false;
@@ -274,7 +282,13 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 			fs::remove( directory, ignored );
 		}
 	} cleanup{ staging, directory };
-	if( !writeFile( staging, write ) ) return false;
+	std::error_code stagingOpenFailure;
+	if( !writeFile( staging, write, &stagingOpenFailure ) ) {
+		// No callback ran if opening the staging file failed. Permission-only
+		// fallback is safe here; encoding/flush failures must never replay it.
+		return policy == StagingPolicy::AllowInPlace && permissionFailure(stagingOpenFailure) &&
+			writeFile(target, write);
+	}
 	if( replacing ) {
 		fs::permissions( staging, previous.permissions(), error );
 		if( error ) return false;

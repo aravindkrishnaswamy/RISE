@@ -18,6 +18,7 @@
 #include "Reference.h"
 #include <functional>
 #include <cstdint>
+#include <system_error>
 
 #ifndef DISKFILEWRITE_BUFFER_
 #define DISKFILEWRITE_BUFFER_
@@ -73,8 +74,8 @@ namespace RISE
 			// Publish a completed, nonempty output beside the destination.
 			static bool WriteAtomically( const std::string& path,
 				const std::function<bool(DiskFileWriteBuffer&)>& write );
-			// AllowInPlace restores direct writes on staging/rename permission
-			// failures or when a dangling symlink can be opened through the CRT.
+			// AllowInPlace restores direct writes on staging creation/open or
+			// rename permission failures or when a dangling symlink can be opened through the CRT.
 			// A failed direct write may leave a partial destination.
 			static bool WriteAtomically( const std::string& path,
 				const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy );
@@ -85,6 +86,7 @@ namespace RISE
 			virtual ~DiskFileWriteBuffer( );
 
 		private:
+			DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure );
 			bool hasWritten = false;
 			bool writeFailed = false;
 			std::uint64_t logicalSize = 0;

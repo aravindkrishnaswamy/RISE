@@ -983,6 +983,34 @@ static void TestStagedOutputFallback()
 		std::cout << "SKIP: process can read a write-only target" << std::endl;
 	}
 	fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write);
+	if( restricted ) {
+		for( const bool existing : { false, true } ) {
+			for( const auto policy : { DiskFileWriteBuffer::StagingPolicy::Required,
+				DiskFileWriteBuffer::StagingPolicy::AllowInPlace } ) {
+				const auto maskedTarget = root / "umask.bin";
+				fs::remove(maskedTarget);
+				if( existing ) std::ofstream(maskedTarget) << "before mask";
+				unsigned int calls = 0;
+				bool saved = false;
+				{
+					struct RestoreMask { mode_t previous; ~RestoreMask() { ::umask(previous); } } mask{ ::umask(0222) };
+					saved = DiskFileWriteBuffer::WriteAtomically(maskedTarget.string(), [&]( DiskFileWriteBuffer& buffer ) {
+						++calls;
+						return buffer.setBytes("mask", 4);
+					}, policy);
+				}
+				const bool expected = policy == DiskFileWriteBuffer::StagingPolicy::AllowInPlace;
+				Check( saved == expected && calls == (expected ? 1U : 0U) &&
+					(expected ? read(maskedTarget) == "mask" :
+						(existing ? read(maskedTarget) == "before mask" : !fs::exists(maskedTarget))),
+					"staging-open permission fallback respects required policy and invokes encoder once" );
+				fs::remove(maskedTarget);
+			}
+		}
+		bool leftover = false;
+		for( const auto& entry : fs::directory_iterator(root) ) leftover |= entry.is_directory();
+		Check( !leftover, "staging-open permission fallback cleans inaccessible staging directories" );
+	}
 	const auto target = root / "created.bin";
 	const auto link = root / "broken-link.bin";
 	fs::create_symlink( target.filename(), link );
