@@ -135,7 +135,7 @@ namespace
 	}
 }
 
-int main()
+static int RunTests()
 {
 	std::printf( "=== CstLoadViaCstTest (P5 Slice 1: load via the canonical CST) ===\n" );
 	auto* capturedLog = new CapturedLog();
@@ -520,4 +520,9 @@ int main()
 	capturedLog->release();
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
 	return s_fail == 0 ? 0 : 1;
+}
+
+int main()
+{
+	return RISE::TestSupport::WithOwnedScratch(RunTests);
 }
