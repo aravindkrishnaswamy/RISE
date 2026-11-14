@@ -1991,6 +1991,8 @@ kernel void fct_commit_scalar(device const float* lowState [[buffer(0)]],
     alpha[upper]*fluxDelta[component*all+upper];volatile float correction=
     lowerCorrection-upperCorrection;volatile float scaled=scale*correction;
     value[component]+=scaled;}
+  // The GPU flushes a subnormal result to a signed zero; publish the canonical positive zero.
+  if(value[component]==0.0f)value[component]=0.0f;
   accepted[component*p.cells+gid]=value[component];
   if(!isfinite(value[component]))atomic_fetch_or_explicit(failure,8u,memory_order_relaxed);}
  for(uint inequality=0u;inequality<p.inequalities;++inequality){float rowScale=1.0f;
