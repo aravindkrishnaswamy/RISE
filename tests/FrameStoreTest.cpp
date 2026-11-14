@@ -34,11 +34,17 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <memory>
+#include <stdexcept>
 #include <sstream>
 #include <thread>
 #include <vector>
 
 #include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
+#include "../src/Library/Shaders/StandardShader.h"
+#include "../src/Library/Scene.h"
+#include "../src/Library/Interfaces/IJobRasterizerOutput.h"
 #include "../src/Library/Rendering/FilteredFilm.h"
 #include "../src/Library/Rendering/SplatFilm.h"
 #include "../src/Library/Rendering/ProgressiveFilm.h"
@@ -56,6 +62,10 @@ using RISE::Implementation::FrameStore;
 using RISE::Implementation::MakeAOVPlan;
 using RISE::Implementation::PropagateAOVsToFrameStore;
 
+namespace RISE { namespace Implementation {
+	IRasterizerOutput* ForTest_CreateCallbackRasterizerOutput(IJobRasterizerOutput& receiver);
+} }
+
 namespace
 {
 	int gFailCount = 0;
@@ -65,6 +75,7 @@ namespace
 	{
 		if ( cond ) {
 			++gPassCount;
+			if(label.find("tile exception:")==0)std::cout << "PASS: " << label << "\n";
 		} else {
 			++gFailCount;
 			std::cerr << "FAIL: " << label << "\n";
@@ -89,6 +100,177 @@ namespace
 		spec.tileEdge = tile;
 		spec.aovChannels = std::move( aovs );
 		return new FrameStore( spec );
+	}
+
+	// A bad lock cleanup must produce a bounded assertion, not hang this
+	// standalone executable. A timed-out worker owns the store reference and
+	// its result state, so detaching is safe even on the intentional RED path.
+	// GREEN always joins; no detached worker or extra reference survives.
+	bool ReadAndReacquireTiles(FrameStore& store)
+	{
+		struct Result {std::atomic<bool> done{false};bool ok=false;};
+		auto result=std::make_shared<Result>();store.addref();
+		std::thread reader([result,frame=&store]() {
+			try {
+				std::vector<float> pixels(frame->Width()*frame->Height()*4);
+				frame->Render(pixels.data(),frame->Width()*4*sizeof(float),
+					Rect(0,0,static_cast<unsigned int>(frame->Height()),static_cast<unsigned int>(frame->Width())),
+					TargetFormat::RGBA32F_Linear,ViewTransform::Identity());
+				for(size_t y=0;y<frame->TileCountY();++y)for(size_t x=0;x<frame->TileCountX();++x) {
+					frame->BeginTile(x,y);frame->EndTile(x,y);
+				}
+				result->ok=true;
+			} catch(...) {}
+			frame->release();result->done.store(true,std::memory_order_release);
+		});
+		const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+		while(!result->done.load(std::memory_order_acquire) && std::chrono::steady_clock::now()<deadline)
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		if(!result->done.load(std::memory_order_acquire)){reader.detach();return false;}
+		reader.join();return result->ok;
+	}
+
+	struct ThrowingTileObserver final : IRenderObserver
+	{
+		unsigned int calls=0;bool fail=true;
+		void OnTileComplete(const Rect&,uint64_t) override {
+			++calls;if(fail)throw std::runtime_error("observer failure "+std::to_string(calls));
+		}
+	};
+
+	void TestTileBracketExceptions()
+	{
+		using RISE::Implementation::FrameStoreTileBracket;
+		using RISE::Implementation::FrameStoreBulkBracket;
+		const auto release=[](auto* p){if(p)p->release();};
+		{
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(4,4,2),release);
+			ThrowingTileObserver observer;store->AddObserver(&observer);
+			const auto before=store->Generation();std::string error;
+			FrameStoreTileBracket bracket(store.get(),0,0,2,2);
+			try{bracket.Release();}catch(const std::exception& e){error=e.what();}
+			Check(error=="observer failure 1" && observer.calls==4 && store->Generation()==before+4,
+				"tile exception: explicit Release propagates first observer error after committing all four tiles");
+			bracket.Release();Check(observer.calls==4,"tile exception: repeated Release neither double-unlocks nor notifies");
+			store->RemoveObserver(&observer);
+			const bool readable=ReadAndReacquireTiles(*store);
+			Check(readable,"tile exception: explicit Release leaves every tile readable and reacquirable within deadline");
+			if(readable){bracket.Acquire();bracket.Release();}
+			Check(readable && store->Generation()==before+12,"tile exception: released bracket can acquire and commit the same four tiles again");
+		}
+		for(bool bulk : {false,true}) {
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(4,4,2),release);
+			ThrowingTileObserver observer;store->AddObserver(&observer);
+			std::string error;
+			try {
+				if(bulk) {
+					FrameStoreBulkBracket bracket(store.get(),store->AsBeautyRasterImage());
+					throw std::runtime_error("original callback failure");
+				} else {
+					FrameStoreTileBracket bracket(store.get(),0,0,2,2);
+					throw std::runtime_error("original callback failure");
+				}
+			}catch(const std::exception& e){error=e.what();}
+			Check(error=="original callback failure" && observer.calls==4,
+				bulk?"tile exception: bulk destructor preserves active callback error and notifies all tiles despite observer errors":
+				"tile exception: tile destructor preserves active callback error and notifies all tiles despite observer errors");
+			store->RemoveObserver(&observer);
+			Check(ReadAndReacquireTiles(*store),bulk?"tile exception: bulk destructor unlocks every tile within deadline":
+				"tile exception: tile destructor unlocks every tile within deadline");
+		}
+		{
+			struct Source final : RISERasterImage {
+				bool fail=true;mutable unsigned int reads=0;
+				Source():RISERasterImage(2,2,RISEColor(.5,.25,.125,.5)){}
+				RISEColor GetPEL(unsigned int x,unsigned int y) const override {
+					if(fail && ++reads==2)throw std::runtime_error("source read failure");
+					return RISERasterImage::GetPEL(x,y);
+				}
+			} source;
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(2,2,2),release);
+			ThrowingTileObserver observer;store->AddObserver(&observer);std::string error;
+			try{store->CopyTileFromRasterImage(0,0,source,Rect(0,0,2,2));}
+			catch(const std::exception& e){error=e.what();}
+			Check(error=="source read failure" && observer.calls==1,"tile exception: CopyTile preserves source error while cleanup observer also throws");
+			store->RemoveObserver(&observer);const bool readable=ReadAndReacquireTiles(*store);
+			Check(readable,"tile exception: CopyTile source failure releases its tile within deadline");
+			if(readable){source.fail=false;store->CopyTileFromRasterImage(0,0,source,Rect(0,0,2,2));}
+			bool exact=readable;
+			for(unsigned int y=0;y<2;++y)for(unsigned int x=0;x<2;++x) {
+				const auto c=store->AsBeautyRasterImage().GetPEL(x,y);
+				exact &= c.base.r==.5 && c.base.g==.25 && c.base.b==.125 && c.a==.5;
+			}
+			Check(exact,"tile exception: CopyTile healthy retry copies all independent RGB and alpha values");
+		}
+	}
+
+	void TestRasterizerBlockExceptions()
+	{
+		using namespace RISE::Implementation;
+		struct Probe final : PixelBasedRasterizerHelper {
+			Probe(IRayCaster* caster,FrameStore* store):Rasterizer(store),PixelBasedRasterizerHelper(caster,store){}
+			bool TakeSingleSample(const RuntimeContext&,const RasterizerState&,const Ray&,RISEPel&) const override{return false;}
+			void IntegratePixel(const RuntimeContext&,unsigned int,unsigned int,unsigned int,const IScene&,
+				RISEColor& result,bool,Scalar,Scalar) const override {
+				// Test-only instrumentation is not part of the image semantics.
+				++integratedCalls;result=RISEColor(.5,.25,.125,.5);
+			}
+			mutable unsigned int integratedCalls=0;
+		};
+		struct Output final : IRasterizerOutput,Reference {
+			bool fail=true;unsigned int calls=0;
+			void OutputIntermediateImage(const IRasterImage&,const Rect*) override {
+				++calls;if(fail)throw std::runtime_error("original output failure");
+			}
+			void OutputImage(const IRasterImage& image,const Rect* region,unsigned int) override{OutputIntermediateImage(image,region);}
+		};
+		struct Receiver final : IJobRasterizerOutput {
+			bool fail=true;unsigned int calls=0;
+			bool PremultipliedAlpha() override{return true;}
+			int GetColorSpace() override{return 0;}
+			bool WantsFloat32() override{return true;}
+			void OutputImageRGBA16(const unsigned short*,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int) override{}
+			void OutputImageRGBA32F(const float*,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int,unsigned int) override {
+				++calls;if(fail)throw std::runtime_error("original receiver failure");
+			}
+		};
+		const auto release=[](auto* p){if(p)p->release();};
+		std::unique_ptr<StandardShader,decltype(release)> shader(new StandardShader(std::vector<IShaderOp*>()),release);
+		IRayCaster* rawCaster=nullptr;RISE_API_CreateRayCaster(&rawCaster,false,10,*shader,true);
+		std::unique_ptr<IRayCaster,decltype(release)> caster(rawCaster,release);
+		std::unique_ptr<Scene,decltype(release)> scene(new Scene(),release);
+		RandomNumberGenerator random;RuntimeContext context(random,RuntimeContext::PASS_NORMAL,false);
+		for(bool animation : {false,true})for(unsigned int mode=0;mode<3;++mode) {
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(4,4,2),release);
+			Probe probe(caster.get(),store.get());Output output;Receiver receiver;
+			std::unique_ptr<IRasterizerOutput,decltype(release)> adapter(
+				mode==1?ForTest_CreateCallbackRasterizerOutput(receiver):nullptr,release);
+			if(mode==1)probe.AddRasterizerOutput(adapter.get());else probe.AddRasterizerOutput(&output);
+			// mode2 exercises the explicit split Release rather than unwind.
+			output.fail=mode==0;ThrowingTileObserver observer;store->AddObserver(&observer);
+			const auto run=[&]() {
+				const Rect block(0,0,3,3);
+				if(animation)probe.SPRasterizeSingleBlockOfAnimation(context,store->AsBeautyRasterImage(),*scene,block,4,
+					PixelBasedRasterizerHelper::AnimFrameData{PixelBasedRasterizerHelper::FIELD_BOTH,0,0,0,0});
+				else probe.SPRasterizeSingleBlock(context,store->AsBeautyRasterImage(),*scene,block,4);
+			};
+			std::string error;try{run();}catch(const std::exception& e){error=e.what();}
+			const std::string expected=mode==0?"original output failure":mode==1?"original receiver failure":"observer failure 1";
+			const std::string label=std::string("tile exception: ")+(animation?"animation ":"static ")+
+				(mode==0?"IRasterizerOutput ":mode==1?"receiver ":"split Release ");
+			Check(error==expected && observer.calls==4 && probe.integratedCalls==0,
+				label+"propagates original failure and releases all four tiles despite throwing observers");
+			store->RemoveObserver(&observer);const bool readable=ReadAndReacquireTiles(*store);
+			Check(readable,label+"allows bounded full-store read and tile reacquisition");
+			if(readable){output.fail=false;receiver.fail=false;run();}
+			bool exact=readable && probe.integratedCalls==16 && (mode==1?receiver.calls:output.calls)==3;
+			for(unsigned int y=0;y<4;++y)for(unsigned int x=0;x<4;++x) {
+				const auto c=store->AsBeautyRasterImage().GetPEL(x,y);
+				exact &= c.base.r==.5 && c.base.g==.25 && c.base.b==.125 && c.a==.5;
+			}
+			Check(exact,label+"healthy retry writes every independent beauty and alpha sample");
+			probe.FreeRasterizerOutputs();
+		}
 	}
 
 	// ─── Section 1: construction & geometry ───────────────────────
@@ -1180,11 +1362,18 @@ namespace
 	}
 }
 
-int main()
+int main(int argc,char** argv)
 {
+	if(argc==2 && std::strcmp(argv[1],"--tile-exception-only")==0) {
+		TestTileBracketExceptions();TestRasterizerBlockExceptions();
+		std::cout << "FrameStore tile exceptions: passed " << gPassCount << ", failed " << gFailCount << "\n";
+		return gFailCount==0?0:1;
+	}
 	std::cout << "FrameStoreTest L1 — buffer + tile locking + Render readback\n";
 	std::cout << "------------------------------------------------------------\n";
 
+	TestTileBracketExceptions();
+	TestRasterizerBlockExceptions();
 	TestConstructionAndGeometry();
 	TestAOVChannels();
 	TestPlannedAOVBridge();

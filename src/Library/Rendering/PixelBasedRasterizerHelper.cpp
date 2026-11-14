@@ -518,12 +518,10 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		                  ( static_cast<size_t>( rect.right )  / te ) + 1 );
 		fsTy1 = std::min( mFrameStore->TileCountY(),
 		                  ( static_cast<size_t>( rect.bottom ) / te ) + 1 );
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
 	}
+
+	FrameStoreTileBracket tileBracket( fsBracket ? mFrameStore : nullptr,
+		fsTx0, fsTy0, fsTx1, fsTy1 );
 
 	// L6e-1.1 — Draw toggles + dispatch in-progress observer fire
 	// INSIDE the bracket so toggle writes are lock-protected, and
@@ -602,16 +600,8 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 	// frame-complete cadence; per-tile toggles are noise rather
 	// than useful progress.
 	if( fsBracket && !skipBlockOutput && ShouldFireToggleObserverEvents() ) {
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
+		tileBracket.Release();
+		tileBracket.Acquire();
 	}
 
 	// L8 round 11 — time-based intra-block tile-bracket flush.
@@ -670,16 +660,8 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		if( fsBracket && !skipBlockOutput && y < rect.bottom ) {
 			const auto now = FlushClock::now();
 			if( now - lastFlush >= kFlushInterval ) {
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->EndTile( tx, ty );
-					}
-				}
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->BeginTile( tx, ty );
-					}
-				}
+				tileBracket.Release();
+				tileBracket.Acquire();
 				lastFlush = now;
 
 				// L8 round 12+15 — intra-block cancellation check.
@@ -723,11 +705,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		// EndTile fires per-tile observers (OnTileComplete) and bumps
 		// the global generation.  Order doesn't matter — each tile's
 		// observer fire is independent.
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
+		tileBracket.Release();
 	}
 
 	if( !skipBlockOutput ) {
@@ -788,12 +766,10 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 		                  ( static_cast<size_t>( rect.right )  / te ) + 1 );
 		fsTy1 = std::min( mFrameStore->TileCountY(),
 		                  ( static_cast<size_t>( rect.bottom ) / te ) + 1 );
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
 	}
+
+	FrameStoreTileBracket tileBracket( fsBracket ? mFrameStore : nullptr,
+		fsTx0, fsTy0, fsTx1, fsTy1 );
 
 	// L6e-1.1 — block-border dim + in-progress observer dispatch
 	// inside the bracket; see SPRasterizeSingleBlock for rationale.
@@ -817,16 +793,8 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	// for the rationale; this is the animation-path twin.
 	// L8 round 6 — same per-rasterizer gate as the static path.
 	if( fsBracket && drewToggles && ShouldFireToggleObserverEvents() ) {
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->BeginTile( tx, ty );
-			}
-		}
+		tileBracket.Release();
+		tileBracket.Acquire();
 	}
 
 	// L8 round 11 — time-based intra-block flush; see
@@ -868,16 +836,8 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 		if( fsBracket && !skipBlockOutput && y < rect.bottom ) {
 			const auto now = FlushClockAnim::now();
 			if( now - lastFlushAnim >= kFlushIntervalAnim ) {
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->EndTile( tx, ty );
-					}
-				}
-				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-						mFrameStore->BeginTile( tx, ty );
-					}
-				}
+				tileBracket.Release();
+				tileBracket.Acquire();
 				lastFlushAnim = now;
 
 				// L8 round 12+15 — intra-block cancellation check
@@ -893,11 +853,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	(void)earlyAbortAnim;
 
 	if( fsBracket ) {
-		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
-			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
-				mFrameStore->EndTile( tx, ty );
-			}
-		}
+		tileBracket.Release();
 	}
 
 	if( !skipBlockOutput ) {

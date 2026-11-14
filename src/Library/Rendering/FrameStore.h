@@ -444,10 +444,8 @@ namespace RISE
 		// Each `EndTile` fires `OnTileComplete` to observers + bumps the
 		// global generation counter, so a full-image bulk write produces
 		// one observer notification per FrameStore tile (same fan-out as
-		// a fully-rendered per-block frame).  Observers MUST NOT throw
-		// from `OnTileComplete` — the destructor is implicitly
-		// `noexcept` and a throw during stack unwinding would call
-		// `std::terminate`.
+		// a fully-rendered per-block frame). Observers should not throw;
+		// cleanup contains notification failures and continues unlocking.
 		//
 		// IMPORTANT: do NOT construct nested inside an active per-tile
 		// bracket window — `std::shared_mutex` is non-recursive, so a
@@ -481,16 +479,29 @@ namespace RISE
 		//! optionally unioned with the albedo+normal pair required by OIDN.
 		AOVBuffers::Plan MakeAOVPlan( const FrameStore* fs, bool denoiserAux );
 
+		// Owns a half-open tile rectangle. Explicit Release propagates the
+		// first notification failure after unlocking all tiles. Unwinding
+		// contains notification failures and preserves the active exception.
+		class FrameStoreTileBracket
+		{
+		public:
+			FrameStoreTileBracket( FrameStore* fs, size_t tx0, size_t ty0,
+			                       size_t tx1, size_t ty1 );
+			~FrameStoreTileBracket() noexcept;
+			void Acquire();
+			void Release();
+			FrameStoreTileBracket( const FrameStoreTileBracket& ) = delete;
+			FrameStoreTileBracket& operator=( const FrameStoreTileBracket& ) = delete;
+		private:
+			FrameStore* fs_;
+			size_t tx0_, ty0_, columns_, count_, first_ = 0, end_ = 0;
+		};
+
 		class FrameStoreBulkBracket
 		{
 		public:
 			FrameStoreBulkBracket( FrameStore* fs, const IRasterImage& image );
-			// `noexcept` is explicit — the destructor calls
-			// `EndTile` on every tile, which fires `OnTileComplete`
-			// observers; observers MUST NOT throw (a throw during
-			// stack unwinding from a noexcept dtor calls
-			// `std::terminate`).  Marking explicit makes that
-			// contract self-documenting at the declaration site.
+			// Cleanup releases every tile even if notification throws.
 			~FrameStoreBulkBracket() noexcept;
 
 			// Non-copyable, non-movable — strict scope semantics.
@@ -500,7 +511,7 @@ namespace RISE
 			FrameStoreBulkBracket& operator=( FrameStoreBulkBracket&& )      = delete;
 
 		private:
-			FrameStore* mFs;  ///< null when guard is a no-op
+			FrameStoreTileBracket tiles_;
 		};
 
 	} // namespace Implementation
