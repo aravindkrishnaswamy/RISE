@@ -32,6 +32,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
+#include <stdexcept>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -49,6 +51,7 @@
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/FrameEncoders.h"
 #include "../src/Library/RasterImages/RasterImage.h"
+#include "../src/Library/RasterImages/WriteOnlyRasterImage.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/Interfaces/IFrameEncoder.h"
@@ -67,6 +70,7 @@ namespace
 	{
 		if ( cond ) {
 			++gPassCount;
+			if( std::getenv("RISE_RED_PROVE_MARKER") ) std::cout << "PASS: " << label << "\n";
 		} else {
 			++gFailCount;
 			std::cerr << "FAIL: " << label << "\n";
@@ -486,11 +490,142 @@ namespace
 			!vfs->SaveTo( *rejected, enc, opts ), "SaveTo refuses empty and rejected output" );
 		rejected->release();
 
+		struct ThrowingEncoder final : IFrameEncoder, Reference
+		{
+			const FrameStore* observed = nullptr;
+			unsigned int references = 0;
+			std::string FormatName() const override { return "throwing"; }
+			std::vector<std::string> Extensions() const override { return { "throwing" }; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode( const FrameStore& store, IWriteBuffer&, const EncodeOpts& ) override
+			{
+				observed = &store;
+				references = store.refcount();
+				throw std::runtime_error( "injected encoding failure" );
+			}
+		} throwing;
+		auto* destination = new MemoryBuffer();
+		bool threw = false;
+		bool saved = true;
+		try { saved = vfs->SaveTo( *destination, &throwing, opts ); }
+		catch( const std::exception& ) { threw = true; }
+		Check( !threw && !saved && throwing.observed &&
+			throwing.observed->refcount() + 1 == throwing.references,
+			"SaveTo encoding failure returns false and releases its snapshot" );
+		Check( destination->refcount() == 1, "SaveTo encoding failure releases destination references" );
+		destination->release();
+		Check( !vfs->SaveAs( vfsPath, &throwing, opts ) &&
+			ReadFileAllBytes( vfsPath, preserved ) && preserved == vfsBytes &&
+			throwing.observed->refcount() + 1 == throwing.references,
+			"SaveAs encoding failure preserves the image and releases its snapshot" );
+
+#ifndef _WIN32
+		namespace fs = std::filesystem;
+		const fs::path scratch = MakeTempPath() + "_save_compatibility";
+		fs::create_directory( scratch );
+		const fs::path target = scratch / "image.png";
+		fs::copy_file( vfsPath, target, fs::copy_options::overwrite_existing );
+		const auto originalPermissions = fs::status( scratch ).permissions();
+		fs::permissions( scratch, fs::perms::owner_read | fs::perms::owner_exec );
+		std::error_code permissionError;
+		const fs::path probe = scratch / "permission_probe";
+		const bool createdProbe = fs::create_directory( probe, permissionError );
+		if( permissionError == std::errc::permission_denied ) {
+			Check( vfs->SaveAs( target.string(), enc, opts ) &&
+				ReadFileAllBytes( target.string(), preserved ) && preserved == vfsBytes,
+				"SaveAs compatibility: writable image in a read-only directory" );
+		} else {
+			std::cout << "SaveAs read-only directory fixture skipped: permissions are not enforced\n";
+		}
+		fs::permissions( scratch, originalPermissions );
+		if( createdProbe ) fs::remove( probe );
+		const fs::path link = scratch / "dangling.png";
+		const fs::path linkTarget = scratch / "created.png";
+		fs::create_symlink( linkTarget.filename(), link );
+		Check( vfs->SaveAs( link.string(), enc, opts ) && fs::is_symlink( link ) &&
+			ReadFileAllBytes( linkTarget.string(), preserved ) && preserved == vfsBytes,
+			"SaveAs compatibility: dangling symlink remains and receives the image" );
+		fs::remove_all( scratch );
+#endif
+
 		std::remove( vfsPath.c_str() );
 		std::remove( l2Path.c_str() );
 		safe_release( img );
 		l2Store->release();
 		vfs->release();
+	}
+
+	void TestWriteOnlyFinalizationFailure()
+	{
+		struct ThrowingWriter final : IRasterImageWriter, Reference
+		{
+			unsigned int finalizations = 0;
+			bool reject = true;
+			bool rejectBegin = false;
+			void BeginWrite( unsigned int, unsigned int ) override
+			{
+				if( rejectBegin ) throw std::runtime_error( "injected begin failure" );
+			}
+			void WriteColor( const RISEColor&, unsigned int, unsigned int ) override {}
+			void EndWrite() override
+			{
+				++finalizations;
+				if( reject ) throw std::runtime_error( "injected finalization failure" );
+			}
+		} writer;
+		auto* image = new RISEWriteOnlyRasterImage( 1, 1 );
+		image->DumpImage( &writer );
+		bool failed = false;
+		try { image->DumpImage( nullptr ); }
+		catch( const std::exception& ) { failed = true; }
+		Check( failed && writer.refcount() == 1,
+			"write-only explicit finalization propagates failure and releases the writer" );
+		writer.reject = false;
+		image->release();
+		Check( writer.finalizations == 1,
+			"write-only failed explicit finalization is not retried by destruction" );
+		// Keep the unfixed RED path a normal assertion failure: the old
+		// destructor would terminate if we exercised it after EndWrite throws.
+		if( writer.finalizations == 1 ) {
+			writer.reject = true;
+			image = new RISEWriteOnlyRasterImage( 1, 1 );
+			image->DumpImage( &writer );
+			image->release();
+			Check( writer.refcount() == 1 && writer.finalizations == 2,
+				"write-only destructor handles finalization failure and releases the writer" );
+		}
+		writer.reject = false;
+		writer.rejectBegin = true;
+		image = new RISEWriteOnlyRasterImage( 1, 1 );
+		failed = false;
+		try { image->DumpImage( &writer ); }
+		catch( const std::exception& ) { failed = true; }
+		Check( failed && writer.refcount() == 1,
+			"write-only failed BeginWrite releases its incoming writer" );
+		image->release();
+
+		struct LifetimeWriter final : IRasterImageWriter, Reference
+		{
+			bool& destroyed;
+			explicit LifetimeWriter( bool& flag ) : destroyed( flag ) {}
+			~LifetimeWriter() override { destroyed = true; }
+			void BeginWrite( unsigned int, unsigned int ) override {}
+			void WriteColor( const RISEColor&, unsigned int, unsigned int ) override {}
+			void EndWrite() override {}
+		};
+		if( writer.finalizations == 2 ) {
+			bool destroyed = false;
+			auto* borrowed = new LifetimeWriter( destroyed );
+			image = new RISEWriteOnlyRasterImage( 1, 1 );
+			image->DumpImage( borrowed );
+			borrowed->release();
+			image->DumpImage( borrowed );
+			Check( !destroyed && borrowed->refcount() == 1,
+				"write-only rebind retains a writer owned solely by the image" );
+			image->release();
+			Check( destroyed, "write-only rebind releases the retained writer at destruction" );
+		}
 	}
 
 	// ─── Section 5: rasterizer-swap simulation ────────────────────
@@ -1003,6 +1138,7 @@ int main()
 	TestIntermediateMultiTile();
 	TestRenderToBuffer();
 	TestSaveAsByteIdenticalToL2();
+	TestWriteOnlyFinalizationFailure();
 	TestRasterizerSwap();
 	TestResolutionChange();
 	TestMultiFrameReuse();

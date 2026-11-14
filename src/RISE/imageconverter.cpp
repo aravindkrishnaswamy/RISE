@@ -18,11 +18,27 @@
 #include <charconv>
 #include <filesystem>
 #include <limits>
+#include <memory>
+#include <exception>
 #include "../Library/Utilities/RString.h"
 #include "../Library/Utilities/DiskFileWriteBuffer.h"
 #include <string.h>
 
 using namespace RISE;
+
+namespace
+{
+	struct ReleaseReference
+	{
+		void operator()( const IReference* reference ) const
+		{
+			if( reference ) reference->release();
+		}
+	};
+
+	template<typename T> using OwnedReference = std::unique_ptr<T, ReleaseReference>;
+}
+
 
 static std::string Extension( const char* path )
 {
@@ -32,7 +48,7 @@ static std::string Extension( const char* path )
 	return extension;
 }
 
-int main( int argc, char** argv )
+static int Convert( int argc, char** argv )
 {
 	if( argc < 3 ) {
 		std::cout << "Usage: imageconverter <input image file> <output image file> <options>" << std::endl;
@@ -62,6 +78,8 @@ int main( int argc, char** argv )
 	// Try and load the input image
 	IMemoryBuffer*				pBuffer = 0;
 	RISE_API_CreateMemoryBufferFromFile( &pBuffer, argv[1] );
+	OwnedReference<IMemoryBuffer> inputBuffer( pBuffer );
+	if( !pBuffer ) return 1;
 
 	IRasterImageReader*			reader = 0;
 
@@ -102,7 +120,6 @@ int main( int argc, char** argv )
 			const auto result = std::from_chars( begin, end, dimension );
 			if( result.ec != std::errc{} || result.ptr != end || dimension == 0 ) {
 				std::cerr << "Invalid resize dimension: " << argv[i] << '\n';
-				pBuffer->release();
 				return 1;
 			}
 			continue;
@@ -137,26 +154,24 @@ int main( int argc, char** argv )
 			RISE_API_CreateTIFFReader( &reader, *pBuffer, in );
 		} else {
 			std::cout << "Unknown extension for reader: " << inputExtension << " on file" << std::endl;
-			pBuffer->release();
 			return 1;
 		}
 	}
 	
+	OwnedReference<IRasterImageReader> ownedReader( reader );
 	unsigned int width = 0, height = 0;
 	if( !reader || !reader->BeginRead( width, height ) ) {
-		safe_release( reader );
-		pBuffer->release();
 		return 1;
 	}
 	if( width == 0 || height == 0 || width > std::numeric_limits<unsigned int>::max() / height ) {
 		reader->EndRead();
-		reader->release();
-		pBuffer->release();
 		return 1;
 	}
 
 	IRasterImage* pImage = nullptr;
 	RISE_API_CreateRISEColorRasterImage( &pImage, width, height, RISEColor() );
+	OwnedReference<IRasterImage> image( pImage );
+	if( !image ) return 1;
 	for( unsigned int y = 0; y < height; ++y ) {
 		for( unsigned int x = 0; x < width; ++x ) {
 			RISEColor color;
@@ -165,23 +180,23 @@ int main( int argc, char** argv )
 		}
 	}
 	reader->EndRead();
-	reader->release();
-	pBuffer->release();
+	ownedReader.reset();
+	inputBuffer.reset();
 	const unsigned int outputWidth = new_width ? new_width : width;
 	const unsigned int outputHeight = new_height ? new_height : height;
 	if( outputWidth > std::numeric_limits<unsigned int>::max() / 8 / outputHeight ) {
 		std::cerr << "Output image is too large\n";
-		pImage->release();
 		return 1;
 	}
 
 	IRasterImageWriter*			writer = 0;
 	
 	// Then dump the image out
-	auto* pOutBuffer = new Implementation::DiskFileWriteBuffer( argv[2] );
-	if( !pOutBuffer->ReadyToWrite() ) {
-		safe_release( pOutBuffer );
-		safe_release( pImage );
+	IWriteBuffer* rawOutput = nullptr;
+	RISE_API_CreateDiskFileWriteBuffer( &rawOutput, argv[2] );
+	OwnedReference<IWriteBuffer> output( rawOutput );
+	auto* pOutBuffer = dynamic_cast<Implementation::DiskFileWriteBuffer*>( rawOutput );
+	if( !pOutBuffer || !pOutBuffer->ReadyToWrite() ) {
 		return 1;
 	}
 	
@@ -212,54 +227,47 @@ int main( int argc, char** argv )
 		}
 	}
 
+	OwnedReference<IRasterImageWriter> ownedWriter( writer );
 	if( !writer ) {
-		pImage->release();
-		pOutBuffer->release();
 		return 1;
 	}
 
 	if( new_width || new_height )
 	{
-		// Resize the image
+		// Stream resized pixels explicitly so finalization errors occur in
+		// this call, where main can report them, rather than a destructor.
 		std::cout << "Resizing the image: [";
-
-		IRasterImageAccessor* pAccessor = 0;
-//		RISE_API_CreateCatmullRomBicubicRasterImageAccessor( &pAccessor, *pImage ); // turns out this may not be a good idea for images
-		RISE_API_CreateUniformBSplineBicubicRasterImageAccessor( &pAccessor, *pImage );
-
-		// When resizing always use the write only raster image, at least that way the memory requirements
-		// don't kill us for large images
-		IRasterImage* pNewImage = 0;
-		RISE_API_CreateWriteOnlyRISEColorRasterImage( &pNewImage, outputWidth, outputHeight );
-
-		// Set the writer
-		pNewImage->DumpImage( writer );
-
-		for( unsigned int y=0; y<pNewImage->GetHeight(); y++ ) {
-			for( unsigned int x=0; x<pNewImage->GetWidth(); x++ ) {
-				RISEColor c;
-				const Scalar v = pNewImage->GetHeight() > 1 ? Scalar(y) / (pNewImage->GetHeight() - 1) : 0.5;
-				const Scalar u = pNewImage->GetWidth() > 1 ? Scalar(x) / (pNewImage->GetWidth() - 1) : 0.5;
-				pAccessor->GetPEL( v, u, c );
-				pNewImage->SetPEL( x, y, c );
+		IRasterImageAccessor* rawAccessor = nullptr;
+		RISE_API_CreateUniformBSplineBicubicRasterImageAccessor( &rawAccessor, *pImage );
+		OwnedReference<IRasterImageAccessor> accessor( rawAccessor );
+		if( !accessor ) return 1;
+		writer->BeginWrite( outputWidth, outputHeight );
+		for( unsigned int y = 0; y < outputHeight; ++y ) {
+			for( unsigned int x = 0; x < outputWidth; ++x ) {
+				RISEColor color;
+				const Scalar v = outputHeight > 1 ? Scalar(y) / (outputHeight - 1) : 0.5;
+				const Scalar u = outputWidth > 1 ? Scalar(x) / (outputWidth - 1) : 0.5;
+				accessor->GetPEL( v, u, color );
+				writer->WriteColor( color, x, y );
 			}
 			std::cout << '.';
 		}
-
+		writer->EndWrite();
 		std::cout << ']' << std::endl;
-
-		safe_release( pAccessor );
-		pImage->release();
-		pImage = pNewImage;
 	} else {
-		// No resize, so just dump it out
 		pImage->DumpImage( writer );
 	}
 
-	pImage->release();
-	writer->release();
-	const bool saved = pOutBuffer->Finish( true );
-	pOutBuffer->release();
+	ownedWriter.reset();
+	return pOutBuffer->Finish( true ) ? 0 : 1;
+}
 
-	return saved ? 0 : 1;
+int main( int argc, char** argv )
+{
+	try {
+		return Convert( argc, argv );
+	} catch( const std::exception& failure ) {
+		std::cerr << "Image conversion failed: " << failure.what() << '\n';
+		return 1;
+	}
 }

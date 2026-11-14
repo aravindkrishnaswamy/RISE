@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <cassert>
 #include <mutex>
+#include <memory>
+#include <exception>
 #include <shared_mutex>
 
 using namespace RISE;
@@ -556,15 +558,16 @@ namespace RISE
 			const EncodeOpts&  opts ) const
 		{
 			if ( !encoder ) return false;
-			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
+			const auto release = []( FrameStore* store ) { store->release(); };
+			std::unique_ptr<FrameStore, decltype(release)> snap(
+				SnapshotFrameStore( chainMutex_, framestore_ ), release );
 			if ( !snap ) return false;
 
 			const bool written = DiskFileWriteBuffer::WriteAtomically( path,
 				[&]( DiskFileWriteBuffer& buffer ) {
 					encoder->Encode( *snap, buffer, opts );
 					return true;
-				} );
-			snap->release();
+				}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace );
 
 			if( written ) {
 				GlobalLog()->PrintEx( eLog_Event,
@@ -582,11 +585,18 @@ namespace RISE
 			const EncodeOpts& opts ) const
 		{
 			if ( !encoder ) return false;
-			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
+			const auto release = []( FrameStore* store ) { store->release(); };
+			std::unique_ptr<FrameStore, decltype(release)> snap(
+				SnapshotFrameStore( chainMutex_, framestore_ ), release );
 			if ( !snap ) return false;
 			CheckedWriteBuffer checked( dst );
-			encoder->Encode( *snap, checked, opts );
-			snap->release();
+			try {
+				encoder->Encode( *snap, checked, opts );
+			} catch( const std::exception& failure ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"ViewportFrameStore::SaveTo: encoding failed: %s", failure.what() );
+				return false;
+			}
 			return checked.Succeeded();
 		}
 

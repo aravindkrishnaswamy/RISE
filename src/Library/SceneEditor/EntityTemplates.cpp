@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 
 namespace RISE
 {
@@ -1136,16 +1137,17 @@ std::string EntityTemplates::EnsureDefaultTextureFile()
 	if( !RISE_API_CreateRISEColorRasterImage( &img, 4, 4, RISEColor( RISEPel( 0.6, 0.6, 0.6 ), 1.0 ) ) || !img )
 		return std::string();
 
+	const auto release = []( const IReference* reference ) { reference->release(); };
+	std::unique_ptr<IRasterImage, decltype(release)> image( img, release );
 	const bool written = Implementation::DiskFileWriteBuffer::WriteAtomically( path,
-		[img]( Implementation::DiskFileWriteBuffer& buffer ) {
+		[img, release]( Implementation::DiskFileWriteBuffer& buffer ) {
 			IRasterImageWriter* writer = nullptr;
 			if( !RISE_API_CreatePNGWriter( &writer, buffer, 8, eColorSpace_Rec709RGB_Linear ) || !writer )
 				return false;
+			std::unique_ptr<IRasterImageWriter, decltype(release)> ownedWriter( writer, release );
 			img->DumpImage( writer );
-			writer->release();
 			return true;
-		} );
-	img->release();
+		}, Implementation::DiskFileWriteBuffer::StagingPolicy::AllowInPlace );
 	return written || isCached() ? path : std::string();
 
 }
