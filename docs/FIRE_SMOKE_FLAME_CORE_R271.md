@@ -1583,7 +1583,32 @@ The two follow-up arms are §38.
 - **A zone ending at 0.3 m is too shallow:** the flame is tall again (0.49 / 0.89 m) and 0.75 m is 36% above McCaffrey, although everything from 0.75 m up mixes like FDS (0.91–1.02).
 - So the candidate's 0.5 m top stands, and the open question is the step, not the level. **Test launched:** the zone switch gains a ramp form (`RISE_FIRE_VREMAN_ZONE=ramp:<k0>:<k1>:<scale>`: `<scale>` below layer k0, rising linearly to 1 at k1; diagnostic, uncommitted, in `s29_optins.patch`; driver `ab_build_ramp`). Arms `ab_lc_ramp16_33` (0.02 to 0.5 m, ramp to 0.07 at 1.0 m) and `ab_lc_ramp16_33_cv01` (0.01 to 0.5 m, same ramp), 4 s each.
 
-**Running:** `ab_lc_zone16_10s`, the 10 s confirmation of the candidate (zone top 0.5 m).
+The ramp arms are §39; its reading of the step is corrected there.
+
+## 39. Ramping the constant does not help: the cost is the depth of reduced C_v, not the step (2026-11-13)
+
+`r271_compact_stencil/ab_lc_ramp16_33` (C_v 0.02 below 0.49 m, linear to 0.07 at 1.0 m; `ramp:16:33:0.2857`) and `ab_lc_ramp16_33_cv01` (C_v 0.01 below 0.49 m, same ramp; `ramp:16:33:0.1429`); carrier, compact, driver `ab_build_ramp`, 4 s each from r270 step 9223 (exit 0 both; run alongside the 10 s arm). Evidence: `s39_runs.txt`.
+
+| 4 s windows | McCaffrey | FDS | step at 0.5 m, 0.02 (candidate) | ramp 0.5–1.0 m, 0.02 | step at 0.5 m, 0.01 (§38) | ramp 0.5–1.0 m, 0.01 |
+|---|---|---|---|---|---|---|
+| 90% / 99% heat-release height (m) | — | 0.43 / 0.77 | 0.46 / 0.80 | 0.43 / 0.77 | 0.40 / 0.70 | 0.37 / 0.64 |
+| centre excess T at 0.50 m (K) | 551 | 631 | 764 | 762 | 692 | 690 |
+| 0.75 m | 367 | 355 | 467 | 471 | 429 | 399 |
+| 0.99 m | 247 | 228 | 311 | 320 | 292 | 279 |
+| 1.51 m | 122 | 114 | 156 | 170 | 159 | 157 |
+| 2.00 m | 76 | 72 | 89 | 107 | 97 | 105 |
+| 3.01 m | 39 | 39 | 48 | 50 | 47 | 55 |
+| plume mass flux, RISE / FDS, at 0.29 / 0.75 / 0.99 / 2.00 / 3.01 m | — | — | 0.84 / 0.85 / 0.85 / 0.81 / 0.87 | 0.89 / 0.86 / 0.85 / 0.73 / 0.76 | 0.98 / 0.92 / 0.86 / 0.74 / 0.83 | 0.98 / 0.98 / 0.91 / 0.75 / 0.78 |
+| centre rms w / w_c, RISE / FDS, at 0.99 / 1.51 / 2.00 m | — | — | 0.88 / 0.95 / 0.98 | 0.78 / 0.76 / 0.82 | 0.76 / 0.83 / 0.97 | 0.78 / 0.75 / 0.84 |
+| turbulent / mean heat flux, RISE / FDS, at 0.99 / 1.51 / 2.00 m | — | — | 0.74 / 0.85 / 0.96 | 0.55 / 0.63 / 0.74 | 0.60 / 0.79 / 1.03 | 0.55 / 0.69 / 0.84 |
+
+- **The ramp makes the upper plume worse, not better.** Both ramp arms fall to 73–78% of FDS's plume mass flux from 2 m and are 28–41% above McCaffrey at 2–3 m (candidate: 17–23%). The fluctuation dip sits at 1–1.5 m and is as deep as with the 1 m step zone of §36.
+- **So §38's reading was wrong: it is not the sharpness of the step.** What costs the upper plume is how much height runs at reduced C_v. Fluctuation grown there is grid-scale-heavy and carries little heat; when the constant returns to 0.07 that part is removed and the plume is left under-mixed until about 3 m.
+- **The near field keeps improving with more reduced-C_v height:** with 0.01 and the ramp the plume carries 98% of FDS's mass flux to 0.75 m and the centre is 9–12% above FDS at 0.5–0.75 m, but the flame is now two cells short (0.37 / 0.64 m).
+- **Trade-off, now mapped in both directions:** more reduced-C_v height improves the first metre and degrades 1.5–3 m. The adopted step at 0.5 m with 0.02 is the most balanced arm tested: 81–87% of FDS's plume mass flux at every height. No arm matches FDS at both ends.
+- The ramp switch stays an uncommitted diagnostic.
+
+**Running:** `ab_lc_zone16_10s` (10 s confirmation of the candidate) and `r271_inert/res_t6_lc_zone12` (inert plume at tier 6 with the 0.5 m zone, `below:12:0.2857`), to check the adopted zone against inert FDS as §35 did for the 1 m zone.
 
 ## Next (owner decisions)
 
