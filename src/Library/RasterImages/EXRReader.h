@@ -43,10 +43,12 @@ namespace RISE
 		{
 		protected:
 			IReadBuffer& pBuffer;
+			const std::uint64_t origin;
 			bool failed = false;
 
 		public:
-			IStreamWrapper( IReadBuffer& buffer ) : Imf::IStream( "none" ), pBuffer( buffer )
+			IStreamWrapper( IReadBuffer& buffer, std::uint64_t origin_ = 0 ) :
+				Imf::IStream( "none" ), pBuffer( buffer ), origin( origin_ )
 			{}
 
 			bool read( char c[/*n*/], int n )
@@ -64,13 +66,19 @@ namespace RISE
 
 			uint64_t tellg()
 			{
-				return BufferPosition(pBuffer);
+				const auto position = BufferPosition(pBuffer);
+				if( position < origin || position == std::numeric_limits<std::uint64_t>::max() ) {
+					failed = true;
+					throw std::runtime_error("EXR input position is unavailable");
+				}
+				return position - origin;
 			}
 
 			void seekg( uint64_t pos )
 			{
-				if( pos > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
-					!BufferSeek(pBuffer, IBuffer::START, static_cast<std::int64_t>(pos)) ) {
+				const auto limit = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+				if( origin > limit || pos > limit - origin ||
+					!BufferSeek(pBuffer, IBuffer::START, static_cast<std::int64_t>(origin + pos)) ) {
 					failed = true;
 					throw std::runtime_error("EXR input seek failed");
 				}

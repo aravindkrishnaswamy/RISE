@@ -43,7 +43,7 @@ EXRWriter::EXRWriter(
 	const EXR_COMPRESSION compression_,
 	const bool            with_alpha_,
 	const bool            write_float_ ) :
-  out( buffer_ ),
+  out( buffer_, BufferPosition(buffer_) ),
   exrout( 0 ),
   exrout_float( 0 ),
   buffer( buffer_ ),
@@ -92,6 +92,9 @@ void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 	delete exrout_float;
 	exrout_float = nullptr;
 	out.ResetFailure();
+	// Each BeginWrite starts a standalone EXR at the current output cursor.
+	// Store chunk offsets relative to that header even inside a larger buffer.
+	out.SetOrigin( BufferPosition(buffer) );
 	horzpixels = 0;
 	scanlines = 0;
 	// OpenEXR's RgbaOutputFile constructor accepts (1, 1) and larger

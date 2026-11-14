@@ -45,14 +45,17 @@ namespace RISE
 		{
 		protected:
 			IWriteBuffer& pBuffer;
+			std::uint64_t origin;
 			bool failed = false;
 
 		public:
-			OStreamWrapper( IWriteBuffer& buffer ) : Imf::OStream( "none" ), pBuffer( buffer )
+			OStreamWrapper( IWriteBuffer& buffer, std::uint64_t origin_ = 0 ) :
+				Imf::OStream( "none" ), pBuffer( buffer ), origin( origin_ )
 			{}
 
 			bool Failed() const { return failed; }
 			void ResetFailure() { failed = false; }
+			void SetOrigin( std::uint64_t position ) { origin = position; }
 
 			void write( const char c[/*n*/], int n )
 			{
@@ -71,9 +74,9 @@ namespace RISE
 			{
 				try {
 					const auto position = BufferPosition(pBuffer);
-					if( position == std::numeric_limits<std::uint64_t>::max() )
+					if( position < origin || position == std::numeric_limits<std::uint64_t>::max() )
 						throw std::runtime_error("EXR output position is unavailable");
-					return position;
+					return position - origin;
 				} catch( ... ) {
 					failed = true;
 					throw;
@@ -83,8 +86,9 @@ namespace RISE
 			void seekp( uint64_t pos )
 			{
 				try {
-					if( pos > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
-						!BufferSeek(pBuffer, IBuffer::START, static_cast<std::int64_t>(pos)) )
+					const auto limit = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+					if( origin > limit || pos > limit - origin ||
+						!BufferSeek(pBuffer, IBuffer::START, static_cast<std::int64_t>(origin + pos)) )
 						throw std::runtime_error("EXR output seek failed");
 				} catch( ... ) {
 					failed = true;

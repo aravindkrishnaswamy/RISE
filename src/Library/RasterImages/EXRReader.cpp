@@ -71,7 +71,7 @@ bool EXRReader::BeginRead( unsigned int& width, unsigned int& height )
 		{
 			// Finish this InputFile before rewinding for the SDK's YCA
 			// decoder: two live decoders must not share an input cursor.
-			IStreamWrapper inbuf( pReadBuffer );
+			IStreamWrapper inbuf( pReadBuffer, buffer_start_pos );
 			Imf::InputFile in( inbuf );
 			const Imf::Header& hdr = in.header();
 			if( inbuf.Failed() ) throw std::runtime_error( "EXR incomplete header" );
@@ -135,7 +135,7 @@ bool EXRReader::BeginRead( unsigned int& width, unsigned int& height )
 				throw std::runtime_error( "EXR YCA input rewind failed" );
 			const std::size_t pixelCount = static_cast<std::size_t>( imageWidth ) * imageHeight;
 			std::vector<Imf::Rgba> rgba( pixelCount );
-			IStreamWrapper inbuf( pReadBuffer );
+			IStreamWrapper inbuf( pReadBuffer, buffer_start_pos );
 			Imf::RgbaInputFile in( inbuf );
 			if( in.dataWindow() != dw )
 				throw std::runtime_error( "EXR data window changed during YCA decode" );
