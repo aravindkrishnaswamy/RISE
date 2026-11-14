@@ -24,7 +24,6 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-#include "Utilities/stl_utils.h"
 #include "Interfaces/ILog.h"
 
 //////////////////////////////////////////////////////////
@@ -5909,7 +5908,10 @@ namespace RISE
 
 		Voronoi2DPainter::GeneratorsList gl;
 
-		stl_utils::shuffle( pts, p, gl );
+		gl.reserve( pts.size() );
+		for( size_t i = 0; i < pts.size(); ++i ) {
+			gl.emplace_back( pts[i], p[i] );
+		}
 
 		(*ppi) = new Voronoi2DPainter( gl, border, bsize );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "voronoi2D painter" );
@@ -5937,7 +5939,10 @@ namespace RISE
 
 		Voronoi3DPainter::GeneratorsList gl;
 
-		stl_utils::shuffle( pts, p, gl );
+		gl.reserve( pts.size() );
+		for( size_t i = 0; i < pts.size(); ++i ) {
+			gl.emplace_back( pts[i], p[i] );
+		}
 
 		(*ppi) = new Voronoi3DPainter( gl, border, bsize );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "voronoi3D painter" );
@@ -5970,7 +5975,10 @@ namespace RISE
 
 		Voronoi3DPainter::GeneratorsList gl;
 
-		stl_utils::shuffle( pts, p, gl );
+		gl.reserve( pts.size() );
+		for( size_t i = 0; i < pts.size(); ++i ) {
+			gl.emplace_back( pts[i], p[i] );
+		}
 
 		(*ppi) = new Voronoi3DPainter( gl, border, bsize, worldSpace );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "voronoi3D painter" );
@@ -7639,6 +7647,10 @@ namespace RISE
 								)
 	{
 		if( !ppi ) {
+			return false;
+		}
+		if( !pMemory && size != 0 ) {
+			*ppi = nullptr;
 			return false;
 		}
 

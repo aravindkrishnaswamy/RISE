@@ -16,6 +16,7 @@
 #ifndef ASCII_SCRIPTPARSER_
 #define ASCII_SCRIPTPARSER_
 
+#include <string>
 #include "../Interfaces/ISceneParser.h"
 #include "../Utilities/Reference.h"
 
@@ -28,7 +29,7 @@ namespace RISE
 		protected:
 			virtual ~AsciiScriptParser();
 
-			char		szFilename[1024];
+			std::string filename;
 
 		public:
 			AsciiScriptParser( const char * szFilename_ );

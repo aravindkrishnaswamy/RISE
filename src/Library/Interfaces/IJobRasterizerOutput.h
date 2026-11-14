@@ -19,6 +19,17 @@ namespace RISE
 {
 	//! Very basic interface that applications must implement if they want
 	//! to get access to the rasterized output
+	//!
+	//! Callbacks can execute on render-worker threads. Each registered adapter
+	//! serializes its policy queries and image deliveries; separate adapters
+	//! may still call the same receiver concurrently. Image pointers are borrowed
+	//! only for the duration of a delivery.
+	//!
+	//! Return promptly. Callbacks may run while FrameStore tile locks are held:
+	//! do not re-enter that FrameStore, synchronously render or mutate the Job,
+	//! or wait for frame/render completion. Job mutation/rendering is not reentrant.
+	//! Code sharing receiver-side locks must release them before accessing
+	//! that FrameStore or waiting for rendering on other threads.
 	class IJobRasterizerOutput
 	{
 	public:

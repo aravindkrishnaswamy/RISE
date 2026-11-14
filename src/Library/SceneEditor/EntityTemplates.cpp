@@ -16,13 +16,29 @@
 #include "ChunkDescriptorRegistry.h"
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IRasterImageWriter.h"
-#include "../Interfaces/IWriteBuffer.h"
+#include "../Interfaces/ILog.h"
 #include "../Utilities/Color/Color.h"
 
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
+#include <filesystem>
+#include <memory>
+#include <algorithm>
+#include <array>
+#include <stdexcept>
+#ifdef _WIN32
+#include <windows.h>
+#include <aclapi.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <sys/acl.h>
+#endif
+#endif
 
 namespace RISE
 {
@@ -866,14 +882,6 @@ namespace
 		{ "composite_function2d_painter", "child_b",    true, "Second operand: any colour painter in this scene" },
 		{ "function2d_painter",           "function2d", true, "The named painter to wrap as a greyscale colour" },
 
-		// voronoi2d/3d `border`: its Finalize maps the `none` sentinel to
-		// a NULL pointer (`border=="none" ? 0 : ...`), and
-		// Job::AddVoronoi{2,3}DPainter then fails the null border lookup.
-		// So unlike every other optional painter slot, this one has no
-		// usable "unbound" value at all -- it is a required reference the
-		// descriptor never marked.
-		{ "voronoi2d_painter",            "border",     true, "Border colour painter (the `none` sentinel is not accepted here)" },
-		{ "voronoi3d_painter",            "border",     true, "Border colour painter (the `none` sentinel is not accepted here)" },
 	};
 
 	// True iff `args` mentions `param` at all.
@@ -1114,45 +1122,287 @@ std::string EntityTemplates::DefaultLambertianChunkText( const std::string& name
 	return s;
 }
 
+namespace
+{
+const std::vector<unsigned char>& DefaultTextureBytes()
+{
+	// Encode the known thumbnail once. Cache validation compares only this
+	// bounded payload, so partial or unrelated files are never reused.
+	static const std::vector<unsigned char> encoded = [] {
+		const auto release = []( const IReference* reference ) { reference->release(); };
+		IRasterImage* rawImage = nullptr;
+		RISE_API_CreateRISEColorRasterImage( &rawImage, 4, 4, RISEColor( RISEPel( 0.6, 0.6, 0.6 ), 1.0 ) );
+		std::unique_ptr<IRasterImage, decltype(release)> image( rawImage, release );
+		IMemoryBuffer* rawBuffer = nullptr;
+		RISE_API_CreateMemoryBuffer( &rawBuffer );
+		std::unique_ptr<IMemoryBuffer, decltype(release)> buffer( rawBuffer, release );
+		if( !image || !buffer ) throw std::runtime_error("Could not create default PNG storage");
+		IRasterImageWriter* rawWriter = nullptr;
+		RISE_API_CreatePNGWriter( &rawWriter, *buffer, 8, eColorSpace_Rec709RGB_Linear );
+		std::unique_ptr<IRasterImageWriter, decltype(release)> writer( rawWriter, release );
+		if( !writer ) throw std::runtime_error("Could not create default PNG writer");
+		image->DumpImage( writer.get() );
+		// PNGWriter reports encoding failures by exception. Also verify the
+		// known payload ends with IEND before accepting it for cache repair.
+		constexpr std::array<unsigned char, 12> endChunk = {
+			0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xae, 0x42, 0x60, 0x82
+		};
+		const unsigned int size = buffer->getCurPos();
+		const auto* bytes = reinterpret_cast<const unsigned char*>( buffer->Pointer() );
+		if( size < endChunk.size() ||
+			!std::equal( endChunk.begin(), endChunk.end(), bytes + size - endChunk.size() ) )
+			throw std::runtime_error("Default PNG encoding did not complete");
+		return std::vector<unsigned char>( bytes, bytes + size );
+	}();
+	return encoded;
+}
+
+#ifndef _WIN32
+class TextureDescriptor
+{
+public:
+	explicit TextureDescriptor( int descriptor ) : fd( descriptor ) {}
+	~TextureDescriptor() { if( fd >= 0 ) close( fd ); }
+	TextureDescriptor( const TextureDescriptor& ) = delete;
+	TextureDescriptor& operator=( const TextureDescriptor& ) = delete;
+	int fd;
+};
+
+bool HasSafeTextureACL( int fd )
+{
+#ifdef __APPLE__
+	// macOS extended ALLOW entries can bypass mode bits and can propagate
+	// onto newly created children. Refuse them rather than editing any ACL.
+	// On an existing opened inode, ENOENT means there is no extended ACL.
+	acl_t acl = acl_get_fd_np( fd, ACL_TYPE_EXTENDED );
+	if( !acl ) return errno == ENOENT;
+	bool safe = acl_valid( acl ) == 0;
+	if( safe ) {
+		acl_entry_t entry;
+		int next = ACL_FIRST_ENTRY;
+		for( ;; ) {
+			if( acl_get_entry( acl, next, &entry ) != 0 ) {
+				// Darwin reports end-of-ACL as -1/EINVAL, including an
+				// empty ACL. The ACL itself was validated above.
+				safe = errno == EINVAL;
+				break;
+			}
+			acl_tag_t tag;
+			if( acl_get_tag_type( entry, &tag ) != 0 || tag != ACL_EXTENDED_DENY ) {
+				safe = false;
+				break;
+			}
+			next = ACL_NEXT_ENTRY;
+		}
+	}
+	acl_free( acl );
+	return safe;
+#else
+	return fd >= 0;
+#endif
+}
+
+bool IsOwnedTextureFile( int fd )
+{
+	struct stat info{};
+	return fd >= 0 && fstat( fd, &info ) == 0 && S_ISREG( info.st_mode ) &&
+		info.st_uid == geteuid() && info.st_nlink == 1 && (info.st_mode & 0022) == 0 && HasSafeTextureACL( fd );
+}
+
+bool IsTrustedTextureDirectory( int fd )
+{
+	struct stat info{};
+	return fd >= 0 && fstat( fd, &info ) == 0 && S_ISDIR( info.st_mode ) &&
+		(info.st_uid == geteuid() || info.st_uid == 0) &&
+		((info.st_mode & 0022) == 0 || (info.st_mode & S_ISVTX) != 0) && HasSafeTextureACL( fd );
+}
+
+int OpenTrustedTextureRoot( const std::string& canonicalParent )
+{
+	TextureDescriptor current( open( "/", O_RDONLY | O_DIRECTORY | O_CLOEXEC ) );
+	if( !IsTrustedTextureDirectory( current.fd ) ) return -1;
+	for( const auto& component : std::filesystem::path( canonicalParent ).relative_path() ) {
+		if( component.empty() ) continue;
+		const int next = openat( current.fd, component.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC );
+		if( current.fd >= 0 ) close( current.fd );
+		current.fd = next;
+		if( !IsTrustedTextureDirectory( current.fd ) ) return -1;
+	}
+	const int result = current.fd;
+	current.fd = -1;
+	return result;
+}
+
+bool TextureMatches( int fd, const std::vector<unsigned char>& encoded )
+{
+	std::array<unsigned char, 256> actual{};
+	std::size_t offset = 0;
+	while( offset < encoded.size() ) {
+		const std::size_t remaining = encoded.size() - offset;
+		const std::size_t amount = remaining < actual.size() ? remaining : actual.size();
+		const ssize_t count = read( fd, actual.data(), amount );
+		if( count < 0 && errno == EINTR ) continue;
+		if( count <= 0 || !std::equal( actual.begin(), actual.begin() + count, encoded.begin() + offset ) ) return false;
+		offset += static_cast<std::size_t>( count );
+	}
+	ssize_t count;
+	do { count = read( fd, actual.data(), 1 ); } while( count < 0 && errno == EINTR );
+	return count == 0;
+}
+
+bool EnsurePrivateTexture( const std::string& parent, std::string& path,
+	const std::vector<unsigned char>& encoded )
+{
+	// Anchor every operation to opened directories. An lstat(path) followed
+	// by an ordinary pathname write would still follow a substituted link.
+	const TextureDescriptor parentDir( OpenTrustedTextureRoot( parent ) );
+	if( parentDir.fd < 0 ) return false;
+	const std::string cacheName = "rise_entity_templates_" + std::to_string( geteuid() );
+	if( mkdirat( parentDir.fd, cacheName.c_str(), 0700 ) != 0 && errno != EEXIST ) return false;
+	const TextureDescriptor cacheDir( openat( parentDir.fd, cacheName.c_str(),
+		O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC ) );
+	struct stat info{};
+	if( cacheDir.fd < 0 || fstat( cacheDir.fd, &info ) != 0 || !S_ISDIR( info.st_mode ) ||
+		info.st_uid != geteuid() || (info.st_mode & 0077) != 0 || !HasSafeTextureACL( cacheDir.fd ) ) return false;
+	constexpr const char* filename = "rise_entity_template_default_texture.png";
+	path = parent + cacheName + "/" + filename;
+	{
+		const TextureDescriptor input( openat( cacheDir.fd, filename, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC ) );
+		if( input.fd >= 0 ) {
+			if( !IsOwnedTextureFile( input.fd ) ) return false;
+			if( TextureMatches( input.fd, encoded ) ) return true;
+		} else if( errno != ENOENT ) return false;
+	}
+	// Open without truncating, then validate that same descriptor before
+	// changing any bytes. Refuse symlinks, hardlinks, and foreign-owned files.
+	const TextureDescriptor output( openat( cacheDir.fd, filename,
+		O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600 ) );
+	if( !IsOwnedTextureFile( output.fd ) ) return false;
+	int locked;
+	do { locked = flock( output.fd, LOCK_EX ); } while( locked != 0 && errno == EINTR );
+	if( locked != 0 || !IsOwnedTextureFile( output.fd ) ) return false;
+	// Another process may have repaired this same inode after our first
+	// read. Recheck under the writer lock so a stale validator never
+	// truncates a PNG that a successful caller is about to consume.
+	if( TextureMatches( output.fd, encoded ) ) return true;
+	if( ftruncate( output.fd, 0 ) != 0 || lseek( output.fd, 0, SEEK_SET ) != 0 ) return false;
+	std::size_t offset = 0;
+	while( offset < encoded.size() ) {
+		const ssize_t count = write( output.fd, encoded.data() + offset, encoded.size() - offset );
+		if( count < 0 && errno == EINTR ) continue;
+		if( count <= 0 ) return false;
+		offset += static_cast<std::size_t>( count );
+	}
+	return fsync( output.fd ) == 0;
+}
+#else
+class TextureHandle
+{
+public:
+	explicit TextureHandle( HANDLE value ) : handle( value ) {}
+	~TextureHandle() { if( handle && handle != INVALID_HANDLE_VALUE ) CloseHandle( handle ); }
+	TextureHandle( const TextureHandle& ) = delete;
+	TextureHandle& operator=( const TextureHandle& ) = delete;
+	const HANDLE handle;
+};
+
+bool IsOwnedTextureFile( HANDLE file )
+{
+	BY_HANDLE_FILE_INFORMATION info{};
+	if( file == INVALID_HANDLE_VALUE || GetFileType( file ) != FILE_TYPE_DISK ||
+		!GetFileInformationByHandle( file, &info ) || info.nNumberOfLinks != 1 ||
+		(info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) ) return false;
+	HANDLE rawToken = nullptr;
+	if( !OpenProcessToken( GetCurrentProcess(), TOKEN_QUERY, &rawToken ) ) return false;
+	const TextureHandle token( rawToken );
+	DWORD size = 0;
+	GetTokenInformation( token.handle, TokenUser, nullptr, 0, &size );
+	if( size == 0 ) return false;
+	std::vector<unsigned char> tokenBytes( size );
+	if( !GetTokenInformation( token.handle, TokenUser, tokenBytes.data(), size, &size ) ) return false;
+	PSID owner = nullptr;
+	PSECURITY_DESCRIPTOR security = nullptr;
+	if( GetSecurityInfo( file, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+		&owner, nullptr, nullptr, nullptr, &security ) != ERROR_SUCCESS ) return false;
+	const bool owned = owner && EqualSid( owner, reinterpret_cast<TOKEN_USER*>( tokenBytes.data() )->User.Sid );
+	LocalFree( security );
+	return owned;
+}
+
+bool TextureMatches( HANDLE file, const std::vector<unsigned char>& encoded )
+{
+	std::array<unsigned char, 256> actual{};
+	std::size_t offset = 0;
+	while( offset < encoded.size() ) {
+		const std::size_t remaining = encoded.size() - offset;
+		const DWORD amount = static_cast<DWORD>( remaining < actual.size() ? remaining : actual.size() );
+		DWORD count = 0;
+		if( !ReadFile( file, actual.data(), amount, &count, nullptr ) || count == 0 ||
+			!std::equal( actual.begin(), actual.begin() + count, encoded.begin() + offset ) ) return false;
+		offset += count;
+	}
+	DWORD count = 0;
+	return ReadFile( file, actual.data(), 1, &count, nullptr ) && count == 0;
+}
+
+bool EnsurePrivateTexture( const std::string& parent, std::string& path,
+	const std::vector<unsigned char>& encoded )
+{
+	// Windows checks the opened leaf's reparse flag and token owner before
+	// reading/truncating that handle; no pathname check/write window exists.
+	path = parent + "rise_entity_template_default_texture.png";
+	const auto nativePath = std::filesystem::path( path ).wstring();
+	{
+		const TextureHandle input( CreateFileW( nativePath.c_str(), GENERIC_READ | READ_CONTROL,
+			FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr ) );
+		if( input.handle != INVALID_HANDLE_VALUE ) {
+			if( !IsOwnedTextureFile( input.handle ) ) return false;
+			if( TextureMatches( input.handle, encoded ) ) return true;
+		} else if( GetLastError() != ERROR_FILE_NOT_FOUND ) return false;
+	}
+	const TextureHandle output( CreateFileW( nativePath.c_str(), GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
+		0, nullptr, OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, nullptr ) );
+	if( !IsOwnedTextureFile( output.handle ) ) return false;
+	if( TextureMatches( output.handle, encoded ) ) return true;
+	LARGE_INTEGER start{};
+	if( !SetFilePointerEx( output.handle, start, nullptr, FILE_BEGIN ) || !SetEndOfFile( output.handle ) ) return false;
+	std::size_t offset = 0;
+	while( offset < encoded.size() ) {
+		DWORD count = 0;
+		if( !WriteFile( output.handle, encoded.data() + offset,
+			static_cast<DWORD>( encoded.size() - offset ), &count, nullptr ) || count == 0 ) return false;
+		offset += count;
+	}
+	return FlushFileBuffers( output.handle ) != 0;
+}
+#endif
+}
+
 std::string EntityTemplates::EnsureDefaultTextureFile()
 {
 	const char* tmpEnv = std::getenv( "TMPDIR" );
 	if( !tmpEnv || !tmpEnv[0] ) tmpEnv = std::getenv( "TEMP" );
 	if( !tmpEnv || !tmpEnv[0] ) tmpEnv = std::getenv( "TMP" );
-	std::string dir = ( tmpEnv && tmpEnv[0] ) ? tmpEnv : "/tmp";
-	if( dir.back() != '/' && dir.back() != '\\' ) dir += '/';
-	const std::string path = dir + "rise_entity_template_default_texture.png";
+	std::error_code pathError;
+	const auto absoluteRoot = std::filesystem::absolute( (tmpEnv && tmpEnv[0]) ? tmpEnv : "/tmp", pathError );
+	if( pathError ) return std::string();
+	const auto canonicalRoot = std::filesystem::canonical( absoluteRoot, pathError );
+	if( pathError ) return std::string();
+	std::string dir = canonicalRoot.generic_string();
+	if( dir.empty() ) return std::string();
+	if( dir.back() != '/' ) dir += '/';
 
-	// Idempotent: reuse an existing file from a prior call in this
-	// (or an earlier) process rather than rewriting every time.
-	struct stat st;
-	if( ::stat( path.c_str(), &st ) == 0 && st.st_size > 0 )
-		return path;
-
-	IRasterImage* img = nullptr;
-	if( !RISE_API_CreateRISEColorRasterImage( &img, 4, 4, RISEColor( RISEPel( 0.6, 0.6, 0.6 ), 1.0 ) ) || !img )
-		return std::string();
-
-	IWriteBuffer* buf = nullptr;
-	if( !RISE_API_CreateDiskFileWriteBuffer( &buf, path.c_str() ) || !buf )
-	{
-		img->release();
+	const std::vector<unsigned char>* encodedPointer = nullptr;
+	try {
+		// A throwing static initializer retries after a transient encoding failure.
+		encodedPointer = &DefaultTextureBytes();
+	} catch( const std::exception& failure ) {
+		GlobalLog()->PrintEx(eLog_Warning, "EntityTemplates: default PNG encoding failed: %s", failure.what());
 		return std::string();
 	}
+	std::string path;
+	return EnsurePrivateTexture( dir, path, *encodedPointer ) ? path : std::string();
 
-	IRasterImageWriter* writer = nullptr;
-	const bool madeWriter = RISE_API_CreatePNGWriter( &writer, *buf, 8, eColorSpace_Rec709RGB_Linear ) && writer;
-	if( madeWriter )
-	{
-		img->DumpImage( writer );   // void -- verify success via stat() below
-		writer->release();
-	}
-	buf->release();
-	img->release();
-
-	if( !madeWriter || ::stat( path.c_str(), &st ) != 0 || st.st_size <= 0 )
-		return std::string();
-	return path;
 }
 
 }   // namespace RISE

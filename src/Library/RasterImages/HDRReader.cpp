@@ -12,7 +12,11 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include <stdio.h>					// for sscanf
+#include <charconv>
+#include <sstream>
+#include <string_view>
+#include <new>
+#include <limits>
 #include <string.h>					// for strlen and strncmp
 #include "HDRReader.h"
 #include "../Interfaces/ILog.h"
@@ -22,98 +26,86 @@ using namespace RISE::Implementation;
 
 HDRReader::HDRReader( IReadBuffer& buffer ) :
   pReadBuffer( buffer ),
-  pBuffer( 0 )
+  pBuffer( 0 ),
+  bufW( 0 ),
+  bufH( 0 )
 {
 	pReadBuffer.addref();
 }
 
 HDRReader::~HDRReader( )
 {
+	EndRead();
 	pReadBuffer.release();
-
-	if( pBuffer ) {
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;
-		pBuffer = 0;
-	}
 }
 
-bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
+bool HDRReader::BeginRead( unsigned int& outputWidth, unsigned int& outputHeight )
 {
+	EndRead();
+	outputWidth = outputHeight = 0;
+	unsigned int width = 0, height = 0;
 	// Verify the RADIANCE signature
 	static const char * szSignature = "#?RADIANCE";
 	char szSigFromBuf[11] = {0};
 
-	pReadBuffer.seek( IBuffer::START, 0 );
-	pReadBuffer.getBytes( szSigFromBuf, static_cast<unsigned int>(strlen(szSignature)) );
-
-	if( strcmp(szSignature, szSigFromBuf) != 0 ) {
+	if( !BufferSeek(pReadBuffer, IBuffer::START, 0) ||
+		!pReadBuffer.getBytes(szSigFromBuf, static_cast<unsigned int>(strlen(szSignature))) ||
+		strcmp(szSignature, szSigFromBuf) != 0 ) {
 		GlobalLog()->PrintSourceError( "HDRReader::BeginRead:: RADIANCE signature not found!", __FILE__, __LINE__ );
 		return false;
 	}
 
-	// Next, skip past comments until we reach the portion that tells us the dimensions of the image
-	char buf[1024] = {0};
-	unsigned int numRead = 0;
-	while( (numRead = pReadBuffer.getLine( buf, 1024 )) ) {
-		// Check to see if this line contains the format string
-		if( strncmp( buf, "FORMAT", 6 ) == 0 ) {
-			break;
+	// Read bounded prefixes and consume the rest of a long physical line
+	// so an ancillary line's continuation cannot become a header field.
+	char buf[1024];
+	bool longLine = false;
+	const auto readHeaderLine = [&]() {
+		const int length = pReadBuffer.getLine( buf, sizeof(buf) );
+		longLine = length == sizeof(buf) && buf[length-1] != '\n';
+		if( longLine ) {
+			char discarded[1024];
+			int n;
+			do {
+				n = pReadBuffer.getLine( discarded, sizeof(discarded) );
+			} while( n == sizeof(discarded) && discarded[n-1] != '\n' );
 		}
-	}
+		return std::string_view( buf, length > 0 ? static_cast<size_t>( length ) : 0 );
+	};
+	std::string_view line;
+	do {
+		line = readHeaderLine();
+	} while( !line.empty() && line.substr( 0, 7 ) != "FORMAT=" );
 
-	if( numRead == 0 ) {
-		GlobalLog()->Print( eLog_Error, "HDRReader: Something went wrong looking for FORMAT string" );
+	const auto last = line.find_last_not_of( " \t\r\n" );
+	if( longLine || last == std::string_view::npos ||
+		line.substr( 0, last + 1 ) != "FORMAT=32-bit_rle_rgbe" ) {
+		GlobalLog()->Print( eLog_Error, "HDRReader: Missing or unsupported FORMAT" );
 		return false;
 	}
 
-	// Check if the format string is ok
-	const char * szFormat = "FORMAT=32-bit_rle_rgbe";
-	if( strncmp( buf, szFormat, strlen(szFormat) ) != 0 ) {
-		GlobalLog()->Print( eLog_Error, "HDRReader: The FORMAT is NOT 32-bit_rle_rgbe" );
-	}
+	do {
+		line = readHeaderLine();
+	} while( !line.empty() && line.substr( 0, 2 ) != "-Y" && line.substr( 0, 2 ) != "+Y" );
 
-	// Now look for the -Y or +Y
-	while( (numRead = pReadBuffer.getLine( buf, 1024 )) ) {
-		// Check to see if this line contains the format string
-		if( strncmp( buf, "-Y", 2 ) == 0 ||
-			strncmp( buf, "+Y", 2 ) == 0 ) {
-			break;
-		}
-	}
-
-	if( numRead == 0 ) {
-		GlobalLog()->Print( eLog_Error, "HDRReader: Something went wrong looking for image dimensions" );
+	if( line.empty() || longLine ) {
+		GlobalLog()->Print( eLog_Error, "HDRReader: Invalid image resolution line" );
 		return false;
 	}
 
-	bool bFlippedY = false;
-	if( strncmp( buf, "+Y", 2 ) == 0 ) {
-		bFlippedY = true;
-	}
-
-	// Find the X
-	bool bFlippedX = false;
-	{
-		int cnt=0;
-		while( buf[cnt] != 'X' ) {
-			cnt++;
-		}
-
-		if( buf[cnt-1] == '-' ) {
-			// Flip the X
-			bFlippedX = true;
-		}
-	}
-
-	// Read the dimensions
-	char dummy[32] = {0};
-	sscanf( buf, "%s %u %s %u", dummy, &height, dummy, &width );
-
-	if( !width || !height ) {
+	std::istringstream resolution{ std::string( line ) };
+	std::string yAxis, heightToken, xAxis, widthToken, trailing;
+	const auto readDimension = []( const std::string& token, unsigned int& value ) {
+		const char* end = token.data() + token.size();
+		const auto parsed = std::from_chars( token.data(), end, value );
+		return parsed.ec == std::errc{} && parsed.ptr == end && value != 0;
+	};
+	if( !(resolution >> yAxis >> heightToken >> xAxis >> widthToken) || (resolution >> trailing) ||
+		(yAxis != "-Y" && yAxis != "+Y") || (xAxis != "-X" && xAxis != "+X") ||
+		!readDimension( heightToken, height ) || !readDimension( widthToken, width ) ) {
 		GlobalLog()->Print( eLog_Error, "HDRReader: Something is wrong with image dimensions" );
 		return false;
 	}
+	const bool bFlippedY = yAxis == "+Y";
 
 	// The -X (horizontally flipped) scanline order walks the write cursor
 	// backwards off the row (start is at the row's left edge with step -1);
@@ -121,25 +113,25 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 	// with a clear message -- the pre-fix code decoded it into out-of-bounds
 	// indices, and the bounds guards below would otherwise reject it with a
 	// misleading "malformed data" error.
-	if( bFlippedX ) {
+	if( xAxis == "-X" ) {
 		GlobalLog()->Print( eLog_Error, "HDRReader: -X (horizontally flipped) scanline order is not supported" );
 		return false;
 	}
 
-	// Guard the destination-buffer sizing against a header-driven integer
-	// overflow.  width and height come from an unbounded sscanf %u, so the
-	// historical 32-bit product `width*height*4` can wrap to a tiny
-	// allocation that the RLE decode loop below then writes past (heap OOB
-	// write).  Compute the size in 64-bit and cap at a sane ceiling.
+	// Cap the pixel count before multiplying by the four bytes per pixel.
 	static const unsigned long long kMaxImageBytes = 2ULL * 1024 * 1024 * 1024; // 2 GiB ceiling
-	const unsigned long long nBytes64 = (unsigned long long)width * (unsigned long long)height * 4ULL;
-	if( nBytes64 > kMaxImageBytes ) {
+	const auto pixels = static_cast<unsigned long long>( width ) * height;
+	if( pixels > kMaxImageBytes / 4 ) {
 		GlobalLog()->Print( eLog_Error, "HDRReader: Image dimensions too large" );
 		return false;
 	}
-	const size_t nBytes = (size_t)nBytes64;
+	const size_t nBytes = static_cast<size_t>( pixels * 4 );
 
-	pBuffer = new unsigned char[nBytes];
+	pBuffer = new (std::nothrow) unsigned char[nBytes];
+	if( !pBuffer ) {
+		GlobalLog()->PrintEasyError( "HDRReader: Failed to allocate image pixels" );
+		return false;
+	}
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 	memset( pBuffer, 0, nBytes );
 
@@ -147,15 +139,13 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 	// The Radiance RLE run lengths are file-controlled and can advance the
 	// write cursor arbitrarily; without a clamp a crafted run walks off the
 	// buffer (heap OOB write) independent of the allocation-overflow above.
-	// On any out-of-range write (or a zero-length run, which makes no forward
-	// progress and would spin forever on a truncated file) we reject the
-	// whole file rather than corrupt the heap.
+	// Reject out-of-range writes and new-RLE zero-length packets. Old-RLE
+	// repeat-count bytes may be zero; their bounded shift and checked packet
+	// reads keep those chains finite without rejecting valid multibyte counts.
 	const long long nBytesSigned = (long long)nBytes;
 	auto RejectMalformed = [this]() -> bool {
 		GlobalLog()->Print( eLog_Error, "HDRReader: Malformed / out-of-bounds RLE scanline data; rejecting file" );
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;
-		pBuffer = 0;
+		EndRead();
 		return false;
 	};
 
@@ -166,14 +156,23 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 		int start = bFlippedY ? (height-y-1)*width : y*width;
 		// step is always +1 here (bFlippedX / -X order was rejected above);
 		// the `idx < 0` / `pos-step < 0` guards below are defensive only.
-		int step = bFlippedX ? -1 : 1;
+		const int step = 1;
 
 		// Start by reading the first four bytes of every scanline
-		pReadBuffer.getBytes( col, 4 );
+		if( !pReadBuffer.getBytes( col, 4 ) ) {
+			return RejectMalformed();
+		}
 
 		// This is Radiance's new RLE scheme
 		// Header of 0x2, 0x2 is RLE encoding
-		if( col[0] == 2 && col[1] == 2 && col[2] >= 0 ) {
+		// Radiance's per-channel RLE is defined for this scanline width range.
+		if( width >= 8 && width <= 32767 && col[0] == 2 && col[1] == 2 &&
+			(static_cast<unsigned char>( col[2] ) & 0x80u) == 0 ) {
+			const auto scanlineWidth = (static_cast<unsigned int>( col[2] ) << 8) |
+				static_cast<unsigned char>( col[3] );
+			if( scanlineWidth != width ) {
+				return RejectMalformed();
+			}
 
 			// Each component is run length encoded seperately
 			// This will naturally lead to better compression
@@ -185,7 +184,10 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 				while( x < width ){
 
 					// Check to see if we have a run
-					unsigned char num = pReadBuffer.getUChar();
+					unsigned char num;
+					if( !pReadBuffer.getBytes( &num, 1 ) ) {
+						return RejectMalformed();
+					}
 					bool bRun = false;
 					unsigned int runLen = 0;
 					unsigned char value = 0;
@@ -196,12 +198,12 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 						// A run: read the value once and repeat it
 						bRun = true;
 						runLen = num - 128;
-						value = pReadBuffer.getUChar();
+						if( !pReadBuffer.getBytes( &value, 1 ) ) {
+							return RejectMalformed();
+						}
 					}
 
-					// A zero-length code makes no forward progress; on a
-					// truncated / crafted file getUChar() returns 0 forever,
-					// so treat it as malformed rather than spinning.
+					// A zero-length code makes no forward progress.
 					if( runLen == 0 ) {
 						return RejectMalformed();
 					}
@@ -212,12 +214,16 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 						return RejectMalformed();
 					}
 
+					unsigned char literals[128];
+					if( !bRun && !pReadBuffer.getBytes( literals, runLen ) ) {
+						return RejectMalformed();
+					}
 					for( unsigned int i=0; i<runLen; i++ ) {
 						const long long idx = (long long)component + (long long)pos*4;
 						if( idx < 0 || idx >= nBytesSigned ) {
 							return RejectMalformed();
 						}
-						pBuffer[idx] = bRun ? value : pReadBuffer.getUChar();
+						pBuffer[idx] = bRun ? value : literals[i];
 						pos += step;
 					}
 					x += runLen;
@@ -229,33 +235,28 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 			// All it contains is either runs or raw data, runs have their header, which we
 			// check for right away.
 			int pos = start;
-			for( unsigned int x=0; x<width; x++ ) {
-				if( x > 0 ){
-					pReadBuffer.getBytes( col, 4 );
+			unsigned int repeatShift = 0;
+			for( unsigned int x = 0; x < width; ) {
+				if( x > 0 && !pReadBuffer.getBytes( col, 4 ) ) {
+					return RejectMalformed();
 				}
 
 				// Check for the RLE header for this scanline
 				if( col[0] == 1 && col[1] == 1 && col[2] == 1 ) {
 
-					// Do the run
-
-					int num = ((int) col[3])&0xFF;
-
-					// A count of zero would underflow the `x += num-1`
-					// accounting below (x is unsigned) and repeats nothing;
-					// treat it as malformed.
-					if( num == 0 ) {
+					// Successive markers contribute little-endian base-256
+					// repeat counts. A zero low byte is valid (0,1 means 256).
+					// Bound the shift before evaluating it, and compare before
+					// shifting so malformed counts cannot wrap or overrun a row.
+					if( x == 0 || repeatShift >= std::numeric_limits<unsigned int>::digits ) {
 						return RejectMalformed();
 					}
-
-					// The run must not exceed the pixels remaining in this
-					// scanline (parity with the new-RLE `x + runLen > width`
-					// clamp).  Without this a long run would corrupt later
-					// scanlines in-buffer before the global end-check below
-					// stopped it.  x < width here, so `width - x` >= 1.
-					if( (unsigned int)num > width - x ) {
+					const auto countByte = static_cast<unsigned int>(static_cast<unsigned char>(col[3]));
+					if( countByte > ((width - x) >> repeatShift) ) {
 						return RejectMalformed();
 					}
+					const auto num = countByte << repeatShift;
+					repeatShift += 8;
 
 					// The run repeats the PREVIOUS pixel; bounds-check that
 					// back-reference (at the first pixel of a scanline it can
@@ -269,7 +270,7 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 					unsigned char b = pBuffer[prev+2];
 					unsigned char e = pBuffer[prev+3];
 
-					for( int i=0; i<num; i++ ) {
+					for( unsigned int i = 0; i < num; ++i ) {
 						const long long idx = (long long)pos*4;
 						if( idx < 0 || idx+3 >= nBytesSigned ) {
 							return RejectMalformed();
@@ -281,7 +282,7 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 						pos += step;
 					}
 
-					x += num-1;
+					x += num;
 				} else {
 
 					// No runs here, so just store the 4 bytes just read into
@@ -298,19 +299,22 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 					pBuffer[idx+2] = col[2];
 					pBuffer[idx+3] = col[3];
 					pos += step;
+					++x;
+					repeatShift = 0;
 				}
 			}
 		}
 	}
 
-	bufW = width;
+	bufW = outputWidth = width;
+	bufH = outputHeight = height;
 
 	return true;
 }
 
 void HDRReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned int y )
 {
-	if( pBuffer ) {
+	if( pBuffer && x < bufW && y < bufH ) {
 		// The HDR format is always Rec709 with non-linearity in e?  Yea that kinda makes sense
 		// If we used some other format like ROMM, there wouldn't be enough bits in the r, g & b
 		// What we need is 16 bit RGBE to pull this off
@@ -318,7 +322,7 @@ void HDRReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned in
 
 		const unsigned char RGBEBase = 128;
 
-		const unsigned int idx = y*bufW*4+x*4;
+		const auto idx = (static_cast<size_t>(y) * bufW + x) * 4;
 
 		unsigned char r = pBuffer[idx];
 		unsigned char g = pBuffer[idx+1];
@@ -346,4 +350,5 @@ void HDRReader::EndRead( )
 		delete [] pBuffer;
 		pBuffer = 0;
 	}
+	bufW = bufH = 0;
 }

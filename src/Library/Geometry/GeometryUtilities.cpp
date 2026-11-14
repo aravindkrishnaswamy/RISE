@@ -71,7 +71,11 @@ namespace RISE
 		// Now divide all the elements in vNormList list by incident and normalize!
 		for( int i = 0; i < nNumVerts; i++ )
 		{
-			Scalar	OOIncident = 1.0f / Scalar( incident[i] );
+			if( incident[i] == 0 ) {
+				vNormals.emplace_back( 0, 0, 0 );
+				continue;
+			}
+			Scalar OOIncident = 1.0f / Scalar( incident[i] );
 			sum[i] = sum[i] * OOIncident;
 			vNormals.push_back( Vector3Ops::Normalize(sum[i]) );
 		}

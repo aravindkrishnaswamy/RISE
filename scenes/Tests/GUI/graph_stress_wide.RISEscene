@@ -203,7 +203,7 @@ worley3d_painter
 	colora			col06
 	colorb			col10
 	jitter			1.0
-	output			f2f1
+	output			f1
 	scale			6 6 6
 }
 

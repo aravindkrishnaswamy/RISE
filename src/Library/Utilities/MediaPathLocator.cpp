@@ -14,8 +14,9 @@
 #include "pch.h"
 #include "MediaPathLocator.h"
 #include "../Interfaces/ILog.h"
-#include <sys/types.h>
-#include <sys/stat.h>
+#include <algorithm>
+#include <filesystem>
+#include <string_view>
 
 using namespace RISE;
 
@@ -27,53 +28,46 @@ MediaPathLocator::~MediaPathLocator()
 {
 }
 
+namespace
+{
+	std::string SearchRoot( const char* path )
+	{
+		std::string root = path ? path : "";
+		if( !root.empty() && root.back() != '/' && root.back() != '\\' ) root += '/';
+		return root;
+	}
+}
+
 bool MediaPathLocator::FileExists( const String& file )
 {
-	struct stat file_stats = {0};
-	return !stat( file.c_str(), &file_stats );
+	std::error_code error;
+	// Match the native narrow encoding consumed by fopen and ifstream.
+	return std::filesystem::exists( std::filesystem::path(file.c_str()), error );
 }
 
 bool MediaPathLocator::AddPath( const char* path )
 {
-	if( path ) {
-		String p(path);
-
-		PathListType::iterator it;
-		for( it=paths.begin(); it!=paths.end(); it++ ) {
-			const String& po = *it;
-
-			if( p == po ) {
-				GlobalLog()->PrintEx( eLog_Warning, "MediaPathLocator::AddPath '%s' already exists, ignoring request to add", path );
-				return false;
-			}
-		}
-
-		if( !(path[strlen(path)-1] == '/' || path[strlen(path)-1] == '\\') ) {
-			p.concatenate( "/" );
-		}
-		paths.push_back( p );
-
-		return true;
+	const std::string root = SearchRoot( path );
+	if( root.empty() ) return false;
+	const auto existing = std::find_if( paths.begin(), paths.end(),
+		[&root]( const String& item ) { return std::string_view(item.c_str()) == root; } );
+	if( existing != paths.end() ) {
+		GlobalLog()->PrintEx( eLog_Warning, "MediaPathLocator::AddPath '%s' already exists, ignoring request to add", path );
+		return false;
 	}
-
-	return false;
+	paths.emplace_back( root.c_str() );
+	return true;
 }
 
 bool MediaPathLocator::RemovePath( const char* path )
 {
-	String po( path );
-
-	PathListType::iterator it;
-	for( it=paths.begin(); it!=paths.end(); it++ ) {
-		const String& p = *it;
-
-		if( po == p ) {
-			paths.erase( it );
-			return true;
-		}
-	}
-
-	return false;
+	const std::string root = SearchRoot( path );
+	if( root.empty() ) return false;
+	const auto entry = std::find_if( paths.begin(), paths.end(),
+		[&root]( const String& item ) { return std::string_view(item.c_str()) == root; } );
+	if( entry == paths.end() ) return false;
+	paths.erase( entry );
+	return true;
 }
 
 void MediaPathLocator::ClearAllPaths( )
@@ -93,8 +87,8 @@ String MediaPathLocator::Find( const String& file )
 	for( it=paths.begin(); it!=paths.end(); it++ ) {
 		const String& path = *it;
 
-		String s( path );
-		s.concatenate( file );
+		const std::string candidate = std::string(path.c_str()) + file.c_str();
+		String s( candidate.c_str() );
 
 		if( FileExists( s ) ) {
 			GlobalLog()->PrintEx( eLog_Info, "MediaPathLocator:: Remapped '%s' to '%s'", file.c_str(), s.c_str() );

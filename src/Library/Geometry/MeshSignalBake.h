@@ -14,7 +14,7 @@
 //                             their own.
 //    MeshSignalBakeCache      the LAZY, geometry-owned find-or-build the
 //                             design doc §7.3 settled on -- a `mutable`
-//                             table map behind an RMutex, following the
+//                             table map behind a mutex, following the
 //                             SSS point-set precedent (ARCHITECTURE.md
 //                             §Known Exceptions).
 //
@@ -43,7 +43,7 @@
 #define MESH_SIGNAL_BAKE_
 
 #include "../Utilities/Math3D/Math3D.h"
-#include "../Utilities/Threads/Threads.h"
+#include <mutex>
 #include <vector>
 #include <atomic>
 #include <memory>
@@ -328,7 +328,7 @@ namespace RISE
 		};
 
 		mutable std::vector<Entry>	m_entries[ MeshSignalBake::eKindCount ];
-		mutable RMutex				m_mutex;
+		mutable std::mutex				m_mutex;
 
 		//! Per-POSITION orientations the bakes trace along, built once by the
 		//! IInputSource on the first miss and reused by every later radius.

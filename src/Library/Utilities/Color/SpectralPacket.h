@@ -16,6 +16,8 @@
 #define SPECTRAL_PACKET_
 
 #include <memory.h>
+#include <memory>
+#include "../FiniteMath.h"
 #include "../../Interfaces/ILog.h"
 #include "../../Interfaces/IFunction1D.h"
 
@@ -66,6 +68,13 @@ namespace RISE
 		Scalar			delta;
 		Scalar			OVnumfreq;
 
+		static std::unique_ptr<Scalar[]> AllocateAmplitudes( unsigned int count )
+		{
+			std::unique_ptr<Scalar[]> samples( new Scalar[count] );
+			GlobalLog()->PrintNew( samples.get(), __FILE__, __LINE__, "amplitudes" );
+			return samples;
+		}
+
 	public:
 		SpectralPacket( ) : 
 		lambda_begin( 400 ),
@@ -73,8 +82,7 @@ namespace RISE
 		num_freq( 1 ),
 		delta( 300 )
 		{
-			amplitudes = new Scalar[num_freq];
-			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
+			amplitudes = AllocateAmplitudes( num_freq ).release();
 
 			for( unsigned int i=0; i<num_freq; i++ ) {
 				amplitudes[i] = 0;
@@ -89,8 +97,7 @@ namespace RISE
 		num_freq( sp.num_freq ),
 		delta( sp.delta )
 		{
-			amplitudes = new Scalar[num_freq];
-			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
+			amplitudes = AllocateAmplitudes( num_freq ).release();
 
 			for( unsigned int i=0; i<num_freq; i++ ) {
 				amplitudes[i] = sp.amplitudes[i];
@@ -103,49 +110,46 @@ namespace RISE
 		lambda_begin( lambda_begin_ ),
 		lambda_end( lambda_end_ ),
 		num_freq( num_freq_ ),
-		delta( (lambda_end-lambda_begin) / Scalar(num_freq) )
+		delta( num_freq ? (lambda_end-lambda_begin) / Scalar(num_freq) : 0 )
 		{
-			amplitudes = new Scalar[num_freq];
-			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
+			amplitudes = AllocateAmplitudes( num_freq ).release();
 
 			for( unsigned int i=0; i<num_freq; i++ ) {
 				amplitudes[i] = 0;
 			}
 
-			OVnumfreq = 1.0 / Scalar(num_freq);
+			OVnumfreq = num_freq ? 1.0 / Scalar(num_freq) : 0;
 		}
 
 		SpectralPacket( Scalar lambda_begin_, Scalar lambda_end_, unsigned int num_freq_, Scalar& d ) : 
 		lambda_begin( lambda_begin_ ),
 		lambda_end( lambda_end_ ),
 		num_freq( num_freq_ ),
-		delta( (lambda_end-lambda_begin) / Scalar(num_freq) )
+		delta( num_freq ? (lambda_end-lambda_begin) / Scalar(num_freq) : 0 )
 		{
-			amplitudes = new Scalar[num_freq];
-			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
+			amplitudes = AllocateAmplitudes( num_freq ).release();
 
 			for( unsigned int i=0; i<num_freq; i++ ) {
 				amplitudes[i] = d;
 			}
 
-			OVnumfreq = 1.0 / Scalar(num_freq);
+			OVnumfreq = num_freq ? 1.0 / Scalar(num_freq) : 0;
 		}
 
 		SpectralPacket( Scalar lambda_begin_, Scalar lambda_end_, unsigned int num_freq_, const IFunction1D* pFunc ) : 
 		lambda_begin( lambda_begin_ ),
 		lambda_end( lambda_end_ ),
 		num_freq( num_freq_ ),
-		delta( (lambda_end-lambda_begin) / Scalar(num_freq) )
+		delta( num_freq ? (lambda_end-lambda_begin) / Scalar(num_freq) : 0 )
 		{
-			amplitudes = new Scalar[num_freq];
-			GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
-
-			// Pull the values from the function
+			std::unique_ptr<Scalar[]> samples( new Scalar[num_freq] );
 			for( unsigned int i=0; i<num_freq; i++ ) {
-				amplitudes[i] = pFunc->Evaluate( lambda_begin + (i*delta) );
+				const Scalar wavelength = lambda_begin + (i*delta);
+				samples[i] = IsFiniteDouble( wavelength ) ? pFunc->Evaluate( wavelength ) : 0;
 			}
-				
-			OVnumfreq = 1.0 / Scalar(num_freq);
+			OVnumfreq = num_freq ? 1.0 / Scalar(num_freq) : 0;
+			GlobalLog()->PrintNew( samples.get(), __FILE__, __LINE__, "amplitudes" );
+			amplitudes = samples.release();
 		}
 
 		//
@@ -168,6 +172,11 @@ namespace RISE
 		//! allocated with.  Required so callers iterating
 		//! `SetAtIndex` know the loop bound.
 		inline unsigned int NumBins() const { return num_freq; }
+
+		inline Scalar ValueAtIndex( unsigned int idx ) const
+		{
+			return idx < num_freq ? amplitudes[idx] : 0;
+		}
 
 		//! Writes one amplitude bin in place.  Used by RGB-source
 		//! painters (Landing 3) so their GetSpectrum can populate a
@@ -203,38 +212,27 @@ namespace RISE
 		// Assignment
 		inline		SpectralPacket	operator=( const SpectralPacket& s )
 		{
-			// Check if the packet we are assigned to has the same frequencies responsible
-			// and same discretization of frequencies
-			if( SameFreqs( *this, s ) )
-			{
-				// Then its a lot easier
-				memcpy( amplitudes, s.amplitudes, sizeof( Scalar ) * num_freq );
+			if( this == &s ) {
+				return *this;
 			}
-			else if( s.num_freq == num_freq )
-			{
-				// If the number of frequencies are atleast the same, we don't need to 
-				// reallocate
-				lambda_begin = s.lambda_begin;
-				lambda_end = s.lambda_end;
-				memcpy( amplitudes, s.amplitudes, sizeof( Scalar ) * num_freq );
-			}
-			else
-			{
-				// We have to reallocate the array
+
+			const bool resize = num_freq != s.num_freq;
+			if( resize ) {
+				std::unique_ptr<Scalar[]> replacement( new Scalar[s.num_freq] );
 				GlobalLog()->PrintDelete( amplitudes, __FILE__, __LINE__ );
-				delete amplitudes;
-				lambda_begin = s.lambda_begin;
-				lambda_end = s.lambda_end;
-				num_freq = s.num_freq;
-				delta = (lambda_end-lambda_begin) / Scalar(num_freq);
-				OVnumfreq = 1.0 / Scalar(num_freq);
-				amplitudes = new Scalar[num_freq];
-				GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
-
-				memcpy( amplitudes, s.amplitudes, sizeof( Scalar ) * num_freq );
+				delete [] amplitudes;
+				amplitudes = replacement.release();
 			}
 
-			// Return the left hand side
+			lambda_begin = s.lambda_begin;
+			lambda_end = s.lambda_end;
+			num_freq = s.num_freq;
+			delta = s.delta;
+			OVnumfreq = s.OVnumfreq;
+			memcpy( amplitudes, s.amplitudes, sizeof( Scalar ) * num_freq );
+			if( resize ) {
+				GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
+			}
 			return *this;
 		}
 
@@ -311,19 +309,18 @@ namespace RISE
 		{
 			// Get the value at the particular wavelength
 
-			// Outside the frequency range
-			if( nm < lambda_begin || nm > lambda_end ) {
+			if( num_freq == 0 || !(nm >= lambda_begin && nm <= lambda_end) ) {
 				return 0;
 			}
 
-			// Find the rigt frequency.  nm == lambda_end lands one past the
-			// last bin; it belongs to the last bin (DL-464: this read past
-			// the array).
-			unsigned int idx = (unsigned int)((nm-lambda_begin)/delta);
-			if( idx >= num_freq ) {
-				idx = num_freq - 1;
+			// The upper endpoint belongs to the last bin, including a
+			// packet whose endpoints coincide.
+			if( nm == lambda_end || delta == 0 ) {
+				return amplitudes[num_freq-1];
 			}
-			return amplitudes[idx];
+			const Scalar bin = (nm-lambda_begin) / delta;
+			return bin >= 0 && bin < num_freq
+				? amplitudes[static_cast<unsigned int>(bin)] : amplitudes[num_freq-1];
 		}
 	};
 }

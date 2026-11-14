@@ -227,7 +227,7 @@ namespace RISE
 			void ComputeAreas(bool positionsChanged = true, bool graphProofReusable = false, bool refusalProofReusable = false);
 
 			//! LAZY per-vertex signal bakes (occlusion / thickness), one
-			//! table per (kind, radius).  `mutable` + the cache's own RMutex
+			//! table per (kind, radius).  `mutable` + the cache's own mutex
 			//! is the sanctioned ARCHITECTURE.md §Known Exceptions pattern
 			//! (SSS point-set precedent); see MeshSignalBake.h for why the
 			//! build cannot be eager.

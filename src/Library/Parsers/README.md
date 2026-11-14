@@ -10,7 +10,7 @@ This directory defines the chunk-parser registry, script, command, and options p
 - Derive-time scene loading (the ONLY scene-load path): `../Cst/Cst.cpp` (`ParseToCst` + `DeriveToJob`)
 - Command parser: `AsciiCommandParser.*` (the console `load`/`run`/`modify` commands — `ICommandParser`)
 - Script parser: `AsciiScriptParser.*`
-- Math expression evaluator: `MathExpressionEvaluator.*`
+- Legacy expression evaluation for the v6 migration tool: [LegacyMathExpression.h](../../../tools/LegacyMathExpression.h)
 - Options parser: [../Options.h](../Options.h) (constructed via `RISE_API_CreateOptionsParser`)
 
 ## Scene File Basics
@@ -37,6 +37,29 @@ Chunk syntax rules:
   silently-accepted second syntax. `ParseToCst` itself stays lossless/permissive about the bytes
   (an editor must still be able to open a file that violates this), so the rejection happens at
   derive time, the same PASS-1 layer that rejects an unknown chunk type or a value-less parameter.
+
+Numeric descriptor fields use checked conversion. Missing fields retain their
+specified defaults. Non-numeric `Int` and `Double` values, non-finite doubles,
+and integers outside the destination range fail derivation. `UInt .5` fails
+because it has no decimal integer prefix. Explicit signs and historical
+integer-prefix conversion remain supported where the descriptor's numeric
+syntax accepts them. Values above `UINT_MAX` fail instead of wrapping or
+reading an uninitialized value.
+
+`spectral_painter` and `piecewise_linear_function` use the same table rule.
+Inline `cp` entries require two finite, whitespace-separated values and can
+include additional columns. File-backed tables consume the leading required
+values, ignore additional columns, and warn and skip headers or malformed
+rows. `nmfile` and `ampfile` consume the first finite value on each physical
+row. Empty results, embedded NUL bytes, file I/O failures, and mismatched
+wavelength/amplitude counts are errors.
+
+Console commands and ASCII scripts recognize a standalone unquoted `#`
+token as a trailing comment and any leading `#` token as a full-line comment.
+Quoted hashes, embedded hashes, and value tokens such as `#3` and `#Dir`
+remain literal. Options and the public tokenizer APIs do not strip comments. Malformed numeric command arguments,
+incomplete render rectangles, and unknown `mediapath` subcommands are hard
+errors. A plain `render # comment` renders the current frame.
 
 Note on light colour (2026-09-02): `omni_light`, `spot_light`,
 `directional_light` and `ambient_light` each take a `colorspace`

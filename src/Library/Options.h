@@ -19,6 +19,7 @@
 #include "Interfaces/IOptions.h"
 #include "Utilities/Reference.h"
 #include <map>
+#include <string>
 #include <vector>
 
 namespace RISE
@@ -32,7 +33,7 @@ namespace RISE
 		protected:
 			virtual ~Options();
 
-			std::map<String,String> options;
+			std::map<std::string, String, std::less<>> options;
 
 		public:
 			Options( const char* filename );

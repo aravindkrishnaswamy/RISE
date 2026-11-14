@@ -553,8 +553,8 @@ namespace RISE
                 BoundingBox bounds;
                 PhotonListType packets;
             };
-            static unsigned ReadableBytes(const IReadBuffer& b) {
-                return b.getCurPos()<=b.Size()?b.Size()-b.getCurPos():0;
+            static std::uint64_t ReadableBytes(const IReadBuffer& b) {
+                return BufferBytesAvailable(b);
             }
             static bool PacketLoadError(const char* message) {
                 GlobalLog()->PrintEx(eLog_Error,"DirectionalPhotonMap: %s; existing map retained",message);

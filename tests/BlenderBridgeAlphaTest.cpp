@@ -2,7 +2,13 @@
 // The real bridge producer functions are included below; no warning replicas.
 
 #include <cmath>
+#include <thread>
+#include <stdexcept>
+#include <memory>
+#include <chrono>
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -23,6 +29,7 @@ static int g_failures = 0;
 static void Check( const bool ok, const std::string& what )
 {
 	++g_checks;
+	if( ok && std::getenv("RISE_RED_PROVE_MARKER") ) std::cout << "PASS: " << what << std::endl;
 	if( !ok ) {
 		++g_failures;
 		std::cout << "  FAIL: " << what << std::endl;
@@ -30,6 +37,229 @@ static void Check( const bool ok, const std::string& what )
 }
 
 namespace {
+
+void TestOutputBufferSizing()
+{
+	// Arithmetic-only large cases: never allocate these images.
+	if( sizeof(size_t) > sizeof(uint32_t) ) {
+		const auto boundary = checked_rgba_storage<float>( 32768, 32768 );
+		Check( boundary.values == (std::uint64_t{1} << 32) &&
+			boundary.bytes == (std::uint64_t{1} << 34),
+			"BlenderBufferSize: 32768 squared RGBA storage does not wrap its channel count" );
+		const auto larger = checked_rgba_storage<float>( 65535, 65535 );
+		const auto preview = checked_rgba_storage<unsigned short>( 65535, 65535 );
+		constexpr std::uint64_t values = 65535ULL * 65535ULL * 4ULL;
+		const size_t last = rgba_value_offset( 65534, 65534, 65535 );
+		Check( larger.values == values && preview.values == values &&
+			last == values - 4 && last > std::numeric_limits<uint32_t>::max(),
+			"BlenderBufferSize: final and preview indices preserve offsets above UINT_MAX" );
+	} else {
+		bool rejected = false;
+		try { checked_rgba_storage<float>( 32768, 32768 ); }
+		catch( const std::length_error& ) { rejected = true; }
+		Check( rejected, "BlenderBufferSize: 32-bit hosts reject unrepresentable storage" );
+	}
+	bool rejected = false;
+	try { checked_rgba_storage<float>( UINT32_MAX, UINT32_MAX ); }
+	catch( const std::length_error& ) { rejected = true; }
+	Check( rejected, "BlenderBufferSize: native byte/container overflow is rejected before allocation" );
+	Check( !valid_image_region(2, 2, 1, 0, 0, 1) && !valid_image_region(2, 2, 0, 1, 1, 0) &&
+		!valid_image_region(2, 2, 0, 0, 2, 1) && !valid_image_region(2, 2, 0, 0, 1, 2),
+		"BlenderBufferSize: inverted and out-of-bounds rectangles are rejected" );
+
+	struct Preview
+	{
+		std::vector<unsigned short> pixels;
+		unsigned int calls = 0;
+		bool dimensions = false;
+	} preview;
+	const auto capture = []( void* user, const unsigned short* pixels,
+		uint32_t width, uint32_t height, uint32_t fullWidth, uint32_t fullHeight,
+		uint32_t top, uint32_t left ) -> int {
+		auto& observed = *static_cast<Preview*>( user );
+		++observed.calls;
+		observed.dimensions = width == 1 && height == 2 && fullWidth == 2 && fullHeight == 2 &&
+			top == 0 && left == 1;
+		const auto layout = checked_rgba_storage<unsigned short>( width, height );
+		observed.pixels.assign( pixels, pixels + layout.values );
+		return 1;
+	};
+	MemoryRasterizerOutput output( capture, &preview );
+	const unsigned short image16[16] = {
+		0, 0, 0, 65535, 100, 200, 300, 400,
+		0, 0, 0, 65535, 500, 600, 700, 800
+	};
+	output.OutputImageRGBA16( image16, 2, 2, 0, 1, 1, 1 );
+	rise_blender_render_result result{};
+	const bool copied16 = output.CopyToResult( result );
+	Check( copied16 && result.width == 2 && result.height == 2 &&
+		result.rgba[4] == float(100) / 65535.0f && result.rgba[15] == float(800) / 65535.0f &&
+		preview.calls == 1 && preview.dimensions && preview.pixels ==
+			std::vector<unsigned short>({100, 200, 300, 400, 500, 600, 700, 800}),
+		"BlenderBufferSize: legacy receiver and packed preview preserve rectangle channels" );
+	rise_blender_free_render_result( &result );
+	const float image32[16] = {
+		0, 0, 0, 1, -1, 0.25f, 2, 1,
+		0, 0, 0, 1, 0.5f, 0.75f, 0.125f, 0.5f
+	};
+	output.OutputImageRGBA32F( image32, 2, 2, 0, 1, 1, 1 );
+	const bool copied32 = output.CopyToResult( result );
+	Check( copied32 && result.rgba[4] == -1 && result.rgba[6] == 2 && result.rgba[15] == 0.5f &&
+		preview.calls == 2 && preview.dimensions && preview.pixels ==
+			std::vector<unsigned short>({0, 16384, 65535, 65535, 32768, 49151, 8192, 32768}),
+		"BlenderBufferSize: float receiver retains HDR while preview clamps and packs its region" );
+	rise_blender_free_render_result( &result );
+	float nonfinite[16];
+	std::memcpy( nonfinite, image32, sizeof(nonfinite) );
+	const std::uint32_t nonfiniteBits[] = { 0x7fc00001U, 0x7f800000U, 0xff800000U };
+	std::memcpy( nonfinite + 4, nonfiniteBits, sizeof(nonfiniteBits) );
+	output.OutputImageRGBA32F( nonfinite, 2, 2, 0, 1, 1, 1 );
+	const bool copiedNonfinite = output.CopyToResult( result );
+	Check( copiedNonfinite && std::memcmp(result.rgba + 4, nonfiniteBits, sizeof(nonfiniteBits)) == 0 &&
+		preview.calls == 3 && preview.pixels ==
+			std::vector<unsigned short>({0, 65535, 0, 65535, 32768, 49151, 8192, 32768}),
+		"BlenderBufferSize: preview bounds NaN and infinities while final float samples retain their bits" );
+	rise_blender_free_render_result( &result );
+	output.OutputImageRGBA32F( image32, 2, 2, 0, 0, UINT32_MAX, UINT32_MAX );
+	output.OutputImageRGBA16( image16, 2, 2, 1, 1, 0, 0 );
+	Check( preview.calls == 3 && output.CopyToResult(result) &&
+		std::memcmp(result.rgba + 4, nonfiniteBits, sizeof(nonfiniteBits)) == 0,
+		"BlenderBufferSize: invalid receiver rectangles neither invoke preview nor corrupt the image" );
+	rise_blender_free_render_result( &result );
+}
+
+void TestExportCallbackFailure()
+{
+	struct State
+	{
+		rise_blender_camera camera{};
+		rise_blender_painter painter{};
+		rise_blender_material material{};
+		rise_blender_mesh mesh{};
+		rise_blender_object object{};
+		rise_blender_scene scene{};
+		rise_blender_render_settings settings{};
+		rise_blender_render_result result{};
+		float vertices[9] = {-10,-10,0, 10,-10,0, 0,10,0};
+		uint32_t indices[3] = {0,1,2};
+		char error[1024]{};
+		std::atomic<bool> failCallback{true};
+		std::atomic<unsigned int> failureCalls{0};
+		std::atomic<unsigned int> healthyCalls{0};
+		std::atomic<bool> sawCompleteRegion{false};
+		std::atomic<bool> done{false};
+		bool escaped = false;
+		bool failedReturn = false;
+		bool originalCause = false;
+		bool clearedResult = false;
+		bool healthyRetry = false;
+		State()
+		{
+			camera.projection_type = RISE_BLENDER_CAMERA_PERSPECTIVE;
+			camera.location[2] = 3;
+			camera.forward[2] = -1;
+			camera.up[1] = 1;
+			camera.fov_y_radians = 0.7f;
+			camera.width = camera.height = 2;
+			camera.pixel_aspect = 1;
+			painter.name = "bridge_callback_fixture_color";
+			painter.kind = RISE_BLENDER_PAINTER_UNIFORM;
+			painter.color_space = RISE_BLENDER_COLOR_LINEAR;
+			painter.color[0] = 0.2f; painter.color[1] = 0.4f; painter.color[2] = 0.6f;
+			material.name = "bridge_callback_fixture_material";
+			material.model = RISE_BLENDER_MATERIAL_LAMBERT;
+			material.diffuse_painter_name = painter.name;
+			material.emission_painter_name = painter.name;
+			mesh.name = "bridge_callback_fixture_mesh";
+			mesh.vertices = vertices;
+			mesh.vertex_indices = indices;
+			mesh.num_vertices = 3; mesh.num_triangles = 1;
+			mesh.use_face_normals = 1;
+			mesh.double_sided = 1;
+			object.name = "bridge_callback_fixture_object";
+			object.geometry_name = mesh.name;
+			object.material_name = material.name;
+			object.visible = 1;
+			for( unsigned int i = 0; i < 16; ++i ) object.transform[i] = i % 5 == 0 ? 1.0f : 0.0f;
+			scene.camera = &camera;
+			scene.painters = &painter; scene.num_painters = 1;
+			scene.materials = &material; scene.num_materials = 1;
+			scene.meshes = &mesh; scene.num_meshes = 1;
+			scene.objects = &object; scene.num_objects = 1;
+			settings.width = settings.height = 2;
+			settings.pixel_samples = settings.light_samples = settings.max_recursion = 1;
+			settings.show_lights = 1;
+			settings.rasterizer_kind = RISE_BLENDER_RASTERIZER_PT_PEL;
+			settings.pixel_filter = RISE_BLENDER_PIXEL_FILTER_NONE;
+		}
+		~State() { rise_blender_free_render_result( &result ); }
+	};
+	auto state = std::make_shared<State>();
+	// The worker and C callback own/use only heap state. A broken exception
+	// cleanup can time out normally without a dangling stack pointer.
+	std::thread worker( [state] {
+		const auto callback = []( void* user, const unsigned short* pixels,
+			uint32_t width, uint32_t height, uint32_t fullWidth, uint32_t fullHeight,
+			uint32_t top, uint32_t left ) -> int {
+			auto& current = *static_cast<State*>( user );
+			if( current.failCallback.load() ) {
+				++current.failureCalls;
+				throw std::runtime_error( "bridge callback fixture failure" );
+			}
+			++current.healthyCalls;
+			if( pixels && width == 2 && height == 2 && fullWidth == 2 && fullHeight == 2 && top == 0 && left == 0 )
+				current.sawCompleteRegion.store( true );
+			return 1;
+		};
+		try {
+			int returned = -1;
+			try {
+				returned = rise_blender_render_scene( &state->scene, &state->settings, nullptr,
+					callback, state.get(), &state->result, state->error, sizeof(state->error) );
+			} catch( ... ) {
+				state->escaped = true;
+			}
+			state->failedReturn = returned == 0;
+			state->originalCause = std::strstr( state->error, "bridge callback fixture failure" ) != nullptr;
+			state->clearedResult = state->result.rgba == nullptr && state->result.width == 0 &&
+				state->result.height == 0 && state->result.warnings[0] == 0;
+			rise_blender_free_render_result( &state->result );
+			state->failCallback.store( false );
+			returned = rise_blender_render_scene( &state->scene, &state->settings, nullptr,
+				callback, state.get(), &state->result, state->error, sizeof(state->error) );
+			bool complete = returned == 1 && state->result.rgba && state->result.width == 2 &&
+				state->result.height == 2 && state->error[0] == 0 && state->result.warnings[0] == 0;
+			for( unsigned int i = 0; i < 4 && complete; ++i ) {
+				const float* pixel = state->result.rgba + i * 4;
+				complete &= pixel[0] > 0 && pixel[1] > pixel[0] && pixel[2] > pixel[1] &&
+					std::isfinite(pixel[0]) && std::isfinite(pixel[1]) && std::isfinite(pixel[2]) &&
+					std::isfinite(pixel[3]);
+			}
+			state->healthyRetry = complete && state->healthyCalls.load() > 0 && state->sawCompleteRegion.load();
+			rise_blender_free_render_result( &state->result );
+		} catch( ... ) {
+			state->escaped = true;
+		}
+		state->done.store( true, std::memory_order_release );
+	} );
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while( !state->done.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline )
+		std::this_thread::sleep_for( std::chrono::milliseconds(1) );
+	const bool completed = state->done.load( std::memory_order_acquire );
+	if( completed ) worker.join();
+	else worker.detach(); // RED only; its capture owns every input/output object.
+	Check( completed, "BlenderExportFailure: failing and healthy four-pixel renders complete within deadline" );
+	Check( completed && !state->escaped && state->failureCalls.load() > 0 && state->failedReturn && state->originalCause,
+		"BlenderExportFailure: C export contains callback exception and reports its original cause" );
+	Check( completed && state->clearedResult,
+		"BlenderExportFailure: failed C export clears its result buffer, dimensions and warnings" );
+	Check( completed && state->healthyRetry,
+		"BlenderExportFailure: healthy C export retry delivers all four emissive pixels and complete preview" );
+	// A stuck render can own global pool workers. Do not let static pool
+	// destruction turn the deadline's normal assertion failure into a hang.
+	// All Check failures above use std::endl, so diagnostics are flushed.
+	if( !completed ) std::_Exit(1); // RED only; GREEN joins and cleans up normally.
+}
 
 //! Row-major (Blender mathutils convention) identity + translation,
 //! matching `blender_matrix_to_rise_matrix`'s own documented layout.
@@ -454,16 +684,22 @@ void TestConstantAlphaPrecision() {
     job->release();
 }
 
-int main()
+int main( int argc, char** argv )
 {
 	std::cout << "=== Blender bridge Alpha test (DL-193) ===" << std::endl;
 
-	TestConstantAlphaPrecision();
-	TestAbiVersionAndAlphaFields();
-	TestOpaqueMaterialUnaffected();
-	TestAlphaCutoutUnderPixelPel();
-	TestAlphaCutoutUnderPT();
-	TestAlphaCutoutUnderBDPT();
+	const bool bufferOnly = argc == 2 && std::strcmp(argv[1], "--buffer-only") == 0;
+	const bool exportOnly = argc == 2 && std::strcmp(argv[1], "--export-failure-only") == 0;
+	if( !exportOnly ) TestOutputBufferSizing();
+	if( !bufferOnly ) TestExportCallbackFailure();
+	if( !bufferOnly && !exportOnly ) {
+		TestConstantAlphaPrecision();
+		TestAbiVersionAndAlphaFields();
+		TestOpaqueMaterialUnaffected();
+		TestAlphaCutoutUnderPixelPel();
+		TestAlphaCutoutUnderPT();
+		TestAlphaCutoutUnderBDPT();
+	}
 
 	std::cout << "----------------------------------------" << std::endl;
 	std::cout << "checks: " << g_checks << "   failures: " << g_failures << std::endl;

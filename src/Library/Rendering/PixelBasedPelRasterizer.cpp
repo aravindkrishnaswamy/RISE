@@ -193,16 +193,21 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 			// Use a temporary low-spp sampling object for training
 			ISampling2D* pTrainSampling = 0;
+			RasterizerScopeExit trainingSamplingOwner( [&]() {
+				safe_release( pTrainSampling );
+			} );
 			RISE_API_CreateUniformSampling2D( &pTrainSampling, 1.0, 1.0 );
 			if( pTrainSampling ) {
 				pTrainSampling->SetNumSamples( currentTrainingSPP );
 			}
 
-			ISampling2D* pSavedSampling = pSampling;
-			const_cast<PixelBasedPelRasterizer*>(this)->pSampling = pTrainSampling;
+			ScopedActiveSampling samplingOverride( *this, pTrainSampling );
 
 			// Create a temporary image for training (results are discarded)
 			IRasterImage* pTrainImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+			RasterizerScopeExit pTrainImageOwner( [&]() {
+				safe_release( pTrainImage );
+			} );
 
 			if( pProgressFunc ) {
 				char title[128];
@@ -212,6 +217,9 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 			{
 				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( ComputeTileSize( pTrainImage->GetWidth(), pTrainImage->GetHeight(), static_cast<unsigned int>( HowManyThreadsToSpawn() ), 8, 8, 64 ) );
+				RasterizerScopeExit pTrainBlocksOwner( [&]() {
+					safe_release( pTrainBlocks );
+				} );
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_PATHGUIDING,
 					pScene,
@@ -222,7 +230,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			}
 
 			// Restore state
-			const_cast<PixelBasedPelRasterizer*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pTrainSampling );
 			safe_release( pTrainImage );
 
@@ -441,15 +449,20 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 			// Use 1 SPP for training — enough to populate tiles
 			ISampling2D* pTrainSampling = 0;
+			RasterizerScopeExit trainingSamplingOwner( [&]() {
+				safe_release( pTrainSampling );
+			} );
 			RISE_API_CreateUniformSampling2D( &pTrainSampling, 1.0, 1.0 );
 			if( pTrainSampling ) {
 				pTrainSampling->SetNumSamples( 1 );
 			}
 
-			ISampling2D* pSavedSampling = pSampling;
-			const_cast<PixelBasedPelRasterizer*>(this)->pSampling = pTrainSampling;
+			ScopedActiveSampling samplingOverride( *this, pTrainSampling );
 
 			IRasterImage* pTrainImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+			RasterizerScopeExit pTrainImageOwner( [&]() {
+				safe_release( pTrainImage );
+			} );
 
 			if( pProgressFunc ) {
 				char title[128];
@@ -460,6 +473,9 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 			{
 				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( ComputeTileSize( pTrainImage->GetWidth(), pTrainImage->GetHeight(), static_cast<unsigned int>( HowManyThreadsToSpawn() ), 8, 8, 64 ) );
+				RasterizerScopeExit pTrainBlocksOwner( [&]() {
+					safe_release( pTrainBlocks );
+				} );
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_NORMAL,
 					pScene,
@@ -469,7 +485,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 				safe_release( pTrainBlocks );
 			}
 
-			const_cast<PixelBasedPelRasterizer*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pTrainSampling );
 			safe_release( pTrainImage );
 		}
@@ -513,6 +529,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	RasterizerState rast = {x,y};
 
 	// Progressive rendering: check if this pixel has already converged.
@@ -523,7 +540,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 	// further down.  See PixelBasedRasterizerHelper.h GetAdaptiveShowMap
 	// docs.
 	const bool bAdaptiveActive = adaptiveConfig.maxSamples > 0
-		&& pSampling && rc.UsesPixelSampling()
+		&& sampling && rc.UsesPixelSampling()
 		&& rc.AllowsAdaptiveSampling();
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 	if( pProgFilm ) {
@@ -549,10 +566,10 @@ void PixelBasedPelRasterizer::IntegratePixel(
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
 
-	if( pSampling && pPixelFilter && rc.UsesPixelSampling() )
+	if( sampling && pPixelFilter && rc.UsesPixelSampling() )
 	{
 		const bool adaptive = adaptiveConfig.maxSamples > 0 && rc.AllowsAdaptiveSampling();
-		const unsigned int batchSize = pSampling->GetNumSamples();
+		const unsigned int batchSize = sampling->GetNumSamples();
 		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 		// For ZSobol, compute log2SPP from the full progressive SPP budget
@@ -611,7 +628,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 		while( globalSampleIndex < passEndIndex && !converged )
 		{
 			ISampling2D::SamplesList2D samples;
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 
 			ISampling2D::SamplesList2D::const_iterator m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n && globalSampleIndex<passEndIndex; m++, globalSampleIndex++ )

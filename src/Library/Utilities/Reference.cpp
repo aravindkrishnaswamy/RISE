@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <mutex>
 #include "Reference.h"
 #include "../Interfaces/ILog.h"
 
@@ -30,42 +31,30 @@ Reference::~Reference()
 
 void Reference::addref() const
 {
-	mutex.lock();
+	const std::lock_guard<const RMutex> lock( mutex );
 	if( m_nRefcount > 0 ) {
 		m_nRefcount++;
 	}
-	mutex.unlock();
 }
 
 bool Reference::release() const
 {
-	bool bValid = false;
-
-	mutex.lock();
-	
-	bValid = m_nRefcount > 0;
-
-	if( bValid )
+	bool destroy;
 	{
-		bool bDestroy = false;
-		
-		if( m_nRefcount > 0 ) {
-			m_nRefcount--;
-			bDestroy = !(m_nRefcount > 0);
-		}
-
-		mutex.unlock();
-
-		if( bDestroy ) {
-			GlobalLog()->PrintDelete( (IReference*)this, __FILE__, __LINE__ );
-			delete this;
-		}
-		return !bDestroy;
+		const std::lock_guard<const RMutex> lock( mutex );
+		if( m_nRefcount == 0 ) return false;
+		destroy = --m_nRefcount == 0;
 	}
-	return false; 
+
+	if( destroy ) {
+		GlobalLog()->PrintDelete( static_cast<const IReference*>(this), __FILE__, __LINE__ );
+		delete this;
+	}
+	return !destroy;
 }
 
 unsigned int Reference::refcount() const
 {
-	return m_nRefcount > 0 ? m_nRefcount : 0;
+	const std::lock_guard<const RMutex> lock( mutex );
+	return m_nRefcount;
 }

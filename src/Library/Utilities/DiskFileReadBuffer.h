@@ -33,32 +33,36 @@ namespace RISE
 
 			// This is the only constructor
 			DiskFileReadBuffer( const char * file_name );
+			unsigned int Size() const override { return DiskBuffer::Size(); }
+			std::uint64_t Size64() const override { return nSize; }
 
 			//
 			// This is for the IReadBuffer interface
 			//
 
-			char getChar();
-			unsigned char getUChar();
+			char getChar() override;
+			unsigned char getUChar() override;
 
-			short getWord();
-			unsigned short getUWord();
+			short getWord() override;
+			unsigned short getUWord() override;
 
-			int getInt();
-			unsigned int getUInt();
+			int getInt() override;
+			unsigned int getUInt() override;
 
-			float getFloat();
-			double getDouble();
+			float getFloat() override;
+			double getDouble() override;
 
-			bool getBytes( void* pDest, unsigned int amount );
+			bool getBytes( void* pDest, unsigned int amount ) override;
 
-			int getLine( char* pDest, unsigned int max );
+			int getLine( char* pDest, unsigned int max ) override;
 
 		protected:
 			// Default destructor
 			virtual ~DiskFileReadBuffer( );
 
-			unsigned int	nSize;		///< Size of the file we are reading from
+			std::uint64_t	nSize;		///< Readable end, reduced when I/O exposes an earlier EOF.
+		private:
+			void RecordReadEnd();
 		};
 	}
 }

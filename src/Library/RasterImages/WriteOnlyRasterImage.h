@@ -16,10 +16,15 @@
 #ifndef WriteOnlyRasterImage_
 #define WriteOnlyRasterImage_
 
+#include <algorithm>
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IRasterImageWriter.h"
 #include "../Utilities/PEL.h"
 #include "../Utilities/Reference.h"
+#include "../Interfaces/ILog.h"
+#include <exception>
+#include <memory>
+#include <utility>
 
 namespace RISE
 {
@@ -38,10 +43,24 @@ namespace RISE
 
 			virtual ~WriteOnlyRasterImage_Template( )
 			{
-				if( pWriter ) {
-					pWriter->EndWrite(); 
+				// Explicit DumpImage(nullptr) reports finalization failures to
+				// the caller. Destruction must release the writer safely.
+				try {
+					FinishWriter();
+				} catch( const std::exception& failure ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"WriteOnlyRasterImage: finalization failed: %s", failure.what() );
+				} catch( ... ) {
+					GlobalLog()->PrintEasyError( "WriteOnlyRasterImage: finalization failed" );
 				}
-				safe_release( pWriter );
+			}
+
+			void FinishWriter() const
+			{
+				const auto release = []( IRasterImageWriter* writer ) { writer->release(); };
+				std::unique_ptr<IRasterImageWriter, decltype(release)> writer(
+					std::exchange( pWriter, nullptr ), release );
+				if( writer ) writer->EndWrite();
 			}
 
 		public:
@@ -59,12 +78,19 @@ namespace RISE
 			void Clear( const RISEColor& p, const Rect* rc )
 			{
 				if( pWriter ) {
+					// Same inclusive-region contract as RISERasterImage::Clear:
+					// endpoints are clamped to the image (UINT_MAX = "to the
+					// edge"); empty images and wholly outside or inverted
+					// regions write nothing.
+					if( !width || !height ) return;
 					unsigned int startx = 0, endx = width-1, starty = 0, endy = height-1;
 					if( rc ) {
+						if( rc->left > rc->right || rc->top > rc->bottom ||
+							rc->left >= width || rc->top >= height ) return;
 						startx = rc->left;
-						endx = rc->right;
+						endx = std::min( rc->right, width-1 );
 						starty = rc->top;
-						endy = rc->bottom;
+						endy = std::min( rc->bottom, height-1 );
 					}
 
 					for( unsigned int j=starty; j<=endy; j++ ) {
@@ -77,18 +103,14 @@ namespace RISE
 
 			void DumpImage( IRasterImageWriter* pWriter_ ) const
 			{
-				// Thats who we write to
-				if( pWriter ) {
-					pWriter->EndWrite();
-					pWriter->release();
-				}
-
-				pWriter = pWriter_;
-
-				if( pWriter ) {
-					pWriter->addref();
-					pWriter->BeginWrite( width, height );
-				}
+				// Acquire the incoming reference first: it can be the same
+				// writer currently held only by this image.
+				const auto release = []( IRasterImageWriter* writer ) { writer->release(); };
+				std::unique_ptr<IRasterImageWriter, decltype(release)> next( pWriter_, release );
+				if( next ) next->addref();
+				FinishWriter();
+				if( next ) next->BeginWrite( width, height );
+				pWriter = next.release();
 			}
 
 			void LoadImage( IRasterImageReader* )

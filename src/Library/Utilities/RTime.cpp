@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "RTime.h"
+#include <chrono>
 
 #ifdef WIN32
 	#define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
@@ -38,6 +39,16 @@ namespace RISE
 	}
 }
 
+namespace
+{
+	unsigned int MonotonicMilliseconds()
+	{
+		using namespace std::chrono;
+		return static_cast<unsigned int>(
+			duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count() );
+	}
+}
+
 Timer::Timer() : 
   startTime( 0 ),
   endTime( 0 ),
@@ -52,12 +63,12 @@ Timer::~Timer( )
 void Timer::start()
 {
 	interval = 0;
-	startTime = GetMilliseconds();
+	startTime = MonotonicMilliseconds();
 }
 
 void Timer::stop()
 {
-	endTime = GetMilliseconds();
+	endTime = MonotonicMilliseconds();
 	interval = endTime-startTime;
 }
 

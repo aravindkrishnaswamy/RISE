@@ -20,6 +20,10 @@
 #include "../Interfaces/ITwoColorOperator.h"
 #include "../Utilities/PEL.h"
 #include "../Utilities/Reference.h"
+#include <algorithm>
+#include <limits>
+#include <memory>
+#include <stdexcept>
 
 namespace RISE
 {
@@ -29,144 +33,139 @@ namespace RISE
 		class RasterImage_Template : public virtual IRasterImage, public virtual Reference
 		{
 		protected:
-			typedef Color_Template<ColorBase>		PEL;
-			PEL*									pData;
-			unsigned int							width;
-			unsigned int							height;
-			unsigned int							stride;
+			using PEL = Color_Template<ColorBase>;
+			PEL* pData = nullptr;
+			unsigned int width = 0;
+			unsigned int height = 0;
+			unsigned int stride = 0;
 
-			bool									bICreatedData;
-			RasterImage_Template<ColorBase>*		pParent;			// pointer to parent raster image
+			virtual ~RasterImage_Template() = default;
 
-			virtual ~RasterImage_Template( )
+		private:
+			// A view retains the allocation it references even after its source
+			// image is reloaded. Borrowed external pixels remain caller-owned.
+			std::shared_ptr<PEL[]> storage;
+
+			struct ReleaseSource {
+				void operator()( RasterImage_Template* source ) const { source->release(); }
+			};
+			std::unique_ptr<RasterImage_Template, ReleaseSource> borrowedSource;
+
+			void RetainBacking( RasterImage_Template* source )
 			{
-				if( pData && bICreatedData ) {
-					GlobalLog()->PrintDelete( pData, __FILE__, __LINE__ );
-					delete [] pData;
+				storage = source->storage;
+				if( !storage && source->pData ) {
+					auto* owner = source->borrowedSource ? source->borrowedSource.get() : source;
+					owner->addref();
+					borrowedSource.reset( owner );
 				}
+			}
 
-				safe_release( pParent );
+			static std::shared_ptr<PEL[]> Adopt( PEL* data )
+			{
+				if( !data ) return {};
+				return std::shared_ptr<PEL[]>( data, []( PEL* pixels ) {
+					GlobalLog()->PrintDelete( pixels, __FILE__, __LINE__ );
+					delete [] pixels;
+				} );
+			}
 
-				pData = 0;
-				pParent = 0;
+			static std::shared_ptr<PEL[]> Allocate( unsigned int w, unsigned int h, unsigned int rowStride )
+			{
+				if( !w || !h ) return {};
+				const size_t limit = std::numeric_limits<size_t>::max() / sizeof(PEL);
+				if( w > limit || h - 1 > (limit - w) / rowStride )
+					throw std::length_error( "Raster image dimensions exceed addressable storage" );
+				auto pixels = Adopt( new PEL[static_cast<size_t>(h - 1) * rowStride + w] );
+				GlobalLog()->PrintNew( pixels.get(), __FILE__, __LINE__, "raster pixels" );
+				return pixels;
+			}
+
+			void Replace( std::shared_ptr<PEL[]> pixels, unsigned int w, unsigned int h )
+			{
+				storage = std::move(pixels);
+				pData = storage.get();
+				borrowedSource.reset();
+				width = w;
+				height = h;
+				stride = w;
 			}
 
 		public:
-			// Default Constructor
-			RasterImage_Template( ) : 
-			pData( 0 ),
-			width( 0 ),
-			height( 0 ),
-			stride( 0 ),
-			bICreatedData(false),
-			pParent( 0 )
+			RasterImage_Template() = default;
+
+			RasterImage_Template( unsigned int w, unsigned int h, const PEL& value )
 			{
-			};
+				Replace( Allocate( w, h, w ), w, h );
+				if( pData ) std::fill_n( pData, static_cast<size_t>(w) * h, value );
+			}
 
-			// Constructor for creating a raster image of a defined size, with each Pel set to given color value
-			RasterImage_Template( const unsigned int w, const unsigned int h, const PEL& p ) : 
-			pData( 0 ),
-			width( w ),
-			height( h ),
-			stride( w ),
-			bICreatedData( true ),
-			pParent( 0 )
+			RasterImage_Template( const RasterImage_Template& source ) :
+				Reference( source ),
+				width( source.width ), height( source.height ), stride( source.stride ),
+				storage( Allocate( width, height, stride ) )
 			{
-				if( width>0 && height>0 ) {
-					pData = new PEL[width*height];
-					GlobalLog()->PrintNew( pData, __FILE__, __LINE__, "data" );
-				}
-
-				unsigned int dataPtr = 0;
-
-				for( unsigned int j=0; j<height; j++, dataPtr+=stride ) {
-					for( unsigned int i=0; i<width; i++ ) {
-						pData[dataPtr+i] = p;
-					}
+				pData = storage.get();
+				if( !pData ) return;
+				for( unsigned int y = 0; y < height; ++y ) {
+					const size_t offset = static_cast<size_t>(y) * stride;
+					std::copy_n( source.pData + offset, width, pData + offset );
 				}
 			}
 
-			// Copy constructor, NOTE: DATA IS COPIED in this instance!
-			RasterImage_Template( const RasterImage_Template<ColorBase>& s ) : 
-			pData( 0 ),
-			width( s.width ),
-			height( s.height ),
-			stride( s.stride ),
-			bICreatedData( true ),
-			pParent( 0 )
+			RasterImage_Template( RasterImage_Template* source )
 			{
-				pData = new PEL[width*height];
-				GlobalLog()->PrintNew( pData, __FILE__, __LINE__, "data" );
-
-				unsigned int dataPtr = 0;
-				
-				for( int j=0; j<height; j++, dataPtr+=stride ) {
-					for( int i=0; i<width; i++ ) {
-						pData[dataPtr+i] = s.pData[dataPtr+i];
-					}
-				}
+				if( !source ) return;
+				RetainBacking( source );
+				pData = source->pData;
+				width = source->width;
+				height = source->height;
+				stride = source->stride;
 			}
 
-			// Copy constructor, NOTE: DATA IS NOT COPIED in this instance!
-			RasterImage_Template( RasterImage_Template<ColorBase>* s ) : 
-			pData( s->pData ),
-			width( s->width ),
-			height( s->height ),
-			stride( s->stride ),
-			bICreatedData( false ),
-			pParent( s )
+			// View rectangles use an exclusive right and bottom, as before.
+			RasterImage_Template( RasterImage_Template* source, const Rect& clip )
 			{
-				s->addref();
-			}
-			  
-			// Clipped raster image, DATA IS NOT COPIED!
-			RasterImage_Template( RasterImage_Template<ColorBase>* s, const Rect& clip ) : 
-			pData( &s->pData[clip.top*s->stride+clip.left] ),
-			width( clip.right-clip.left ),
-			height( clip.bottom-clip.top ),
-			stride( s->stride ),
-			bICreatedData( false ),
-			pParent( s )
-			{
-				// Do some sanity checks!
-				s->addref();
+				if( !source || !source->pData || clip.left >= clip.right || clip.top >= clip.bottom ||
+					clip.right > source->width || clip.bottom > source->height ) return;
+				RetainBacking( source );
+				stride = source->stride;
+				pData = source->pData + static_cast<size_t>(clip.top) * stride + clip.left;
+				width = clip.right - clip.left;
+				height = clip.bottom - clip.top;
 			}
 
-			// Constructor from a void*, this just makes an image out of some random bytes...
-			RasterImage_Template( void* pBytes, const unsigned int w, const unsigned int h, bool bOwnData ) : 
-			pData( (PEL*)pBytes ),
-			width( w ),
-			height( h ),
-			stride( w ),
-			bICreatedData( bOwnData ),
-			pParent( 0 )
+			RasterImage_Template( void* pixels, unsigned int w, unsigned int h, bool owns ) :
+				pData( static_cast<PEL*>(pixels) ), width( pixels ? w : 0 ), height( pixels ? h : 0 ),
+				stride( width ), storage( owns ? Adopt(pData) : std::shared_ptr<PEL[]>() )
 			{
 			}
 
 			inline		PEL&	GetPel( const unsigned int x, const unsigned int y ) const
 			{
-				return pData[y*stride+x];
+				return pData[static_cast<size_t>(y)*stride+x];
 			}
 
 			inline		void SetPel( const unsigned int x, const unsigned int y, const PEL& p )
 			{
-				pData[y*stride+x] = p;
+				pData[static_cast<size_t>(y)*stride+x] = p;
 			}
 
 			inline		void	Clear( const RISEColor& p, const Rect* rc )
 			{
+				if( !width || !height ) return;
 				PEL sep( p.base, p.a );
 				
 				unsigned int startx = 0, endx = width-1, starty = 0, endy = height-1;
 				if( rc ) {
 					startx = rc->left;
-					endx = rc->right;
+					endx = std::min( rc->right, width - 1 );
 					starty = rc->top;
-					endy = rc->bottom;
+					endy = std::min( rc->bottom, height - 1 );
 				}
 
 				for( unsigned int j=starty; j<=endy; j++ ) {
-					const unsigned int dataPtr = j*stride;
+					const size_t dataPtr = static_cast<size_t>(j)*stride;
 					for( unsigned int i=startx; i<=endx; i++ ) {
 						pData[dataPtr+i] = sep;
 					}
@@ -175,7 +174,7 @@ namespace RISE
 
 			inline		void	Clear( const PEL& p, const int* f=0 )
 			{
-				unsigned int dataPtr = 0;
+				size_t dataPtr = 0;
 				for( unsigned int j=0; j<height; j++, dataPtr+=stride ) {
 					for( unsigned int i=0; i<width; i++ ) {
 						pData[dataPtr+i] = p;
@@ -188,7 +187,7 @@ namespace RISE
 				if( pWriter )
 				{
 					pWriter->BeginWrite( width, height );
-					unsigned int dataPtr = 0;
+					size_t dataPtr = 0;
 					for( unsigned int j=0; j<height; j++, dataPtr+=stride ) {
 						for( unsigned int i=0; i<width; i++ ) {
 							pWriter->WriteColor( pData[dataPtr+i], i, j );
@@ -199,65 +198,40 @@ namespace RISE
 				}
 			}
 
-			void	LoadImage( IRasterImageReader* pReader )
+			void LoadImage( IRasterImageReader* reader )
 			{
-				unsigned int w, h;
-				
-				if( pReader )
-				{
-					if( pReader->BeginRead( w, h ) )
-					{
-						if( w!=width || h!=height )
-						{
-							// Re-allocate ourselves				
-							if( pData && bICreatedData ) {
-								GlobalLog()->PrintDelete( pData, __FILE__, __LINE__ );
-								delete [] pData;
-								pData = 0;
-							}
-							
-							safe_release( pParent );
-
-							width = w;
-							height = h;
-							stride = width;
-							bICreatedData = true;
-							pData = new PEL[width*height];
-							GlobalLog()->PrintNew( pData, __FILE__, __LINE__, "data" );
-						}
-
-						unsigned int dataPtr = 0;
-						for( unsigned int j=0; j<height; j++, dataPtr+=stride ) {
-							for( unsigned int i=0; i<width; i++ ) {
-								RISEColor c;
-								pReader->ReadColor( c, i, j );
-								pData[dataPtr+i] = c;
-							}
-						}
-
-						pReader->EndRead( );
-					} 
-					else if( !pData )
-					{
-						// Setup some dummy data
-						width = 1;
-						height = 1;
-						bICreatedData = true;
-						pData = new PEL[width*height];
-						GlobalLog()->PrintNew( pData, __FILE__, __LINE__, "data" );
-					}
+				if( !reader ) return;
+				unsigned int w = 0, h = 0;
+				if( !reader->BeginRead( w, h ) ) {
+					if( !pData ) Replace( Allocate( 1, 1, 1 ), 1, 1 );
+					return;
 				}
+				try {
+					if( w != width || h != height ) Replace( Allocate( w, h, w ), w, h );
+					for( unsigned int y = 0; y < height; ++y ) {
+						const size_t offset = static_cast<size_t>(y) * stride;
+						for( unsigned int x = 0; x < width; ++x ) {
+							RISEColor color;
+							reader->ReadColor( color, x, y );
+							pData[offset+x] = color;
+						}
+					}
+				} catch( ... ) {
+					try { reader->EndRead(); } catch( ... ) {}
+					throw;
+				}
+				reader->EndRead();
 			}
 
 			// For IRasterImage
 			RISEColor	GetPEL( const unsigned int x, const unsigned int y ) const
 			{
-				return RISEColor( pData[y*stride+x].base, pData[y*stride+x].a );
+				return RISEColor( pData[static_cast<size_t>(y)*stride+x].base, pData[static_cast<size_t>(y)*stride+x].a );
 			}
 
 			void	SetPEL( const unsigned int x, const unsigned int y, const RISEColor& p )
 			{
-				pData[y*stride+x] = Color_Template<ColorBase>( p.base, p.a );
+				pData[static_cast<size_t>(y)*stride+x] = Color_Template<ColorBase>( p.base, p.a );
 			}
 
 			inline unsigned int GetWidth( ) const

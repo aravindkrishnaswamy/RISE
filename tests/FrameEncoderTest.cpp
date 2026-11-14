@@ -24,6 +24,15 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <cstdint>
+#include <array>
+#include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#ifndef NO_PNG_SUPPORT
+#include <png.h>
+#endif
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -32,6 +41,9 @@
 
 #include "../src/Library/Rendering/FrameEncoders.h"
 #include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/ViewportFrameStore.h"
+#include "../src/Library/RasterImages/PNGWriter.h"
+#include "TestTempDir.h"
 #include "../src/Library/Rendering/DisplayTransformWriter.h"
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
@@ -52,10 +64,315 @@ namespace
 	{
 		if ( cond ) {
 			++gPassCount;
+			if( std::getenv("RISE_RED_PROVE_MARKER") ) std::cout << "PASS: " << label << "\n";
 		} else {
 			++gFailCount;
 			std::cerr << "FAIL: " << label << "\n";
 		}
+	}
+
+#ifndef NO_PNG_SUPPORT
+	struct RawPNGPixelRow
+	{
+		bool decoded = false;
+		bool hasGamma = false;
+		double gamma = 0;
+		unsigned int depth = 0;
+		unsigned int channels = 0;
+		std::array<unsigned char, 16> samples{};
+	};
+
+	RawPNGPixelRow ReadRawPNGPixelRow( const IMemoryBuffer& buffer )
+	{
+		struct Input
+		{
+			const char* bytes;
+			std::size_t size;
+			std::size_t position;
+		} input{ buffer.Pointer(), buffer.Size(), 0 };
+		RawPNGPixelRow result;
+		png_structp png = png_create_read_struct( PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr );
+		if( !png ) return result;
+		png_infop info = png_create_info_struct( png );
+		if( !info ) {
+			png_destroy_read_struct( &png, nullptr, nullptr );
+			return result;
+		}
+		if( setjmp( png_jmpbuf( png ) ) ) {
+			png_destroy_read_struct( &png, &info, nullptr );
+			return {};
+		}
+		// No gamma, alpha or endian transforms: inspect the file's actual
+		// RGBA samples in PNG network order, independently of RISE's reader.
+		png_set_read_fn( png, &input, []( png_structp state, png_bytep data, png_size_t size ) {
+			auto* source = static_cast<Input*>( png_get_io_ptr( state ) );
+			if( size > source->size - source->position ) png_error( state, "truncated fixture" );
+			std::memcpy( data, source->bytes + source->position, size );
+			source->position += size;
+		} );
+		png_read_info( png, info );
+		result.depth = png_get_bit_depth( png, info );
+		result.channels = png_get_channels( png, info );
+		result.hasGamma = png_get_gAMA( png, info, &result.gamma ) != 0;
+		if( png_get_image_width( png, info ) != 2 || png_get_image_height( png, info ) != 1 ||
+			(png_get_color_type( png, info ) != PNG_COLOR_TYPE_RGBA &&
+			 png_get_color_type( png, info ) != PNG_COLOR_TYPE_RGB) ||
+			(result.depth != 8 && result.depth != 16) ||
+			png_get_rowbytes( png, info ) != 2u * result.channels * (result.depth / 8u) ) {
+			png_destroy_read_struct( &png, &info, nullptr );
+			return {};
+		}
+		png_read_row( png, result.samples.data(), nullptr );
+		png_read_end( png, info );
+		png_destroy_read_struct( &png, &info, nullptr );
+		result.decoded = true;
+		return result;
+	}
+
+	std::array<double, 3> PNGReferenceChannels( const RISEColor& color, COLOR_SPACE space )
+	{
+		std::array<double, 3> rgb{ color.base.r, color.base.g, color.base.b };
+		if( space == eColorSpace_ROMMRGB_Linear || space == eColorSpace_ProPhotoRGB ) {
+			// Independent sequential Rec.709 D65 -> XYZ D65 -> Bradford D50
+			// -> ROMM D50 reference, rather than the production composite matrix.
+			const auto multiply = []( const std::array<double, 3>& value, const double (&matrix)[3][3] ) {
+				std::array<double, 3> transformed{};
+				for( std::size_t row = 0; row < 3; ++row )
+					for( std::size_t column = 0; column < 3; ++column )
+						transformed[row] += matrix[row][column] * value[column];
+				return transformed;
+			};
+			constexpr double toXYZ[3][3] = {
+				{0.412453, 0.357580, 0.180423}, {0.212671, 0.715160, 0.072169}, {0.019334, 0.119193, 0.950227}
+			};
+			constexpr double toD50[3][3] = {
+				{1.0479, 0.0229, -0.0502}, {0.0296, 0.9904, -0.0171}, {-0.0092, 0.0151, 0.7519}
+			};
+			constexpr double toROMM[3][3] = {
+				{1.3460, -0.2556, -0.0511}, {-0.5446, 1.5082, 0.0205}, {0, 0, 1.2123}
+			};
+			rgb = multiply( multiply( multiply( rgb, toXYZ ), toD50 ), toROMM );
+		}
+		for( double& channel : rgb ) {
+			if( space == eColorSpace_sRGB )
+				channel = channel <= 0.003040247678 ? 12.92 * channel : 1.055 * std::pow( channel, 1.0 / 2.4 ) - 0.055;
+			else if( space == eColorSpace_ProPhotoRGB )
+				channel = channel <= 0.001953 ? 16.0 * channel : std::pow( channel, 1.0 / 1.8 );
+			channel = std::max( 0.0, std::min( 1.0, channel ) );
+		}
+		return rgb;
+	}
+#endif
+
+	void TestPNGTransferMetadata()
+	{
+#ifndef NO_PNG_SUPPORT
+		const std::array<RISEColor, 2> colors = {
+			RISEColor( RISEPel( 0.018, 0.271, 0.673 ), 0.37 ),
+			RISEColor( RISEPel( 0.0005, 0.001, 0.0015 ), 0.8 )
+		};
+		struct Encoding { COLOR_SPACE space; const char* name; double gamma; };
+		const Encoding encodings[] = {
+			{ eColorSpace_Rec709RGB_Linear, "linear709", 1.0 },
+			{ eColorSpace_ROMMRGB_Linear, "linearROMM", 1.0 },
+			{ eColorSpace_sRGB, "sRGB", 1.0 / 2.2 },
+			{ eColorSpace_ProPhotoRGB, "ProPhoto", 1.0 / 1.8 }
+		};
+		for( const auto& encoding : encodings ) {
+			for( unsigned char depth : { 8, 16 } ) {
+				auto* buffer = new MemoryBuffer();
+				IRasterImageWriter* writer = nullptr;
+				RISE_API_CreatePNGWriter( &writer, *buffer, depth, encoding.space );
+				if( writer ) {
+					writer->BeginWrite( 2, 1 );
+					for( unsigned int x = 0; x < colors.size(); ++x ) writer->WriteColor( colors[x], x, 0 );
+					writer->EndWrite();
+					writer->release();
+				}
+				const auto png = ReadRawPNGPixelRow( *buffer );
+				buffer->release();
+				const std::string label = std::string("PNGGamma: ") + encoding.name + " " + std::to_string(depth);
+				Check( png.decoded && png.depth == depth && png.channels == 4, label + " independent libpng decode" );
+				const double quantizedGamma = std::round( encoding.gamma * 100000.0 ) / 100000.0;
+				Check( png.decoded && png.hasGamma && std::abs(png.gamma - quantizedGamma) < 1.0e-10,
+					label + " metadata matches the selected space's legacy gamma approximation" );
+				bool samplesMatch = png.decoded;
+				const unsigned int maximum = depth == 8 ? 255 : 65535;
+				for( std::size_t x = 0; x < colors.size() && samplesMatch; ++x ) {
+					const auto rgb = PNGReferenceChannels( colors[x], encoding.space );
+					for( std::size_t channel = 0; channel < 4; ++channel ) {
+						const double value = channel == 3 ? colors[x].a : rgb[channel];
+						const unsigned int expected = static_cast<unsigned int>( value * maximum );
+						const std::size_t offset = (x * 4u + channel) * (depth / 8u);
+						const unsigned int actual = depth == 8 ? png.samples[offset] :
+							(static_cast<unsigned int>(png.samples[offset]) << 8) | png.samples[offset + 1u];
+						samplesMatch &= actual == expected;
+					}
+				}
+				Check( samplesMatch, label + " raw RGB and alpha match analytic conversion and truncation" );
+			}
+		}
+#endif
+	}
+
+	void TestPNGCodecFailurePropagation()
+	{
+#ifndef NO_PNG_SUPPORT
+		struct ScopedFailure
+		{
+			bool previous = ForTest_SetPNGWriteFailureAfterHeader( true );
+			~ScopedFailure() { ForTest_SetPNGWriteFailureAfterHeader( previous ); }
+		};
+		struct AcceptingBuffer final : MemoryBuffer
+		{
+			bool acceptedEveryWrite = true;
+			bool setBytes( const void* bytes, unsigned int count ) override
+			{
+				const bool accepted = MemoryBuffer::setBytes( bytes, count );
+				acceptedEveryWrite &= accepted;
+				return accepted;
+			}
+		};
+		FrameStoreSpec spec;
+		spec.width = 2; spec.height = 1; spec.tileEdge = 8;
+		auto* store = new FrameStore( spec );
+		auto* viewport = new ViewportFrameStore();
+		viewport->BindFrameStore( store );
+		EncodeOpts opts;
+		opts.bpp = 16;
+		for( const char* name : { "PNG", "HDR10_PNG" } ) {
+			auto* encoder = FrameEncoderRegistry::Get().ByFormatName( name );
+			const std::string label = std::string("PNGCodecFailure: ") + name;
+			auto* buffer = new AcceptingBuffer();
+			bool reported = false;
+			{
+				ScopedFailure failure;
+				try { encoder->Encode( *store, *buffer, opts ); }
+				catch( const std::exception& ) { reported = true; }
+			}
+			Check( reported && buffer->getCurPos() > 8 && buffer->acceptedEveryWrite &&
+				buffer->refcount() == 1 && !ReadRawPNGPixelRow(*buffer).decoded,
+				label + " internal codec error after accepted header writes is reported and releases ownership" );
+			buffer->Resize( 0, true );
+			encoder->Encode( *store, *buffer, opts );
+			const auto retried = ReadRawPNGPixelRow( *buffer );
+			Check( retried.decoded && buffer->refcount() == 1,
+				label + " healthy retry produces a complete PNG" );
+			buffer->Resize( 0, true );
+			bool saved = true;
+			{
+				ScopedFailure failure;
+				saved = viewport->SaveTo( *buffer, encoder, opts );
+			}
+			Check( !saved && buffer->getCurPos() > 8 && buffer->acceptedEveryWrite,
+				label + " SaveTo refuses internally failed PNG despite successful destination writes" );
+			buffer->release();
+			char storage[16]{};
+			auto* rejecting = new MemoryBuffer( storage, sizeof(storage), false );
+			reported = false;
+			try { encoder->Encode( *store, *rejecting, opts ); }
+			catch( const std::exception& ) { reported = true; }
+			Check( reported && rejecting->refcount() == 1,
+				label + " rejected destination writes propagate separately from internal errors" );
+			rejecting->release();
+
+			const std::filesystem::path path = RISE::TestSupport::ScratchPath(
+				std::string("png_internal_failure_") + name + "_" +
+				std::to_string(RISE::TestSupport::CurrentProcessId()) + ".png" );
+			const auto readFile = [&path] {
+				std::ifstream input( path, std::ios::binary );
+				return std::vector<char>( std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() );
+			};
+			Check( viewport->SaveAs( path.string(), encoder, opts ), label + " staged baseline saved" );
+			const auto complete = readFile();
+			{
+				ScopedFailure failure;
+				saved = viewport->SaveAs( path.string(), encoder, opts );
+			}
+			Check( !saved && !complete.empty() && readFile() == complete,
+				label + " failed staged encoding preserves the previous complete image" );
+			Check( viewport->SaveAs( path.string(), encoder, opts ) && readFile() == complete,
+				label + " staged encoding recovers after internal codec failure" );
+			std::filesystem::remove( path );
+		}
+		// Invalid replacement must deactivate an old image and fail visibly;
+		// EndWrite after that failure cannot emit stale pixels.
+		auto* buffer = new MemoryBuffer();
+		IRasterImageWriter* writer = nullptr;
+		RISE_API_CreatePNGWriter( &writer, *buffer, 8, eColorSpace_sRGB );
+		writer->BeginWrite( 2, 1 );
+		bool reported = false;
+		try { writer->BeginWrite( 0, 1 ); }
+		catch( const std::exception& ) { reported = true; }
+		writer->EndWrite();
+		Check( reported && buffer->getCurPos() == 0,
+			"PNGCodecFailure: invalid replacement reports failure and clears the previous active image" );
+		writer->BeginWrite( 2, 1 );
+		writer->WriteColor( RISEColor(RISEPel(0.2, 0.3, 0.4), 0.5), 0, 0 );
+		writer->WriteColor( RISEColor(RISEPel(0.4, 0.3, 0.2), 0.5), 1, 0 );
+		reported = false;
+		{
+			ScopedFailure failure;
+			try { writer->EndWrite(); }
+			catch( const std::exception& ) { reported = true; }
+		}
+		buffer->Resize( 0, true );
+		writer->EndWrite();
+		Check( reported && ReadRawPNGPixelRow(*buffer).decoded,
+			"PNGCodecFailure: the same PNG writer can retry after codec cleanup" );
+		writer->release();
+		buffer->release();
+		viewport->release();
+		store->release();
+#endif
+	}
+
+	void TestEncoderFactoryFailure()
+	{
+		struct NullFactoryEncoder final : FrameEncoderBase
+		{
+			std::string FormatName() const override { return "null_factory"; }
+			std::vector<std::string> Extensions() const override { return { "null" }; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			IRasterImageWriter* CreateWriter( IWriteBuffer& dst, const EncodeOpts& ) const override
+			{
+				// Writer construction can emit bytes before reporting failure.
+				// Those bytes must never turn a null factory result into success.
+				const char partial[] = "partial factory output";
+				dst.setBytes( partial, sizeof(partial) );
+				return nullptr;
+			}
+		} encoder;
+		FrameStoreSpec spec;
+		spec.width = 2; spec.height = 1; spec.tileEdge = 8;
+		auto* store = new FrameStore( spec );
+		auto* viewport = new ViewportFrameStore();
+		viewport->BindFrameStore( store );
+		auto* buffer = new MemoryBuffer();
+		EncodeOpts opts;
+		bool reported = false;
+		try { encoder.Encode( *store, *buffer, opts ); }
+		catch( const std::exception& ) { reported = true; }
+		Check( reported && buffer->getCurPos() > 0 && buffer->refcount() == 1,
+			"EncoderFactoryFailure: direct encoding reports null factory after partial output" );
+		buffer->Resize( 0, true );
+		Check( !viewport->SaveTo( *buffer, &encoder, opts ) && buffer->getCurPos() > 0,
+			"EncoderFactoryFailure: SaveTo refuses bytes from a failed writer factory" );
+		const std::filesystem::path path = RISE::TestSupport::ScratchPath(
+			"null_factory_" + std::to_string(RISE::TestSupport::CurrentProcessId()) + ".bin" );
+		const std::string previous = "previous complete output";
+		{ std::ofstream baseline( path, std::ios::binary ); baseline << previous; }
+		const bool saved = viewport->SaveAs( path.string(), &encoder, opts );
+		std::ifstream input( path, std::ios::binary );
+		const std::string preserved{ std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
+		input.close();
+		Check( !saved && preserved == previous,
+			"EncoderFactoryFailure: SaveAs preserves previous output when its factory fails" );
+		std::filesystem::remove( path );
+		buffer->release();
+		viewport->release();
+		store->release();
 	}
 
 	// ─── Pixel pattern ────────────────────────────────────────────
@@ -910,12 +1227,86 @@ void TestHDR10PNGEncoder_L5c()
 	store->release();
 }
 
-int main()
+static void TestEncoderFailureOwnership()
+{
+	class RejectingBuffer final : public MemoryBuffer {
+	public:
+		bool reject = true;
+		unsigned int budget = 0;
+		unsigned int written = 0;
+		bool setBytes( const void* data, unsigned int count ) override {
+			if( reject ) {
+				if( count > budget ) return false;
+				budget -= count;
+			}
+			written += count;
+			return MemoryBuffer::setBytes(data, count);
+		}
+	};
+	FrameStoreSpec spec;
+	spec.width = spec.height = 1;
+	spec.tileEdge = 8;
+	auto* store = new FrameStore(spec);
+	std::vector<const char*> formats{ "tga" };
+#ifndef NO_EXR_SUPPORT
+	formats.push_back("exr");
+#endif
+#ifndef NO_TIFF_SUPPORT
+	formats.push_back("tiff");
+#endif
+	for( const char* format : formats ) {
+		auto* encoder = FrameEncoderRegistry::Get().ByExtension(format);
+		Check( encoder != nullptr, "failure fixture has its requested encoder" );
+		if( !encoder ) continue;
+		for( unsigned int bpp : { 16U, 32U } ) {
+			EncodeOpts opts;
+			opts.bpp = bpp;
+			auto* complete = new RejectingBuffer();
+			complete->reject = false;
+			encoder->Encode(*store, *complete, opts);
+			const auto lastWrite = complete->written - 1;
+			complete->release();
+			// Budgets inject early failures and failure at the last write.
+			for( unsigned int budget : { 0U, std::min(16U, lastWrite), std::min(64U, lastWrite), lastWrite } ) {
+				auto* buffer = new RejectingBuffer();
+				buffer->budget = budget;
+				bool failed = false;
+				try { encoder->Encode(*store, *buffer, opts); }
+				catch( const std::exception& ) { failed = true; }
+				Check( failed && buffer->refcount() == 1, "failed encoding releases its writer and buffer reference" );
+				buffer->reject = false;
+				buffer->Resize(0, true);
+				encoder->Encode(*store, *buffer, opts);
+				Check( buffer->refcount() == 1 && buffer->getCurPos() > 0, "encoding recovers after a rejected output write" );
+				buffer->seek(IBuffer::START, 0);
+				IRasterImageReader* reader = nullptr;
+				if( std::strcmp(format, "exr") == 0 )
+					RISE_API_CreateEXRReader(&reader, *buffer, opts.colorSpace);
+				else if( std::strcmp(format, "tiff") == 0 ) RISE_API_CreateTIFFReader(&reader, *buffer, opts.colorSpace);
+				else RISE_API_CreateTGAReader(&reader, *buffer, opts.colorSpace);
+				unsigned int width = 0, height = 0;
+				Check( reader && reader->BeginRead(width, height) && width == 1 && height == 1,
+					"retried encoder output decodes as a complete image" );
+				if( reader ) { reader->EndRead(); reader->release(); }
+				buffer->release();
+			}
+		}
+	}
+
+	store->release();
+
+}
+
+static int RunTests()
 {
 	std::cout << "FrameEncoderTest L2 — IFrameEncoder byte-identical regression\n";
 	std::cout << "------------------------------------------------------------\n";
 
 	TestRegistry();
+	TestPNGTransferMetadata();
+	TestPNGCodecFailurePropagation();
+	TestEncoderFactoryFailure();
+	TestEncoderFailureOwnership();
 	TestByteIdentityAllFormats();
 	TestHDRFormatsIgnoreViewTransform();
 	TestNon10AlphaPrecision();
@@ -928,4 +1319,9 @@ int main()
 	std::cout << "------------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";
 	return gFailCount == 0 ? 0 : 1;
+}
+
+int main()
+{
+	return RISE::TestSupport::WithOwnedScratch( RunTests );
 }

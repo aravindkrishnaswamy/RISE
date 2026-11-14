@@ -22,7 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
-#include "../src/Library/Parsers/MathExpressionEvaluator.h"
+#include "LegacyMathExpression.h"
 #include "../src/Library/Sampling/HaltonPoints.h"
 #include "../src/Library/Utilities/Math3D/Constants.h"   // RISE::PI / RISE::E_ -- the SAME constants the legacy preprocessor seeds (AsciiSceneParser.cpp:9965-9966); portable, unlike M_PI/M_E (undefined on MSVC).
 

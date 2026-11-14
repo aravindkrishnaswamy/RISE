@@ -29495,11 +29495,7 @@ namespace RISE
 			//!    ephemeral render closure -- doDraftRenderWork,
 			//!    doObjectMapRenderWork, doViewModeRenderWork and
 			//!    doBeautyVariantRenderWork; the count said "three"), and
-			//!    `SinkLease` in `ReadImage(maxEdge,...)`.  (The
-			//!    file's PNG codec helpers -- `DecodePngRgbAt` and
-			//!    `EncodeLinearPassthroughPng_` -- do use plain paired
-			//!    `safe_release` across their reader/writer calls; they are the
-			//!    exception, not a precedent to copy here.)
+			//!    `SinkLease` in `ReadImage(maxEdge,...)`.
 			//!  * THE GUARDED SCOPE IS PRIMARILY A ZERO-BYTE WINDOW, not a
 			//!    "shows-the-ephemeral-render" window.  The ctor moves the
 			//!    cache OUT (AgentImageCache::Take leaves the png empty and
@@ -30225,44 +30221,42 @@ namespace RISE
 			//! different translation unit's anonymous-namespace helper --
 			//! and deliberately simpler: no display-transform wrapper, since
 			//! the composite's bytes are already final display values).
-			//! Returns an empty vector on a writer-creation failure or zero
-			//! dims.
+			//! Returns an empty vector on encoding/allocation failure or zero dims.
 			std::vector<unsigned char> EncodeLinearPassthroughPng_(
 				const std::vector<RISEColor>& pels, unsigned int w, unsigned int h )
 			{
 				std::vector<unsigned char> out;
 				if( w == 0 || h == 0 ) return out;
 
-				// `new` yields refcount 1 (Reference starts at 1) -- our owning
-				// ref; PNGWriter addrefs it internally.  safe_release both at
-				// the end (no extra addref taken here).
-				Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer();
+				try {
+					const auto release=[](auto* p){if(p)p->release();};
+					std::unique_ptr<Implementation::MemoryBuffer,decltype(release)> buffer(
+						new Implementation::MemoryBuffer(),release);
+					IRasterImageWriter* rawWriter=nullptr;
+					const bool created=RISE_API_CreatePNGWriter(&rawWriter,*buffer,8,eColorSpace_Rec709RGB_Linear);
+					std::unique_ptr<IRasterImageWriter,decltype(release)> writer(rawWriter,release);
+					if(!created || !writer)return out;
 
-				IRasterImageWriter* writer = nullptr;
-				if( !RISE_API_CreatePNGWriter( &writer, *buffer, /*bpp=*/8, eColorSpace_Rec709RGB_Linear ) || !writer ) {
-					safe_release( buffer );
-					return out;
-				}
-
-				writer->BeginWrite( w, h );
-				for( unsigned int y = 0; y < h; ++y ) {
-					for( unsigned int x = 0; x < w; ++x ) {
-						writer->WriteColor( pels[ static_cast<std::size_t>( y ) * w + x ], x, y );
+					writer->BeginWrite( w, h );
+					for( unsigned int y = 0; y < h; ++y ) {
+						for( unsigned int x = 0; x < w; ++x ) {
+							writer->WriteColor( pels[ static_cast<std::size_t>( y ) * w + x ], x, y );
+						}
 					}
-				}
-				writer->EndWrite();   // flushes the encoded PNG bytes into `buffer`
+					writer->EndWrite();   // flushes the encoded PNG bytes into `buffer`
 
-				const unsigned int nBytes = buffer->getCurPos();
-				const char* p = buffer->Pointer();
-				if( p && nBytes > 0 ) {
-					out.assign(
-						reinterpret_cast<const unsigned char*>( p ),
-						reinterpret_cast<const unsigned char*>( p ) + nBytes );
-				}
+					const unsigned int nBytes = buffer->getCurPos();
+					const char* p = buffer->Pointer();
+					if( p && nBytes > 0 ) {
+						out.assign(
+							reinterpret_cast<const unsigned char*>( p ),
+							reinterpret_cast<const unsigned char*>( p ) + nBytes );
+					}
 
-				safe_release( writer );
-				safe_release( buffer );
-				return out;
+					return out;
+				} catch(...) {
+					return {}; // A codec failure must not escape the agent API.
+				}
 			}
 
 			//! compare_to_reference visual=true: map a per-pixel mean |delta|
@@ -30503,6 +30497,12 @@ namespace RISE
 				if( outW < 1 ) outW = 1;
 				if( outH < 1 ) outH = 1;
 			}
+		}
+
+		std::vector<unsigned char> AgentSession::ForTest_EncodeLinearPassthroughPng(
+			const std::vector<RISEColor>& pels, unsigned int width, unsigned int height )
+		{
+			return EncodeLinearPassthroughPng_(pels,width,height);
 		}
 
 		//! R1 fix round (2026-08-09) -- supervisor decision, recorded here so a future pass doesn't "close

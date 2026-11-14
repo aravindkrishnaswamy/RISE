@@ -6,6 +6,8 @@
 #include <cstring>
 #include <vector>
 #include <functional>
+#include <limits>
+#include "../src/Library/Cameras/ThinLensCamera.h"
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Cameras/CameraCommon.h"
 #include "../src/Library/Lights/PointLight.h"
@@ -77,6 +79,10 @@ public:
     }
 };
 int main() {
+    double triple[3]={10,20,30};
+    double pair[2]={10,20};
+    if(ParseStrictVec3("1 invalid 3",triple) || triple[0]!=10 || triple[1]!=20 || triple[2]!=30) ++failures;
+    if(ParseStrictVec2("1 invalid",pair) || pair[0]!=10 || pair[1]!=20) ++failures;
     const Point3 location(0,0,4),lookAt(0,0,0);
     const Vector3 up(0,1,0),orientation(0,0,0);
     const Vector2 target(0,0);
@@ -89,6 +95,93 @@ int main() {
         if(kind==3) ok=RISE_API_CreateOrthographicCamera(&camera,location,lookAt,up,32,32,Vector2(2,2),1,1,0,0,orientation,target);
         auto* common=dynamic_cast<CameraCommon*>(camera);
         if(!ok || !common) { ++failures;safe_release(camera);continue; }
+        std::vector<const char*> scalarFields = { "theta", "elevation", "phi", "azimuth", "exposure", "width", "height" };
+        if(kind==0) scalarFields.push_back("fov");
+        if(kind==1) scalarFields.insert(scalarFields.end(), { "sensor_size", "focal_length", "fstop", "focus_distance",
+            "aperture_blades", "aperture_rotation", "anamorphic_squeeze", "tilt_x", "tilt_y", "shift_x", "shift_y" });
+        if(kind==2) scalarFields.push_back("scale");
+        for(const char* field : scalarFields) {
+            auto* valid=camera->KeyframeFromParameters(field,"1.25");
+            if(!valid) ++failures;
+            else {
+                const bool orbitAngle=std::strcmp(field,"theta")==0 || std::strcmp(field,"elevation")==0 ||
+                    std::strcmp(field,"phi")==0 || std::strcmp(field,"azimuth")==0;
+                const Scalar expected=orbitAngle?1.25*DEG_TO_RAD:1.25;
+                if(*static_cast<const Scalar*>(valid->getValue())!=expected) ++failures;
+                valid->release();
+            }
+            for(const char* text : { "", "garbage", "nan", "inf", "1e1000", "1junk", "1 2" }) {
+                auto* parameter=camera->KeyframeFromParameters(field,text);
+                if(parameter) {
+                    std::printf("FAIL: %s accepts invalid %s value '%s'\n",labels[kind],field,text);
+                    ++failures;parameter->release();
+                }
+            }
+        }
+        for(const char* field : { "location", "lookat", "up", "orientation", "target_orientation" }) {
+            for(const char* text : { "nan 0 0", "0 inf 0", "0 0 1e1000", "1", "1 2 3 4" }) {
+                auto* parameter=camera->KeyframeFromParameters(field,text);
+                if(parameter) { ++failures;parameter->release(); }
+            }
+        }
+        auto* whitespaceScalar=camera->KeyframeFromParameters("exposure","\v1.5\f");
+        if(!whitespaceScalar || *static_cast<const Scalar*>(whitespaceScalar->getValue())!=1.5) ++failures;
+        safe_release(whitespaceScalar);
+        auto* whitespaceVector=camera->KeyframeFromParameters("location","\v1\f2\t3\r");
+        if(!whitespaceVector) ++failures;
+        else {
+            const auto& point=*static_cast<const Point3*>(whitespaceVector->getValue());
+            if(point.x!=1 || point.y!=2 || point.z!=3) ++failures;
+            whitespaceVector->release();
+        }
+        auto* whitespacePair=camera->KeyframeFromParameters("target_orientation","1\f2\v");
+        if(!whitespacePair) ++failures;
+        else {
+            const auto& angles=*static_cast<const Vector2*>(whitespacePair->getValue());
+            if(angles.x!=DEG_TO_RAD || angles.y!=2*DEG_TO_RAD) ++failures;
+            whitespacePair->release();
+        }
+        for(const char* field : { "width", "height" }) {
+            auto* probe=camera->KeyframeFromParameters(field,"32");
+            if(!probe) { ++failures;continue; }
+            for(const char* text : { "0", "-1", "4294967296" }) {
+                auto* invalid=camera->KeyframeFromParameters(field,text);
+                if(invalid) { ++failures;invalid->release(); }
+            }
+            Parameter<Scalar> validDimension(40,probe->getID());
+            camera->SetIntermediateValue(validDimension);
+            const unsigned int expectedWidth=std::strcmp(field,"width")==0?40:32;
+            const unsigned int expectedHeight=std::strcmp(field,"height")==0?40:32;
+            if(common->GetWidth()!=expectedWidth || common->GetHeight()!=expectedHeight) ++failures;
+            for(Scalar dimension : { Scalar(0), Scalar(-1), Scalar(4294967296.0), std::numeric_limits<Scalar>::quiet_NaN() }) { // HYGIENE-OK: exercise rejection of non-finite interpolated camera state.
+                Parameter<Scalar> interpolated(dimension,probe->getID());
+                camera->SetIntermediateValue(interpolated);
+                if(common->GetWidth()!=expectedWidth || common->GetHeight()!=expectedHeight) ++failures;
+            }
+            camera->SetIntermediateValue(*probe);
+            probe->release();
+        }
+        if(auto* lens=dynamic_cast<ThinLensCamera*>(camera)) {
+            const auto oldBlades=lens->GetApertureBlades();
+            auto* probe=camera->KeyframeFromParameters("aperture_blades","6");
+            if(!probe) ++failures;
+            else {
+                camera->SetIntermediateValue(*probe);
+                if(lens->GetApertureBlades()!=6) ++failures;
+                for(const char* text : { "-1", "4294967296" }) {
+                    auto* invalid=camera->KeyframeFromParameters("aperture_blades",text);
+                    if(invalid) { ++failures;invalid->release(); }
+                }
+                for(Scalar blades : { Scalar(-1), Scalar(4294967296.0), std::numeric_limits<Scalar>::quiet_NaN() }) { // HYGIENE-OK: exercise rejection of non-finite interpolated camera state.
+                    Parameter<Scalar> interpolated(blades,probe->getID());
+                    camera->SetIntermediateValue(interpolated);
+                    if(lens->GetApertureBlades()!=6) ++failures;
+                }
+                Parameter<Scalar> restoreBlades(oldBlades,probe->getID());
+                camera->SetIntermediateValue(restoreBlades);
+                probe->release();
+            }
+        }
         char label[64];std::snprintf(label,sizeof(label),"%s location",labels[kind]);
         Measure<Point3>(label,*camera,"location","1.125 2.25 3.5","9.625 8.75 6.5",[&]{return common->GetRestLocation();});
         std::snprintf(label,sizeof(label),"%s orientation",labels[kind]);

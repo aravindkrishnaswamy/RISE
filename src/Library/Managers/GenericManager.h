@@ -23,6 +23,9 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <string_view>
+#include <algorithm>
+#include <cstring>
 
 namespace RISE
 {
@@ -86,6 +89,27 @@ namespace RISE
 		if( g_cstFinalizeDiagSink && g_cstFinalizeDiagSink->empty() ) *g_cstFinalizeDiagSink = msg;
 	}
 
+	// Preserve the old vector<char> ordering, including its terminating NUL.
+	struct ManagerNameLess
+	{
+		using is_transparent = void;
+
+		bool operator()( std::string_view left, std::string_view right ) const
+		{
+			const auto common = std::min( left.size(), right.size() );
+			size_t i = 0;
+			// Skip equal blocks, then apply char ordering at the first mismatch.
+			for( ; common - i >= 16; i += 16 ) {
+				if( std::memcmp( left.data() + i, right.data() + i, 16 ) != 0 ) break;
+			}
+			for( ; i < common; ++i ) {
+				if( left[i] != right[i] ) return left[i] < right[i];
+			}
+			if( left.size() == right.size() ) return false;
+			return left.size() < right.size() ? right[common] >= char(0) : left[common] < char(0);
+		}
+	};
+
 	template< class T >
 	class GenericManager : public virtual Implementation::Reference, public virtual IManager<T>
 	{
@@ -93,35 +117,20 @@ namespace RISE
 
 		struct ITEMREFERENCES
 		{
-			IDeletedCallback<T>&	pFunc;
-			IReference&				pCaller;
-
-			ITEMREFERENCES( IDeletedCallback<T>& a, IReference& c ) :
-			pFunc( a ), pCaller( c )
-			{}
-
-			ITEMREFERENCES( const ITEMREFERENCES& item ) :
-			pFunc( item.pFunc ), pCaller( item.pCaller )
-			{}
-
-			ITEMREFERENCES& operator=( const ITEMREFERENCES& item )
-			{
-				pFunc = item.pFunc;
-				pCaller = item.pCaller;
-				return *this;
-			}
+			IDeletedCallback<T>* pFunc;
+			IReference* pCaller;
 		};
 
 		typedef std::vector<ITEMREFERENCES>				ReferencesListType;
 		typedef std::pair<T*,ReferencesListType>		ItemType;
-		typedef std::map<String,ItemType>				ItemListType;
+		typedef std::map<std::string,ItemType,ManagerNameLess>				ItemListType;
 
 		ItemListType		items;
 
 		// P1: parallel per-name registration serial, bumped on every AddItem, so a
 		// remove+re-add under the same name yields a NEW serial (identity change).
 		unsigned long long							m_nNextSerial;
-		std::map<String,unsigned long long>			m_serials;
+		std::map<std::string,unsigned long long,ManagerNameLess>			m_serials;
 
 		virtual ~GenericManager( )
 		{
@@ -146,12 +155,16 @@ namespace RISE
 				return false;
 			}
 
-			// Now add it
+			std::string name( szName );
+			const auto inserted = items.try_emplace( name, pItem, ReferencesListType() );
+			try {
+				m_serials.emplace( std::move(name), m_nNextSerial + 1 );
+			} catch( ... ) {
+				items.erase( inserted.first );
+				throw;
+			}
+			++m_nNextSerial;
 			pItem->addref();
-
-			String vecName( szName );
-			items[vecName] = std::pair<T*,ReferencesListType>( pItem, ReferencesListType() );
-			m_serials[vecName] = ++m_nNextSerial;   // P1: identity serial
 			if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pItem ) );   // D35: PRODUCED entity
 			return true;
 		}
@@ -163,20 +176,16 @@ namespace RISE
 				return false;
 			}
 
-			String vecName( szName );
-			typename ItemListType::iterator	elem = items.find( vecName );
+			typename ItemListType::iterator	elem = items.find( std::string_view(szName) );
 
 			if( elem == items.end() ) {
 				GlobalLog()->PrintEx( eLog_Warning, "GenericManager::RemoveItem:: '%s' not found", szName );
 				return false;
 			}
-
-			typename ReferencesListType::iterator	m, n;
-			for( m=elem->second.second.begin(), n=elem->second.second.end(); m!=n; m++ ) {
-				ITEMREFERENCES&	itemcb = *m;
-				itemcb.pFunc( *(elem->second.first) );
-				itemcb.pCaller.release();
-			}
+			const auto serial = m_serials.find( elem->first );
+			auto item = items.extract( elem );
+			if( serial != m_serials.end() ) m_serials.erase( serial );
+			NotifyDeleted( item.mapped() );
 
 			// Release the manager's own ref on the item.  AddItem
 			// addref'd; without this matching release the item leaks
@@ -185,9 +194,7 @@ namespace RISE
 			// removed at runtime; the other managers are essentially
 			// load-once / shutdown-once in practice and Shutdown's
 			// safe_release covers them on teardown.
-			safe_release( elem->second.first );
-			items.erase( elem );
-			m_serials.erase( vecName );   // P1: drop identity serial (a re-add gets a fresh one)
+			safe_release( item.mapped().first );
 			return true;
 		}
 
@@ -198,8 +205,7 @@ namespace RISE
 				return 0;
 			}
 
-			String vecName( szName );
-			typename ItemListType::const_iterator	elem = items.find( vecName );
+			typename ItemListType::const_iterator	elem = items.find( std::string_view(szName) );
 
 			if( elem == items.end() ) {
 				return 0;
@@ -213,8 +219,7 @@ namespace RISE
 		unsigned long long	GetItemSerial( const char* szName ) const
 		{
 			if( !szName ) return 0;
-			String vecName( szName );
-			typename std::map<String,unsigned long long>::const_iterator it = m_serials.find( vecName );
+			typename std::map<std::string,unsigned long long,ManagerNameLess>::const_iterator it = m_serials.find( std::string_view(szName) );
 			return ( it == m_serials.end() ) ? 0 : it->second;
 		}
 
@@ -226,16 +231,14 @@ namespace RISE
 				return 0;
 			}
 
-			String vecName( szName );
-			typename ItemListType::iterator	elem = items.find( vecName );
+			typename ItemListType::iterator	elem = items.find( std::string_view(szName) );
 
 			if( elem == items.end() ) {
 				GlobalLog()->PrintEx( eLog_Warning, "GenericManager::RequestItemUse:: '%s' not found", szName );
 				return 0;
 			}
 
-			ITEMREFERENCES		itemcb( pFunc, pCaller );
-			elem->second.second.push_back( itemcb );
+			elem->second.second.push_back( { &pFunc, &pCaller } );
 			pCaller.addref();
 			return elem->second.first;
 		}
@@ -251,10 +254,11 @@ namespace RISE
 					for( m=i->second.second.begin(), n=i->second.second.end(); m!=n; m++ )
 					{
 						ITEMREFERENCES&	itemcb = *m;
-						if( itemcb.pFunc == pFunc ) {
+						if( *itemcb.pFunc == pFunc ) {
 							// We found it, now blow this entry away.
-							itemcb.pCaller.release();
+							auto* caller = itemcb.pCaller;
 							i->second.second.erase( m );
+							caller->release();
 							return true;
 						}
 					}
@@ -271,22 +275,12 @@ namespace RISE
 		//
 		void		Shutdown( )
 		{
-			typename ItemListType::iterator		i, e;
-			for( i=items.begin(), e=items.end(); i!=e; i++ )
-			{
-				typename ReferencesListType::iterator	m, n;
-				for( m=i->second.second.begin(), n=i->second.second.end(); m!=n; m++ ) {
-					ITEMREFERENCES&	itemcb = (*m);
-					itemcb.pFunc( *i->second.first );
-					itemcb.pCaller.release();
-				}
-
-				i->second.second.clear();
-				safe_release( i->second.first );
+			while( !items.empty() ) {
+				auto item = items.extract( items.begin() );
+				m_serials.erase( item.key() );
+				NotifyDeleted( item.mapped() );
+				safe_release( item.mapped().first );
 			}
-
-			items.clear();
-			m_serials.clear();   // P1
 		}
 
 		unsigned int	getItemCount( ) const{ return static_cast<unsigned int>(items.size()); }
@@ -304,6 +298,15 @@ namespace RISE
 			typename ItemListType::const_iterator		i, e;
 			for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 				pFunc( i->second.first );
+			}
+		}
+
+	private:
+		static void NotifyDeleted( const ItemType& item )
+		{
+			for( const auto& callback : item.second ) {
+				(*callback.pFunc)( *item.first );
+				callback.pCaller->release();
 			}
 		}
 	};

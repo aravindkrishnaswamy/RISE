@@ -15,7 +15,6 @@
 #include "../Interfaces/ILog.h"
 
 #include <cstdio>
-#include <cstring>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -65,7 +64,7 @@ void FileEncoderObserver::OnDenoiseComplete( unsigned int frame, uint64_t /*gene
 
 void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 {
-	if ( !store_ || !encoder_ ) return;
+	if ( !store_ || !encoder_ || store_->Width() == 0 || store_->Height() == 0 ) return;
 
 	// Determine the file extension from the encoder's first listed
 	// extension.  This is the canonical extension per
@@ -75,64 +74,42 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 	if ( !exts.empty() ) ext = exts.front();
 	else                  ext = "out";
 
-	// Build the filename — same templating as
-	// FileRasterizerOutput.cpp:156-160.
-	static const int MAX_BUFFER_SIZE = 2048;
-	char filename[MAX_BUFFER_SIZE];
+	// Animated output has a minimum of four digits for the frame number.
+	std::string frameNumber;
 	if ( bMultiple_ ) {
-		snprintf( filename, MAX_BUFFER_SIZE, "%s%s%.4u.%s",
-			pattern_.c_str(), suffix, frame, ext.c_str() );
-	} else {
-		snprintf( filename, MAX_BUFFER_SIZE, "%s%s.%s",
-			pattern_.c_str(), suffix, ext.c_str() );
+		frameNumber = std::to_string( frame );
+		if( frameNumber.size() < 4 ) frameNumber.insert( 0, 4 - frameNumber.size(), '0' );
 	}
+	std::string filename = pattern_ + suffix + frameNumber + "." + ext;
 
-	// Open the disk file.  If the open fails, mirror the legacy
-	// "fall back to fro_temp_…" emergency-file behaviour from
-	// FileRasterizerOutput.cpp:167-186 — we don't want to lose
-	// the rendered data when a path is unwritable.
-	DiskFileWriteBuffer* buf = new DiskFileWriteBuffer( filename );
-
-	if ( !buf->ReadyToWrite() ) {
-		safe_release( buf );
-
-		const FileEncoderObserver* pMe = this;
-		char emergency[MAX_BUFFER_SIZE];
-		if ( bMultiple_ ) {
-			snprintf( emergency, MAX_BUFFER_SIZE,
-				"fro_temp_%lu%s_%.4u.%s",
-				static_cast<unsigned long>( reinterpret_cast<uintptr_t>( pMe ) ),
-				suffix, frame, ext.c_str() );
-		} else {
-			snprintf( emergency, MAX_BUFFER_SIZE,
-				"fro_temp_%lu%s.%s",
-				static_cast<unsigned long>( reinterpret_cast<uintptr_t>( pMe ) ),
-				suffix, ext.c_str() );
-		}
-
-		buf = new DiskFileWriteBuffer( emergency );
-		if ( !buf->ReadyToWrite() ) {
-			GlobalLog()->PrintEasyError(
-				"FileEncoderObserver:: Fatal error trying to write image, "
-				"couldn't even write the emergency file!" );
-			safe_release( buf );
+	// Stage each frame beside its destination. If staging is unavailable,
+	// allow the historical direct-write path for writable destinations.
+	// Publication failures retain completed staging bytes. Other failures
+	// may try a new exclusive emergency file without trusting an old candidate.
+	const auto encode = [&]( DiskFileWriteBuffer& buffer ) {
+		encoder_->Encode( *store_, buffer, opts_ );
+		return true;
+	};
+	DiskFileWriteBuffer::WriteDiagnostics primary;
+	if( !DiskFileWriteBuffer::WriteAtomically(filename, encode, DiskFileWriteBuffer::StagingPolicy::AllowInPlace, &primary) ) {
+		if( !primary.recoveryPath.empty() ) {
+			GlobalLog()->PrintEx(eLog_Warning, "Could not publish '%s'; completed image retained at '%s'",
+				filename.c_str(), primary.recoveryPath.c_str());
 			return;
 		}
+		const std::string emergency = "fro_temp_" +
+			std::to_string( reinterpret_cast<uintptr_t>( this ) ) + suffix +
+			(bMultiple_ ? "_" : "") + frameNumber + "." + ext;
 		GlobalLog()->PrintEx( eLog_Warning,
-			"Failed to open specified file '%s', rendered scene written "
-			"to emergency file '%s' instead!", filename, emergency );
-		// Use the emergency filename as the effective filename for
-		// the success log message below.
-		std::strncpy( filename, emergency, MAX_BUFFER_SIZE );
-		filename[ MAX_BUFFER_SIZE - 1 ] = '\0';
+			"Could not publish '%s', trying emergency file '%s'",
+			filename.c_str(), emergency.c_str() );
+		DiskFileWriteBuffer::WriteDiagnostics recovery;
+		if( !DiskFileWriteBuffer::WriteNewFile(emergency, encode, &recovery) ) {
+			GlobalLog()->PrintEx(eLog_Error, "FileEncoderObserver: Could not write emergency file '%s': %s",
+				emergency.c_str(), recovery.error.message().c_str());
+			return;
+		}
+		filename = recovery.recoveryPath;
 	}
-
-	GlobalLog()->PrintNew( buf, __FILE__, __LINE__, "DiskFileWriteBuffer" );
-
-	encoder_->Encode( *store_, *buf, opts_ );
-
-	safe_release( buf );
-
-	GlobalLog()->PrintEx( eLog_Event,
-		"FileEncoderObserver:: Written to '%s'", filename );
+	GlobalLog()->PrintEx( eLog_Event, "FileEncoderObserver:: Written to '%s'", filename.c_str() );
 }

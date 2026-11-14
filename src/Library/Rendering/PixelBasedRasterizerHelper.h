@@ -25,12 +25,49 @@
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/ProgressiveConfig.h"
 #include "TimeIndexedMotionBlur.h"
+#include <utility>
 #include <typeinfo>	// Model-B F2 S3 fix round: ForTest_SamplingKernelName's typeid
 
 namespace RISE
 {
 	namespace Implementation
 	{
+		// Internal render cleanup. Explicit Run propagates normal-path errors;
+		// unwind cleanup preserves the active callback/observer exception.
+		template< class F >
+		class RasterizerScopeExit
+		{
+			F cleanup_;
+			bool armed_ = true;
+
+		public:
+			explicit RasterizerScopeExit( F cleanup ) :
+				cleanup_( std::move(cleanup) )
+			{}
+
+			RasterizerScopeExit( const RasterizerScopeExit& ) = delete;
+			RasterizerScopeExit& operator=( const RasterizerScopeExit& ) = delete;
+
+			~RasterizerScopeExit() noexcept
+			{
+				if( armed_ ) {
+					try {
+						cleanup_();
+					} catch( ... ) {
+						// Cleanup must preserve the original render failure.
+					}
+				}
+			}
+
+			void Run()
+			{
+				if( armed_ ) {
+					armed_ = false;
+					cleanup_();
+				}
+			}
+		};
+
 		class PixelBasedRasterizerHelper : public virtual Rasterizer
 		{
 		public:
@@ -174,6 +211,54 @@ namespace RISE
 		protected:
 			IRayCaster*			pCaster;
 			ISampling2D*		pSampling;
+
+			// Per-invocation execution state, separate from the authored owning
+			// kernel above. Installed only between joined worker phases; workers
+			// read it while the scoped owner is alive. Concurrent render calls
+			// on one rasterizer and callback re-entry are not supported.
+			mutable ISampling2D* mActiveSampling = nullptr;
+			mutable bool mHasActiveSampling = false;
+			ISampling2D* ActiveSampling() const
+			{
+				return mHasActiveSampling ? mActiveSampling : pSampling;
+			}
+
+			// Borrows the caller-owned kernel. Declare its owner first so this
+			// override restores the prior execution state before releasing it.
+			class ScopedActiveSampling
+			{
+				const PixelBasedRasterizerHelper& owner_;
+				ISampling2D* previous_;
+				bool hadPrevious_;
+				bool armed_ = true;
+
+			public:
+				ScopedActiveSampling( const PixelBasedRasterizerHelper& owner, ISampling2D* sampling ) :
+					owner_( owner ),
+					previous_( owner.mActiveSampling ),
+					hadPrevious_( owner.mHasActiveSampling )
+				{
+					owner_.mActiveSampling = sampling;
+					owner_.mHasActiveSampling = true;
+				}
+
+				ScopedActiveSampling( const ScopedActiveSampling& ) = delete;
+				ScopedActiveSampling& operator=( const ScopedActiveSampling& ) = delete;
+
+				~ScopedActiveSampling() noexcept
+				{
+					Restore();
+				}
+
+				void Restore() noexcept
+				{
+					if( armed_ ) {
+						owner_.mActiveSampling = previous_;
+						owner_.mHasActiveSampling = hadPrevious_;
+						armed_ = false;
+					}
+				}
+			};
 			IPixelFilter*		pPixelFilter;
 			bool				useZSobol;		///< Use Morton-indexed Sobol (blue-noise error distribution)
 
@@ -413,12 +498,69 @@ namespace RISE
 				}
 			}
 
-			/// Returns a reference to the image that should be sent to
-			/// OutputIntermediateImage.  The default just returns the
-			/// primary image.  BDPT overrides this to return a scratch
-			/// copy with resolved splats composited in, avoiding any
-			/// mutation of the primary accumulation buffer.
-			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
+			/// Returns the image the caller hands to OutputIntermediateImage
+			/// together with @a region.  The primary accumulation buffer is
+			/// never mutated: when a FilteredFilm (or, in
+			/// BidirectionalRasterizerBase, a SplatFilm) is active the result
+			/// is a scratch image composed from the primary plus the films;
+			/// otherwise it is @a primary itself.
+			///
+			/// Contract:
+			///  * @a region non-null: only the pixels inside that INCLUSIVE
+			///    rect, clamped to the image, are valid in the returned
+			///    image (film contributions are additionally limited to the
+			///    active output / splat region, exactly as a full-frame
+			///    composition would produce them).  Pixels outside it may
+			///    hold anything, including another caller's composition.
+			///    An empty or wholly off-image region composes nothing.
+			///  * @a region null: the whole image is valid.
+			///  * The returned reference is valid until the caller's
+			///    consumers have returned; consumers must not retain it.
+			///  * Concurrent calls are allowed only for pairwise-DISJOINT
+			///    regions on the same primary (the per-block worker shape:
+			///    each worker passes its own finished tile).  A null region
+			///    must not run concurrently with any other call.
+			///  * The scratch image is never allocated or resized here; it is
+			///    prepared single-threaded before any worker pass (render
+			///    dimensions are constant within a pass).  If it is missing
+			///    or its dimensions do not match @a primary, the primary is
+			///    returned unchanged (one warning per process).
+			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const;
+
+			/// Clamps an inclusive region to a w x h image (null = whole
+			/// image).  False when nothing of it lies on the image.
+			static bool ClampRegionToImage( const Rect* region, unsigned int w, unsigned int h, Rect& out );
+
+			/// Inclusive intersection of @a a with @a b (null @a b = no
+			/// limit).  False when the intersection is empty.
+			static bool IntersectRegion( const Rect& a, const Rect* b, Rect& out );
+
+			/// Copies src -> dst over an inclusive region already clamped
+			/// to both images.
+			static void CopyRegion( const IRasterImage& src, IRasterImage& dst, const Rect& r );
+
+			/// Region the single-threaded per-pass preview composes: the
+			/// render's clamped output crop (ConfigureOutputRegion), or null
+			/// (whole image) when there is none.  An invalid crop renders the
+			/// full frame (BoundsFromRect), so it composes the full frame too.
+			const Rect* PreviewCompositionRegion() const {
+				return mHasActiveOutputRegion ? &mActiveOutputRegion : 0;
+			}
+
+			/// Release the render-scoped preview composition resources
+			/// (filtered film + its scratch here; subclasses add their own
+			/// composition scratch).  Called by every top-level render
+			/// entry point's scope guard -- on success, cancel and unwind --
+			/// on the dispatching thread after all workers have joined and
+			/// the last preview consumer has returned, so no frame-sized
+			/// buffer outlives the render.  Must be idempotent.
+			virtual void ReleaseRenderScopedPreviewResources() const;
+
+			/// Whether GetIntermediateOutputImage composes into
+			/// pFilteredScratch.  True for the base getter; a subclass whose
+			/// getter composes elsewhere returns false so the render entry
+			/// points do not allocate an unread frame-sized scratch.
+			virtual bool UsesFilteredPreviewScratch() const { return true; }
 
 			// Our own functions
 			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;

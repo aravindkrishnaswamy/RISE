@@ -591,6 +591,9 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	const unsigned int width = pFilm->GetWidth();
 	const unsigned int height = pFilm->GetHeight();
 	ConfigureSplatRegion( pRect, width, height );
+	// Composition scratch for previews: prepared here, single-threaded,
+	// never inside the (possibly concurrent) GetIntermediateOutputImage.
+	EnsureCompositionScratch( width, height );
 
 	// PreRenderSetup runs ONE light pass to populate the photon
 	// store used by VM merging.  The t=1 splat strategy is handled
@@ -626,8 +629,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
 
 		mSplatTotalSamples = 1.0;
-		if( pSampling ) {
-			mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+		if( ActiveSampling() ) {
+			mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 		}
 		mSplatTotalSamples *= GetSplatSampleScale();
 
@@ -826,8 +829,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 			mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
 
 			mSplatTotalSamples = 1.0;
-			if( pSampling ) {
-				mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+			if( ActiveSampling() ) {
+				mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 			}
 			mSplatTotalSamples *= GetSplatSampleScale();
 
@@ -1004,8 +1007,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	// at the frame time would be thrown away.
 	if( mPerPassShutterTimeCandidate && effectiveMergeRadius > 0 ) {
 		mSplatTotalSamples = 1.0;
-		if( pSampling ) {
-			mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+		if( ActiveSampling() ) {
+			mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 		}
 		mSplatTotalSamples *= GetSplatSampleScale();
 		GlobalLog()->PrintEx( eLog_Info,
@@ -1109,8 +1112,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	pLightVertexStore->BuildKDTreeParallel();
 
 	mSplatTotalSamples = 1.0;
-	if( pSampling ) {
-		mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+	if( ActiveSampling() ) {
+		mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 	}
 	mSplatTotalSamples *= GetSplatSampleScale();
 
@@ -1316,9 +1319,9 @@ bool VCMRasterizerBase::WantsPerPassShutterTime() const
 		( mVCMNormalization.mMergeRadiusSq > 0 || mBaseVolumeRadius > 0 );
 }
 
-// GetIntermediateOutputImage and ResolveSplatIntoScratch are inherited
-// from BidirectionalRasterizerBase — both algorithms use the same
-// lazy-scratch splat composition.
+// GetIntermediateOutputImage is inherited from BidirectionalRasterizerBase
+// — both algorithms use the same region-only splat composition into a
+// scratch prepared in PreRenderSetup (EnsureCompositionScratch).
 // FlushToOutputs / FlushPreDenoisedToOutputs / FlushDenoisedToOutputs
 // (splat-film composition at flush time) live in
 // BidirectionalRasterizerBase since DL-458 -- BDPT shares them so its

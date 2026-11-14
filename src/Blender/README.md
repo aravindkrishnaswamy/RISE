@@ -13,6 +13,12 @@ the bridge talks to RISE only through the existing public APIs in
 - `addons/rise_renderer/`: Blender Python add-on and `RenderEngine` registration.
 - `native/`: Small shared-library bridge that feeds Blender scene data into a RISE `IJobPriv` and returns RGBA pixels back to Blender.
 
+Image dimensions in the native ABI are 32-bit integers. RGBA channel counts,
+byte sizes, and offsets use checked native `size_t` arithmetic, including preview
+regions; there is no separate 32-bit channel-count limit. Images that cannot fit
+the host's native storage or container limits are rejected, and allocation or
+callback exceptions become a failed render with an error message at the C boundary.
+
 ## Supported Scope
 
 - Final renders through Blender's external `RenderEngine` API.

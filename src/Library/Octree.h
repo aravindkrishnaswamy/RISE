@@ -104,11 +104,10 @@ namespace RISE
 		bool AddElements( const std::vector<Element>& elements, const unsigned char max_recursion_level )
 		{
 			GlobalLog()->PrintEx( eLog_Info, "Octree:: Generating tree for %d elements, Max Recursion: %d, Max Elements/node: %d", elements.size(), max_recursion_level, maxPerNode );
-			Timer	t;
-			t.start();
+			const auto tStart = std::chrono::steady_clock::now();
 			bool	bRet = root.AddElements( ep, elements, maxPerNode, bbox, 99, max_recursion_level );
-			t.stop();
-			GlobalLog()->PrintEx( eLog_Info, "Octree:: Time to generate Octree %d seconds, %d ms", t.getInterval()/1000, t.getInterval()%1000 );
+			const auto tEnd = std::chrono::steady_clock::now();
+			GlobalLog()->PrintEx( eLog_Info, "Octree:: Time to generate Octree %d seconds, %d ms", ElapsedMilliseconds(tStart, tEnd)/1000, ElapsedMilliseconds(tStart, tEnd)%1000 );
 			return bRet;
 		}
 

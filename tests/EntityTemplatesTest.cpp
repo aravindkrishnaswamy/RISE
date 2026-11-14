@@ -38,6 +38,20 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
+#include <iterator>
+#include <new>
+
+#ifndef _WIN32
+#include <cerrno>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <csignal>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <sys/acl.h>
+#endif
+#endif
 #include <string>
 #include <vector>
 
@@ -52,11 +66,36 @@
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/SceneEditor/EntityTemplates.h"
 #include "../src/Library/SceneEditor/CstIntrospection.h"
 #include "../src/Library/SceneEditor/ReferenceGraph.h"
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Parsers/IAsciiChunkParser.h"
 #include "TestTempDir.h"
+
+namespace {
+	thread_local bool rejectThumbnailPixels = false;
+	thread_local bool rejectedThumbnailPixels = false;
+}
+
+// Inject one recoverable failure into the 4x4 RGBA PNG pixel allocation.
+// Delegate healthy allocations to ordinary new[] so sanitizer allocation
+// families remain paired with the normal delete[].
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept
+{
+	if( size == 4 * 4 * 4 && rejectThumbnailPixels ) {
+		rejectThumbnailPixels = false;
+		rejectedThumbnailPixels = true;
+		return nullptr;
+	}
+	try { return ::operator new[](size); }
+	catch( ... ) { return nullptr; }
+}
+
+void operator delete[](void* pointer, const std::nothrow_t&) noexcept
+{
+	::operator delete[](pointer);
+}
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -69,6 +108,354 @@ namespace
 	{
 		if( c ) { ++g_pass; std::printf( "  ok  : %s\n", what.c_str() ); }
 		else    { ++g_fail; std::printf( "  FAIL: %s\n", what.c_str() ); }
+	}
+
+#if defined(__APPLE__) && !defined(NO_PNG_SUPPORT)
+	struct RestoreThumbnailACL
+	{
+		std::filesystem::path path;
+		acl_t previous;
+		explicit RestoreThumbnailACL( const std::filesystem::path& file ) : path( file ),
+			previous( acl_get_file( path.c_str(), ACL_TYPE_EXTENDED ) )
+		{
+			if( !previous && errno == ENOENT ) previous = acl_init( 0 );
+		}
+		~RestoreThumbnailACL()
+		{
+			if( previous ) {
+				Check( acl_set_file( path.c_str(), ACL_TYPE_EXTENDED, previous ) == 0,
+					"thumbnail ACL safety: fixture restores original ACL" );
+				acl_free( previous );
+			}
+		}
+	};
+
+	bool AddThumbnailACL( const std::filesystem::path& file, const char* entry )
+	{
+		std::fflush( nullptr );
+		const pid_t child = fork();
+		if( child == 0 ) {
+			execl( "/bin/chmod", "chmod", "+a", entry, file.c_str(), static_cast<char*>(nullptr) );
+			_exit( 127 );
+		}
+		if( child < 0 ) return false;
+		int status = 0;
+		pid_t joined;
+		do { joined = waitpid( child, &status, 0 ); } while( joined < 0 && errno == EINTR );
+		return child > 0 && joined == child && WIFEXITED( status ) && WEXITSTATUS( status ) == 0;
+	}
+#endif
+
+	void TestDefaultTextureCacheIntegrity()
+	{
+#ifndef NO_PNG_SUPPORT
+		namespace fs = std::filesystem;
+		fs::path scratch = RISE::TestSupport::ScratchTestRoot( "rise_entity_texture_" );
+		fs::create_directories( scratch );
+		scratch = fs::canonical( scratch );
+		struct RestoreScratch
+		{
+			fs::path path;
+			bool hadTmp = std::getenv( "TMPDIR" ) != nullptr;
+			std::string previousTmp = hadTmp ? std::getenv( "TMPDIR" ) : "";
+			~RestoreScratch()
+			{
+#ifdef _WIN32
+				_putenv_s( "TMPDIR", hadTmp ? previousTmp.c_str() : "" );
+#else
+				if( hadTmp ) setenv( "TMPDIR", previousTmp.c_str(), 1 );
+				else unsetenv( "TMPDIR" );
+#endif
+				std::error_code ignored;
+				fs::permissions( path, fs::perms::owner_all, ignored );
+				fs::remove_all( path, ignored );
+			}
+		} restore{ scratch };
+#ifdef _WIN32
+		const bool changedTmp = _putenv_s( "TMPDIR", scratch.string().c_str() ) == 0;
+#else
+		const bool changedTmp = setenv( "TMPDIR", scratch.string().c_str(), 1 ) == 0;
+#endif
+		Check( changedTmp, "thumbnail cache: isolated temporary directory installed" );
+		if( !changedTmp ) return;
+#ifndef _WIN32
+		const fs::path cacheDirectory = scratch / ("rise_entity_templates_" + std::to_string( geteuid() ));
+		const fs::path target = cacheDirectory / "rise_entity_template_default_texture.png";
+		const fs::path victim = scratch / "sentinel_victim";
+		const std::string sentinel = "thumbnail cache must never overwrite this unrelated file";
+		{ std::ofstream output( victim ); output << sentinel; }
+		const auto victimIntact = [&] {
+			std::ifstream input( victim );
+			return std::string( std::istreambuf_iterator<char>( input ), std::istreambuf_iterator<char>() ) == sentinel;
+		};
+		// The old public cache location can already belong to another user.
+		// Migration must leave it untouched, even when it redirects elsewhere.
+		const fs::path legacy = scratch / "rise_entity_template_default_texture.png";
+		fs::create_symlink( victim, legacy );
+#else
+		const fs::path target = scratch / "rise_entity_template_default_texture.png";
+#endif
+		const auto readBytes = [&target] {
+			std::ifstream input( target, std::ios::binary );
+			return std::vector<char>( std::istreambuf_iterator<char>( input ), std::istreambuf_iterator<char>() );
+		};
+		rejectThumbnailPixels = true;
+		const bool firstFailed = EntityTemplates::EnsureDefaultTextureFile().empty();
+		rejectThumbnailPixels = false;
+		Check( firstFailed && rejectedThumbnailPixels,
+			"thumbnail encode retry: initial PNG allocation failure is diagnosed" );
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string(),
+			"thumbnail encode retry: recovered allocator generates the default texture" );
+#ifndef _WIN32
+		Check( victimIntact() && fs::is_symlink( fs::symlink_status( legacy ) ) && fs::read_symlink( legacy ) == victim,
+			"thumbnail symlink safety: legacy shared cache link and sentinel victim are untouched" );
+#endif
+		const auto complete = readBytes();
+		Check( complete.size() > 16 && static_cast<unsigned char>(complete.front()) == 0x89,
+			"thumbnail cache: generated payload has a PNG signature and exceeds the failure limit" );
+		if( complete.size() <= 16 ) return;
+		{
+			struct RestoreWorkingDirectory {
+				fs::path previous = fs::current_path();
+				~RestoreWorkingDirectory() { std::error_code ignored; fs::current_path( previous, ignored ); }
+			} restoreWorkingDirectory;
+			const std::string relativeRoot = fs::relative( scratch, fs::current_path() ).generic_string();
+#ifdef _WIN32
+			const bool relativeInstalled = _putenv_s( "TMPDIR", relativeRoot.c_str() ) == 0;
+#else
+			const bool relativeInstalled = setenv( "TMPDIR", relativeRoot.c_str(), 1 ) == 0;
+#endif
+			const std::string absoluteTexture = EntityTemplates::EnsureDefaultTextureFile();
+			fs::current_path( scratch );
+			std::ifstream input( absoluteTexture, std::ios::binary );
+			const std::vector<char> afterChdir( std::istreambuf_iterator<char>( input ), std::istreambuf_iterator<char>{} );
+			Check( relativeInstalled && fs::path( absoluteTexture ).is_absolute() && afterChdir == complete,
+				"thumbnail absolute path: relative TMPDIR produces a usable path after chdir" );
+#ifdef _WIN32
+			_putenv_s( "TMPDIR", scratch.string().c_str() );
+#else
+			setenv( "TMPDIR", scratch.string().c_str(), 1 );
+#endif
+		}
+		const auto completePermissions = fs::status(target).permissions();
+		fs::permissions(target, fs::perms::owner_read);
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+			"thumbnail cache: complete read-only PNG is reused without rewriting" );
+		fs::permissions(target, completePermissions);
+
+		{
+			std::ofstream truncated( target, std::ios::binary | std::ios::trunc );
+			truncated.write( complete.data(), 16 );
+		}
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+			"thumbnail cache: truncated nonempty cache is replaced with the complete default PNG" );
+		// Equal-length foreign contents must also be rejected. This includes
+		// unsigned PNG signature bytes, avoiding signed-char comparison bugs.
+		{
+			auto foreign = complete;
+			foreign.back() ^= 1;
+			std::ofstream changed( target, std::ios::binary | std::ios::trunc );
+			changed.write( foreign.data(), static_cast<std::streamsize>( foreign.size() ) );
+		}
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+			"thumbnail cache: equal-length foreign contents are replaced" );
+#ifndef _WIN32
+		const fs::path unsafeRoot = scratch / "unsafe_root";
+		const fs::path nestedRoot = unsafeRoot / "safe_leaf";
+		fs::create_directories( nestedRoot );
+		fs::permissions( unsafeRoot, fs::perms::owner_all | fs::perms::others_write );
+		setenv( "TMPDIR", unsafeRoot.c_str(), 1 );
+		const std::string cacheName = "rise_entity_templates_" + std::to_string( geteuid() );
+		Check( EntityTemplates::EnsureDefaultTextureFile().empty() && !fs::exists( unsafeRoot / cacheName ) && victimIntact(),
+			"thumbnail parent safety: foreign-writable nonsticky temp root is refused before cache creation" );
+		setenv( "TMPDIR", nestedRoot.c_str(), 1 );
+		Check( EntityTemplates::EnsureDefaultTextureFile().empty() && !fs::exists( nestedRoot / cacheName ) && victimIntact(),
+			"thumbnail parent safety: foreign-writable nonsticky ancestor is refused before cache creation" );
+		fs::permissions( unsafeRoot, fs::perms::owner_all | fs::perms::others_write | fs::perms::sticky_bit );
+		setenv( "TMPDIR", unsafeRoot.c_str(), 1 );
+		Check( !EntityTemplates::EnsureDefaultTextureFile().empty(),
+			"thumbnail parent safety: owned sticky temp root supports a private cache" );
+		setenv( "TMPDIR", scratch.c_str(), 1 );
+		fs::permissions( unsafeRoot, fs::perms::owner_all );
+#ifdef __APPLE__
+		const fs::path aclRoot = scratch / "acl_root";
+		fs::create_directory( aclRoot );
+		{
+			RestoreThumbnailACL restoreACL( aclRoot );
+			const bool installed = restoreACL.previous && AddThumbnailACL( aclRoot,
+				"everyone allow list,search,add_file,add_subdirectory,delete_child,file_inherit,directory_inherit" );
+			Check( installed, "thumbnail ACL safety: inherited everyone-allow root fixture installed" );
+			if( installed ) {
+				setenv( "TMPDIR", aclRoot.c_str(), 1 );
+				Check( EntityTemplates::EnsureDefaultTextureFile().empty() && !fs::exists( aclRoot / cacheName ) && victimIntact(),
+					"thumbnail ACL safety: inherited ALLOW root is refused before creating cache contents" );
+				setenv( "TMPDIR", scratch.c_str(), 1 );
+			}
+		}
+		{
+			RestoreThumbnailACL restoreACL( cacheDirectory );
+			const bool installed = restoreACL.previous && AddThumbnailACL( cacheDirectory,
+				"everyone allow list,search,add_file,add_subdirectory,delete_child,file_inherit,directory_inherit" );
+			Check( installed, "thumbnail ACL safety: existing cache-directory ALLOW fixture installed" );
+			if( installed ) {
+				{ std::ofstream partial( target, std::ios::binary | std::ios::trunc ); partial.put( '\0' ); }
+				Check( EntityTemplates::EnsureDefaultTextureFile().empty() && readBytes() == std::vector<char>{ '\0' } && victimIntact(),
+					"thumbnail ACL safety: ALLOW cache directory is refused without repairing its partial file" );
+			}
+		}
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+			"thumbnail ACL safety: removing the unsafe directory ACL allows owned-cache recovery" );
+		{
+			RestoreThumbnailACL restoreACL( target );
+			const bool installed = restoreACL.previous && AddThumbnailACL( target, "everyone allow read,write" );
+			Check( installed, "thumbnail ACL safety: existing cache-file ALLOW fixture installed" );
+			if( installed ) {
+				{ std::ofstream partial( target, std::ios::binary | std::ios::trunc ); partial.put( '\0' ); }
+				Check( EntityTemplates::EnsureDefaultTextureFile().empty() && readBytes() == std::vector<char>{ '\0' } && victimIntact(),
+					"thumbnail ACL safety: ALLOW cache file is refused without changing its contents" );
+			}
+		}
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+			"thumbnail ACL safety: removing the unsafe file ACL allows owned-cache recovery" );
+		{
+			RestoreThumbnailACL restoreACL( cacheDirectory );
+			const bool installed = restoreACL.previous && AddThumbnailACL( cacheDirectory, "everyone deny delete" );
+			Check( installed, "thumbnail ACL safety: deny-only fixture installed" );
+			if( installed ) Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+				"thumbnail ACL safety: deny-only ACL permits safe cache reuse" );
+		}
+#endif
+		fs::remove( target );
+		fs::create_symlink( victim, target );
+		Check( EntityTemplates::EnsureDefaultTextureFile().empty() && victimIntact() &&
+			fs::is_symlink( fs::symlink_status( target ) ) && fs::read_symlink( target ) == victim,
+			"thumbnail symlink safety: cache leaf link is refused without changing its target or link" );
+		fs::remove( target );
+		fs::create_hard_link( victim, target );
+		Check( EntityTemplates::EnsureDefaultTextureFile().empty() && victimIntact() && fs::equivalent( target, victim ),
+			"thumbnail symlink safety: hardlinked sentinel is refused without changing either name" );
+		fs::remove( target );
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+			"thumbnail symlink safety: cache recovers after hostile leaf entries are removed" );
+		fs::permissions( cacheDirectory, fs::perms::owner_all | fs::perms::group_write );
+		Check( EntityTemplates::EnsureDefaultTextureFile().empty() && readBytes() == complete,
+			"thumbnail symlink safety: cache directory accessible to another user is refused" );
+		fs::permissions( cacheDirectory, fs::perms::owner_all );
+		const fs::path movedCache = scratch / "moved_cache";
+		fs::rename( cacheDirectory, movedCache );
+		fs::create_directory_symlink( movedCache, cacheDirectory );
+		Check( EntityTemplates::EnsureDefaultTextureFile().empty() &&
+			fs::is_symlink( fs::symlink_status( cacheDirectory ) ),
+			"thumbnail symlink safety: substituted cache directory link is refused unchanged" );
+		fs::remove( cacheDirectory );
+		fs::rename( movedCache, cacheDirectory );
+		// Changing ownership requires privilege; exercise the actual owner
+		// rejection whenever this runner is allowed to create that topology.
+		const uid_t foreignOwner = geteuid() == 0 ? 1 : 0;
+		if( chown( target.c_str(), foreignOwner, static_cast<gid_t>(-1) ) == 0 ) {
+			Check( EntityTemplates::EnsureDefaultTextureFile().empty() && readBytes() == complete,
+				"thumbnail symlink safety: foreign-owned cache entry is refused unchanged" );
+			Check( chown( target.c_str(), geteuid(), static_cast<gid_t>(-1) ) == 0,
+				"thumbnail symlink safety: foreign-owner fixture restores original ownership" );
+		} else {
+			std::printf( "SKIP: thumbnail foreign-owner fixture requires chown privilege\n" );
+		}
+		// Independent processes share one private cache. Every successful
+		// caller must immediately be able to consume the complete PNG, even
+		// when several callers originally observed the same partial entry.
+		bool concurrentCacheIntact = true;
+		for( unsigned int round = 0; round < 8 && concurrentCacheIntact; ++round ) {
+			{ std::ofstream partial( target, std::ios::binary | std::ios::trunc ); partial.put( '\0' ); }
+			int startPipe[2];
+			if( pipe( startPipe ) != 0 ) { concurrentCacheIntact = false; break; }
+			std::vector<pid_t> children;
+			std::fflush( nullptr );
+			for( unsigned int index = 0; index < 8; ++index ) {
+				const pid_t child = fork();
+				if( child == 0 ) {
+					close( startPipe[1] );
+					char token;
+					ssize_t received;
+					do { received = read( startPipe[0], &token, 1 ); } while( received < 0 && errno == EINTR );
+					close( startPipe[0] );
+					if( received != 1 ) _exit( 2 );
+					for( unsigned int call = 0; call < 32; ++call ) {
+						if( EntityTemplates::EnsureDefaultTextureFile() != target.string() || readBytes() != complete ) _exit( 1 );
+					}
+					_exit( 0 );
+				}
+				if( child < 0 ) { concurrentCacheIntact = false; break; }
+				children.push_back( child );
+			}
+			// Keep our read end open until release so a failed fork cannot
+			// make this fixture deliver SIGPIPE to the test process.
+			const char tokens[] = "rrrrrrrr";
+			ssize_t released;
+			do { released = write( startPipe[1], tokens, sizeof(tokens) - 1 ); } while( released < 0 && errno == EINTR );
+			if( released != static_cast<ssize_t>(sizeof(tokens) - 1) ) concurrentCacheIntact = false;
+			close( startPipe[0] );
+			close( startPipe[1] );
+			for( const pid_t child : children ) {
+				int status = 0;
+				pid_t joined;
+				do { joined = waitpid( child, &status, 0 ); } while( joined < 0 && errno == EINTR );
+				if( joined != child || !WIFEXITED( status ) || WEXITSTATUS( status ) != 0 ) concurrentCacheIntact = false;
+			}
+		}
+		Check( concurrentCacheIntact,
+			"thumbnail cache concurrency: shared-cache callers always consume a complete PNG after success" );
+		// Run the write limit in a child so logger streams and process-wide
+		// signal/rlimit state cannot affect the remaining test suite.
+		{ std::ofstream empty( target, std::ios::binary | std::ios::trunc ); }
+		const auto originalPermissions = fs::status( cacheDirectory ).permissions();
+		fs::permissions( cacheDirectory, fs::perms::owner_read | fs::perms::owner_exec );
+		std::error_code permissionError;
+		const fs::path probe = cacheDirectory / "permission_probe";
+		const bool createdProbe = fs::create_directory( probe, permissionError );
+		if( permissionError == std::errc::permission_denied ) {
+			std::fflush( nullptr );
+			const pid_t child = fork();
+			if( child == 0 ) {
+				struct rlimit previousLimit{};
+				struct sigaction previousSignal{};
+				struct sigaction ignoredSignal{};
+				ignoredSignal.sa_handler = SIG_IGN;
+				sigemptyset( &ignoredSignal.sa_mask );
+				if( getrlimit( RLIMIT_FSIZE, &previousLimit ) != 0 ||
+					sigaction( SIGXFSZ, &ignoredSignal, &previousSignal ) != 0 ) _exit( 64 );
+				struct rlimit limited = previousLimit;
+				limited.rlim_cur = 16;
+				if( setrlimit( RLIMIT_FSIZE, &limited ) != 0 ) {
+					sigaction( SIGXFSZ, &previousSignal, nullptr );
+					_exit( 64 );
+				}
+				const bool refused = EntityTemplates::EnsureDefaultTextureFile().empty();
+				std::error_code sizeError;
+				const bool partial = fs::file_size( target, sizeError ) == 16 && !sizeError;
+				const bool restored = setrlimit( RLIMIT_FSIZE, &previousLimit ) == 0 &&
+					sigaction( SIGXFSZ, &previousSignal, nullptr ) == 0;
+				if( !restored ) _exit( 64 );
+				const bool recovered = EntityTemplates::EnsureDefaultTextureFile() == target.string() &&
+					readBytes() == complete;
+				_exit( (refused ? 0 : 1) | (partial ? 0 : 2) | (recovered ? 0 : 4) );
+			}
+			int status = 0;
+			const bool joined = child > 0 && waitpid( child, &status, 0 ) == child && WIFEXITED( status );
+			const int result = joined ? WEXITSTATUS( status ) : 64;
+			Check( joined && result < 64, "thumbnail cache: limited-write fixture completes normally" );
+			Check( result < 64 && (result & 1) == 0,
+				"thumbnail cache: failed in-place write returns no usable texture path" );
+			Check( result < 64 && (result & 2) == 0,
+				"thumbnail cache: failure fixture leaves a nonempty truncated PNG" );
+			Check( result < 64 && (result & 4) == 0,
+				"thumbnail cache: restored write limit regenerates the complete PNG" );
+		} else {
+			std::printf( "SKIP: thumbnail cache read-only directory permissions are not enforced\n" );
+		}
+		fs::permissions( cacheDirectory, originalPermissions );
+		if( createdProbe ) fs::remove( probe );
+#endif
+#endif
 	}
 
 	// Minimal base scene: film + camera + rasterizer (so LoadAsciiSceneViaCst
@@ -1023,6 +1410,33 @@ namespace
 		std::remove( tmp.c_str() );
 	}
 
+	void TestVoronoiNodeDefaults()
+	{
+		for( const char* keyword : { "voronoi2d_painter", "voronoi3d_painter" } ) {
+			bool needsBorder = false;
+			for( const auto& requirement : EntityTemplates::NodeRequirements( keyword ) )
+				if( requirement.param == "border" ) needsBorder = true;
+			Check( !needsBorder, std::string("Voronoi node defaults: ") + keyword + " does not require a border painter" );
+			std::string chunk, diagnostic;
+			const bool built = EntityTemplates::BuildNodeChunkText( keyword, "voronoi_default", {}, chunk, diagnostic );
+			Check( built, std::string("Voronoi node defaults: ") + keyword + " builds with zero caller arguments (" + diagnostic + ")" );
+			if( !built ) continue;
+			const std::string scene = std::string(kBaseScene) + "\n" + chunk;
+			const std::string path = TempPath( (std::string(keyword) + "_defaults.RISEscene").c_str() );
+			Job* job = LoadScene( scene.c_str(), path );
+			Check( job != nullptr, std::string("Voronoi node defaults: ") + keyword + " derives with its default none border" );
+			if( job ) {
+				{
+					SceneEditController controller( *job, nullptr );
+					Check( NameInCategory( controller, Category::Painter, "voronoi_default" ),
+						std::string("Voronoi node defaults: ") + keyword + " registers the derived painter" );
+				}
+				job->release();
+			}
+			std::remove( path.c_str() );
+		}
+	}
+
 	// round-2: a required Reference is not always Painter-typed.
 	// `ChunkNodeRequirements` must advertise the descriptor's OWN
 	// `referenceCategories` for a required reference slot (not just
@@ -1252,9 +1666,10 @@ namespace
 	}
 }   // anonymous namespace
 
-int main()
+static int RunTests()
 {
 	std::printf( "=== EntityTemplatesTest ===\n" );
+	TestDefaultTextureCacheIntegrity();
 	TestAllTemplatesInstantiate();
 	TestObjectBootstrapMaterial();
 	TestDuplicateRoundTrip();
@@ -1267,9 +1682,15 @@ int main()
 	TestCreateChunkNodeRefusalsByteIdentical();
 	TestCreateChunkNodeUndoRedo();
 	TestCreateChunkNodeControllerDiscipline();
+	TestVoronoiNodeDefaults();
 	TestCreateChunkNodeMaterialReferenceStandIn();
 	TestCreateChunkNodeKeywordSweep();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
+}
+
+int main()
+{
+	return RISE::TestSupport::WithOwnedScratch( RunTests );
 }

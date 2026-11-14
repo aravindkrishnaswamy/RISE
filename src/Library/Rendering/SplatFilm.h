@@ -38,6 +38,7 @@
 #include "../Utilities/Color/Color_Template.h"
 #include "../Utilities/Threads/Threads.h"
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace RISE
@@ -60,18 +61,37 @@ namespace RISE
 				}
 			};
 
+			// Pure representability preflight; does not allocate film storage.
+			// The full uint32_t BatchRecord index domain permits 2^32 pixels
+			// where native byte counts and vector limits can represent them.
+			static std::size_t CheckedPixelCount(unsigned int w, unsigned int h);
+
 			unsigned int				width;
 			unsigned int				height;
 			std::vector<SplatPixel>		pixels;
-			std::vector<RMutex*>		rowMutexes;		///< One mutex per scanline for concurrent access
+			std::vector<std::unique_ptr<RMutex>> rowMutexes;		///< One mutex per scanline for concurrent access
 
-			virtual ~SplatFilm();
+			~SplatFilm() override;
+
+			//! Shared body of Resolve / Unresolve.  Reads each row under its
+			//! row mutex (one at a time, released before touching the target).
+			void ApplyResolved( IRasterImage& target, const Scalar sampleCount, const Rect* region, const bool subtract ) const;
 
 		public:
+			// Zero extents produce a no-op film. Unrepresentable index/native
+			// storage counts throw length_error before allocating film storage.
 			SplatFilm(
 				const unsigned int w,					///< [in] Width of the film in pixels
 				const unsigned int h					///< [in] Height of the film in pixels
 				);
+			SplatFilm(const SplatFilm&) = delete;
+			SplatFilm& operator=(const SplatFilm&) = delete;
+
+			// Row mutexes are owned by this noncopyable film. Manual users must
+			// flush/unbind every participating thread's TLS before film destruction:
+			// use FlushCallingThreadSplatBuffer() or ThreadLocalSplatBufferTaskScope
+			// from ThreadLocalSplatBuffer.h. The film destructor cannot clear other
+			// workers' thread-local bindings. Render task entrypoints provide scopes.
 
 			//! DL-294: THE film-membership rule for a fractional splat
 			//! position (FILM coordinates: fx = screen x, fy = H - screen
@@ -118,16 +138,15 @@ namespace RISE
 			//! truncated to an integer pixel and the image shows
 			//! aliasing / hard edges.
 			//!
-			//! Correctness requires the filter kernel to integrate to
-			//! approximately 1 over its support; SplatFilm::Resolve
-			//! divides by total sample count (not per-pixel weight),
-			//! so an unnormalised kernel would bias the result.
-			//! Mitchell–Netravali, Catmull-Rom, windowed sincs, and
-			//! the built-in box filter all satisfy this.
+			//! Wide-footprint weights are normalized by their actual discrete sum;
+			//! continuous unit-integral scaling is not required. Evaluations and
+			//! the positive sum must be finite. Nonpositive sums are dropped;
+			//! the legacy nonpositive-centre check falls back to a point splat.
 			//!
 			//! Degenerates to a point splat when the filter's
 			//! half-width is ≤ 0.501 (box case) to avoid unnecessary
 			//! work — matches PixelBasedRasterizerHelper::UseFilteredFilm.
+			//! Nonfinite or negative filter support is rejected without splatting.
 			void SplatFiltered(
 				const Scalar screenX,					///< [in] Fractional X (image-row convention; see NearestPixel)
 				const Scalar screenY,					///< [in] Fractional Y (image-row convention; see NearestPixel)
@@ -149,8 +168,12 @@ namespace RISE
 				std::size_t count
 				);
 
-			//! After rendering: resolves accumulated splats into the final image.
+			//! Resolves accumulated splats into the image (additive).
 			//! Divides each pixel's accumulated color by the total number of samples.
+			//! Safe to call concurrently with Splat/BatchCommit writers (each row
+			//! is read under its row mutex; a row reflects whole committed
+			//! batches) and with other Resolve calls on disjoint target regions.
+			//! The caller must not hold any of this film's row mutexes.
 			void Resolve(
 				IRasterImage& target,					///< [in/out] Target image to receive resolved splats
 				const Scalar sampleCount,				///< [in] Total number of samples taken
@@ -173,6 +196,8 @@ namespace RISE
 			//! it's bound to this film) into the shared accumulator.
 			//! Called at tile boundaries and at end-of-pass to make
 			//! sure no splats are orphaned in thread_local storage.
+			//! This commits records but retains the binding; manual lifetime
+			//! completion requires FlushCallingThreadSplatBuffer() or a task scope.
 			void FlushCallingThreadBuffer();
 		};
 	}

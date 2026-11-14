@@ -37,6 +37,9 @@ namespace RISE
 			TGAWriter( IWriteBuffer& buffer, const COLOR_SPACE color_space_ );
 
 			virtual ~TGAWriter();
+			// Shared preflight: 16-bit format dimensions and the legacy 32-bit
+			// IWriteBuffer total-size budget (including the 18-byte header).
+			static void ValidateDimensions( unsigned int width, unsigned int height );
 
 			void	BeginWrite( const unsigned int width, const unsigned int height );
 			void	WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y );

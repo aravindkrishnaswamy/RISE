@@ -234,9 +234,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\..\src\Library\Utilities\BitField.cpp">
-      <Filter>Utilities</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\CPU_Count.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -252,13 +249,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\RenderParallelScope.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Utilities\DynamicProperties.cpp">
-      <Filter>Utilities</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\GeometricUtilities.cpp">
-      <Filter>Utilities</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Utilities\LoadLibraryWin32.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\MediaPathLocator.cpp">
@@ -1137,9 +1128,6 @@
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp">
-      <Filter>Parser</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp">
       <Filter>Shaders</Filter>
     </ClCompile>
@@ -1275,9 +1263,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\..\..\src\Library\Utilities\BitField.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\BoundingBox.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -1290,6 +1275,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskBuffer.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\LittleEndian.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -1299,10 +1287,10 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\RenderParallelScope.h">
       <Filter>Utilities</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
 	<ClInclude Include="..\..\..\src\Library\Utilities\FiniteMath.h">
+	  <Filter>Utilities</Filter>
+	</ClInclude>
+	<ClInclude Include="..\..\..\src\Library\Utilities\CheckedSize.h">
 	  <Filter>Utilities</Filter>
 	</ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\GeometricUtilities.h">
@@ -1320,9 +1308,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\GradedIndexMedium.h">
       <Filter>Utilities</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\LoadLibrary.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\math_utils.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -1333,9 +1318,6 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\MersenneTwister.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\MRUCache.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.h">
@@ -1396,12 +1378,6 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\SimpleInterpolators.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\SimpleNotification.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\stl_utils.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Transformable.h">
@@ -1521,9 +1497,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ShiftColorOperator.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\Color\SmartColor.h">
-      <Filter>Utilities\Color</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SpectralPacket.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
@@ -1531,9 +1504,6 @@
       <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\sRGB.h">
-      <Filter>Utilities\Color</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\Color\WardToneMappingOperator.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Threads\Threads.h">
@@ -2871,9 +2841,6 @@
     <ClInclude Include="..\..\..\src\Library\Parsers\IAsciiChunkParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h">
-      <Filter>Parser</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h">
       <Filter>Parser</Filter>
     </ClInclude>
@@ -3368,9 +3335,6 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\CompletePathGuide.h">
       <Filter>Utilities</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\CoreUtils.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\EquiangularSampler.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -3414,9 +3378,6 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\MortonCode.h">
-      <Filter>Utilities</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\NullScatteringTracker.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\OidnConfig.h">

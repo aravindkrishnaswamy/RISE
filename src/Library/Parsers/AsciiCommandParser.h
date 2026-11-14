@@ -21,6 +21,8 @@
 #include "../Utilities/RString.h"
 #include "../Utilities/Reference.h"
 
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace RISE
@@ -32,17 +34,10 @@ namespace RISE
 		protected:
 			virtual ~AsciiCommandParser();
 			
-			typedef bool ( *COMMANDFUNCTION)( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-
-			struct tCommandPair {
-				char				szCommand[256];			// maximum 256 char. commands
-				COMMANDFUNCTION		pFunc;					// the function to call for the command
-			};
-			
-			tCommandPair* functionList;
 
 	public:
-			static unsigned int TokenizeString( const char* szStr, String* tokens, unsigned int max_tokens );	
+			static unsigned int TokenizeString( const char* szStr, String* tokens, unsigned int max_tokens );
+			static std::vector<std::string> Tokenize( std::string_view line );
 			AsciiCommandParser( );
 
 			// This function parses a single line of a command
@@ -50,28 +45,28 @@ namespace RISE
 			bool ParseCommand( String* tokens, unsigned int numTokens, IJob& pJob );
 
 			// Parsers for root commands
-			static bool ParseSet( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParseRemove( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise);
-			static bool ParsePredictRasterizationTime( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParseRasterize( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParseRasterizeAnimation( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParseClearAll( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParseLoad( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParseRun( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParseQuit( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParseModify( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParsePhotonMap( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParseMediaPath( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
-			static bool ParseEcho( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseSet( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseRemove( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise);
+			static bool ParsePredictRasterizationTime( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseRasterize( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseRasterizeAnimation( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseClearAll( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseLoad( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseRun( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseQuit( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseModify( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParsePhotonMap( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseMediaPath( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
+			static bool ParseEcho( const std::string* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* pRise );
 
 			// Parsers for 2nd level remove commands
-			static bool ParseRemovePainter( String* tokens, unsigned int num_tokens, IJob& pJob );
-			static bool ParseRemoveMaterial( String* tokens, unsigned int num_tokens, IJob& pJob );
-			static bool ParseRemoveObject( String* tokens, unsigned int num_tokens, IJob& pJob );
-			static bool ParseRemoveGeometry( String* tokens, unsigned int num_tokens, IJob& pJob );
-			static bool ParseRemoveLight( String* tokens, unsigned int num_tokens, IJob& pJob );
-			static bool ParseRemoveModifier( String* tokens, unsigned int num_tokens, IJob& pJob );
-			static bool ParseRemoveRasterizerOutputs( String* tokens, unsigned int num_tokens, IJob& pJob );
+			static bool ParseRemovePainter( const std::string* tokens, unsigned int num_tokens, IJob& pJob );
+			static bool ParseRemoveMaterial( const std::string* tokens, unsigned int num_tokens, IJob& pJob );
+			static bool ParseRemoveObject( const std::string* tokens, unsigned int num_tokens, IJob& pJob );
+			static bool ParseRemoveGeometry( const std::string* tokens, unsigned int num_tokens, IJob& pJob );
+			static bool ParseRemoveLight( const std::string* tokens, unsigned int num_tokens, IJob& pJob );
+			static bool ParseRemoveModifier( const std::string* tokens, unsigned int num_tokens, IJob& pJob );
+			static bool ParseRemoveRasterizerOutputs( const std::string* tokens, unsigned int num_tokens, IJob& pJob );
 		};
 	}
 }

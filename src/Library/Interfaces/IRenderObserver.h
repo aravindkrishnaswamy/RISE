@@ -13,14 +13,12 @@
 //  Callbacks fire from the rasterizer's worker thread (today) or
 //  from FrameStore::EndTile / MarkFrameComplete (Phase 2).  They
 //  carry NO pixel data — observers consume the FrameStore directly.
-//  This means:
-//    - the render thread never blocks waiting for an observer to
-//      finish (file write, network send, UI repaint queue);
-//    - the seqlock model lets observers and the rasterizer run
-//      concurrently with no mutex.
-//  Each platform's GUI bridge marshals from the render thread to the
-//  UI thread via Qt signals / dispatch_async / Compose
-//  LaunchedEffect; observers don't need to do that internally.
+//  Notifications run synchronously on the producing thread. Observers
+//  should return promptly and marshal UI or lengthy work to their own queue.
+//  FrameStore::Render takes shared tile locks for a consistent read; the
+//  producer releases all tiles owned by its bracket before notification.
+//  Raw beauty-view access still needs external synchronization. Platform
+//  bridges marshal UI delivery through their platform's queue mechanism.
 //
 //  Author: design landing L1
 //  License: see LICENSE.TXT

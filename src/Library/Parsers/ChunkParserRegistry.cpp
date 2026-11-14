@@ -29,11 +29,17 @@
 #include "pch.h"
 #include <vector>
 #include <map>
+#include <memory>
+#include <limits>
 #include <set>
 #include <stack>
 #include <string>
+#include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <string_view>
 #include <cstring>   // Phase 6.2: strstr for sentinel detection
 #include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
 #include <cstdlib>   // strtod for the ar_layer numeric parse
@@ -50,9 +56,9 @@
 #include "ChunkParserRegistry.h"
 #include "StdOutProgress.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/MediaPathLocator.h"
-#include "MathExpressionEvaluator.h"
 #include "../Utilities/RasterizerDefaults.h"
 #include "../Utilities/Transformable.h"
 #include "../Rendering/Film.h"		// kDefaultFilm* constants for `film` chunk
@@ -99,44 +105,48 @@ using namespace RISE::Implementation;
 #define MAX_CHARS_PER_LINE		8192
 
 // Read a data file into its meaningful lines, tolerant of comments and
-// blank lines.  Skips blank / whitespace-only lines and lines whose first
-// non-blank character is '#'.  Returns false (the caller logs) if the file
-// cannot be opened.  Each returned line still contains its trailing
-// newline; callers sscanf their own column format from it and validate the
-// conversion count, so a malformed or non-numeric line is skipped rather
-// than — as the historical `while( !feof(f) ) { fscanf(...); push; }` loops
-// did — spinning forever on a comment line (fscanf matches nothing and does
-// not advance) or pushing uninitialized / duplicated values at EOF.
+// blank lines. Skips blank lines and lines whose first nonblank byte is '#'.
 static bool ReadDataFileLines( const String& filename, std::vector<std::string>& outLines )
 {
-	FILE* f = fopen( GlobalMediaPathLocator().Find( filename ).c_str(), "r" );
-	if( !f ) {
+	std::ifstream file( GlobalMediaPathLocator().Find( filename ).c_str() );
+	if( !file ) {
+		GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
 		return false;
 	}
-	char buf[MAX_CHARS_PER_LINE];
-	while( fgets( buf, sizeof( buf ), f ) ) {
-		const char* p = buf;
-		while( *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' ) {
-			++p;
+	std::string line;
+	size_t lineNumber = 0;
+	while( std::getline( file, line ) ) {
+		++lineNumber;
+		if( line.find( '\0' ) != std::string::npos ) {
+			GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Embedded NUL in file `%s` at line %zu", filename.c_str(), lineNumber );
+			return false;
 		}
-		if( *p == '\0' || *p == '#' ) {
-			continue;   // blank / whitespace-only / comment line
+		const auto start = line.find_first_not_of( " \t\r" );
+		if( start != std::string::npos && line[start] != '#' ) {
+			outLines.push_back( line );
 		}
-		outLines.push_back( std::string( buf ) );
 	}
-	fclose( f );
+	if( file.bad() ) {
+		GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to read file `%s` after line %zu", filename.c_str(), lineNumber );
+		return false;
+	}
 	return true;
 }
 
-inline bool string_split( const String& s, String& first, String& second, const char ch )
+// Table readers consume the leading required finite columns. Extra columns
+// belong to the source table and can be ignored by a narrower consumer.
+static bool ReadSampleColumns( const std::string& row, double* samples, size_t count )
 {
-	String::const_iterator it = std::find( s.begin(), s.end(), ch );
-	if( it==s.end() ) {
-		return false;
+	if( row.find( '\0' ) != std::string::npos ) return false;
+	const char* cursor = row.c_str();
+	for( size_t i = 0; i < count; ++i ) {
+		char* end = nullptr;
+		const double sample = std::strtod( cursor, &end );
+		if( end == cursor || !RISE::IsFiniteDouble(sample) ) return false;
+		samples[i] = sample;
+		cursor = end;
+		if( i + 1 < count && !std::isspace( static_cast<unsigned char>(*cursor) ) ) return false;
 	}
-
-	first = String( s.begin(), it );
-	second = String( it+1, s.end() );
 	return true;
 }
 
@@ -826,16 +836,16 @@ namespace RISE
 				ParseStateBag&         bag,
 				const IAsciiChunkParser::ParamsList& params )
 			{
-				for( IAsciiChunkParser::ParamsList::const_iterator i = params.begin(); i != params.end(); ++i ) {
-					String pname;
-					String pvalue;
-					if( !string_split( *i, pname, pvalue, ' ' ) ) {
-						return false;
-					}
+				for( const auto& parameter : params ) {
+					const std::string_view line( parameter.c_str() );
+					const auto separator = line.find( ' ' );
+					if( separator == std::string_view::npos ) return false;
+					const std::string_view name = line.substr( 0, separator );
+					const char* value = line.data() + separator + 1;
 
 					const ParameterDescriptor* found = 0;
 					for( std::vector<ParameterDescriptor>::const_iterator p = desc.parameters.begin(); p != desc.parameters.end(); ++p ) {
-						if( p->name == std::string(pname.c_str()) ) {
+						if( p->name == name ) {
 							found = &(*p);
 							break;
 						}
@@ -844,24 +854,32 @@ namespace RISE
 					if( !found ) {
 						GlobalLog()->PrintEx( eLog_Error,
 							kUndeclaredParameterFmt,
-							pname.c_str(),
+							std::string(name).c_str(),
 							desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str() );
 						return false;
 					}
 
 					switch( found->kind ) {
+					case ValueKind::UInt: {
+						unsigned int parsed;
+						if( !ParseStateBag::ReadUnsigned( value, parsed ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser: parameter `%s` in `%s` is outside the unsigned integer range",
+								found->name.c_str(), desc.keyword.c_str() );
+							return false;
+						}
+						[[fallthrough]];
+					}
 					case ValueKind::Double:
 					case ValueKind::DoubleVec2:
 					case ValueKind::DoubleVec3:
 					case ValueKind::DoubleVec4:
 					case ValueKind::DoubleMat4:
-					case ValueKind::UInt:
-						if( !AllTokensAreFiniteNumbers( pvalue.c_str() ) ) {
+						if( !AllTokensAreFiniteNumbers( value ) ) {
 							GlobalLog()->PrintEx( eLog_Error,
 								"ChunkParser:: parameter `%s` in `%s` expects finite numeric value(s); got `%s` (nan/inf and non-numeric tokens are rejected)",
-								pname.c_str(),
+								std::string(name).c_str(),
 								desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str(),
-								pvalue.c_str() );
+								value );
 							return false;
 						}
 						break;
@@ -870,9 +888,9 @@ namespace RISE
 					}
 
 					if( found->repeatable ) {
-						bag.AppendRepeatable( found->name, std::string(pvalue.c_str()) );
+						bag.AppendRepeatable( found->name, std::string(value) );
 					} else {
-						bag.SetSingle( found->name, std::string(pvalue.c_str()) );
+						bag.SetSingle( found->name, std::string(value) );
 					}
 				}
 				return true;
@@ -1297,76 +1315,63 @@ namespace RISE
 					std::vector<double> wavelengths;
 					std::vector<double> amplitudes;
 
-					// Repeatable per-sample control points: "cp <nm> <amp>"
-					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
-					for( size_t k = 0; k < cps.size(); ++k ) {
-						double nm = 0.0, amp = 0.0;
-						sscanf( cps[k].c_str(), "%lf %lf", &nm, &amp );
-						wavelengths.push_back( nm );
-						amplitudes.push_back( amp );
-					}
 
-					// Optional file-loaded spectrum (pairs)
-					if( bag.Has( "file" ) ) {
-						std::string fname = bag.GetString( "file" );
-						std::vector<std::string> fileLines;
-						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
-							return false;
-						}
-						for( const std::string& ln : fileLines ) {
-							double nm = 0.0, amp = 0.0;
-							if( sscanf( ln.c_str(), "%lf %lf", &nm, &amp ) == 2 ) {
-								wavelengths.push_back( nm );
-								amplitudes.push_back( amp );
-							} else {
-								GlobalLog()->PrintEx( eLog_Warning, "spectral file:: skipping malformed line in `%s`", fname.c_str() );
-							}
-						}
-					}
+					const auto appendPair = [&]( const std::string& row ) {
+						double pair[2];
+						if( !ReadSampleColumns( row, pair, 2 ) ) return false;
+						wavelengths.push_back( pair[0] );
+						amplitudes.push_back( pair[1] );
+						return true;
+					};
 
-					// Optional file-loaded wavelengths
-					if( bag.Has( "nmfile" ) ) {
-						std::string fname = bag.GetString( "nmfile" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							char nmbuf[MAX_CHARS_PER_LINE];
-							while( fgets( nmbuf, sizeof( nmbuf ), f ) ) {
-								const char* q = nmbuf;
-								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
-								if( *q == '\0' || *q == '#' ) continue;
-								double nm = 0.0;
-								if( sscanf( nmbuf, "%lf", &nm ) == 1 ) wavelengths.push_back( nm );
-							}
-							fclose( f );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+					for( const std::string& row : bag.GetRepeatable( "cp" ) ) {
+						if( !appendPair( row ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: invalid control point", name.c_str() );
 							return false;
 						}
 					}
 
-					// Optional file-loaded amplitudes
-					if( bag.Has( "ampfile" ) ) {
-						std::string fname = bag.GetString( "ampfile" );
-						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
-						if( f ) {
-							char ampbuf[MAX_CHARS_PER_LINE];
-							while( fgets( ampbuf, sizeof( ampbuf ), f ) ) {
-								const char* q = ampbuf;
-								while( *q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' ) ++q;
-								if( *q == '\0' || *q == '#' ) continue;
-								double amp = 0.0;
-								if( sscanf( ampbuf, "%lf", &amp ) == 1 ) amplitudes.push_back( amp );
+					for( const char* field : { "file", "nmfile", "ampfile" } ) {
+						if( !bag.Has( field ) ) continue;
+						const std::string filename = bag.GetString( field );
+						std::ifstream input( GlobalMediaPathLocator().Find( filename.c_str() ).c_str() );
+						if( !input ) {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
+							return false;
+						}
+						const std::string_view kind( field );
+						std::string row;
+						size_t lineNumber = 0;
+						while( std::getline( input, row ) ) {
+							++lineNumber;
+							if( row.find( '\0' ) != std::string::npos ) {
+								GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: Embedded NUL in file `%s` at line %zu", name.c_str(), filename.c_str(), lineNumber );
+								return false;
 							}
-							fclose( f );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+							const auto first = row.find_first_not_of( " \t\r\f\v" );
+							if( first == std::string::npos || row[first] == '#' ) continue;
+							double sample = 0;
+							const bool valid = kind == "file" ? appendPair( row ) : ReadSampleColumns( row, &sample, 1 );
+							if( !valid ) {
+								GlobalLog()->PrintEx( eLog_Warning, "spectral_painter `%s`: skipping malformed line in `%s`", name.c_str(), filename.c_str() );
+								continue;
+							}
+							if( kind != "file" ) {
+								(kind == "nmfile" ? wavelengths : amplitudes).push_back( sample );
+							}
+						}
+						if( input.bad() ) {
+							GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: Failed to read file `%s` after line %zu", name.c_str(), filename.c_str(), lineNumber );
 							return false;
 						}
 					}
 
 					if( amplitudes.empty() || wavelengths.empty() ) {
 						GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: no samples (empty / all-comment file, no inline cp)", name.c_str() );
+						return false;
+					}
+					if( amplitudes.size() != wavelengths.size() ) {
+						GlobalLog()->PrintEx( eLog_Error, "spectral_painter `%s`: wavelength and amplitude sample counts differ", name.c_str() );
 						return false;
 					}
 					return pJob.AddSpectralColorPainter( name.c_str(), &amplitudes[0], &wavelengths[0], nmbegin, nmend, static_cast<unsigned int>(amplitudes.size()), scale );
@@ -1382,7 +1387,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "nmbegin"; p.kind = ValueKind::Double;   p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
 						{ auto& p = P(); p.name = "nmend";   p.kind = ValueKind::Double;   p.description = "End wavelength (nm)"; p.defaultValueHint = "700"; }
 						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;   p.description = "Multiplies the spectrum on every path (spectral samples and the RGB projections alike, DL-464); as a reflectance, a scaled spectrum above 1 is an energy gain"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Wavelength,amplitude sample (repeatable)"; }
+						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Wavelength amplitude sample (repeatable)"; }
 						{ auto& p = P(); p.name = "file";    p.kind = ValueKind::Filename; p.description = "Spectrum text file (pairs)"; }
 						{ auto& p = P(); p.name = "nmfile";  p.kind = ValueKind::Filename; p.description = "Wavelength list file"; }
 						{ auto& p = P(); p.name = "ampfile"; p.kind = ValueKind::Filename; p.description = "Amplitude list file"; }
@@ -2339,6 +2344,7 @@ namespace RISE
 					// truncation so backwards behaviour is identical.
 					double exponent    = 12.0;
 					if( bag.Has( "exponent" ) ) exponent = static_cast<double>( bag.GetUInt( "exponent" ) );
+					if( bag.HadHardError() ) return false;
 
 					return pJob.AddMandelbrotFractalPainter( name.c_str(), colora.c_str(), colorb.c_str(), xstart, xend, ystart, yend, exponent );
 				}
@@ -2862,7 +2868,7 @@ namespace RISE
 						else if( t == "box" )      type = 1;
 						else if( t == "torus" )    type = 2;
 						else if( t == "cylinder" ) type = 3;
-						else                       type = String( t.c_str() ).toUInt();
+						else if( !ParseStateBag::ReadUnsigned( t.c_str(), type ) ) return false;
 					}
 
 					return pJob.AddSDF3DPainter( name.c_str(), type, param1, param2, param3, shell_thickness, noise_amplitude, noise_frequency, colora.c_str(), colorb.c_str(), scale, shift );
@@ -3011,7 +3017,7 @@ namespace RISE
 						if(      m == "euclidean" ) metric = 0;
 						else if( m == "manhattan" ) metric = 1;
 						else if( m == "chebyshev" ) metric = 2;
-						else                        metric = String( m.c_str() ).toUInt();
+						else if( !ParseStateBag::ReadUnsigned( m.c_str(), metric ) ) return false;
 					}
 					unsigned int output = 0;	// 0=F1, 1=F2, 2=F2-F1
 					if( bag.Has( "output" ) ) {
@@ -3019,7 +3025,7 @@ namespace RISE
 						if(      o == "f1" )    output = 0;
 						else if( o == "f2" )    output = 1;
 						else if( o == "f2-f1" ) output = 2;
-						else                    output = String( o.c_str() ).toUInt();
+						else if( !ParseStateBag::ReadUnsigned( o.c_str(), output ) ) return false;
 					}
 
 					return pJob.AddWorley3DPainter( name.c_str(), jitter, metric, output, colora.c_str(), colorb.c_str(), scale, shift );
@@ -3089,10 +3095,11 @@ namespace RISE
 
 					// Repeatable inline generators: "gen <x> <y> <painter>"
 					const std::vector<std::string>& gens = bag.GetRepeatable( "gen" );
-					for( size_t k = 0; k < gens.size(); ++k ) {
+					for( const std::string& gen : gens ) {
 						double x = 0, y = 0;
-						char painter[256] = {0};
-						sscanf( gens[k].c_str(), "%lf %lf %255s", &x, &y, painter );
+						std::string painter;
+						std::istringstream fields( gen );
+						if( !(fields >> x >> y >> painter) ) return false;
 						ptx.push_back( x );
 						pty.push_back( y );
 						painters.push_back( painter );
@@ -3105,8 +3112,9 @@ namespace RISE
 						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
 							for( const std::string& ln : fileLines ) {
 								double x = 0.0, y = 0.0;
-								char painter[256] = {0};
-								if( sscanf( ln.c_str(), "%lf %lf %255s", &x, &y, painter ) == 3 ) {
+								std::string painter;
+								std::istringstream fields( ln );
+								if( fields >> x >> y >> painter ) {
 									ptx.push_back( x );
 									pty.push_back( y );
 									painters.push_back( painter );
@@ -3115,22 +3123,14 @@ namespace RISE
 						}
 					}
 
-					const unsigned int num = static_cast<unsigned int>(painters.size());
-					char* pntrmem = new char[num*256];
-					memset( pntrmem, 0, num*256 );
-					char** pntrs = new char*[num];
+					if( painters.size() > std::numeric_limits<unsigned int>::max() ) return false;
+					std::vector<const char*> names;
+					names.reserve( painters.size() );
+					for( const std::string& painter : painters ) names.push_back( painter.c_str() );
 
-					for( unsigned int i=0; i<num; i++ ) {
-						pntrs[i] = &pntrmem[i*256];
-						strncpy( pntrs[i], painters[i].c_str(), 255 );
-					}
-
-					bool bRet = pJob.AddVoronoi2DPainter( name.c_str(), &ptx[0], &pty[0], (const char**)pntrs, num, border=="none"?0:border.c_str(), bordersize );
-
-					delete [] pntrs;
-					delete [] pntrmem;
-
-					return bRet;
+					return pJob.AddVoronoi2DPainter( name.c_str(), ptx.data(), pty.data(),
+						names.data(), static_cast<unsigned int>(names.size()),
+						border.c_str(), bordersize );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3182,10 +3182,11 @@ namespace RISE
 
 					// Repeatable inline generators: "gen <x> <y> <z> <painter>"
 					const std::vector<std::string>& gens = bag.GetRepeatable( "gen" );
-					for( size_t k = 0; k < gens.size(); ++k ) {
+					for( const std::string& gen : gens ) {
 						double x = 0, y = 0, z = 0;
-						char painter[256] = {0};
-						sscanf( gens[k].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter );
+						std::string painter;
+						std::istringstream fields( gen );
+						if( !(fields >> x >> y >> z >> painter) ) return false;
 						ptx.push_back( x );
 						pty.push_back( y );
 						ptz.push_back( z );
@@ -3198,11 +3199,13 @@ namespace RISE
 						std::vector<std::string> fileLines;
 						if( ReadDataFileLines( String( fname.c_str() ), fileLines ) && !fileLines.empty() ) {
 							int num = 0;
-							sscanf( fileLines[0].c_str(), "%d", &num );
-							for( int i = 1; i <= num && i < (int)fileLines.size(); ++i ) {
+							std::istringstream count( fileLines[0] );
+							count >> num;
+							for( size_t i = 1; num > 0 && i <= static_cast<size_t>(num) && i < fileLines.size(); ++i ) {
 								double x = 0.0, y = 0.0, z = 0.0;
-								char painter[256] = {0};
-								if( sscanf( fileLines[i].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter ) == 4 ) {
+								std::string painter;
+								std::istringstream fields( fileLines[i] );
+								if( fields >> x >> y >> z >> painter ) {
 									ptx.push_back( x );
 									pty.push_back( y );
 									ptz.push_back( z );
@@ -3212,28 +3215,14 @@ namespace RISE
 						}
 					}
 
-					const unsigned int num = static_cast<unsigned int>(painters.size());
-					char* pntrmem = new char[num*256];
-					memset( pntrmem, 0, num*256 );
-					char** pntrs = new char*[num];
+					if( painters.size() > std::numeric_limits<unsigned int>::max() ) return false;
+					std::vector<const char*> names;
+					names.reserve( painters.size() );
+					for( const std::string& painter : painters ) names.push_back( painter.c_str() );
 
-					for( unsigned int i=0; i<num; i++ ) {
-						pntrs[i] = &pntrmem[i*256];
-						strncpy( pntrs[i], painters[i].c_str(), 255 );
-					}
-
-					// P1-A fix (S7 review round 1): AddVoronoi3DPainter's
-					// original 8-arg signature must stay byte-identical
-					// (see IJob.h) -- call the tail-appended `WithSpace`
-					// virtual instead, which always carries `worldSpace`
-					// (computed above, defaulting to the historical FALSE
-					// when `space` is omitted).
-					bool bRet = pJob.AddVoronoi3DPainterWithSpace( name.c_str(), &ptx[0], &pty[0], &ptz[0], (const char**)pntrs, num, border=="none"?0:border.c_str(), bordersize, worldSpace );
-
-					delete [] pntrs;
-					delete [] pntrmem;
-
-					return bRet;
+					return pJob.AddVoronoi3DPainterWithSpace( name.c_str(), ptx.data(), pty.data(), ptz.data(),
+						names.data(), static_cast<unsigned int>(names.size()),
+						border.c_str(), bordersize, worldSpace );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3434,26 +3423,26 @@ namespace RISE
 
 					// Repeatable per-sample control points: "cp <x> <y>"
 					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
-					for( size_t k = 0; k < cps.size(); ++k ) {
-						double x = 0.0, y = 0.0;
-						sscanf( cps[k].c_str(), "%lf %lf", &x, &y );
-						cp_x.push_back( x );
-						cp_y.push_back( y );
+					for( const std::string& row : cps ) {
+						double pair[2];
+						if( !ReadSampleColumns( row, pair, 2 ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "piecewise_linear_function `%s`: invalid control point", name.c_str() );
+							return false;
+						}
+						cp_x.push_back( pair[0] );
+						cp_y.push_back( pair[1] );
 					}
 
 					// Optional file-loaded function (pairs)
 					if( bag.Has( "file" ) ) {
 						std::string fname = bag.GetString( "file" );
 						std::vector<std::string> fileLines;
-						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
-							return false;
-						}
+						if( !ReadDataFileLines( String( fname.c_str() ), fileLines ) ) return false;
 						for( const std::string& ln : fileLines ) {
-							double x = 0.0, y = 0.0;
-							if( sscanf( ln.c_str(), "%lf %lf", &x, &y ) == 2 ) {
-								cp_x.push_back( x );
-								cp_y.push_back( y );
+							double pair[2];
+							if( ReadSampleColumns( ln, pair, 2 ) ) {
+								cp_x.push_back( pair[0] );
+								cp_y.push_back( pair[1] );
 							} else {
 								GlobalLog()->PrintEx( eLog_Warning, "piecewise_linear_function:: skipping malformed line in `%s`", fname.c_str() );
 							}
@@ -3491,16 +3480,25 @@ namespace RISE
 					std::string name = bag.GetString( "name", "noname" );
 
 					std::vector<double> cp_x;
-					std::vector<String> cp_y;
+					std::vector<std::string> cp_y;
 
 					// Repeatable per-row entries: "cp <x> <Function1D name>"
 					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
-					for( size_t k = 0; k < cps.size(); ++k ) {
-						double x = 0.0;
-						char y[1024] = {0};
-						sscanf( cps[k].c_str(), "%lf %s", &x, y );
+					for( const std::string& row : cps ) {
+						std::istringstream fields( row );
+						std::string xToken, y, extra;
+						if( !(fields >> xToken >> y) || ((fields >> extra) && extra[0] != '#') ) {
+							SetFinalizeDiagIfEmpty( "piecewise_linear_function2d control point expects a coordinate and a function name" );
+							return false;
+						}
+						char* end = nullptr;
+						const double x = std::strtod( xToken.c_str(), &end );
+						if( end != xToken.data() + xToken.size() || !IsFiniteDouble( x ) ) {
+							SetFinalizeDiagIfEmpty( "piecewise_linear_function2d control point requires a finite coordinate" );
+							return false;
+						}
 						cp_x.push_back( x );
-						cp_y.push_back( String(y) );
+						cp_y.push_back( std::move(y) );
 					}
 
 					if( cp_x.empty() ) {
@@ -3514,16 +3512,12 @@ namespace RISE
 					}
 
 					// Setup the array of strings
-					char** func = new char*[cp_x.size()];
-					for( unsigned int i=0; i<cp_x.size(); i++ ) {
-						func[i] = (char*)(&(*(cp_y[i].begin())));
+					std::vector<char*> functions;
+					functions.reserve( cp_y.size() );
+					for( std::string& rowName : cp_y ) {
+						functions.push_back( rowName.data() );
 					}
-
-					bool bRet = pJob.AddPiecewiseLinearFunction2D( name.c_str(), cp_x.empty() ? 0 : &cp_x[0], func, static_cast<unsigned int>(cp_x.size()) );
-
-					delete [] func;
-
-					return bRet;
+					return pJob.AddPiecewiseLinearFunction2D( name.c_str(), cp_x.data(), functions.data(), static_cast<unsigned int>(cp_x.size()) );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -9078,23 +9072,11 @@ namespace RISE
 					// Job::AddModifierStack, one home for the wording so the
 					// CLI, the agent verbs and any future caller agree.
 					const std::vector<std::string>& mods = bag.GetRepeatable( "modifier" );
-					const unsigned int num = static_cast<unsigned int>( mods.size() );
-
-					char* modmem = new char[num > 0 ? num*256 : 1];
-					if( num > 0 ) { memset( modmem, 0, num*256 ); }
-					char** modptrs = new char*[num > 0 ? num : 1];
-
-					for( unsigned int i = 0; i < num; i++ ) {
-						modptrs[i] = &modmem[i*256];
-						strncpy( modptrs[i], mods[i].c_str(), 255 );
-					}
-
-					bool bRet = pJob.AddModifierStack( name.c_str(), (const char**)modptrs, num );
-
-					delete [] modptrs;
-					delete [] modmem;
-
-					return bRet;
+					if( mods.size() > std::numeric_limits<unsigned int>::max() ) return false;
+					std::vector<const char*> names;
+					names.reserve( mods.size() );
+					for( const std::string& member : mods ) names.push_back( member.c_str() );
+					return pJob.AddModifierStack( name.c_str(), names.data(), static_cast<unsigned int>(names.size()) );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -11426,23 +11408,11 @@ namespace RISE
 					std::string name = bag.GetString( "name", "noname" );
 
 					const std::vector<std::string>& shaderops = bag.GetRepeatable( "shaderop" );
-					const unsigned int num = static_cast<unsigned int>(shaderops.size());
-
-					char* shmem = new char[num*256];
-					memset( shmem, 0, num*256 );
-					char** shops = new char*[num];
-
-					for( unsigned int i=0; i<num; i++ ) {
-						shops[i] = &shmem[i*256];
-						strncpy( shops[i], shaderops[i].c_str(), 255 );
-					}
-
-					bool bRet = pJob.AddStandardShader( name.c_str(), num, (const char**)shops );
-
-					delete [] shops;
-					delete [] shmem;
-
-					return bRet;
+					if( shaderops.size() > std::numeric_limits<unsigned int>::max() ) return false;
+					std::vector<const char*> names;
+					names.reserve( shaderops.size() );
+					for( const std::string& member : shaderops ) names.push_back( member.c_str() );
+					return pJob.AddStandardShader( name.c_str(), static_cast<unsigned int>(names.size()), names.data() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -11465,39 +11435,47 @@ namespace RISE
 				{
 					std::string name = bag.GetString( "name", "noname" );
 
-					std::vector<String> shaderops;
+					std::vector<std::string> shaderops;
 					std::vector<unsigned int> mins, maxs;
 					std::vector<char> operations;
 
 					// Repeatable composite tokens: "<shaderop-name> <min-depth> <max-depth> <op>"
 					const std::vector<std::string>& sops = bag.GetRepeatable( "shaderop" );
-					for( size_t k = 0; k < sops.size(); ++k ) {
-						char buf[256] = {0};
+					const auto readDepth = []( const std::string& token, unsigned int& value ) {
+						const char* begin = token.data();
+						const char* end = begin + token.size();
+						if( begin != end && *begin == '+' ) ++begin;
+						const auto parsed = std::from_chars( begin, end, value );
+						return parsed.ec == std::errc{} && parsed.ptr == end;
+					};
+					for( const std::string& row : sops ) {
+						std::istringstream fields( row );
+						std::vector<std::string> tokens;
+						std::string token;
+						while( fields >> token && token[0] != '#' ) {
+							tokens.push_back( token );
+						}
 						unsigned int min=1, max=10000;
-						char operation = '+';
-						sscanf( sops[k].c_str(), "%s %u %u %c", buf, &min, &max, &operation );
-						shaderops.push_back( String(buf) );
+						if( tokens.empty() || tokens.size() > 4 ||
+							(tokens.size() > 1 && !readDepth( tokens[1], min )) ||
+							(tokens.size() > 2 && !readDepth( tokens[2], max )) ||
+							(tokens.size() > 3 && tokens[3].size() != 1) ) {
+							SetFinalizeDiagIfEmpty( "advanced_shader expects a shader-op name with optional minimum depth, maximum depth, and operation" );
+							return false;
+						}
+						shaderops.push_back( std::move(tokens[0]) );
 						mins.push_back( min );
 						maxs.push_back( max );
-						operations.push_back( operation );
+						operations.push_back( tokens.size() > 3 ? tokens[3][0] : '+' );
 					}
 
 					const unsigned int num = static_cast<unsigned int>(shaderops.size());
-					char* shmem = new char[num*256];
-					memset( shmem, 0, num*256 );
-					char** shops = new char*[num];
-
-					for( unsigned int i=0; i<num; i++ ) {
-						shops[i] = &shmem[i*256];
-						strncpy( shops[i], shaderops[i].c_str(), 255 );
+					std::vector<const char*> shops;
+					shops.reserve( num );
+					for( const std::string& opName : shaderops ) {
+						shops.push_back( opName.c_str() );
 					}
-
-					bool bRet = pJob.AddAdvancedShader( name.c_str(), num, (const char**)shops, (unsigned int*)(&(*(mins.begin()))), (unsigned int*)(&(*(maxs.begin()))), (char*)(&(*(operations.begin()))) );
-
-					delete [] shops;
-					delete [] shmem;
-
-					return bRet;
+					return pJob.AddAdvancedShader( name.c_str(), num, shops.data(), mins.data(), maxs.data(), operations.data() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -12995,6 +12973,16 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
 
+					// MLT normalizes by the bootstrap mean: zero samples is invalid
+					// (division by zero, empty CDF).  Hard error, DL-32 convention.
+					if( bootstrapSamples == 0 ) {
+						static const char* const msg =
+							"bootstrap_samples must be at least 1 (got 0)";
+						GlobalLog()->PrintEx( eLog_Error, "mlt_rasterizer:: %s", msg );
+						RISE::SetFinalizeDiagIfEmpty( msg );
+						return false;
+					}
+
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						defaultshader.c_str(), showLuminaires, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
@@ -13069,6 +13057,16 @@ namespace RISE
 					StabilityConfig stabilityConfig;
 					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
 
+					// MLT normalizes by the bootstrap mean: zero samples is invalid
+					// (division by zero, empty CDF).  Hard error, DL-32 convention.
+					if( bootstrapSamples == 0 ) {
+						static const char* const msg =
+							"bootstrap_samples must be at least 1 (got 0)";
+						GlobalLog()->PrintEx( eLog_Error, "mlt_spectral_rasterizer:: %s", msg );
+						RISE::SetFinalizeDiagIfEmpty( msg );
+						return false;
+					}
+
 					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						defaultshader.c_str(), showLuminaires,
@@ -13118,6 +13116,7 @@ namespace RISE
 					std::string pattern   = bag.GetString( "pattern",  "none" );
 					bool        multiple  = bag.GetBool(   "multiple", false );
 					int         bpp       = bag.GetInt(    "bpp",      8 );
+					if( bag.HadHardError() ) return false;
 
 					char type = 0;
 					if( bag.Has("type") ) {
@@ -13727,7 +13726,8 @@ namespace RISE
 					const std::vector<std::string>& iparams = bag.GetRepeatable( "interpolator_params" );
 
 					for( size_t i = 0; i < values.size(); ++i ) {
-						double time = (i < times.size()) ? RISE::String(times[i].c_str()).toDouble() : 0.0;
+						double time = 0.0;
+						if( i < times.size() && !ParseStateBag::ReadScalar( times[i], time ) ) return false;
 						const char* interp_c  = interps.empty() ? 0 :
 							(interps[std::min(i, interps.size()-1)] == "none" ? 0 : interps[std::min(i, interps.size()-1)].c_str());
 						const char* iparams_c = iparams.empty() ? 0 :
@@ -13886,7 +13886,8 @@ namespace RISE
         std::unique_ptr<IAsciiChunkParser> base_;
         ChunkDescriptor descriptor_;
     public:
-        explicit AlphaMaterialParser(IAsciiChunkParser* base) : base_(base), descriptor_(base->Describe()) {
+        explicit AlphaMaterialParser(std::unique_ptr<IAsciiChunkParser> base) :
+            base_(std::move(base)), descriptor_(base_->Describe()) {
             ParameterDescriptor alpha;
             alpha.name = "alpha_coverage"; alpha.kind = ValueKind::Reference;
             alpha.referenceCategories = {ChunkCategory::Painter};
@@ -14011,8 +14012,8 @@ namespace RISE
 			std::unique_ptr<IAsciiChunkParser> base_;
 			ChunkDescriptor descriptor_;
 		public:
-			LegacyTierParser( IAsciiChunkParser* base, const LegacyTierEntry& tier ) :
-				base_( base ), descriptor_( base->Describe() )
+			LegacyTierParser( std::unique_ptr<IAsciiChunkParser> base, const LegacyTierEntry& tier ) :
+				base_( std::move(base) ), descriptor_( base_->Describe() )
 			{
 				if( tier.frozen ) Implementation::ChunkParsers::MarkFrozen( descriptor_, tier.replacement );
 				else              Implementation::ChunkParsers::MarkDeprecated( descriptor_, tier.replacement );
@@ -14044,230 +14045,226 @@ namespace RISE
 		std::vector<ChunkParserEntry> entries;
 		entries.reserve( 128 );
 
-		auto add = [&entries]( const char* keyword, IAsciiChunkParser* parser ) {
-			ChunkParserEntry e;
-			e.keyword = keyword;
-			IAsciiChunkParser* wrapped = parser->Describe().category == ChunkCategory::Material
-                ? static_cast<IAsciiChunkParser*>(new AlphaMaterialParser(parser)) : parser;
-			// Legacy-deprecation Phase 1: mark the chunk's tier (see kLegacyTierTable).
+		auto add = [&entries]( const char* keyword, std::unique_ptr<IAsciiChunkParser> parser ) {
+			if( parser->Describe().category == ChunkCategory::Material )
+				parser = std::make_unique<AlphaMaterialParser>( std::move(parser) );
 			if( const LegacyTierEntry* tier = FindLegacyTier( keyword ) )
-				wrapped = new LegacyTierParser( wrapped, *tier );
-			e.parser.reset( wrapped );
-			entries.push_back( std::move(e) );
+				parser = std::make_unique<LegacyTierParser>( std::move(parser), *tier );
+			entries.push_back( { keyword, std::move(parser) } );
 		};
 
 		// Painters
-		add( "uniformcolor_painter",                  new UniformColorPainterAsciiChunkParser() );
-		add( "vertex_color_painter",                  new VertexColorPainterAsciiChunkParser() );
-		add( "spectral_painter",                      new SpectralPainterAsciiChunkParser() );
-		add( "scalar_painter",                        new ScalarPainterAsciiChunkParser() );
-		add( "png_painter",                           new PngPainterAsciiChunkParser() );
-		add( "jpg_painter",                           new JpegPainterAsciiChunkParser() );
-		add( "hdr_painter",                           new HdrPainterAsciiChunkParser() );
-		add( "exr_painter",                           new ExrPainterAsciiChunkParser() );
-		add( "tiff_painter",                          new TiffPainterAsciiChunkParser() );
-		add( "checker_painter",                       new CheckerPainterAsciiChunkParser() );
-		add( "lines_painter",                         new LinesPainterAsciiChunkParser() );
-		add( "mandelbrot_painter",                    new MandelbrotPainterAsciiChunkParser() );
-		add( "perlin2d_painter",                      new Perlin2DPainterAsciiChunkParser() );
-		add( "controlled_smoothness2d_painter",       new ControlledSmoothness2DPainterAsciiChunkParser() );
-		add( "polynomial_function2d_painter",         new PolynomialFunction2DPainterAsciiChunkParser() );
-		add( "composite_function2d_painter",          new CompositeFunction2DPainterAsciiChunkParser() );
-		add( "gerstnerwave_painter",                  new GerstnerWavePainterAsciiChunkParser() );
-		add( "perlin3d_painter",                      new Perlin3DPainterAsciiChunkParser() );
-		add( "turbulence3d_painter",                  new Turbulence3DPainterAsciiChunkParser() );
-		add( "wavelet3d_painter",                     new Wavelet3DPainterAsciiChunkParser() );
-		add( "reactiondiffusion3d_painter",           new ReactionDiffusion3DPainterAsciiChunkParser() );
-		add( "gabor3d_painter",                       new Gabor3DPainterAsciiChunkParser() );
-		add( "simplex3d_painter",                     new Simplex3DPainterAsciiChunkParser() );
-		add( "sdf3d_painter",                         new SDF3DPainterAsciiChunkParser() );
-		add( "curlnoise3d_painter",                   new CurlNoise3DPainterAsciiChunkParser() );
-		add( "domainwarp3d_painter",                  new DomainWarp3DPainterAsciiChunkParser() );
-		add( "perlinworley3d_painter",                new PerlinWorley3DPainterAsciiChunkParser() );
-		add( "worley3d_painter",                      new Worley3DPainterAsciiChunkParser() );
-		add( "voronoi2d_painter",                     new Voronoi2DPainterAsciiChunkParser() );
-		add( "voronoi3d_painter",                     new Voronoi3DPainterAsciiChunkParser() );
-		add( "iridescent_painter",                    new IridescentPainterAsciiChunkParser() );
-		add( "blackbody_painter",                     new BlackBodyPainterAsciiChunkParser() );
-		add( "blend_painter",                         new BlendPainterAsciiChunkParser() );
-		add( "function2d_painter",                    new Function2DColorPainterAsciiChunkParser() );
-		add( "expression_function2d",                 new ExpressionFunction2DPainterAsciiChunkParser() );
-		add( "expression_painter",                    new ExpressionPainterAsciiChunkParser() );
-		add( "ramp_painter",                          new RampPainterAsciiChunkParser() );
-		add( "mapping_painter",                       new MappingPainterAsciiChunkParser() );
-		add( "stochastic_tile_painter",               new StochasticTilePainterAsciiChunkParser() );
-		add( "scatter_painter",                       new ScatterPainterAsciiChunkParser() );
-		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
+		add( "uniformcolor_painter",                  std::make_unique<UniformColorPainterAsciiChunkParser>() );
+		add( "vertex_color_painter",                  std::make_unique<VertexColorPainterAsciiChunkParser>() );
+		add( "spectral_painter",                      std::make_unique<SpectralPainterAsciiChunkParser>() );
+		add( "scalar_painter",                        std::make_unique<ScalarPainterAsciiChunkParser>() );
+		add( "png_painter",                           std::make_unique<PngPainterAsciiChunkParser>() );
+		add( "jpg_painter",                           std::make_unique<JpegPainterAsciiChunkParser>() );
+		add( "hdr_painter",                           std::make_unique<HdrPainterAsciiChunkParser>() );
+		add( "exr_painter",                           std::make_unique<ExrPainterAsciiChunkParser>() );
+		add( "tiff_painter",                          std::make_unique<TiffPainterAsciiChunkParser>() );
+		add( "checker_painter",                       std::make_unique<CheckerPainterAsciiChunkParser>() );
+		add( "lines_painter",                         std::make_unique<LinesPainterAsciiChunkParser>() );
+		add( "mandelbrot_painter",                    std::make_unique<MandelbrotPainterAsciiChunkParser>() );
+		add( "perlin2d_painter",                      std::make_unique<Perlin2DPainterAsciiChunkParser>() );
+		add( "controlled_smoothness2d_painter",       std::make_unique<ControlledSmoothness2DPainterAsciiChunkParser>() );
+		add( "polynomial_function2d_painter",         std::make_unique<PolynomialFunction2DPainterAsciiChunkParser>() );
+		add( "composite_function2d_painter",          std::make_unique<CompositeFunction2DPainterAsciiChunkParser>() );
+		add( "gerstnerwave_painter",                  std::make_unique<GerstnerWavePainterAsciiChunkParser>() );
+		add( "perlin3d_painter",                      std::make_unique<Perlin3DPainterAsciiChunkParser>() );
+		add( "turbulence3d_painter",                  std::make_unique<Turbulence3DPainterAsciiChunkParser>() );
+		add( "wavelet3d_painter",                     std::make_unique<Wavelet3DPainterAsciiChunkParser>() );
+		add( "reactiondiffusion3d_painter",           std::make_unique<ReactionDiffusion3DPainterAsciiChunkParser>() );
+		add( "gabor3d_painter",                       std::make_unique<Gabor3DPainterAsciiChunkParser>() );
+		add( "simplex3d_painter",                     std::make_unique<Simplex3DPainterAsciiChunkParser>() );
+		add( "sdf3d_painter",                         std::make_unique<SDF3DPainterAsciiChunkParser>() );
+		add( "curlnoise3d_painter",                   std::make_unique<CurlNoise3DPainterAsciiChunkParser>() );
+		add( "domainwarp3d_painter",                  std::make_unique<DomainWarp3DPainterAsciiChunkParser>() );
+		add( "perlinworley3d_painter",                std::make_unique<PerlinWorley3DPainterAsciiChunkParser>() );
+		add( "worley3d_painter",                      std::make_unique<Worley3DPainterAsciiChunkParser>() );
+		add( "voronoi2d_painter",                     std::make_unique<Voronoi2DPainterAsciiChunkParser>() );
+		add( "voronoi3d_painter",                     std::make_unique<Voronoi3DPainterAsciiChunkParser>() );
+		add( "iridescent_painter",                    std::make_unique<IridescentPainterAsciiChunkParser>() );
+		add( "blackbody_painter",                     std::make_unique<BlackBodyPainterAsciiChunkParser>() );
+		add( "blend_painter",                         std::make_unique<BlendPainterAsciiChunkParser>() );
+		add( "function2d_painter",                    std::make_unique<Function2DColorPainterAsciiChunkParser>() );
+		add( "expression_function2d",                 std::make_unique<ExpressionFunction2DPainterAsciiChunkParser>() );
+		add( "expression_painter",                    std::make_unique<ExpressionPainterAsciiChunkParser>() );
+		add( "ramp_painter",                          std::make_unique<RampPainterAsciiChunkParser>() );
+		add( "mapping_painter",                       std::make_unique<MappingPainterAsciiChunkParser>() );
+		add( "stochastic_tile_painter",               std::make_unique<StochasticTilePainterAsciiChunkParser>() );
+		add( "scatter_painter",                       std::make_unique<ScatterPainterAsciiChunkParser>() );
+		add( "channel_painter",                       std::make_unique<ChannelPainterAsciiChunkParser>() );
 
 		// Functions
-		add( "piecewise_linear_function",             new PiecewiseLinearFunctionChunkParser() );
-		add( "piecewise_linear_function2d",           new PiecewiseLinearFunction2DChunkParser() );
+		add( "piecewise_linear_function",             std::make_unique<PiecewiseLinearFunctionChunkParser>() );
+		add( "piecewise_linear_function2d",           std::make_unique<PiecewiseLinearFunction2DChunkParser>() );
 
 		// Materials
-		add( "lambertian_material",                   new LambertianMaterialAsciiChunkParser() );
-		add( "perfectreflector_material",             new PerfectReflectorMaterialAsciiChunkParser() );
-		add( "perfectrefractor_material",             new PerfectRefractorMaterialAsciiChunkParser() );
-		add( "polished_material",                     new PolishedMaterialAsciiChunkParser() );
-		add( "dielectric_material",                   new DielectricMaterialAsciiChunkParser() );
-		add( "subsurfacescattering_material",         new SubSurfaceScatteringMaterialAsciiChunkParser() );
-		add( "randomwalk_sss_material",               new RandomWalkSSSMaterialAsciiChunkParser() );
-		add( "lambertian_luminaire_material",         new LambertianLuminaireMaterialAsciiChunkParser() );
-		add( "phong_luminaire_material",              new PhongLuminaireMaterialAsciiChunkParser() );
-		add( "ashikminshirley_anisotropicphong_material", new AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser() );
-		add( "isotropic_phong_material",              new IsotropicPhongMaterialAsciiChunkParser() );
-		add( "translucent_material",                  new TranslucentMaterialAsciiChunkParser() );
-		add( "biospec_skin_material",                 new BioSpecSkinMaterialAsciiChunkParser() );
-		add( "donner_jensen_skin_bssrdf_material",    new DonnerJensenSkinBSSRDFMaterialAsciiChunkParser() );
-		add( "generic_human_tissue_material",         new GenericHumanTissueMaterialAsciiChunkParser() );
-		add( "coated_material",                       new CoatedMaterialAsciiChunkParser() );
-		add( "fabric_material",                       new FabricMaterialAsciiChunkParser() );
-		add( "weave_material",                        new WeaveMaterialAsciiChunkParser() );
-		add( "composite_material",                    new CompositeMaterialAsciiChunkParser() );
-		add( "ward_isotropic_material",               new WardIsotropicGaussianMaterialAsciiChunkParser() );
-		add( "ward_anisotropic_material",             new WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser() );
-		add( "ggx_material",                          new GGXMaterialAsciiChunkParser() );
-		add( "pbr_metallic_roughness_material",       new PBRMetallicRoughnessMaterialAsciiChunkParser() );
-		add( "cooktorrance_material",                 new CookTorranceMaterialAsciiChunkParser() );
-		add( "orennayar_material",                    new OrenNayarMaterialAsciiChunkParser() );
-		add( "sheen_material",                        new SheenMaterialAsciiChunkParser() );
-		add( "schlick_material",                      new SchlickMaterialAsciiChunkParser() );
-		add( "datadriven_material",                   new DataDrivenMaterialAsciiChunkParser() );
-		add( "hair_material",                         new HairMaterialAsciiChunkParser() );
+		add( "lambertian_material",                   std::make_unique<LambertianMaterialAsciiChunkParser>() );
+		add( "perfectreflector_material",             std::make_unique<PerfectReflectorMaterialAsciiChunkParser>() );
+		add( "perfectrefractor_material",             std::make_unique<PerfectRefractorMaterialAsciiChunkParser>() );
+		add( "polished_material",                     std::make_unique<PolishedMaterialAsciiChunkParser>() );
+		add( "dielectric_material",                   std::make_unique<DielectricMaterialAsciiChunkParser>() );
+		add( "subsurfacescattering_material",         std::make_unique<SubSurfaceScatteringMaterialAsciiChunkParser>() );
+		add( "randomwalk_sss_material",               std::make_unique<RandomWalkSSSMaterialAsciiChunkParser>() );
+		add( "lambertian_luminaire_material",         std::make_unique<LambertianLuminaireMaterialAsciiChunkParser>() );
+		add( "phong_luminaire_material",              std::make_unique<PhongLuminaireMaterialAsciiChunkParser>() );
+		add( "ashikminshirley_anisotropicphong_material", std::make_unique<AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser>() );
+		add( "isotropic_phong_material",              std::make_unique<IsotropicPhongMaterialAsciiChunkParser>() );
+		add( "translucent_material",                  std::make_unique<TranslucentMaterialAsciiChunkParser>() );
+		add( "biospec_skin_material",                 std::make_unique<BioSpecSkinMaterialAsciiChunkParser>() );
+		add( "donner_jensen_skin_bssrdf_material",    std::make_unique<DonnerJensenSkinBSSRDFMaterialAsciiChunkParser>() );
+		add( "generic_human_tissue_material",         std::make_unique<GenericHumanTissueMaterialAsciiChunkParser>() );
+		add( "coated_material",                       std::make_unique<CoatedMaterialAsciiChunkParser>() );
+		add( "fabric_material",                       std::make_unique<FabricMaterialAsciiChunkParser>() );
+		add( "weave_material",                        std::make_unique<WeaveMaterialAsciiChunkParser>() );
+		add( "composite_material",                    std::make_unique<CompositeMaterialAsciiChunkParser>() );
+		add( "ward_isotropic_material",               std::make_unique<WardIsotropicGaussianMaterialAsciiChunkParser>() );
+		add( "ward_anisotropic_material",             std::make_unique<WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser>() );
+		add( "ggx_material",                          std::make_unique<GGXMaterialAsciiChunkParser>() );
+		add( "pbr_metallic_roughness_material",       std::make_unique<PBRMetallicRoughnessMaterialAsciiChunkParser>() );
+		add( "cooktorrance_material",                 std::make_unique<CookTorranceMaterialAsciiChunkParser>() );
+		add( "orennayar_material",                    std::make_unique<OrenNayarMaterialAsciiChunkParser>() );
+		add( "sheen_material",                        std::make_unique<SheenMaterialAsciiChunkParser>() );
+		add( "schlick_material",                      std::make_unique<SchlickMaterialAsciiChunkParser>() );
+		add( "datadriven_material",                   std::make_unique<DataDrivenMaterialAsciiChunkParser>() );
+		add( "hair_material",                         std::make_unique<HairMaterialAsciiChunkParser>() );
 
 		// Cameras
-		add( "scene_options",                         new SceneOptionsAsciiChunkParser() );
-		add( "camera_defaults",                       new CameraDefaultsAsciiChunkParser() );
+		add( "scene_options",                         std::make_unique<SceneOptionsAsciiChunkParser>() );
+		add( "camera_defaults",                       std::make_unique<CameraDefaultsAsciiChunkParser>() );
 		// Film — pixel-grid descriptor.  See FilmAsciiChunkParser
 		// definition for the contract; the chunk should be authored
 		// BEFORE any camera chunk in the scene file.
-		add( "film",                                  new FilmAsciiChunkParser() );
+		add( "film",                                  std::make_unique<FilmAsciiChunkParser>() );
 
-		add( "pinhole_camera",                        new PinholeCameraAsciiChunkParser() );
-		add( "onb_pinhole_camera",                    new ONBPinholeCameraAsciiChunkParser() );
-		add( "thinlens_camera",                       new ThinlensCameraAsciiChunkParser() );
+		add( "pinhole_camera",                        std::make_unique<PinholeCameraAsciiChunkParser>() );
+		add( "onb_pinhole_camera",                    std::make_unique<ONBPinholeCameraAsciiChunkParser>() );
+		add( "thinlens_camera",                       std::make_unique<ThinlensCameraAsciiChunkParser>() );
 		// realistic_camera reserved for Phase 4 (multi-element lens).
-		add( "fisheye_camera",                        new FisheyeCameraAsciiChunkParser() );
-		add( "orthographic_camera",                   new OrthographicCameraAsciiChunkParser() );
+		add( "fisheye_camera",                        std::make_unique<FisheyeCameraAsciiChunkParser>() );
+		add( "orthographic_camera",                   std::make_unique<OrthographicCameraAsciiChunkParser>() );
 
 		// Geometry
-		add( "sphere_geometry",                       new SphereGeometryAsciiChunkParser() );
-		add( "ellipsoid_geometry",                    new EllipsoidGeometryAsciiChunkParser() );
-		add( "cylinder_geometry",                     new CylinderGeometryAsciiChunkParser() );
-		add( "torus_geometry",                        new TorusGeometryAsciiChunkParser() );
-		add( "infiniteplane_geometry",                new InfinitePlaneGeometryAsciiChunkParser() );
-		add( "box_geometry",                          new BoxGeometryAsciiChunkParser() );
-		add( "clippedplane_geometry",                 new ClippedPlaneGeometryAsciiChunkParser() );
-		add( "indexedmesh_geometry",                  new IndexedMeshGeometryAsciiChunkParser() );
-		add( "3dsmesh_geometry",                      new Mesh3DSGeometryAsciiChunkParser() );
-		add( "rawmesh_geometry",                      new RAWMeshGeometryAsciiChunkParser() );
-		add( "rawmesh2_geometry",                     new RAWMesh2GeometryAsciiChunkParser() );
-		add( "risemesh_geometry",                     new RISEMeshGeometryAsciiChunkParser() );
-		add( "plymesh_geometry",                      new PLYMeshGeometryAsciiChunkParser() );
-		add( "gltfmesh_geometry",                     new GLTFMeshGeometryAsciiChunkParser() );
-		add( "gltf_import",                           new GLTFImportAsciiChunkParser() );
-		add( "circulardisk_geometry",                 new CircularDiskGeometryAsciiChunkParser() );
-		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
-		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
-		add( "sdf_geometry",                          new SDFGeometryAsciiChunkParser() );
-		add( "skeleton_geometry",                     new SkeletonGeometryAsciiChunkParser() );
-		add( "cartesian_disk_geometry",               new CartesianDiskGeometryAsciiChunkParser() );
-		add( "sweep_geometry",                        new SweepGeometryAsciiChunkParser() );
-		add( "lathe_geometry",                        new LatheGeometryAsciiChunkParser() );
-		add( "skin_geometry",                         new SkinGeometryAsciiChunkParser() );
-		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );
-		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
-		add( "hair_geometry",                         new HairGeometryAsciiChunkParser() );
-		add( "hair_guides",                           new HairGuidesAsciiChunkParser() );
+		add( "sphere_geometry",                       std::make_unique<SphereGeometryAsciiChunkParser>() );
+		add( "ellipsoid_geometry",                    std::make_unique<EllipsoidGeometryAsciiChunkParser>() );
+		add( "cylinder_geometry",                     std::make_unique<CylinderGeometryAsciiChunkParser>() );
+		add( "torus_geometry",                        std::make_unique<TorusGeometryAsciiChunkParser>() );
+		add( "infiniteplane_geometry",                std::make_unique<InfinitePlaneGeometryAsciiChunkParser>() );
+		add( "box_geometry",                          std::make_unique<BoxGeometryAsciiChunkParser>() );
+		add( "clippedplane_geometry",                 std::make_unique<ClippedPlaneGeometryAsciiChunkParser>() );
+		add( "indexedmesh_geometry",                  std::make_unique<IndexedMeshGeometryAsciiChunkParser>() );
+		add( "3dsmesh_geometry",                      std::make_unique<Mesh3DSGeometryAsciiChunkParser>() );
+		add( "rawmesh_geometry",                      std::make_unique<RAWMeshGeometryAsciiChunkParser>() );
+		add( "rawmesh2_geometry",                     std::make_unique<RAWMesh2GeometryAsciiChunkParser>() );
+		add( "risemesh_geometry",                     std::make_unique<RISEMeshGeometryAsciiChunkParser>() );
+		add( "plymesh_geometry",                      std::make_unique<PLYMeshGeometryAsciiChunkParser>() );
+		add( "gltfmesh_geometry",                     std::make_unique<GLTFMeshGeometryAsciiChunkParser>() );
+		add( "gltf_import",                           std::make_unique<GLTFImportAsciiChunkParser>() );
+		add( "circulardisk_geometry",                 std::make_unique<CircularDiskGeometryAsciiChunkParser>() );
+		add( "bezierpatch_geometry",                  std::make_unique<BezierPatchGeometryAsciiChunkParser>() );
+		add( "bilinearpatch_geometry",                std::make_unique<BilinearPatchGeometryAsciiChunkParser>() );
+		add( "sdf_geometry",                          std::make_unique<SDFGeometryAsciiChunkParser>() );
+		add( "skeleton_geometry",                     std::make_unique<SkeletonGeometryAsciiChunkParser>() );
+		add( "cartesian_disk_geometry",               std::make_unique<CartesianDiskGeometryAsciiChunkParser>() );
+		add( "sweep_geometry",                        std::make_unique<SweepGeometryAsciiChunkParser>() );
+		add( "lathe_geometry",                        std::make_unique<LatheGeometryAsciiChunkParser>() );
+		add( "skin_geometry",                         std::make_unique<SkinGeometryAsciiChunkParser>() );
+		add( "path_instances_geometry",               std::make_unique<PathInstancesGeometryAsciiChunkParser>() );
+		add( "displaced_geometry",                    std::make_unique<DisplacedGeometryAsciiChunkParser>() );
+		add( "hair_geometry",                         std::make_unique<HairGeometryAsciiChunkParser>() );
+		add( "hair_guides",                           std::make_unique<HairGuidesAsciiChunkParser>() );
 
 		// Modifiers
-		add( "relief_modifier",                       new ReliefModifierAsciiChunkParser() );
-		add( "modifier_stack",                        new ModifierStackAsciiChunkParser() );
-		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );
-		add( "glint_modifier",                        new GlintModifierAsciiChunkParser() );
+		add( "relief_modifier",                       std::make_unique<ReliefModifierAsciiChunkParser>() );
+		add( "modifier_stack",                        std::make_unique<ModifierStackAsciiChunkParser>() );
+		add( "normal_map_modifier",                   std::make_unique<NormalMapModifierAsciiChunkParser>() );
+		add( "glint_modifier",                        std::make_unique<GlintModifierAsciiChunkParser>() );
 
 		// Media
-		add( "homogeneous_medium",                    new HomogeneousMediumAsciiChunkParser() );
-		add( "global_medium",                         new GlobalMediumAsciiChunkParser() );
-		add( "light_rr_threshold",                   new LightRRThresholdAsciiChunkParser() );
-		add( "heterogeneous_medium",                  new HeterogeneousMediumAsciiChunkParser() );
-		add( "painter_heterogeneous_medium",          new PainterHeterogeneousMediumAsciiChunkParser() );
+		add( "homogeneous_medium",                    std::make_unique<HomogeneousMediumAsciiChunkParser>() );
+		add( "global_medium",                         std::make_unique<GlobalMediumAsciiChunkParser>() );
+		add( "light_rr_threshold",                   std::make_unique<LightRRThresholdAsciiChunkParser>() );
+		add( "heterogeneous_medium",                  std::make_unique<HeterogeneousMediumAsciiChunkParser>() );
+		add( "painter_heterogeneous_medium",          std::make_unique<PainterHeterogeneousMediumAsciiChunkParser>() );
 
 		// Objects
-		add( "standard_object",                       new StandardObjectAsciiChunkParser() );
-		add( "override_object",                       new OverrideObjectAsciiChunkParser() );
-		add( "csg_object",                            new CSGObjectAsciiChunkParser() );
+		add( "standard_object",                       std::make_unique<StandardObjectAsciiChunkParser>() );
+		add( "override_object",                       std::make_unique<OverrideObjectAsciiChunkParser>() );
+		add( "csg_object",                            std::make_unique<CSGObjectAsciiChunkParser>() );
 
 		// Shader ops
-		add( "ambientocclusion_shaderop",             new AmbientOcclusionShaderOpAsciiChunkParser() );
-		add( "directlighting_shaderop",               new DirectLightingShaderOpAsciiChunkParser() );
-		add( "pathtracing_shaderop",                  new PathTracingShaderOpAsciiChunkParser() );
-		add( "mis_pathtracing_shaderop",              new PathTracingShaderOpAsciiChunkParser() );  // Legacy alias
-		add( "sms_shaderop",                          new SMSShaderOpAsciiChunkParser() );
-		add( "distributiontracing_shaderop",          new DistributionTracingShaderOpAsciiChunkParser() );
-		add( "finalgather_shaderop",                  new FinalGatherShaderOpAsciiChunkParser() );
-		add( "simple_sss_shaderop",                   new SimpleSubSurfaceScatteringShaderOpAsciiChunkParser() );
-		add( "diffusion_approximation_sss_shaderop",  new DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser() );
-		add( "donner_jensen_skin_sss_shaderop",       new DonnerJensenSkinSSSShaderOpAsciiChunkParser() );
-		add( "arealight_shaderop",                    new AreaLightShaderOpAsciiChunkParser() );
-		add( "transparency_shaderop",                 new TransparencyShaderOpAsciiChunkParser() );
-		add( "alpha_test_shaderop",                   new AlphaTestShaderOpAsciiChunkParser() );
+		add( "ambientocclusion_shaderop",             std::make_unique<AmbientOcclusionShaderOpAsciiChunkParser>() );
+		add( "directlighting_shaderop",               std::make_unique<DirectLightingShaderOpAsciiChunkParser>() );
+		add( "pathtracing_shaderop",                  std::make_unique<PathTracingShaderOpAsciiChunkParser>() );
+		add( "mis_pathtracing_shaderop",              std::make_unique<PathTracingShaderOpAsciiChunkParser>() );  // Legacy alias
+		add( "sms_shaderop",                          std::make_unique<SMSShaderOpAsciiChunkParser>() );
+		add( "distributiontracing_shaderop",          std::make_unique<DistributionTracingShaderOpAsciiChunkParser>() );
+		add( "finalgather_shaderop",                  std::make_unique<FinalGatherShaderOpAsciiChunkParser>() );
+		add( "simple_sss_shaderop",                   std::make_unique<SimpleSubSurfaceScatteringShaderOpAsciiChunkParser>() );
+		add( "diffusion_approximation_sss_shaderop",  std::make_unique<DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser>() );
+		add( "donner_jensen_skin_sss_shaderop",       std::make_unique<DonnerJensenSkinSSSShaderOpAsciiChunkParser>() );
+		add( "arealight_shaderop",                    std::make_unique<AreaLightShaderOpAsciiChunkParser>() );
+		add( "transparency_shaderop",                 std::make_unique<TransparencyShaderOpAsciiChunkParser>() );
+		add( "alpha_test_shaderop",                   std::make_unique<AlphaTestShaderOpAsciiChunkParser>() );
 
 		// Shaders
-		add( "standard_shader",                       new StandardShaderAsciiChunkParser() );
-		add( "advanced_shader",                       new AdvancedShaderAsciiChunkParser() );
-		add( "directvolumerendering_shader",          new DirectVolumeRenderingShaderAsciiChunkParser() );
-		add( "spectraldirectvolumerendering_shader",  new SpectralDirectVolumeRenderingShaderAsciiChunkParser() );
+		add( "standard_shader",                       std::make_unique<StandardShaderAsciiChunkParser>() );
+		add( "advanced_shader",                       std::make_unique<AdvancedShaderAsciiChunkParser>() );
+		add( "directvolumerendering_shader",          std::make_unique<DirectVolumeRenderingShaderAsciiChunkParser>() );
+		add( "spectraldirectvolumerendering_shader",  std::make_unique<SpectralDirectVolumeRenderingShaderAsciiChunkParser>() );
 
 		// Rasterizers
-		add( "pixelpel_rasterizer",                   new PixelPelRasterizerAsciiChunkParser() );
-		add( "pixelintegratingspectral_rasterizer",   new PixelIntegratingSpectralRasterizerAsciiChunkParser() );
-		add( "bdpt_pel_rasterizer",                   new BDPTPelRasterizerAsciiChunkParser() );
-		add( "bdpt_spectral_rasterizer",              new BDPTSpectralRasterizerAsciiChunkParser() );
-		add( "vcm_pel_rasterizer",                    new VCMPelRasterizerAsciiChunkParser() );
-		add( "vcm_spectral_rasterizer",               new VCMSpectralRasterizerAsciiChunkParser() );
-		add( "pathtracing_pel_rasterizer",            new PathTracingPelRasterizerAsciiChunkParser() );
-		add( "pathtracing_spectral_rasterizer",       new PathTracingSpectralRasterizerAsciiChunkParser() );
-		add( "auto_rasterizer",                       new AutoRasterizerAsciiChunkParser() );
-		add( "auto_spectral_rasterizer",              new AutoSpectralRasterizerAsciiChunkParser() );
-		add( "mlt_rasterizer",                        new MLTRasterizerAsciiChunkParser() );
-		add( "mlt_spectral_rasterizer",               new MLTSpectralRasterizerAsciiChunkParser() );
+		add( "pixelpel_rasterizer",                   std::make_unique<PixelPelRasterizerAsciiChunkParser>() );
+		add( "pixelintegratingspectral_rasterizer",   std::make_unique<PixelIntegratingSpectralRasterizerAsciiChunkParser>() );
+		add( "bdpt_pel_rasterizer",                   std::make_unique<BDPTPelRasterizerAsciiChunkParser>() );
+		add( "bdpt_spectral_rasterizer",              std::make_unique<BDPTSpectralRasterizerAsciiChunkParser>() );
+		add( "vcm_pel_rasterizer",                    std::make_unique<VCMPelRasterizerAsciiChunkParser>() );
+		add( "vcm_spectral_rasterizer",               std::make_unique<VCMSpectralRasterizerAsciiChunkParser>() );
+		add( "pathtracing_pel_rasterizer",            std::make_unique<PathTracingPelRasterizerAsciiChunkParser>() );
+		add( "pathtracing_spectral_rasterizer",       std::make_unique<PathTracingSpectralRasterizerAsciiChunkParser>() );
+		add( "auto_rasterizer",                       std::make_unique<AutoRasterizerAsciiChunkParser>() );
+		add( "auto_spectral_rasterizer",              std::make_unique<AutoSpectralRasterizerAsciiChunkParser>() );
+		add( "mlt_rasterizer",                        std::make_unique<MLTRasterizerAsciiChunkParser>() );
+		add( "mlt_spectral_rasterizer",               std::make_unique<MLTSpectralRasterizerAsciiChunkParser>() );
 
 		// Rasterizer output
-		add( "file_rasterizeroutput",                 new FileRasterizerOutputAsciiChunkParser() );
+		add( "file_rasterizeroutput",                 std::make_unique<FileRasterizerOutputAsciiChunkParser>() );
 
 		// Lights
-		add( "ambient_light",                         new AmbientLightAsciiChunkParser() );
-		add( "omni_light",                            new OmniLightAsciiChunkParser() );
-		add( "spot_light",                            new SpotLightAsciiChunkParser() );
-		add( "directional_light",                     new DirectionalLightAsciiChunkParser() );
-		add( "hosek_wilkie_skylight",                 new HosekWilkieSkylightAsciiChunkParser() );
-		add( "rect_light",                            new RectLightAsciiChunkParser() );
-		add( "shape_light",                           new ShapeLightAsciiChunkParser() );
+		add( "ambient_light",                         std::make_unique<AmbientLightAsciiChunkParser>() );
+		add( "omni_light",                            std::make_unique<OmniLightAsciiChunkParser>() );
+		add( "spot_light",                            std::make_unique<SpotLightAsciiChunkParser>() );
+		add( "directional_light",                     std::make_unique<DirectionalLightAsciiChunkParser>() );
+		add( "hosek_wilkie_skylight",                 std::make_unique<HosekWilkieSkylightAsciiChunkParser>() );
+		add( "rect_light",                            std::make_unique<RectLightAsciiChunkParser>() );
+		add( "shape_light",                           std::make_unique<ShapeLightAsciiChunkParser>() );
 
 		// Photon maps & gather
-		add( "caustic_pel_photonmap",                 new CausticPelPhotonMapGenerateAsciiChunkParser() );
-		add( "translucent_pel_photonmap",             new TranslucentPelPhotonMapGenerateAsciiChunkParser() );
-		add( "caustic_spectral_photonmap",            new CausticSpectralPhotonMapGenerateAsciiChunkParser() );
-		add( "global_pel_photonmap",                  new GlobalPelPhotonMapGenerateAsciiChunkParser() );
-		add( "global_spectral_photonmap",             new GlobalSpectralPhotonMapGenerateAsciiChunkParser() );
-		add( "shadow_photonmap",                      new ShadowPhotonMapGenerateAsciiChunkParser() );
-		add( "caustic_pel_gather",                    new CausticPelPhotonMapGatherAsciiChunkParser() );
-		add( "translucent_pel_gather",                new TranslucentPelPhotonMapGatherAsciiChunkParser() );
-		add( "caustic_spectral_gather",               new CausticSpectralPhotonMapGatherAsciiChunkParser() );
-		add( "global_pel_gather",                     new GlobalPelPhotonMapGatherAsciiChunkParser() );
-		add( "global_spectral_gather",                new GlobalSpectralPhotonMapGatherAsciiChunkParser() );
-		add( "shadow_gather",                         new ShadowPhotonMapGatherAsciiChunkParser() );
+		add( "caustic_pel_photonmap",                 std::make_unique<CausticPelPhotonMapGenerateAsciiChunkParser>() );
+		add( "translucent_pel_photonmap",             std::make_unique<TranslucentPelPhotonMapGenerateAsciiChunkParser>() );
+		add( "caustic_spectral_photonmap",            std::make_unique<CausticSpectralPhotonMapGenerateAsciiChunkParser>() );
+		add( "global_pel_photonmap",                  std::make_unique<GlobalPelPhotonMapGenerateAsciiChunkParser>() );
+		add( "global_spectral_photonmap",             std::make_unique<GlobalSpectralPhotonMapGenerateAsciiChunkParser>() );
+		add( "shadow_photonmap",                      std::make_unique<ShadowPhotonMapGenerateAsciiChunkParser>() );
+		add( "caustic_pel_gather",                    std::make_unique<CausticPelPhotonMapGatherAsciiChunkParser>() );
+		add( "translucent_pel_gather",                std::make_unique<TranslucentPelPhotonMapGatherAsciiChunkParser>() );
+		add( "caustic_spectral_gather",               std::make_unique<CausticSpectralPhotonMapGatherAsciiChunkParser>() );
+		add( "global_pel_gather",                     std::make_unique<GlobalPelPhotonMapGatherAsciiChunkParser>() );
+		add( "global_spectral_gather",                std::make_unique<GlobalSpectralPhotonMapGatherAsciiChunkParser>() );
+		add( "shadow_gather",                         std::make_unique<ShadowPhotonMapGatherAsciiChunkParser>() );
 
 		// Irradiance cache
-		add( "irradiance_cache",                      new IrradianceCacheAsciiChunkParser() );
+		add( "irradiance_cache",                      std::make_unique<IrradianceCacheAsciiChunkParser>() );
 
 		// Animation
-		add( "keyframe",                              new KeyframeAsciiChunkParser() );
-		add( "timeline",                              new TimelineAsciiChunkParser() );
-		add( "animation_options",                     new AnimationOptionsAsciiChunkParser() );
-		add( "animation",                             new AnimationAsciiChunkParser() );
-		add( "scene_variant",                         new SceneVariantAsciiChunkParser() );
-		add( "active_scene_variant",                  new ActiveSceneVariantAsciiChunkParser() );
+		add( "keyframe",                              std::make_unique<KeyframeAsciiChunkParser>() );
+		add( "timeline",                              std::make_unique<TimelineAsciiChunkParser>() );
+		add( "animation_options",                     std::make_unique<AnimationOptionsAsciiChunkParser>() );
+		add( "animation",                             std::make_unique<AnimationAsciiChunkParser>() );
+		add( "scene_variant",                         std::make_unique<SceneVariantAsciiChunkParser>() );
+		add( "active_scene_variant",                  std::make_unique<ActiveSceneVariantAsciiChunkParser>() );
 
 		return entries;
 	}

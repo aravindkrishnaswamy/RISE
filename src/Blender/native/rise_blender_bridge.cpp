@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <limits>
+#include <stdexcept>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -262,6 +264,44 @@ namespace
 		return true;
 	}
 
+	struct RGBAStorageLayout
+	{
+		size_t row_values;
+		size_t values;
+		size_t bytes;
+	};
+
+	template<typename Scalar>
+	RGBAStorageLayout checked_rgba_storage( const uint32_t width, const uint32_t height )
+	{
+		// The ABI carries dimensions, not a 32-bit channel count. Check the
+		// actual native storage/container limits before multiplying.
+		const size_t maximum = std::numeric_limits<size_t>::max();
+		const size_t native_width = width;
+		if( native_width == 0 || height == 0 || native_width > maximum / 4u )
+			throw std::length_error( "Blender RGBA row size is not representable" );
+		const size_t row_values = native_width * 4u;
+		const size_t maximum_values = std::min( maximum / sizeof(Scalar), std::vector<Scalar>().max_size() );
+		if( height > maximum_values / row_values )
+			throw std::length_error( "Blender RGBA image size is not representable" );
+		const size_t values = row_values * height;
+		return { row_values, values, values * sizeof(Scalar) };
+	}
+
+	size_t rgba_value_offset( const size_t y, const size_t x, const size_t width )
+	{
+		// Callers first validate the full image layout and rectangle bounds.
+		return (y * width + x) * 4u;
+	}
+
+	bool valid_image_region( const unsigned int width, const unsigned int height,
+		const unsigned int top, const unsigned int left,
+		const unsigned int bottom, const unsigned int right )
+	{
+		return width != 0 && height != 0 && top <= bottom && left <= right &&
+			bottom < height && right < width;
+	}
+
 	class MemoryRasterizerOutput : public RISE::IJobRasterizerOutput
 	{
 	protected:
@@ -306,22 +346,23 @@ namespace
 			// callback shouldn't fire in production renders — kept for
 			// the pure-virtual contract and as a safety fallback for
 			// any RISE build that predates the float32 plumbing.
-			if( !pImageData ) {
+			if( !pImageData || !valid_image_region( width, height, rc_top, rc_left, rc_bottom, rc_right ) ) {
 				return;
 			}
+			const auto storage = checked_rgba_storage<float>( width, height );
 
 			{
 				std::lock_guard<std::mutex> guard( buffer_mutex_ );
 
 				if( width_ != width || height_ != height || rgba_.empty() ) {
+					rgba_.assign( storage.values, 0.0f );
 					width_ = width;
 					height_ = height;
-					rgba_.assign( width_ * height_ * 4, 0.0f );
 				}
 
 				for( unsigned int y = rc_top; y <= rc_bottom; ++y ) {
 					for( unsigned int x = rc_left; x <= rc_right; ++x ) {
-						const unsigned int offset = ( y * width_ + x ) * 4;
+						const size_t offset = rgba_value_offset( y, x, width_ );
 						rgba_[offset+0] = float( pImageData[offset+0] ) / 65535.0f;
 						rgba_[offset+1] = float( pImageData[offset+1] ) / 65535.0f;
 						rgba_[offset+2] = float( pImageData[offset+2] ) / 65535.0f;
@@ -333,17 +374,18 @@ namespace
 			if( image_callback_ ) {
 				const unsigned int region_width = rc_right - rc_left + 1;
 				const unsigned int region_height = rc_bottom - rc_top + 1;
-				std::vector<unsigned short> region_rgba( region_width * region_height * 4, 0 );
+				const auto region_storage = checked_rgba_storage<unsigned short>( region_width, region_height );
+				std::vector<unsigned short> region_rgba( region_storage.values, 0 );
 
 				for( unsigned int y = 0; y < region_height; ++y ) {
-					const unsigned short* src = pImageData + ( ( ( rc_top + y ) * width + rc_left ) * 4 );
-					unsigned short* dst = &region_rgba[y * region_width * 4];
-					std::memcpy( dst, src, sizeof( unsigned short ) * region_width * 4 );
+					const unsigned short* src = pImageData + rgba_value_offset( static_cast<size_t>(rc_top) + y, rc_left, width );
+					unsigned short* dst = region_rgba.data() + static_cast<size_t>(y) * region_storage.row_values;
+					std::memcpy( dst, src, sizeof( unsigned short ) * region_storage.row_values );
 				}
 
 				image_callback_(
 					user_data_,
-					&region_rgba[0],
+					region_rgba.data(),
 					region_width,
 					region_height,
 					width,
@@ -377,22 +419,23 @@ namespace
 			const unsigned int rc_right
 		) override
 		{
-			if( !pImageData ) {
+			if( !pImageData || !valid_image_region( width, height, rc_top, rc_left, rc_bottom, rc_right ) ) {
 				return;
 			}
+			const auto storage = checked_rgba_storage<float>( width, height );
 
 			{
 				std::lock_guard<std::mutex> guard( buffer_mutex_ );
 
 				if( width_ != width || height_ != height || rgba_.empty() ) {
+					rgba_.assign( storage.values, 0.0f );
 					width_ = width;
 					height_ = height;
-					rgba_.assign( width_ * height_ * 4, 0.0f );
 				}
 
 				for( unsigned int y = rc_top; y <= rc_bottom; ++y ) {
 					for( unsigned int x = rc_left; x <= rc_right; ++x ) {
-						const unsigned int offset = ( y * width_ + x ) * 4;
+						const size_t offset = rgba_value_offset( y, x, width_ );
 						rgba_[offset+0] = pImageData[offset+0];
 						rgba_[offset+1] = pImageData[offset+1];
 						rgba_[offset+2] = pImageData[offset+2];
@@ -409,16 +452,20 @@ namespace
 			if( image_callback_ ) {
 				const unsigned int region_width = rc_right - rc_left + 1;
 				const unsigned int region_height = rc_bottom - rc_top + 1;
-				std::vector<unsigned short> region_rgba( region_width * region_height * 4, 0 );
+				const auto region_storage = checked_rgba_storage<unsigned short>( region_width, region_height );
+				std::vector<unsigned short> region_rgba( region_storage.values, 0 );
 
 				for( unsigned int y = 0; y < region_height; ++y ) {
 					for( unsigned int x = 0; x < region_width; ++x ) {
-						const unsigned int src = ( ( rc_top + y ) * width + ( rc_left + x ) ) * 4;
-						const unsigned int dst = ( y * region_width + x ) * 4;
+						const size_t src = rgba_value_offset( static_cast<size_t>(rc_top) + y,
+							static_cast<size_t>(rc_left) + x, width );
+						const size_t dst = rgba_value_offset( y, x, region_width );
 						for( int c = 0; c < 4; ++c ) {
 							float v = pImageData[src + c];
-							if( v < 0.0f ) v = 0.0f;
-							if( v > 1.0f ) v = 1.0f;
+							// Keep non-finite values out of float-to-integer casts.
+							// Final float pixels above remain untouched.
+							if( !(v > 0.0f) ) v = 0.0f;
+							else if( v >= 1.0f ) v = 1.0f;
 							region_rgba[dst + c] = static_cast<unsigned short>( v * 65535.0f + 0.5f );
 						}
 					}
@@ -426,7 +473,7 @@ namespace
 
 				image_callback_(
 					user_data_,
-					&region_rgba[0],
+					region_rgba.data(),
 					region_width,
 					region_height,
 					width,
@@ -445,13 +492,14 @@ namespace
 				return false;
 			}
 
-			const size_t total_values = rgba_.size();
-			result.rgba = static_cast<float*>( std::malloc( total_values * sizeof( float ) ) );
+			const auto storage = checked_rgba_storage<float>( width_, height_ );
+			if( rgba_.size() != storage.values ) return false;
+			result.rgba = static_cast<float*>( std::malloc( storage.bytes ) );
 			if( !result.rgba ) {
 				return false;
 			}
 
-			std::memcpy( result.rgba, &rgba_[0], total_values * sizeof( float ) );
+			std::memcpy( result.rgba, rgba_.data(), storage.bytes );
 			result.width = width_;
 			result.height = height_;
 			return true;
@@ -3468,181 +3516,200 @@ extern "C" int rise_blender_render_scene(
 	}
 
 	RISE::IJobPriv* job = 0;
-	if( !RISE::RISE_CreateJobPriv( &job ) || !job ) {
-		write_error( error_message, error_message_size, "Failed to create a RISE job" );
-		return 0;
-	}
-
-	ProgressBridge progress( progress_callback, user_data );
-	MemoryRasterizerOutput raster_output( image_callback, user_data );
-	VolumeCacheGuard volume_cache_guard;
-	// Non-fatal diagnostics (ABI v9); DL-193 (docs/DEBT_LEDGER.md) adds
-	// the alpha/integrator-compatibility warning below, alongside the
-	// pre-existing hair-import warnings this vector already carried.
-	std::vector<std::string> warnings;
-
-	job->SetProgress( &progress );
-	// Top-level BVH for the scene's objects.  CLAUDE.md documents the
-	// production default as (leaf=4, depth=32) — same as
-	// `InitializeContainers` installs; we re-call to be explicit and to
-	// keep this on the documented path.  The previous (leaf=100,
-	// depth=8) silently overflowed for any scene with > 25k objects:
-	// 2^8 leaves × 100 objects/leaf = 25,600 max-addressable objects.
-	// Real Blender scenes (Geometry-Nodes scatters, packed grass,
-	// foliage instancing) routinely exceed 80k objects; the overflow
-	// collapsed traversal so that primary rays never found a hit, and
-	// the whole frame rendered as just the world IBL.  See the
-	// lone-monk scene (≈ 87,800 objects) which failed silently under
-	// the old caps.
-	job->SetPrimaryAcceleration( true, false, 4, 32 );
-
-	if( !configure_camera( *job, *scene->camera, error_message, error_message_size ) ) {
-		RISE::safe_release( job );
-		return 0;
-	}
-
-	for( uint32_t i = 0; i < scene->num_painters; ++i ) {
-		if( !add_painter( *job, scene->painters[i], error_message, error_message_size ) ) {
-			RISE::safe_release( job );
+	try {
+		if( !RISE::RISE_CreateJobPriv( &job ) || !job ) {
+			write_error( error_message, error_message_size, "Failed to create a RISE job" );
 			return 0;
 		}
-	}
 
-	for( uint32_t i = 0; i < scene->num_modifiers; ++i ) {
-		if( !add_modifier( *job, scene->modifiers[i], error_message, error_message_size ) ) {
-			RISE::safe_release( job );
-			return 0;
-		}
-	}
+		ProgressBridge progress( progress_callback, user_data );
+		MemoryRasterizerOutput raster_output( image_callback, user_data );
+		VolumeCacheGuard volume_cache_guard;
+		struct JobCleanup
+		{
+			RISE::IJobPriv*& job;
+			~JobCleanup() { RISE::safe_release( job ); }
+		} cleanup{ job };
+		// Non-fatal diagnostics (ABI v9); DL-193 (docs/DEBT_LEDGER.md) adds
+		// the alpha/integrator-compatibility warning below, alongside the
+		// pre-existing hair-import warnings this vector already carried.
+		std::vector<std::string> warnings;
 
-	// DL-193 (docs/DEBT_LEDGER.md): tracked here, from the SCENE struct
-	// directly rather than from anything `add_material` decides, since
-	// `alpha_mode` is authoritative regardless of which model branch a
-	// material takes.  Consumed after `configure_rasterizer` below.
-	for( uint32_t i = 0; i < scene->num_materials; ++i ) {
-		if( !add_material( *job, scene->materials[i], error_message, error_message_size ) ) {
+		job->SetProgress( &progress );
+		// Top-level BVH for the scene's objects.  CLAUDE.md documents the
+		// production default as (leaf=4, depth=32) — same as
+		// `InitializeContainers` installs; we re-call to be explicit and to
+		// keep this on the documented path.  The previous (leaf=100,
+		// depth=8) silently overflowed for any scene with > 25k objects:
+		// 2^8 leaves × 100 objects/leaf = 25,600 max-addressable objects.
+		// Real Blender scenes (Geometry-Nodes scatters, packed grass,
+		// foliage instancing) routinely exceed 80k objects; the overflow
+		// collapsed traversal so that primary rays never found a hit, and
+		// the whole frame rendered as just the world IBL.  See the
+		// lone-monk scene (≈ 87,800 objects) which failed silently under
+		// the old caps.
+		job->SetPrimaryAcceleration( true, false, 4, 32 );
+
+		if( !configure_camera( *job, *scene->camera, error_message, error_message_size ) ) {
 			RISE::safe_release( job );
 			return 0;
 		}
 
-	}
+		for( uint32_t i = 0; i < scene->num_painters; ++i ) {
+			if( !add_painter( *job, scene->painters[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
 
-	for( uint32_t i = 0; i < scene->num_meshes; ++i ) {
-		if( !add_mesh( *job, scene->meshes[i], error_message, error_message_size ) ) {
+		for( uint32_t i = 0; i < scene->num_modifiers; ++i ) {
+			if( !add_modifier( *job, scene->modifiers[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		// DL-193 (docs/DEBT_LEDGER.md): tracked here, from the SCENE struct
+		// directly rather than from anything `add_material` decides, since
+		// `alpha_mode` is authoritative regardless of which model branch a
+		// material takes.  Consumed after `configure_rasterizer` below.
+		for( uint32_t i = 0; i < scene->num_materials; ++i ) {
+			if( !add_material( *job, scene->materials[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+
+		}
+
+		for( uint32_t i = 0; i < scene->num_meshes; ++i ) {
+			if( !add_mesh( *job, scene->meshes[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		for( uint32_t i = 0; i < scene->num_objects; ++i ) {
+			if( !add_object( *job, scene->objects[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		// Hair / fur grooms (ABI v9).  Materials first -- a hair object
+		// names one.  Both loops are non-fatal: a failure skips that groom
+		// and records a warning for the result struct (see the hair block
+		// in the anonymous namespace above for why).
+		for( uint32_t i = 0; i < scene->num_hair_materials; ++i ) {
+			(void)add_hair_material( *job, scene->hair_materials[i], warnings );
+		}
+
+		for( uint32_t i = 0; i < scene->num_hair_objects; ++i ) {
+			(void)add_hair_object( *job, scene->hair_objects[i], warnings );
+		}
+
+		if( !create_and_assign_media( *job, *scene, *settings, volume_cache_guard, error_message, error_message_size ) ) {
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	for( uint32_t i = 0; i < scene->num_objects; ++i ) {
-		if( !add_object( *job, scene->objects[i], error_message, error_message_size ) ) {
+		for( uint32_t i = 0; i < scene->num_lights; ++i ) {
+			if( !add_light( *job, scene->lights[i], error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		if( scene->use_world_ambient && scene->world_strength > 1e-6f && color_non_zero( scene->world_color ) ) {
+			rise_blender_light ambient;
+			std::memset( &ambient, 0, sizeof( ambient ) );
+			ambient.name = "rise_blender_world_ambient";
+			ambient.type = RISE_BLENDER_LIGHT_AMBIENT;
+			ambient.color[0] = scene->world_color[0];
+			ambient.color[1] = scene->world_color[1];
+			ambient.color[2] = scene->world_color[2];
+			ambient.intensity = scene->world_strength;
+			if( !add_light( *job, ambient, error_message, error_message_size ) ) {
+				RISE::safe_release( job );
+				return 0;
+			}
+		}
+
+		if( !configure_shader( *job, *settings, error_message, error_message_size ) ) {
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	// Hair / fur grooms (ABI v9).  Materials first -- a hair object
-	// names one.  Both loops are non-fatal: a failure skips that groom
-	// and records a warning for the result struct (see the hair block
-	// in the anonymous namespace above for why).
-	for( uint32_t i = 0; i < scene->num_hair_materials; ++i ) {
-		(void)add_hair_material( *job, scene->hair_materials[i], warnings );
-	}
-
-	for( uint32_t i = 0; i < scene->num_hair_objects; ++i ) {
-		(void)add_hair_object( *job, scene->hair_objects[i], warnings );
-	}
-
-	if( !create_and_assign_media( *job, *scene, *settings, volume_cache_guard, error_message, error_message_size ) ) {
-		RISE::safe_release( job );
-		return 0;
-	}
-
-	for( uint32_t i = 0; i < scene->num_lights; ++i ) {
-		if( !add_light( *job, scene->lights[i], error_message, error_message_size ) ) {
+		if( !configure_rasterizer( *job, *settings, *scene, error_message, error_message_size ) ) {
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	if( scene->use_world_ambient && scene->world_strength > 1e-6f && color_non_zero( scene->world_color ) ) {
-		rise_blender_light ambient;
-		std::memset( &ambient, 0, sizeof( ambient ) );
-		ambient.name = "rise_blender_world_ambient";
-		ambient.type = RISE_BLENDER_LIGHT_AMBIENT;
-		ambient.color[0] = scene->world_color[0];
-		ambient.color[1] = scene->world_color[1];
-		ambient.color[2] = scene->world_color[2];
-		ambient.intensity = scene->world_strength;
-		if( !add_light( *job, ambient, error_message, error_message_size ) ) {
+
+		if( !job->AddCallbackRasterizerOutput( &raster_output ) ) {
+			write_error( error_message, error_message_size, "Failed to attach the rasterizer callback output" );
 			RISE::safe_release( job );
 			return 0;
 		}
-	}
 
-	if( !configure_shader( *job, *settings, error_message, error_message_size ) ) {
-		RISE::safe_release( job );
-		return 0;
-	}
-
-	if( !configure_rasterizer( *job, *settings, *scene, error_message, error_message_size ) ) {
-		RISE::safe_release( job );
-		return 0;
-	}
-
-
-	if( !job->AddCallbackRasterizerOutput( &raster_output ) ) {
-		write_error( error_message, error_message_size, "Failed to attach the rasterizer callback output" );
-		RISE::safe_release( job );
-		return 0;
-	}
-
-	if( !job->Rasterize() ) {
-		if( progress.Aborted() ) {
-			write_error( error_message, error_message_size, "RISE render canceled" );
-		} else {
-			write_error( error_message, error_message_size, "RISE rasterization failed" );
+		if( !job->Rasterize() ) {
+			if( progress.Aborted() ) {
+				write_error( error_message, error_message_size, "RISE render canceled" );
+			} else {
+				write_error( error_message, error_message_size, "RISE rasterization failed" );
+			}
+			RISE::safe_release( job );
+			return 0;
 		}
-		RISE::safe_release( job );
-		return 0;
-	}
 
-	if( !raster_output.CopyToResult( *result ) ) {
-		write_error( error_message, error_message_size, "RISE did not produce an image buffer" );
-		RISE::safe_release( job );
-		return 0;
-	}
-
-	// Auto-dispatcher resolution (ABI v8): if the active rasterizer is the
-	// auto_rasterizer, report the concrete integrator it resolved to + the reason
-	// for the Blender UI's "Auto -> X" surfacing.  Queried while the rasterizer is
-	// still alive (before the job is released).
-	// Non-fatal diagnostics (ABI v9).  Populated only on the success
-	// path: a failed render reports through `error_message` instead.
-	// DL-193's own alpha/integrator warning is appended to `warnings`
-	// BELOW (for the Auto case) before `pack_warnings` runs, so the
-	// pack call itself stays at the end of this block, moved past the
-	// auto-dispatcher resolution it now depends on.
-	result->is_auto = 0;
-	result->resolved_integrator[0] = '\0';
-	result->resolve_reason[0] = '\0';
-	{
-		RISE::IRasterizer* active = job->GetRasterizer();
-		if( active && active->IsAutoDispatcher() ) {
-			result->is_auto = 1;
-			std::snprintf( result->resolved_integrator, sizeof( result->resolved_integrator ),
-				"%s", active->ResolvedIntegratorName() );
-			std::snprintf( result->resolve_reason, sizeof( result->resolve_reason ),
-				"%s", active->ResolveReason() );
-
-
+		if( !raster_output.CopyToResult( *result ) ) {
+			write_error( error_message, error_message_size, "RISE did not produce an image buffer" );
+			RISE::safe_release( job );
+			return 0;
 		}
+
+		// Auto-dispatcher resolution (ABI v8): if the active rasterizer is the
+		// auto_rasterizer, report the concrete integrator it resolved to + the reason
+		// for the Blender UI's "Auto -> X" surfacing.  Queried while the rasterizer is
+		// still alive (before the job is released).
+		// Non-fatal diagnostics (ABI v9).  Populated only on the success
+		// path: a failed render reports through `error_message` instead.
+		// DL-193's own alpha/integrator warning is appended to `warnings`
+		// BELOW (for the Auto case) before `pack_warnings` runs, so the
+		// pack call itself stays at the end of this block, moved past the
+		// auto-dispatcher resolution it now depends on.
+		result->is_auto = 0;
+		result->resolved_integrator[0] = '\0';
+		result->resolve_reason[0] = '\0';
+		{
+			RISE::IRasterizer* active = job->GetRasterizer();
+			if( active && active->IsAutoDispatcher() ) {
+				result->is_auto = 1;
+				std::snprintf( result->resolved_integrator, sizeof( result->resolved_integrator ),
+					"%s", active->ResolvedIntegratorName() );
+				std::snprintf( result->resolve_reason, sizeof( result->resolve_reason ),
+					"%s", active->ResolveReason() );
+
+
+			}
+		}
+
+		pack_warnings( warnings, result->warnings, sizeof( result->warnings ) );
+
+		RISE::safe_release( job );
+		return 1;
+	} catch( const std::exception& failure ) {
+		RISE::safe_release( job );
+		rise_blender_free_render_result( result );
+		result->warnings[0] = 0;
+		write_error( error_message, error_message_size, failure.what() );
+		return 0;
+	} catch( ... ) {
+		RISE::safe_release( job );
+		rise_blender_free_render_result( result );
+		result->warnings[0] = 0;
+		write_error( error_message, error_message_size, "Unexpected error during Blender render" );
+		return 0;
 	}
-
-	pack_warnings( warnings, result->warnings, sizeof( result->warnings ) );
-
-	RISE::safe_release( job );
-	return 1;
 }
 
 extern "C" void rise_blender_free_render_result( rise_blender_render_result* result )

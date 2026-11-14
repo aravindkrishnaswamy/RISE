@@ -100,6 +100,43 @@ int main()
 {
 	std::printf( "ParseStateBagArityTest -- DL-32 root-cause fix: GetVec3/GetVec4/GetMat4 hard-error on wrong arity\n" );
 
+	{
+		struct FilmJob final : Job {
+			unsigned int calls = 0;
+			bool SetFilm( unsigned int, unsigned int, double ) override { ++calls; return true; }
+		};
+		auto* job = new FilmJob();
+		std::vector<std::string> diagnostics;
+		Check( DeriveCst( HDR + "film\n{\nwidth 4294967296\nheight 240\n}\n", *job, &diagnostics ) == 0 &&
+			!diagnostics.empty() && job->calls == 0, "overflowing unsigned field fails before the film is applied" );
+		job->release();
+	}
+
+	{
+		struct NumericJob final : Job {
+			unsigned int calls = 0;
+			bool AddFileRasterizerOutput( const char*, bool, char, unsigned char, char,
+				double, char, char, bool ) override { ++calls; return true; }
+			bool AddMandelbrotFractalPainter( const char*, const char*, const char*,
+				double, double, double, double, double ) override { ++calls; return true; }
+			bool AddWorley3DPainter( const char*, double, unsigned int, unsigned int,
+				const char*, const char*, const double[3], const double[3] ) override { ++calls; return true; }
+		};
+		for( const char* chunk : {
+			"file_rasterizeroutput\n{\nbpp 2147483648\n}\n",
+			"file_rasterizeroutput\n{\nbpp invalid\n}\n",
+			"mandelbrot_painter\n{\nexponent 4294967296\n}\n",
+			"mandelbrot_painter\n{\nexponent invalid\n}\n",
+			"worley3d_painter\n{\noutput f2f1\n}\n" } ) {
+			auto* job = new NumericJob();
+			std::vector<std::string> diagnostics;
+			Check( DeriveCst( HDR + chunk, *job, &diagnostics ) == 0 &&
+				!diagnostics.empty() && job->calls == 0,
+				"invalid integer accessor or output enum fails before the job is changed" );
+			job->release();
+		}
+	}
+
 	//----------------------------------------------------------------------
 	// [A] short `position` (2 of 3 tokens) on standard_object.
 	//----------------------------------------------------------------------

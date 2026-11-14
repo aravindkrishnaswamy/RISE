@@ -174,7 +174,15 @@ namespace RISE
 		//! scene-authored relative path would depend on RISE_MEDIA_PATH
 		//! being configured, which a general-purpose template must not
 		//! assume).  Idempotent within a process: writes once, reuses
-		//! the file on repeat calls (checks for existence first).
+		//! the file on repeat calls only when its bytes match the default
+		//! PNG. Incomplete owned cache entries are regenerated. POSIX uses
+		//! an owner-only directory under the configured temp directory;
+		//! the former shared cache path is left untouched. Links and
+		//! foreign-owned files are refused without changing their contents.
+		//! POSIX temp roots and their canonical ancestors must belong to
+		//! this user or root; writable shared directories require the sticky
+		//! bit. macOS extended ACL ALLOW entries on those directories,
+		//! the cache directory, or the file are refused.
 		//! Returns an absolute path, or an empty string on write
 		//! failure (disk full, unwritable temp dir, etc.).
 		static std::string EnsureDefaultTextureFile();

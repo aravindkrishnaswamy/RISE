@@ -827,6 +827,8 @@ typedef struct rise_blender_capabilities {
 } rise_blender_capabilities;
 
 typedef struct rise_blender_render_result {
+	// RGBA value/byte counts use checked native size_t arithmetic. The ABI
+	// has 32-bit dimensions but no 32-bit cap on the number of channels.
 	float* rgba;
 	uint32_t width;
 	uint32_t height;
