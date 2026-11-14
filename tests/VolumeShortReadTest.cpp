@@ -48,6 +48,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Geometry/TriangleMeshLoader3DS.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+#include "../src/Library/RasterImages/JPEGReader.h"
 #include "TestTempDir.h"
 #include "../src/Library/Interfaces/ILogPriv.h"
 #include <iterator>
@@ -70,7 +71,11 @@ static int failCount = 0;
 
 static void Check( bool cond, const char* name )
 {
-	if( cond ) { ++passCount; }
+	if( cond ) {
+		++passCount;
+		const char* marker = std::getenv("RISE_RED_PROVE_MARKER");
+		if( marker && std::strstr(name, marker) ) std::cout << "  PASS: " << name << std::endl;
+	}
 	else { ++failCount; std::cout << "  FAIL: " << name << std::endl; }
 }
 
@@ -617,18 +622,37 @@ namespace
 		return Make3DSChunk( 0x4000, object );
 	}
 
-	void Check3DSLoad( const Bytes3DS& bytes, int selected, bool expected, unsigned int points )
+	void Check3DSLoad( const Bytes3DS& bytes, int selected, bool expected, unsigned int points,
+		const char* message = "3DS compatibility fixture preserves usable vertices and load outcome" )
 	{
 		auto* buffer = new MemoryBuffer( static_cast<unsigned int>(bytes.size()) );
 		buffer->setBytes( bytes.data(), static_cast<unsigned int>(bytes.size()) );
 		auto* loader = new TriangleMeshLoader3DS( buffer );
 		auto* geometry = new TriangleMeshGeometryIndexed( false, false );
-		Check( loader->LoadTriangleMesh( geometry, selected ) == expected && geometry->numPoints() == points,
-			"3DS compatibility fixture preserves usable vertices and load outcome" );
+		Check( loader->LoadTriangleMesh( geometry, selected ) == expected && geometry->numPoints() == points, message );
 		geometry->release();
 		loader->release();
 		buffer->release();
 	}
+
+	class AdvertisedSizeBuffer : public MemoryBuffer, public IBuffer64
+	{
+	public:
+		explicit AdvertisedSizeBuffer( std::uint64_t size ) : MemoryBuffer(1), advertisedSize(size) {}
+		std::uint64_t Size64() const override { return advertisedSize; }
+		std::uint64_t getCurPos64() const override { return getCurPos(); }
+		bool seek64( IBuffer::eSeek origin, std::int64_t amount ) override {
+			if( amount < std::numeric_limits<int>::min() || amount > std::numeric_limits<int>::max() ) return false;
+			return seek( origin, static_cast<int>(amount) );
+		}
+		bool getBytes( void* destination, unsigned int amount ) override {
+			++readCalls;
+			return MemoryBuffer::getBytes( destination, amount );
+		}
+		unsigned int readCalls = 0;
+	private:
+		const std::uint64_t advertisedSize;
+	};
 }
 
 static void Test3DSCompatibility()
@@ -668,12 +692,85 @@ static void Test3DSCompatibility()
 	Check3DSLoad( truncatedMesh, -1, false, 0 );
 	Check3DSLoad( Make3DSChunk( 0x4d4d, Make3DSChunk( 0x3d3d,
 		Make3DSObject(false, false, true) ) ), -1, false, 0 );
+
+	// Metadata discovered after a complete mesh cannot invalidate that mesh,
+	// including when the outer EDIT3DS length still describes a truncated tail.
+	auto checkMetadataTail = []( const Bytes3DS& tail, unsigned int truncateBytes, const char* message ) {
+		for( bool prefix : { false, true } ) {
+			Bytes3DS payload;
+			if( prefix ) Append3DSBytes( payload, Make3DSObject(false, false) );
+			Append3DSBytes( payload, tail );
+			auto bytes = Make3DSChunk( 0x4d4d, Make3DSChunk(0x3d3d, payload) );
+			bytes.resize( bytes.size() - truncateBytes );
+			Check3DSLoad( bytes, -1, prefix, prefix ? 3 : 0, message );
+		}
+	};
+	Bytes3DS badLength;
+	Append3DSWord( badLength, 0xafff );
+	Append3DSUInt( badLength, 1 );
+	checkMetadataTail( badLength, 0, "3DS retained-prefix: undersized EDIT sibling header" );
+	Bytes3DS overshoot;
+	Append3DSWord( overshoot, 0xafff );
+	Append3DSUInt( overshoot, 100 );
+	checkMetadataTail( overshoot, 0, "3DS retained-prefix: overshooting EDIT sibling length" );
+	for( unsigned int size = 1; size < 6; ++size ) {
+		checkMetadataTail( Bytes3DS(size, 0xff), 0, "3DS retained-prefix: partial EDIT sibling header" );
+	}
+	checkMetadataTail( Make3DSChunk(0xafff, Bytes3DS(8, 0)), 3,
+		"3DS retained-prefix: physically truncated EDIT metadata tail" );
+	checkMetadataTail( Make3DSChunk(0x4000, {'m', 'e', 't', 'a'}), 0,
+		"3DS retained-prefix: unterminated trailing object name" );
+	Bytes3DS objectWithBadChild = { 'm', 0 };
+	Append3DSBytes( objectWithBadChild, badLength );
+	checkMetadataTail( Make3DSChunk(0x4000, objectWithBadChild), 0,
+		"3DS retained-prefix: malformed trailing object child" );
+
+	// A discovered mesh remains subject to exact record-size validation. Keep
+	// container lengths correct while declaring more records than are present.
+	for( bool badVertices : { false, true } ) {
+		Bytes3DS vertices;
+		Append3DSWord( vertices, badVertices ? 4 : 3 );
+		for( unsigned int i = 0; i < 9; ++i ) Append3DSUInt( vertices, 0 );
+		Bytes3DS faces;
+		Append3DSWord( faces, badVertices ? 1 : 2 );
+		for( unsigned int value : { 0U, 1U, 2U, 0U } ) Append3DSWord( faces, value );
+		auto mesh = Make3DSChunk( 0x4110, vertices );
+		Append3DSBytes( mesh, Make3DSChunk(0x4120, faces) );
+		Bytes3DS badObject = { 'm', 0 };
+		Append3DSBytes( badObject, Make3DSChunk(0x4100, mesh) );
+		auto objects = Make3DSObject( false, false );
+		Append3DSBytes( objects, Make3DSChunk(0x4000, badObject) );
+		Check3DSLoad( Make3DSChunk(0x4d4d, Make3DSChunk(0x3d3d, objects)), -1, false, 0,
+			"3DS malformed discovered geometry rejects the complete load before publication" );
+	}
+
+	// The buffers advertise large logical inputs without allocating or writing
+	// gigabytes. Refusal must happen before even the first payload read.
+	for( auto size : { static_cast<std::uint64_t>(std::numeric_limits<int>::max()) + 1,
+		static_cast<std::uint64_t>(std::numeric_limits<unsigned int>::max()) + 1 } ) {
+		auto* large = new AdvertisedSizeBuffer(size);
+		auto* jpeg = new JPEGReader( *large, eColorSpace_sRGB );
+		unsigned int width = 0, height = 0;
+		Check( !jpeg->BeginRead(width, height) && large->readCalls == 0,
+			"JPEG size limit rejects oversized input before allocation or reading" );
+		jpeg->release();
+		large->release();
+	}
+	auto* large = new AdvertisedSizeBuffer(
+		static_cast<std::uint64_t>(std::numeric_limits<unsigned int>::max()) + 1 );
+	auto* loader = new TriangleMeshLoader3DS(large);
+	auto* geometry = new TriangleMeshGeometryIndexed(false, false);
+	Check( !loader->LoadTriangleMesh(geometry, -1) && large->readCalls == 0,
+		"3DS size limit rejects oversized input before reading" );
+	geometry->release();
+	loader->release();
+	large->release();
 }
 
 static void TestLargeDiskWrites()
 {
 #ifndef _WIN32
-	// POSIX filesystems leave unwritten gaps sparse, keeping this fixture small.
+	if( !RISE::TestSupport::SupportsSparseFiles() ) return;
 	const auto path = RISE::TestSupport::ScratchPath( "rise_large_buffer_" +
 		std::to_string(RISE::TestSupport::CurrentProcessId()) );
 	auto* buffer = new DiskFileWriteBuffer( path.c_str() );
@@ -710,6 +807,7 @@ static void TestLargeDiskWrites()
 static void TestLargeCodecOffsets()
 {
 #if !defined(_WIN32) && (!defined(NO_EXR_SUPPORT) || !defined(NO_TIFF_SUPPORT))
+	if( RISE::TestSupport::SupportsSparseFiles() ) {
 	const auto path = RISE::TestSupport::ScratchPath( "rise_codec_offsets_" +
 		std::to_string(RISE::TestSupport::CurrentProcessId()) );
 	const std::uint64_t offset = static_cast<std::uint64_t>(std::numeric_limits<unsigned int>::max()) + 16;
@@ -750,6 +848,7 @@ static void TestLargeCodecOffsets()
 #endif
 	reader->release();
 	std::filesystem::remove(path);
+	}
 #endif
 #ifndef NO_EXR_SUPPORT
 	char byte = 'x';
@@ -828,6 +927,33 @@ static void TestStagedOutputFallback()
 		fs::remove( root / "permission-probe" );
 		std::cout << "SKIP: process can create files in the restricted staging parent" << std::endl;
 	}
+	if( restricted ) {
+		for( const auto policy : { DiskFileWriteBuffer::StagingPolicy::Required,
+			DiskFileWriteBuffer::StagingPolicy::AllowInPlace } ) {
+			std::ofstream(path) << "before rename";
+			unsigned int calls = 0;
+			const bool saved = DiskFileWriteBuffer::WriteAtomically(path.string(), [&]( DiskFileWriteBuffer& buffer ) {
+				++calls;
+				fs::permissions(root, fs::perms::owner_read | fs::perms::owner_exec);
+				return buffer.setBytes("encoded once", 12);
+			}, policy);
+			fs::permissions(root, fs::perms::owner_all);
+			const bool allow = policy == DiskFileWriteBuffer::StagingPolicy::AllowInPlace;
+			Check( saved == allow && calls == 1 && read(path) == (allow ? "encoded once" : "before rename"),
+				"rename permission fallback copies completed bytes and invokes encoder once" );
+		}
+		// Cleanup may have been denied while the callback restricted the parent.
+		for( const auto& entry : fs::directory_iterator(root) ) {
+			if( entry.is_directory() ) fs::remove_all(entry.path());
+		}
+	}
+	// ENOTDIR is a structural failure, never a reason to invoke a direct encoder.
+	bool invokedForBadParent = false;
+	Check( !DiskFileWriteBuffer::WriteAtomically((path / "child.bin").string(), [&]( DiskFileWriteBuffer& ) {
+		invokedForBadParent = true;
+		return true;
+	}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace) && !invokedForBadParent,
+		"non-permission staging failures do not invoke the encoder" );
 	const auto target = root / "created.bin";
 	const auto link = root / "broken-link.bin";
 	fs::create_symlink( target.filename(), link );
@@ -858,7 +984,7 @@ static void CheckLateLogRecreation()
 	std::remove( LateLogPath().c_str() );
 }
 
-int main( int /*argc*/, char* /*argv*/[] )
+static int RunTests()
 {
 	// Register before constructing the logger's filename storage. Its former
 	// static-string destructor ran before this callback, which ASan detects.
@@ -888,4 +1014,9 @@ int main( int /*argc*/, char* /*argv*/[] )
 	std::cout << "Passed: " << passCount << std::endl;
 	std::cout << "Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
+}
+
+int main()
+{
+	return RISE::TestSupport::WithOwnedScratch(RunTests);
 }

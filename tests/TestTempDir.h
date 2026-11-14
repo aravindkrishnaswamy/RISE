@@ -23,6 +23,10 @@
 #else
 	#include <unistd.h>
 	#include <sys/wait.h>
+	#include <sys/stat.h>
+	#include <fcntl.h>
+	#include <cerrno>
+	#include <vector>
 #endif
 
 namespace RISE
@@ -85,6 +89,77 @@ namespace TestSupport
 		std::error_code ec;
 		std::filesystem::remove_all( dir, ec );
 		return dir;
+	}
+
+	// Small same-filesystem probe before any multi-GiB hole is created. POSIX
+	// does not guarantee sparse allocation; unsupported filesystems skip only
+	// the large-file sections, keeping ordinary packet/codec coverage active.
+	inline bool SupportsSparseFiles()
+	{
+#ifndef _WIN32
+		static const bool supported = [] {
+			std::string pattern = ScratchPath("rise_sparse_probe_XXXXXX");
+			std::vector<char> name(pattern.begin(), pattern.end());
+			name.push_back(0);
+			const int fd = mkstemp(name.data());
+			if( fd < 0 ) {
+				std::printf("SKIP: cannot create scratch sparse-allocation probe\n");
+				return false;
+			}
+			unlink(name.data());
+			struct stat info{};
+			constexpr off_t length = 1024 * 1024;
+			const bool sparse = lseek(fd, length - 1, SEEK_SET) == length - 1 &&
+				write(fd, "x", 1) == 1 && fsync(fd) == 0 && fstat(fd, &info) == 0 &&
+				info.st_size == length && info.st_blocks * 512 < length / 4;
+			close(fd);
+			if( !sparse ) std::printf("SKIP: scratch filesystem does not support sparse fixtures\n");
+			return sparse;
+		}();
+		return supported;
+#else
+		return false;
+#endif
+	}
+
+	// A parent owns the directory so it can remove even a crashed child's
+	// multi-GiB fixtures. Call before creating threads or constructing globals
+	// with exit callbacks; the test body and its callbacks execute in the child.
+	template<typename Body>
+	inline int WithOwnedScratch( Body&& body )
+	{
+#ifndef _WIN32
+		std::string pattern = ScratchPath("rise_owned_scratch_XXXXXX");
+		std::vector<char> name(pattern.begin(), pattern.end());
+		name.push_back(0);
+		if( !mkdtemp(name.data()) ) return 1;
+		std::fflush(nullptr);
+		const auto child = fork();
+		if( child == 0 ) {
+			if( setenv("TMPDIR", name.data(), 1) != 0 ) _exit(1);
+			std::exit(body());
+		}
+		int status = 0;
+		pid_t waited = -1;
+		if( child > 0 ) {
+			do { waited = waitpid(child, &status, 0); } while( waited < 0 && errno == EINTR );
+		}
+		std::error_code error;
+		// A failed permission fixture may leave child directories read-only.
+		std::filesystem::permissions(name.data(), std::filesystem::perms::owner_all,
+			std::filesystem::perm_options::add, error);
+		for( std::filesystem::recursive_directory_iterator it(name.data(), error), end;
+			!error && it != end; it.increment(error) ) {
+			if( std::filesystem::is_directory(it->symlink_status(error)) )
+				std::filesystem::permissions(it->path(), std::filesystem::perms::owner_all,
+					std::filesystem::perm_options::add, error);
+		}
+		if( !error ) std::filesystem::remove_all(name.data(), error);
+		if( child < 0 || waited != child || error ) return 1;
+		return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+#else
+		return body();
+#endif
 	}
 
 	template<typename CheckFn>

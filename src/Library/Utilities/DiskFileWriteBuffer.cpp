@@ -199,7 +199,7 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy )
 {
 	namespace fs = std::filesystem;
-	const auto writeFile = [&]( const fs::path& file ) {
+	const auto writeFile = [&]( const fs::path& file, const std::function<bool(DiskFileWriteBuffer&)>& encode ) {
 		const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
 		std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer(
 			new DiskFileWriteBuffer( file.string().c_str() ), release );
@@ -207,11 +207,14 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		if( !buffer->ReadyToWrite() ) return false;
 		bool encoded = false;
 		try {
-			encoded = write( *buffer );
+			encoded = encode( *buffer );
 		} catch( const std::exception& failure ) {
 			GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Encoding `%s` failed: %s", file.string().c_str(), failure.what() );
 		}
 		return buffer->Finish( true ) && encoded;
+	};
+	const auto permissionFailure = []( const std::error_code& failure ) {
+		return failure == std::errc::permission_denied || failure == std::errc::operation_not_permitted;
 	};
 	static std::atomic<unsigned long long> nextId{ 0 };
 #ifdef _WIN32
@@ -227,7 +230,7 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		target = fs::canonical( target, error );
 		if( error ) {
 			return error == std::errc::no_such_file_or_directory &&
-				policy == StagingPolicy::AllowInPlace && writeFile( fs::path(path) );
+				policy == StagingPolicy::AllowInPlace && writeFile( fs::path(path), write );
 		}
 	}
 	const auto previous = fs::status( target, error );
@@ -248,7 +251,8 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		directory.clear();
 		if( error && error != std::errc::file_exists ) break;
 	}
-	if( directory.empty() ) return policy == StagingPolicy::AllowInPlace && writeFile( target );
+	if( directory.empty() ) return policy == StagingPolicy::AllowInPlace &&
+		permissionFailure(error) && writeFile( target, write );
 
 	const fs::path staging = directory / "output";
 	struct Cleanup {
@@ -260,11 +264,30 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 			fs::remove( directory, ignored );
 		}
 	} cleanup{ staging, directory };
-	if( !writeFile( staging ) ) return false;
+	if( !writeFile( staging, write ) ) return false;
 	if( replacing ) {
 		fs::permissions( staging, previous.permissions(), error );
 		if( error ) return false;
 	}
 	fs::rename( staging, target, error );
-	return !error;
+	if( !error ) return true;
+	if( policy != StagingPolicy::AllowInPlace || !permissionFailure(error) ) return false;
+
+	// The encoder has already succeeded. Copy its completed bytes rather than
+	// invoking a potentially stateful callback a second time.
+	// Our staging file may have inherited permissions belonging to another
+	// target owner. Make this private copy readable after rename has failed;
+	// keeping an open read handle during rename would deny deletion on Windows.
+	fs::permissions(staging, fs::perms::owner_read, fs::perm_options::add, error);
+	if( error ) return false;
+	std::unique_ptr<FILE, decltype(&fclose)> input(fopen(staging.string().c_str(), "rb"), &fclose);
+	if( !input ) return false;
+	return writeFile( target, [&]( DiskFileWriteBuffer& output ) {
+		unsigned char bytes[65536];
+		for( ;; ) {
+			const auto count = fread(bytes, 1, sizeof(bytes), input.get());
+			if( count && !output.setBytes(bytes, static_cast<unsigned int>(count)) ) return false;
+			if( count != sizeof(bytes) ) return feof(input.get()) && !ferror(input.get());
+		}
+	} );
 }

@@ -73,8 +73,8 @@ namespace RISE
 			// Publish a completed, nonempty output beside the destination.
 			static bool WriteAtomically( const std::string& path,
 				const std::function<bool(DiskFileWriteBuffer&)>& write );
-			// AllowInPlace restores direct writes when a staging directory cannot
-			// be created or a dangling symlink can be opened through the CRT.
+			// AllowInPlace restores direct writes on staging/rename permission
+			// failures or when a dangling symlink can be opened through the CRT.
 			// A failed direct write may leave a partial destination.
 			static bool WriteAtomically( const std::string& path,
 				const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy );

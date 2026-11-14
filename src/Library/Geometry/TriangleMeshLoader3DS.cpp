@@ -31,7 +31,7 @@ using namespace RISE::Implementation;
 namespace
 {
 	bool ReadChunk( IReadBuffer& buffer, unsigned int start, unsigned int limit,
-		unsigned short& id, unsigned int& end )
+		unsigned short& id, unsigned int& end, bool allowTruncatedEdit = false )
 	{
 		if( start > limit || limit - start < 6 ||
 			!BufferSeek( buffer, IBuffer::START, start ) ) return false;
@@ -39,8 +39,9 @@ namespace
 		if( !buffer.getBytes( header, sizeof(header) ) ) return false;
 		id = DecodeLittleEndian<unsigned short, std::uint16_t>( header );
 		const auto length = DecodeLittleEndian<unsigned int, std::uint32_t>( header + 2 );
-		if( length < sizeof(header) || length > limit - start ) return false;
-		end = start + length;
+		if( length < sizeof(header) ) return false;
+		if( length > limit - start && !(allowTruncatedEdit && id == EDIT3DS) ) return false;
+		end = start + std::min( length, limit - start );
 		return true;
 	}
 }
@@ -48,23 +49,27 @@ namespace
 TriangleMeshLoader3DS::TriangleMeshLoader3DS( IReadBuffer* pBuffer_ ) :
   nNumObjects( 0 ), pBuffer( pBuffer_ )
 {
-	if( !pBuffer || pBuffer->Size() == 0 ) {
+	if( !pBuffer || BufferSize(*pBuffer) == 0 ) {
 		pBuffer = nullptr;
 		return;
 	}
 	pBuffer->addref();
+	if( BufferSize(*pBuffer) > std::numeric_limits<unsigned int>::max() ) {
+		GlobalLog()->PrintSourceError( "TriangleMeshLoader3DS: Input exceeds the 32-bit 3DS file-size limit", __FILE__, __LINE__ );
+		return;
+	}
 
 	unsigned char header[6];
 	if( !pBuffer->seek( IBuffer::START, 0 ) || !pBuffer->getBytes( header, sizeof(header) ) ) return;
 	unsigned short id = DecodeLittleEndian<unsigned short, std::uint16_t>( header );
 	const auto declaredEnd = DecodeLittleEndian<unsigned int, std::uint32_t>( header + 2 );
 	if( id != MAIN3DS || declaredEnd < sizeof(header) ) return;
-	// Only mesh data is consumed. A truncated animation tail may extend the
-	// outer chunk beyond EOF, while every mesh chunk must fit the available bytes.
+	// MAIN3DS and EDIT3DS may include truncated metadata tails. Actual mesh
+	// chunks must fit their containers and the available bytes.
 	const unsigned int mainEnd = std::min( declaredEnd, pBuffer->Size() );
 	unsigned int editStart = 0, editEnd = 0;
 	for( unsigned int start = 6, end = 0; start < mainEnd; start = end ) {
-		if( !ReadChunk( *pBuffer, start, mainEnd, id, end ) ) return;
+		if( !ReadChunk( *pBuffer, start, mainEnd, id, end, true ) ) return;
 		if( id == EDIT3DS ) {
 			editStart = start;
 			editEnd = end;
@@ -73,7 +78,8 @@ TriangleMeshLoader3DS::TriangleMeshLoader3DS( IReadBuffer* pBuffer_ ) :
 	}
 	if( editStart == 0 ) return;
 
-	std::vector<unsigned long> objects;
+	// Publish each discovered mesh immediately, so malformed trailing metadata
+	// cannot discard earlier objects. LoadTriangleMesh still validates all mesh data.
 	for( unsigned int start = editStart + 6, end = 0; start < editEnd; start = end ) {
 		if( !ReadChunk( *pBuffer, start, editEnd, id, end ) ) return;
 		if( id != EDIT_OBJECT ) continue;
@@ -95,13 +101,12 @@ TriangleMeshLoader3DS::TriangleMeshLoader3DS( IReadBuffer* pBuffer_ ) :
 		for( unsigned int childEnd = 0; child < end; child = childEnd ) {
 			if( !ReadChunk( *pBuffer, child, end, id, childEnd ) ) return;
 			if( id == OBJ_TRIMESH ) {
-				objects.push_back( child );
+				objptrs.push_back( child );
+				++nNumObjects;
 				break;
 			}
 		}
 	}
-	objptrs.swap( objects );
-	nNumObjects = static_cast<unsigned int>(objptrs.size());
 }
 
 TriangleMeshLoader3DS::~TriangleMeshLoader3DS( )

@@ -88,6 +88,7 @@ void TestStagedSave()
  job->release();
  std::filesystem::remove(path);
 #ifndef _WIN32
+ if( RISE::TestSupport::SupportsSparseFiles() ) {
  class LargeMap final : public GlobalPelPhotonMap {
  public:
   LargeMap() : GlobalPelPhotonMap(0, nullptr) {}
@@ -105,6 +106,7 @@ void TestStagedSave()
   "Job staged photon save supports output beyond 4 GiB");
  job->release();
  std::filesystem::remove(path);
+ }
 #endif
 }
 
@@ -165,6 +167,7 @@ template<class Base>void Run(const char* name){
  Check(!Load<Base>(*job,path.string().c_str())&&Installed<Base>(*job)==installed,"legacy Job load fails and retains installed map");
  auto* valid=new MemoryBuffer();source.Serialize(*valid);Check(valid->DumpToFileToCursor(path.string().c_str()),"exact fixture written");Check(Load<Base>(*job,path.string().c_str())&&Installed<Base>(*job)!=installed&&Installed<Base>(*job)->NumStored()==1,"exact Job load installs valid map");
 #ifndef _WIN32
+ if( RISE::TestSupport::SupportsSparseFiles() ) {
  // Read a real packet whose header/records cross 4 GiB in a sparse file.
  auto* disk = new DiskFileWriteBuffer(path.string().c_str());
  const auto start = static_cast<std::int64_t>(std::numeric_limits<unsigned int>::max()) - 50;
@@ -185,9 +188,12 @@ template<class Base>void Run(const char* name){
  disk->release();
  Check(Load<Base>(*job,path.string().c_str()) && Installed<Base>(*job)->NumStored()==1,
   "normal Job photon loading accepts a file larger than 4 GiB");
+ }
 #endif
 
  std::filesystem::remove(path);valid->release();job->release();installed->release();legacy->release();buffer->release();
 }
 }
-int main(){Run<GlobalPelPhotonMap>("globalPel");Run<CausticPelPhotonMap>("causticPel");Run<GlobalSpectralPhotonMap>("globalNM");Run<CausticSpectralPhotonMap>("causticNM");TestSaveFailure();TestStagedSave();std::printf("PhotonPacketSerializationTest checks=%u failures=%u\n",checks,failures);return failures?1:0;}
+int RunTests(){Run<GlobalPelPhotonMap>("globalPel");Run<CausticPelPhotonMap>("causticPel");Run<GlobalSpectralPhotonMap>("globalNM");Run<CausticSpectralPhotonMap>("causticNM");TestSaveFailure();TestStagedSave();std::printf("PhotonPacketSerializationTest checks=%u failures=%u\n",checks,failures);return failures?1:0;}
+
+int main(){return RISE::TestSupport::WithOwnedScratch(RunTests);}

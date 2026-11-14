@@ -16,6 +16,7 @@
 #include "../Interfaces/ILog.h"
 
 #include <vector>
+#include <limits>
 
 #include "../../../extlib/stb/stb_image.h"
 
@@ -45,17 +46,22 @@ JPEGReader::~JPEGReader( )
 
 bool JPEGReader::BeginRead( unsigned int& width, unsigned int& height )
 {
-	const unsigned int sourceSize = pReadBuffer.Size();
+	const auto sourceSize = BufferSize(pReadBuffer);
 	if( sourceSize == 0 ) {
 		GlobalLog()->PrintSourceError( "JPEGReader::BeginRead:: Passed empty buffer to read from", __FILE__, __LINE__ );
 		return false;
 	}
+	if( sourceSize > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ) {
+		GlobalLog()->PrintSourceError( "JPEGReader::BeginRead:: Input exceeds the decoder's signed 32-bit size limit", __FILE__, __LINE__ );
+		return false;
+	}
+	const auto sourceLength = static_cast<unsigned int>(sourceSize);
 
 	// Slurp the entire IReadBuffer into a contiguous block; stb_image
 	// only exposes blob/callback APIs, and IReadBuffer has no raw-
 	// pointer accessor we can hand straight to stbi_load_from_memory.
-	std::vector<unsigned char> source( sourceSize );
-	if( !pReadBuffer.getBytes( source.data(), sourceSize ) ) {
+	std::vector<unsigned char> source( sourceLength );
+	if( !pReadBuffer.getBytes( source.data(), sourceLength ) ) {
 		GlobalLog()->PrintSourceError( "JPEGReader::BeginRead:: Failed to read from input buffer", __FILE__, __LINE__ );
 		return false;
 	}
