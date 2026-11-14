@@ -1012,6 +1012,15 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		return;
 	}
 	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
+	RasterizerScopeExit renderScratch( [this]() {
+		safe_release( pFilteredFilm );
+		safe_release( pFilteredScratch );
+	} );
+	RasterizerScopeExit renderProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
+		mProgressBase = base;
+		mProgressWeight = weight;
+		mProgressTotal = total;
+	} );
 
 	// Landing 5: propagate the camera's photographic exposure
 	// compensation to every output once at render entry.  Default
@@ -1050,6 +1059,11 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	ConfigureOutputRegion( pRect, width, height );
 
 	IRasterImage* pImage = AcquireRenderImage( width, height );
+	RasterizerScopeExit imageOwner( [&]() {
+		if( pImage ) {
+			ReleaseRenderImage( std::exchange(pImage,nullptr) );
+		}
+	} );
 
 	// Allocate film buffer for wide-support pixel filter reconstruction
 	safe_release( pFilteredFilm );
@@ -1104,6 +1118,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	// If there is no raster sequence, create a default one
 	IRasterizeSequence* blocks = 0;
+	RasterizerScopeExit blocksOwner( [&]() {
+		safe_release( blocks );
+	} );
 	if( !pRasterSequence ) {
 		blocks = CreateDefaultRasterSequence( tileEdge );
 		pRasterSequence = blocks;
@@ -1113,8 +1130,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
 		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( tileEdge );
+		RasterizerScopeExit irrad_seqOwner( [&]() {
+			safe_release( irrad_seq );
+		} );
 		RISERasterImage* pIrradScratch = pRect ?
 			new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) ) : 0;
+		RasterizerScopeExit pIrradScratchOwner( [&]() {
+			safe_release( pIrradScratch );
+		} );
 		IRasterImage& irradImage = pIrradScratch ?
 			static_cast<IRasterImage&>( *pIrradScratch ) : *pImage;
 		if( pProgressFunc ) {
@@ -1184,6 +1207,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
 
 		ProgressiveFilm progFilm( width, height );
+		RasterizerScopeExit progressiveState( [this, previous=mProgressiveFilm, total=mTotalProgressiveSPP]() {
+			mProgressiveFilm = previous;
+			mTotalProgressiveSPP = total;
+		} );
 		mProgressiveFilm = &progFilm;
 		mTotalProgressiveSPP = totalSPP;
 
@@ -1220,8 +1247,11 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
 
 			ISampling2D* pPassSampling = pSavedSampling->Clone();
+			RasterizerScopeExit samplingOwner( [&]() {
+				safe_release( pPassSampling );
+			} );
 			pPassSampling->SetNumSamples( passSPP );
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pPassSampling;
+			ScopedActiveSampling samplingOverride( *this, pPassSampling );
 
 			OnProgressivePassBegin( pScene, passIdx );
 
@@ -1237,13 +1267,16 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			mProgressTotal  = totalProgressUnits;
 
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdge );
+			RasterizerScopeExit pPassSeqOwner( [&]() {
+				safe_release( pPassSeq );
+			} );
 			const bool passCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
 			safe_release( pPassSeq );
 
 			accumulatedProgress += static_cast<double>( numTilesPerPass ) *
 			                       static_cast<double>( passSPP );
 
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pPassSampling );
 
 			if( !passCompleted ) {
@@ -1447,7 +1480,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	pFilteredFilm = 0;
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
-	safe_release( pImage );
+	imageOwner.Run();
 	// Defensive no-op on the normal path (depth was released immediately
 	// after propagation); still protects early-return configurations.
 	if( pAOVBuffers ) pAOVBuffers->ReleaseDepthStorage();
@@ -1741,6 +1774,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	// time. Auto quality uses configured work (DL-360), never this timer.
 	BeginRenderTimer();
 #endif
+	RasterizerScopeExit frameProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
+		mProgressBase = base;
+		mProgressWeight = weight;
+		mProgressTotal = total;
+	} );
 	// Each frame starts a fresh planned AOV accumulation, whether or not
 	// OIDN is compiled/enabled. Interlaced animation renders the two fields
 	// through separate calls into the same image/AOV set; only the first field
@@ -1850,8 +1888,14 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 				tileEdgeAnim, static_cast<unsigned int>( mFrameStore->TileEdge() ) );
 		}
 		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( tileEdgeAnim );
+		RasterizerScopeExit irrad_seqOwner( [&]() {
+			safe_release( irrad_seq );
+		} );
 		RISERasterImage* pIrradScratch = pRect ?
 			new RISERasterImage( image.GetWidth(), image.GetHeight(), RISEColor( 0, 0, 0, 0 ) ) : 0;
+		RasterizerScopeExit pIrradScratchOwner( [&]() {
+			safe_release( pIrradScratch );
+		} );
 		IRasterImage& irradImage = pIrradScratch ?
 			static_cast<IRasterImage&>( *pIrradScratch ) : image;
 		// Null-guarded like the still-render twin above (RasterizeScene's irradiance block): a
@@ -1922,6 +1966,10 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
 
 		ProgressiveFilm progFilm( width, height );
+		RasterizerScopeExit progressiveState( [this, previous=mProgressiveFilm, total=mTotalProgressiveSPP]() {
+			mProgressiveFilm = previous;
+			mTotalProgressiveSPP = total;
+		} );
 		mProgressiveFilm = &progFilm;
 		mTotalProgressiveSPP = totalSPP;
 
@@ -2002,8 +2050,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
 
 			ISampling2D* pPassSampling = pSavedSampling->Clone();
+			RasterizerScopeExit samplingOwner( [&]() {
+				safe_release( pPassSampling );
+			} );
 			pPassSampling->SetNumSamples( passSPP );
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pPassSampling;
+			ScopedActiveSampling samplingOverride( *this, pPassSampling );
 
 			if( perPassTime ) {
 				const Scalar u = GlobalRNG().CanonicalRandom();
@@ -2024,10 +2075,13 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			mProgressWeight = static_cast<double>( passSPP );
 
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdgeAnim );
+			RasterizerScopeExit pPassSeqOwner( [&]() {
+				safe_release( pPassSeq );
+			} );
 			RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, *pPassSeq, passFrameData );
 			safe_release( pPassSeq );
 
-			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pPassSampling );
 
 			accumulatedFrameProgress += static_cast<double>( animNumTiles ) * static_cast<double>( passSPP );
@@ -2177,6 +2231,15 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		return;
 	}
 	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
+	RasterizerScopeExit renderScratch( [this]() {
+		safe_release( pFilteredFilm );
+		safe_release( pFilteredScratch );
+	} );
+	RasterizerScopeExit renderProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
+		mProgressBase = base;
+		mProgressWeight = weight;
+		mProgressTotal = total;
+	} );
 
 	// Acquire scene dimensions from the active Film.
 	const IFilm* pFilm = pScene.GetFilm();
@@ -2187,6 +2250,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 
 	// If there is no raster sequence, create a default one
 	MortonRasterizeSequence* blocks = 0;
+	RasterizerScopeExit blocksOwner( [&]() {
+		safe_release( blocks );
+	} );
 	if( !pRasterSequence ) {
 		unsigned int tileEdgeAnim = ComputeTileSize(
 			width, height,
@@ -2223,6 +2289,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	// genuinely the FrameStore view (when dims match) so the
 	// bracketing fires for actual writes.
 	IRasterImage* pImage = AcquireRenderImage( width, height );
+	RasterizerScopeExit imageOwner( [&]() {
+		if( pImage ) {
+			ReleaseRenderImage( std::exchange(pImage,nullptr) );
+		}
+	} );
 
 	// Allocate film buffer for wide-support pixel filter reconstruction
 	safe_release( pFilteredFilm );
@@ -2484,7 +2555,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	pFilteredFilm = 0;
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
-	ReleaseRenderImage( pImage );
+	imageOwner.Run();
 	// Match the still-image lifetime: depth is perception-only and released
 	// even when OIDN retains its own albedo/normal scratch pair.
 	if( pAOVBuffers ) pAOVBuffers->ReleaseDepthStorage();

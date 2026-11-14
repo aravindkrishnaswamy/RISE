@@ -362,7 +362,11 @@ namespace RISE
 		{
 			assert( tileX < tileCountX_ && tileY < tileCountY_ );
 			TileLockAt( tileX, tileY ).mtx.unlock();
+			PublishTile( tileX, tileY );
+		}
 
+		void FrameStore::PublishTile( size_t tileX, size_t tileY )
+		{
 			// Bump global generation; readers gate viewport repaints
 			// on this counter changing.  Release ordering pairs with
 			// the acquire load on the reader side.
@@ -401,7 +405,7 @@ namespace RISE
 		{
 			// Phase-1 ingest path: copy beauty pixels + alpha from
 			// the existing rasterizer's IRasterImage into our typed
-			// Beauty/Alpha channels under tile-seqlock protection.
+			// Beauty/Alpha channels under exclusive tile-lock protection.
 			//
 			// srcRect is the area of `src` to read (typically the
 			// rasterizer's just-completed tile rect); the
@@ -505,13 +509,17 @@ namespace RISE
 
 		void FrameStoreTileBracket::Release()
 		{
-			std::exception_ptr failure;
+			const size_t begin = first_;
+			// Synchronous observers may Render several of these tiles. Unlock
+			// the complete rectangle first so they never wait on this thread.
 			while( first_ < end_ ) {
 				const size_t index = first_++;
-				// EndTile unlocks before notification. Drop ownership first
-				// so a throwing observer cannot cause a double-unlock.
+				fs_->TileLockAt( tx0_ + index % columns_, ty0_ + index / columns_ ).mtx.unlock();
+			}
+			std::exception_ptr failure;
+			for( size_t index = begin; index < end_; ++index ) {
 				try {
-					fs_->EndTile( tx0_ + index % columns_, ty0_ + index / columns_ );
+					fs_->PublishTile( tx0_ + index % columns_, ty0_ + index / columns_ );
 				} catch( ... ) {
 					if( !failure ) failure = std::current_exception();
 				}

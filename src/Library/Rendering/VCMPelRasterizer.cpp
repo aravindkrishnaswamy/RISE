@@ -137,6 +137,7 @@ void VCMPelRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
@@ -146,8 +147,8 @@ void VCMPelRasterizer::IntegratePixel(
 	// rendering, per-sample t=1 splats, and the splat film normalization
 	// all accumulate across passes identically to BDPT.
 
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
+	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
 
 	// Mirror BDPT's adaptive + ZSobol seed computation.
 	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
@@ -266,7 +267,7 @@ void VCMPelRasterizer::IntegratePixel(
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 		} else {
 			samples.push_back( Point2( 0, 0 ) );
 		}

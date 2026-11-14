@@ -626,8 +626,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
 
 		mSplatTotalSamples = 1.0;
-		if( pSampling ) {
-			mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+		if( ActiveSampling() ) {
+			mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 		}
 		mSplatTotalSamples *= GetSplatSampleScale();
 
@@ -826,8 +826,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 			mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
 
 			mSplatTotalSamples = 1.0;
-			if( pSampling ) {
-				mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+			if( ActiveSampling() ) {
+				mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 			}
 			mSplatTotalSamples *= GetSplatSampleScale();
 
@@ -1004,8 +1004,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	// at the frame time would be thrown away.
 	if( mPerPassShutterTimeCandidate && effectiveMergeRadius > 0 ) {
 		mSplatTotalSamples = 1.0;
-		if( pSampling ) {
-			mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+		if( ActiveSampling() ) {
+			mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 		}
 		mSplatTotalSamples *= GetSplatSampleScale();
 		GlobalLog()->PrintEx( eLog_Info,
@@ -1109,8 +1109,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	pLightVertexStore->BuildKDTreeParallel();
 
 	mSplatTotalSamples = 1.0;
-	if( pSampling ) {
-		mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+	if( ActiveSampling() ) {
+		mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 	}
 	mSplatTotalSamples *= GetSplatSampleScale();
 

@@ -129,13 +129,14 @@ void VCMSpectralRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
 	}
 
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
+	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
 
 	// Adaptive sampling: when enabled, the per-pixel loop can take up
 	// to adaptiveConfig.maxSamples and uses Welford-based convergence
@@ -256,7 +257,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 		} else {
 			samples.push_back( Point2( 0, 0 ) );
 		}

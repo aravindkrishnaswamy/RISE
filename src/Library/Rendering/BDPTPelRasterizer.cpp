@@ -217,14 +217,15 @@ void BDPTPelRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
 	}
 
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
 	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
 	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	// Progressive rendering: check if this pixel has already converged
@@ -315,7 +316,7 @@ void BDPTPelRasterizer::IntegratePixel(
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 		} else {
 			samples.push_back( Point2( 0, 0 ) );
 		}

@@ -35,6 +35,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <sstream>
 #include <thread>
@@ -44,6 +45,7 @@
 #include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
 #include "../src/Library/Shaders/StandardShader.h"
 #include "../src/Library/Scene.h"
+#include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobRasterizerOutput.h"
 #include "../src/Library/Rendering/FilteredFilm.h"
 #include "../src/Library/Rendering/SplatFilm.h"
@@ -75,7 +77,7 @@ namespace
 	{
 		if ( cond ) {
 			++gPassCount;
-			if(label.find("tile exception:")==0)std::cout << "PASS: " << label << "\n";
+			if(label.find("tile exception:")==0 || label.find("full entry exception:")==0)std::cout << "PASS: " << label << "\n";
 		} else {
 			++gFailCount;
 			std::cerr << "FAIL: " << label << "\n";
@@ -128,6 +130,99 @@ namespace
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		if(!result->done.load(std::memory_order_acquire)){reader.detach();return false;}
 		reader.join();return result->ok;
+	}
+
+
+	void TestTileBracketSynchronousReadback()
+	{
+		using RISE::Implementation::FrameStoreTileBracket;
+		struct ReadObserver final : IRenderObserver
+		{
+			std::shared_ptr<FrameStore> store;
+			unsigned int phase = 1;
+			unsigned int reads = 0;
+			bool exact = true;
+			void OnTileComplete( const Rect&, uint64_t ) override
+			{
+				// Deliberately synchronous full-frame readback. Every other
+				// tile owned by this same bracket must already be unlocked.
+				std::vector<float> pixels( 4u * 4u * 4u );
+				store->Render( pixels.data(), 4u * 4u * sizeof(float), Rect(0,0,4,4),
+					TargetFormat::RGBA32F_Linear, ViewTransform::Identity() );
+				for( size_t y = 0; y < 4; ++y ) {
+					for( size_t x = 0; x < 4; ++x ) {
+						const size_t i = (y * 4u + x) * 4u;
+						exact &= pixels[i] == float(x + phase) / 8.0f &&
+							pixels[i+1] == float(y + phase) / 8.0f &&
+							pixels[i+2] == float(x + y + phase) / 16.0f && pixels[i+3] == 0.5f;
+					}
+				}
+				++reads;
+			}
+		};
+		struct Result
+		{
+			std::shared_ptr<FrameStore> store;
+			std::shared_ptr<ReadObserver> observer;
+			std::atomic<bool> done{false};
+			bool failed = false;
+			bool firstPass = false;
+			bool retry = false;
+		};
+		auto result = std::make_shared<Result>();
+		result->store = std::shared_ptr<FrameStore>( MakeStore(4,4,2),
+			[](FrameStore* store) { store->release(); } );
+		result->observer = std::make_shared<ReadObserver>();
+		result->observer->store = result->store;
+		// The worker owns all three heap objects. On an intentionally bad
+		// RED build, no detached worker can access dead stack storage.
+		std::thread worker( [result] {
+			auto& store = *result->store;
+			auto& observer = *result->observer;
+			store.AddObserver( &observer );
+			try {
+				const auto before = store.Generation();
+				FrameStoreTileBracket bracket( &store, 0, 0, 2, 2 );
+				const auto writePixels = [&] {
+					auto* beauty = store.GetChannel<ChannelId::Beauty>();
+					auto* alpha = store.GetChannel<ChannelId::Alpha>();
+					for( size_t y = 0; y < 4; ++y ) {
+						for( size_t x = 0; x < 4; ++x ) {
+							beauty->At(x,y) = RISEPel( double(x + observer.phase) / 8.0,
+								double(y + observer.phase) / 8.0, double(x + y + observer.phase) / 16.0 );
+							alpha->At(x,y) = 0.5;
+						}
+					}
+				};
+				writePixels();
+				bracket.Release();
+				bracket.Release();
+				result->firstPass = observer.reads == 4 && observer.exact &&
+					store.Generation() == before + 4;
+				observer.phase = 2;
+				bracket.Acquire();
+				writePixels();
+				bracket.Release();
+				result->retry = observer.reads == 8 && observer.exact &&
+					store.Generation() == before + 8;
+			} catch( ... ) {
+				result->failed = true;
+			}
+			store.RemoveObserver( &observer );
+			result->done.store( true, std::memory_order_release );
+		} );
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while( !result->done.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline )
+			std::this_thread::sleep_for( std::chrono::milliseconds(1) );
+		const bool completed = result->done.load( std::memory_order_acquire );
+		if( completed ) worker.join();
+		else worker.detach(); // RED only: its captures own store, observer and result.
+		Check( completed,
+			"tile exception: synchronous full-frame observer readback completes within deadline" );
+		Check( completed && !result->failed && result->firstPass,
+			"tile exception: all four notifications read exact committed pixels after every tile unlocks" );
+		Check( completed && !result->failed && result->retry,
+			"tile exception: bracket reacquire and retry permits four more exact synchronous observer reads" );
 	}
 
 	struct ThrowingTileObserver final : IRenderObserver
@@ -269,6 +364,119 @@ namespace
 				exact &= c.base.r==.5 && c.base.g==.25 && c.base.b==.125 && c.a==.5;
 			}
 			Check(exact,label+"healthy retry writes every independent beauty and alpha sample");
+			probe.FreeRasterizerOutputs();
+		}
+	}
+
+	void TestFullEntryExceptions()
+	{
+		using namespace RISE::Implementation;
+		struct SamplingCounts {unsigned int liveClones=0;};
+		struct Sampling final : ISampling2D,Reference {
+			std::shared_ptr<SamplingCounts> counts;unsigned int samples=5;bool clone=false;
+			explicit Sampling(std::shared_ptr<SamplingCounts> value):counts(std::move(value)){}
+			Sampling(const Sampling& source):Reference(source),counts(source.counts),samples(source.samples),clone(true){++counts->liveClones;}
+			~Sampling() override{if(clone)--counts->liveClones;}
+			void SetNumSamples(unsigned int n) override{samples=n;}
+			unsigned int GetNumSamples() override{return samples;}
+			void GenerateSamplePoints(const RandomNumberGenerator&,SamplesList2D& points) const override{points.assign(samples,Point2(.5,.5));}
+			ISampling2D* Clone() const override{return new Sampling(*this);}
+		};
+		struct Probe final : PixelBasedRasterizerHelper {
+			mutable unsigned int acquisitions=0,releases=0;
+			mutable std::atomic<bool> sawThreaded{false};
+			mutable std::vector<unsigned int> passSamples;
+			Probe(IRayCaster* caster,FrameStore* store):Rasterizer(store),PixelBasedRasterizerHelper(caster,store){ForTest_SetThreadCountOverride(1);}
+			bool TakeSingleSample(const RuntimeContext&,const RasterizerState&,const Ray&,RISEPel&) const override{return false;}
+			void PrepareRuntimeContext(RuntimeContext& rc) const override {
+				PixelBasedRasterizerHelper::PrepareRuntimeContext(rc);sawThreaded.store(rc.bThreaded);
+			}
+			void IntegratePixel(const RuntimeContext& rc,unsigned int x,unsigned int y,unsigned int,const IScene&,
+				RISEColor& color,bool,Scalar,Scalar) const override {
+				sawThreaded.store(rc.bThreaded);
+				const auto n=ActiveSampling()?ActiveSampling()->GetNumSamples():1;
+				if(rc.pProgressiveFilm) {
+					auto& px=rc.pProgressiveFilm->Get(x,y);px.alphaSum+=n;px.weightSum+=n;px.sampleIndex+=n;
+				}
+				color=RISEColor(0,0,0,1);
+			}
+			void OnProgressivePassBegin(const IScene&,unsigned int) const override{passSamples.push_back(ActiveSampling()->GetNumSamples());}
+			void PrepareImageForNewRender(IRasterImage& image,const Rect*) const override {
+				FrameStoreBulkBracket bracket(mFrameStore,image);image.Clear(RISEColor(0,0,0,1),nullptr);
+			}
+			IRasterImage* AcquireRenderImage(unsigned int w,unsigned int h) const override {
+				++acquisitions;return PixelBasedRasterizerHelper::AcquireRenderImage(w,h);
+			}
+			void ReleaseRenderImage(IRasterImage* image) const override {
+				++releases;PixelBasedRasterizerHelper::ReleaseRenderImage(image);
+			}
+			ISampling2D* AuthoredKernel()const{return pSampling;}
+			bool Idle()const{return !mProgressiveFilm && !mTotalProgressiveSPP &&
+				mProgressBase==0 && mProgressWeight==0 && mProgressTotal==0 && ActiveSampling()==pSampling;}
+		};
+		struct Output final : IRasterizerOutput,Reference {
+			const Probe& probe;bool fail=true,final=false,stableConfig=true,exactFinal=true;
+			unsigned int finalCalls=0;
+			std::mutex outputMutex;
+			std::string kernel;ISampling2D* authored;
+			Output(const Probe& p,ISampling2D* expected):probe(p),kernel(p.ForTest_SamplingKernelName()),authored(expected){}
+			void Observe() {
+				stableConfig &= probe.AuthoredKernel()==authored && probe.GetSampleCountOverride()==5 &&
+					probe.ForTest_SamplingKernelName()==kernel;
+			}
+			void OutputIntermediateImage(const IRasterImage&,const Rect*) override {
+				std::lock_guard<std::mutex> lock(outputMutex);
+				Observe();if(fail && !final)throw std::runtime_error("full-entry intermediate failure");
+			}
+			void OutputImage(const IRasterImage& image,const Rect*,unsigned int) override {
+				std::lock_guard<std::mutex> lock(outputMutex);
+				Observe();++finalCalls;
+				for(unsigned int y=0;y<4;++y)for(unsigned int x=0;x<4;++x) {
+					const auto pixel=image.GetPEL(x,y);
+					exactFinal &= pixel.base.r==0 && pixel.base.g==0 && pixel.base.b==0 && pixel.a==1;
+				}
+				if(fail && final)throw std::runtime_error("full-entry final failure");
+			}
+		};
+		const auto release=[](auto* p){if(p)p->release();};
+		std::unique_ptr<Job,decltype(release)> job(new Job(),release);
+		const double location[]={0,0,2},lookAt[]={0,0,0},up[]={0,1,0},orientation[]={0,0,0},target[]={0,0};
+		const bool setup=job->SetFilm(4,4,1) && job->AddPinholeCamera("tile-exception",location,lookAt,up,1,0,0,0,orientation,target);
+		Check(setup,"full entry exception: tiny initialized scene fixture installs a four-by-four film and camera");
+		if(!setup)return;
+		std::unique_ptr<StandardShader,decltype(release)> shader(new StandardShader(std::vector<IShaderOp*>()),release);
+		IRayCaster* rawCaster=nullptr;RISE_API_CreateRayCaster(&rawCaster,false,10,*shader,true);
+		std::unique_ptr<IRayCaster,decltype(release)> caster(rawCaster,release);
+		for(bool pooled:{false,true})for(bool animation:{false,true})for(bool progressive:{false,true})for(bool final:{false,true}) {
+			std::unique_ptr<FrameStore,decltype(release)> store(MakeStore(4,4,2),release);
+			auto counts=std::make_shared<SamplingCounts>();
+			std::unique_ptr<Sampling,decltype(release)> kernel(new Sampling(counts),release);
+			Probe probe(caster.get(),store.get());probe.ForTest_SetThreadCountOverride(pooled?2:1);probe.SubSampleRays(kernel.get(),nullptr);
+			ProgressiveConfig config;config.enabled=progressive;config.samplesPerPass=2;probe.SetProgressiveConfig(config);
+			Output output(probe,kernel.get());output.final=final;probe.AddRasterizerOutput(&output);
+			const auto storeRefs=store->refcount(),kernelRefs=kernel->refcount();
+			const auto run=[&]() {
+				if(animation)probe.RasterizeSceneAnimation(*job->GetScene(),0,0,1,false,false,nullptr,nullptr,nullptr);
+				else probe.RasterizeScene(*job->GetScene(),nullptr,nullptr);
+			};
+			std::string error;try{run();}catch(const std::exception& e){error=e.what();}
+			const std::string label=std::string("full entry exception: ")+(pooled?"worker pool ":"caller thread ")+(animation?"animation ":"static ")+
+				(progressive?"progressive ":"single ")+(final?"final ":"intermediate ");
+			Check(error==(final?"full-entry final failure":"full-entry intermediate failure") &&
+				probe.acquisitions==1 && probe.releases==1 && store->refcount()==storeRefs &&
+				(!pooled || final || probe.sawThreaded.load()),
+				label+"propagates callback failure and calls virtual image release exactly once without leaking store refs");
+			const bool idle=probe.Idle() && counts->liveClones==0 && kernel->refcount()==kernelRefs &&
+				probe.AuthoredKernel()==kernel.get() && output.stableConfig;
+			Check(idle,label+"restores execution state and keeps authored kernel identity count and ownership stable");
+			const bool readable=ReadAndReacquireTiles(*store);
+			Check(readable,label+"leaves every tile readable and reacquirable within deadline");
+			if(idle && readable){output.fail=false;probe.passSamples.clear();run();}
+			const std::vector<unsigned int> expected=progressive?std::vector<unsigned int>{2,2,1}:std::vector<unsigned int>{};
+			Check(idle && readable && probe.acquisitions==2 && probe.releases==2 && store->refcount()==storeRefs &&
+				probe.Idle() && counts->liveClones==0 && probe.passSamples==expected && output.stableConfig &&
+				output.exactFinal && output.finalCalls==(final?2u:1u) && probe.sawThreaded.load()==pooled,
+				label+"healthy retry uses exact pass sample counts and releases cloned kernels and image references");
 			probe.FreeRasterizerOutputs();
 		}
 	}
@@ -479,7 +687,7 @@ namespace
 		store->release();
 	}
 
-	// ─── Section 3: tile seqlock + observer firing ────────────────
+	// ─── Section 3: tile locks + observer firing ────────────────
 	struct CountingObserver : public IRenderObserver
 	{
 		std::atomic<int> tileCount{ 0 };
@@ -540,7 +748,7 @@ namespace
 		store->release();
 	}
 
-	// ─── Section 4: concurrent reader / writer (seqlock stress) ───
+	// ─── Section 4: concurrent reader / writer (tile-lock stress) ───
 	void TestConcurrentSeqlock()
 	{
 		FrameStore* store = MakeStore( 32, 32, 8 );
@@ -1365,7 +1573,7 @@ namespace
 int main(int argc,char** argv)
 {
 	if(argc==2 && std::strcmp(argv[1],"--tile-exception-only")==0) {
-		TestTileBracketExceptions();TestRasterizerBlockExceptions();
+		TestTileBracketExceptions();TestRasterizerBlockExceptions();TestTileBracketSynchronousReadback();TestFullEntryExceptions();
 		std::cout << "FrameStore tile exceptions: passed " << gPassCount << ", failed " << gFailCount << "\n";
 		return gFailCount==0?0:1;
 	}
@@ -1373,7 +1581,9 @@ int main(int argc,char** argv)
 	std::cout << "------------------------------------------------------------\n";
 
 	TestTileBracketExceptions();
+	TestTileBracketSynchronousReadback();
 	TestRasterizerBlockExceptions();
+	TestFullEntryExceptions();
 	TestConstructionAndGeometry();
 	TestAOVChannels();
 	TestPlannedAOVBridge();

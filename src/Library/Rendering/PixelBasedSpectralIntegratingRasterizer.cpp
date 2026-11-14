@@ -301,6 +301,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 		const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	RasterizerState rast = {x,y};
 
 	// Derive a per-pixel seed for Owen scrambling.
@@ -310,7 +311,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
 
-	if( pSampling && pPixelFilter && rc.UsesPixelSampling() )
+	if( sampling && pPixelFilter && rc.UsesPixelSampling() )
 	{
 		ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 		if( pProgFilm ) {
@@ -328,7 +329,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			}
 		}
 
-		const unsigned int batchSize = pSampling->GetNumSamples();
+		const unsigned int batchSize = sampling->GetNumSamples();
 		const unsigned int maxSamples = batchSize;
 		const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
 
@@ -388,7 +389,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 		while( sampleIndex < passEndIndex && !converged )
 		{
 			ISampling2D::SamplesList2D	samples;
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 
 			ISampling2D::SamplesList2D::const_iterator		m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n && sampleIndex<passEndIndex; m++, sampleIndex++ )

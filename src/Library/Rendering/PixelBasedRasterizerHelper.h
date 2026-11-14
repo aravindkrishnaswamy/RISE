@@ -25,12 +25,49 @@
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/ProgressiveConfig.h"
 #include "TimeIndexedMotionBlur.h"
+#include <utility>
 #include <typeinfo>	// Model-B F2 S3 fix round: ForTest_SamplingKernelName's typeid
 
 namespace RISE
 {
 	namespace Implementation
 	{
+		// Internal render cleanup. Explicit Run propagates normal-path errors;
+		// unwind cleanup preserves the active callback/observer exception.
+		template< class F >
+		class RasterizerScopeExit
+		{
+			F cleanup_;
+			bool armed_ = true;
+
+		public:
+			explicit RasterizerScopeExit( F cleanup ) :
+				cleanup_( std::move(cleanup) )
+			{}
+
+			RasterizerScopeExit( const RasterizerScopeExit& ) = delete;
+			RasterizerScopeExit& operator=( const RasterizerScopeExit& ) = delete;
+
+			~RasterizerScopeExit() noexcept
+			{
+				if( armed_ ) {
+					try {
+						cleanup_();
+					} catch( ... ) {
+						// Cleanup must preserve the original render failure.
+					}
+				}
+			}
+
+			void Run()
+			{
+				if( armed_ ) {
+					armed_ = false;
+					cleanup_();
+				}
+			}
+		};
+
 		class PixelBasedRasterizerHelper : public virtual Rasterizer
 		{
 		public:
@@ -174,6 +211,54 @@ namespace RISE
 		protected:
 			IRayCaster*			pCaster;
 			ISampling2D*		pSampling;
+
+			// Per-invocation execution state, separate from the authored owning
+			// kernel above. Installed only between joined worker phases; workers
+			// read it while the scoped owner is alive. Concurrent render calls
+			// on one rasterizer and callback re-entry are not supported.
+			mutable ISampling2D* mActiveSampling = nullptr;
+			mutable bool mHasActiveSampling = false;
+			ISampling2D* ActiveSampling() const
+			{
+				return mHasActiveSampling ? mActiveSampling : pSampling;
+			}
+
+			// Borrows the caller-owned kernel. Declare its owner first so this
+			// override restores the prior execution state before releasing it.
+			class ScopedActiveSampling
+			{
+				const PixelBasedRasterizerHelper& owner_;
+				ISampling2D* previous_;
+				bool hadPrevious_;
+				bool armed_ = true;
+
+			public:
+				ScopedActiveSampling( const PixelBasedRasterizerHelper& owner, ISampling2D* sampling ) :
+					owner_( owner ),
+					previous_( owner.mActiveSampling ),
+					hadPrevious_( owner.mHasActiveSampling )
+				{
+					owner_.mActiveSampling = sampling;
+					owner_.mHasActiveSampling = true;
+				}
+
+				ScopedActiveSampling( const ScopedActiveSampling& ) = delete;
+				ScopedActiveSampling& operator=( const ScopedActiveSampling& ) = delete;
+
+				~ScopedActiveSampling() noexcept
+				{
+					Restore();
+				}
+
+				void Restore() noexcept
+				{
+					if( armed_ ) {
+						owner_.mActiveSampling = previous_;
+						owner_.mHasActiveSampling = hadPrevious_;
+						armed_ = false;
+					}
+				}
+			};
 			IPixelFilter*		pPixelFilter;
 			bool				useZSobol;		///< Use Morton-indexed Sobol (blue-noise error distribution)
 

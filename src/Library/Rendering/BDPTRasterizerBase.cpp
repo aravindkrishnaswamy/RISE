@@ -341,8 +341,8 @@ void BDPTRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect
 	// Total sample count for splat film resolve/unresolve.  Must be set
 	// before any blocks render so the progressive hooks work.
 	mSplatTotalSamples = 1.0;
-	if( pSampling ) {
-		mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+	if( ActiveSampling() ) {
+		mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 	}
 	mSplatTotalSamples *= GetSplatSampleScale();
 }
@@ -366,6 +366,15 @@ void BDPTRasterizerBase::RasterizeScene(
 	// member AOV planes, while the successful tail may retain only the
 	// documented OIDN cache.
 	AOVBufferUnwindGuard aovUnwindGuard( pAOVBuffers );
+	RasterizerScopeExit renderScratch( [this]() {
+		safe_release( pFilteredFilm );
+		safe_release( pFilteredScratch );
+	} );
+	RasterizerScopeExit renderProgress( [this, base=mProgressBase, weight=mProgressWeight, total=mProgressTotal]() {
+		mProgressBase = base;
+		mProgressWeight = weight;
+		mProgressTotal = total;
+	} );
 
 #ifdef RISE_ENABLE_OIDN
 	// Stamp render-start wall clock for duration telemetry.
@@ -408,6 +417,9 @@ void BDPTRasterizerBase::RasterizeScene(
 	// disabled builds (where the pointer simply stays null and nothing
 	// happens).
 	IRasterImage* pCombineAccum = 0;
+	RasterizerScopeExit pCombineAccumOwner( [&]() {
+		safe_release( pCombineAccum );
+	} );
 	Scalar combineAccumWeight = 0;
 
 	if( guidingConfig.enabled )
@@ -467,6 +479,9 @@ void BDPTRasterizerBase::RasterizeScene(
 				Scalar previousIndirectEnergyDensity = 0;
 				unsigned int lowGainPasses = 0;
 				IRasterImage* pPreviousTrainingImage = 0;
+				RasterizerScopeExit pPreviousTrainingImageOwner( [&]() {
+					safe_release( pPreviousTrainingImage );
+				} );
 
 				if( guidingConfig.combineTrainingIterations ) {
 					pCombineAccum = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
@@ -496,20 +511,32 @@ void BDPTRasterizerBase::RasterizeScene(
 
 			// Use a temporary low-spp sampling object for training
 			ISampling2D* pTrainSampling = 0;
+			RasterizerScopeExit trainingSamplingOwner( [&]() {
+				safe_release( pTrainSampling );
+			} );
 			RISE_API_CreateUniformSampling2D( &pTrainSampling, 1.0, 1.0 );
 			if( pTrainSampling ) {
 				pTrainSampling->SetNumSamples( currentTrainingSPP );
 			}
 
-			ISampling2D* pSavedSampling = pSampling;
-			const_cast<BDPTRasterizerBase*>(this)->pSampling = pTrainSampling;
+			ScopedActiveSampling samplingOverride( *this, pTrainSampling );
 
 			// Create a temporary image for training (results are discarded)
 			IRasterImage* pTrainImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+			RasterizerScopeExit pTrainImageOwner( [&]() {
+				safe_release( pTrainImage );
+			} );
 
 			// Create a temporary splat film for training
 			SplatFilm* pTrainSplat = new SplatFilm( width, height );
+			RasterizerScopeExit pTrainSplatOwner( [&]() {
+				safe_release( pTrainSplat );
+			} );
 			SplatFilm* pSavedSplat = pSplatFilm;
+			RasterizerScopeExit restoreSplat( [this, pSavedSplat, total=mSplatTotalSamples]() {
+				pSplatFilm = pSavedSplat;
+				mSplatTotalSamples = total;
+			} );
 			pSplatFilm = pTrainSplat;
 			mSplatTotalSamples = static_cast<Scalar>( currentTrainingSPP ) * GetSplatSampleScale();
 
@@ -525,6 +552,9 @@ void BDPTRasterizerBase::RasterizeScene(
 					static_cast<unsigned int>( HowManyThreadsToSpawn() ),
 					8, 8, 64 );
 				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( trainTileEdge );
+				RasterizerScopeExit pTrainBlocksOwner( [&]() {
+					safe_release( pTrainBlocks );
+				} );
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_PATHGUIDING,
 					pScene,
@@ -589,10 +619,10 @@ void BDPTRasterizerBase::RasterizeScene(
 				}
 
 			// Restore state
-			pSplatFilm = pSavedSplat;
+			restoreSplat.Run();
 			safe_release( pTrainSplat );
 			safe_release( pTrainImage );
-			const_cast<BDPTRasterizerBase*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pTrainSampling );
 
 			pGuidingField->EndTrainingIteration();
@@ -845,8 +875,8 @@ void BDPTRasterizerBase::RasterizeScene(
 		// Restore splat total samples for main render
 		mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
 		mSplatTotalSamples = 1.0;
-		if( pSampling ) {
-			mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+		if( ActiveSampling() ) {
+			mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
 		}
 		mSplatTotalSamples *= GetSplatSampleScale();
 
@@ -877,6 +907,11 @@ void BDPTRasterizerBase::RasterizeScene(
 	// later via `FrameSink::CopyImageIntoStore`.  Post-L6d the
 	// rasterizer's per-pixel writes land directly in the FrameStore.
 	IRasterImage* pImage = AcquireRenderImage( width, height );
+	RasterizerScopeExit imageOwner( [&]() {
+		if( pImage ) {
+			ReleaseRenderImage( std::exchange(pImage,nullptr) );
+		}
+	} );
 
 	safe_release( pScratchImage );
 	pScratchImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
@@ -936,6 +971,9 @@ void BDPTRasterizerBase::RasterizeScene(
 
 	// If there is no raster sequence, create a default one
 	MortonRasterizeSequence* blocks = 0;
+	RasterizerScopeExit blocksOwner( [&]() {
+		safe_release( blocks );
+	} );
 	if( !pRasterSequence ) {
 		blocks = new MortonRasterizeSequence( bdptTileEdge );
 		pRasterSequence = blocks;
@@ -972,6 +1010,10 @@ void BDPTRasterizerBase::RasterizeScene(
 		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
 
 		ProgressiveFilm progFilm( width, height );
+		RasterizerScopeExit progressiveState( [this, previous=mProgressiveFilm, total=mTotalProgressiveSPP]() {
+			mProgressiveFilm = previous;
+			mTotalProgressiveSPP = total;
+		} );
 		mProgressiveFilm = &progFilm;
 		mTotalProgressiveSPP = totalSPP;
 
@@ -1003,8 +1045,11 @@ void BDPTRasterizerBase::RasterizeScene(
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
 
 			ISampling2D* pPassSampling = pSavedSampling->Clone();
+			RasterizerScopeExit samplingOwner( [&]() {
+				safe_release( pPassSampling );
+			} );
 			pPassSampling->SetNumSamples( passSPP );
-			const_cast<BDPTRasterizerBase*>(this)->pSampling = pPassSampling;
+			ScopedActiveSampling samplingOverride( *this, pPassSampling );
 
 			if( pProgressFunc ) {
 				pProgressFunc->SetTitle( "BDPT Rasterizing: " );
@@ -1021,13 +1066,16 @@ void BDPTRasterizerBase::RasterizeScene(
 			mProgressTotal  = totalProgressUnits;
 
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( bdptTileEdge );
+			RasterizerScopeExit pPassSeqOwner( [&]() {
+				safe_release( pPassSeq );
+			} );
 			const bool passCompleted = RasterizeBlocksForPass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
 			safe_release( pPassSeq );
 
 			accumulatedProgress += static_cast<double>( numTilesPerPass ) *
 			                       static_cast<double>( passSPP );
 
-			const_cast<BDPTRasterizerBase*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pPassSampling );
 
 			if( !passCompleted ) {
@@ -1327,7 +1375,7 @@ void BDPTRasterizerBase::RasterizeScene(
 		FlushToOutputs( *pImage, pRect, 0 );
 	}
 
-	safe_release( pImage );
+	imageOwner.Run();
 	safe_release( pSplatFilm );
 	pSplatFilm = 0;
 	safe_release( pScratchImage );

@@ -478,9 +478,26 @@ int main( int argc, char** argv )
 {
 	std::cout << "AnimationRasterizerParityTest (DL-458)" << std::endl;
 	const std::string only = argc > 1 ? argv[1] : "";
+	const bool progressiveBatches = argc > 2 && std::string(argv[2]) == "--progressive-batches";
 	for( const RastCase& rc : kCases ) {
 		if( !only.empty() && only != rc.label ) continue;
-		RunCase( rc );
+		if( progressiveBatches ) {
+			// Keep samples=8 and request uneven 3,3,2 batches. VCM's VM
+			// policy retains one-sample iterations; its VC-only F variant
+			// honors these batches. The independent PT reference stays at
+			// its default cadence to catch normalization errors.
+			std::string chunk( rc.chunk );
+			if( chunk.find("\tsamples 8\n") == std::string::npos ) {
+				std::cerr << "--progressive-batches requires a PT, BDPT or VCM case\n";
+				return 2;
+			}
+			chunk.insert( chunk.find("{\n") + 2,
+				"\tprogressive_rendering TRUE\n\tprogressive_samples_per_pass 3\n" );
+			const RastCase batched{rc.label,chunk.c_str()};
+			RunCase( batched );
+		} else {
+			RunCase( rc );
+		}
 	}
 	std::cout << "\nAnimationRasterizerParityTest: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;

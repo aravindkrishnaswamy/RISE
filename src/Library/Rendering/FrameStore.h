@@ -402,6 +402,8 @@ namespace RISE
 			//! inside that TU.
 			template <typename Fn>
 			void DispatchObservers( Fn&& fn );
+			void PublishTile( size_t tileX, size_t tileY );
+			friend class FrameStoreTileBracket;
 
 			// FrameStore is non-copyable (Reference rules).
 			FrameStore( const FrameStore& )            = delete;
@@ -479,8 +481,9 @@ namespace RISE
 		//! optionally unioned with the albedo+normal pair required by OIDN.
 		AOVBuffers::Plan MakeAOVPlan( const FrameStore* fs, bool denoiserAux );
 
-		// Owns a half-open tile rectangle. Explicit Release propagates the
-		// first notification failure after unlocking all tiles. Unwinding
+		// Owns a half-open tile rectangle. Release unlocks every owned tile
+		// before notifying observers, so they can read the whole store. It
+		// propagates the first notification failure after publication. Unwinding
 		// contains notification failures and preserves the active exception.
 		class FrameStoreTileBracket
 		{
