@@ -17,17 +17,25 @@
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IRasterImageWriter.h"
 #include "../Interfaces/ILog.h"
-#include "../Utilities/DiskFileWriteBuffer.h"
 #include "../Utilities/Color/Color.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <algorithm>
 #include <array>
 #include <stdexcept>
+#ifdef _WIN32
+#include <windows.h>
+#include <aclapi.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace RISE
 {
@@ -1153,6 +1161,168 @@ const std::vector<unsigned char>& DefaultTextureBytes()
 	}();
 	return encoded;
 }
+
+#ifndef _WIN32
+class TextureDescriptor
+{
+public:
+	explicit TextureDescriptor( int descriptor ) : fd( descriptor ) {}
+	~TextureDescriptor() { if( fd >= 0 ) close( fd ); }
+	TextureDescriptor( const TextureDescriptor& ) = delete;
+	TextureDescriptor& operator=( const TextureDescriptor& ) = delete;
+	const int fd;
+};
+
+bool IsOwnedTextureFile( int fd )
+{
+	struct stat info{};
+	return fd >= 0 && fstat( fd, &info ) == 0 && S_ISREG( info.st_mode ) &&
+		info.st_uid == geteuid() && info.st_nlink == 1 && (info.st_mode & 0022) == 0;
+}
+
+bool TextureMatches( int fd, const std::vector<unsigned char>& encoded )
+{
+	std::array<unsigned char, 256> actual{};
+	std::size_t offset = 0;
+	while( offset < encoded.size() ) {
+		const std::size_t remaining = encoded.size() - offset;
+		const std::size_t amount = remaining < actual.size() ? remaining : actual.size();
+		const ssize_t count = read( fd, actual.data(), amount );
+		if( count < 0 && errno == EINTR ) continue;
+		if( count <= 0 || !std::equal( actual.begin(), actual.begin() + count, encoded.begin() + offset ) ) return false;
+		offset += static_cast<std::size_t>( count );
+	}
+	ssize_t count;
+	do { count = read( fd, actual.data(), 1 ); } while( count < 0 && errno == EINTR );
+	return count == 0;
+}
+
+bool EnsurePrivateTexture( const std::string& parent, std::string& path,
+	const std::vector<unsigned char>& encoded )
+{
+	// Anchor every operation to opened directories. An lstat(path) followed
+	// by an ordinary pathname write would still follow a substituted link.
+	const TextureDescriptor parentDir( open( parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC ) );
+	if( parentDir.fd < 0 ) return false;
+	const std::string cacheName = "rise_entity_templates_" + std::to_string( geteuid() );
+	if( mkdirat( parentDir.fd, cacheName.c_str(), 0700 ) != 0 && errno != EEXIST ) return false;
+	const TextureDescriptor cacheDir( openat( parentDir.fd, cacheName.c_str(),
+		O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC ) );
+	struct stat info{};
+	if( cacheDir.fd < 0 || fstat( cacheDir.fd, &info ) != 0 || !S_ISDIR( info.st_mode ) ||
+		info.st_uid != geteuid() || (info.st_mode & 0077) != 0 ) return false;
+	constexpr const char* filename = "rise_entity_template_default_texture.png";
+	path = parent + cacheName + "/" + filename;
+	{
+		const TextureDescriptor input( openat( cacheDir.fd, filename, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC ) );
+		if( input.fd >= 0 ) {
+			if( !IsOwnedTextureFile( input.fd ) ) return false;
+			if( TextureMatches( input.fd, encoded ) ) return true;
+		} else if( errno != ENOENT ) return false;
+	}
+	// Open without truncating, then validate that same descriptor before
+	// changing any bytes. Refuse symlinks, hardlinks, and foreign-owned files.
+	const TextureDescriptor output( openat( cacheDir.fd, filename,
+		O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600 ) );
+	if( !IsOwnedTextureFile( output.fd ) ) return false;
+	int locked;
+	do { locked = flock( output.fd, LOCK_EX ); } while( locked != 0 && errno == EINTR );
+	if( locked != 0 || !IsOwnedTextureFile( output.fd ) ) return false;
+	// Another process may have repaired this same inode after our first
+	// read. Recheck under the writer lock so a stale validator never
+	// truncates a PNG that a successful caller is about to consume.
+	if( TextureMatches( output.fd, encoded ) ) return true;
+	if( ftruncate( output.fd, 0 ) != 0 || lseek( output.fd, 0, SEEK_SET ) != 0 ) return false;
+	std::size_t offset = 0;
+	while( offset < encoded.size() ) {
+		const ssize_t count = write( output.fd, encoded.data() + offset, encoded.size() - offset );
+		if( count < 0 && errno == EINTR ) continue;
+		if( count <= 0 ) return false;
+		offset += static_cast<std::size_t>( count );
+	}
+	return fsync( output.fd ) == 0;
+}
+#else
+class TextureHandle
+{
+public:
+	explicit TextureHandle( HANDLE value ) : handle( value ) {}
+	~TextureHandle() { if( handle && handle != INVALID_HANDLE_VALUE ) CloseHandle( handle ); }
+	TextureHandle( const TextureHandle& ) = delete;
+	TextureHandle& operator=( const TextureHandle& ) = delete;
+	const HANDLE handle;
+};
+
+bool IsOwnedTextureFile( HANDLE file )
+{
+	BY_HANDLE_FILE_INFORMATION info{};
+	if( file == INVALID_HANDLE_VALUE || GetFileType( file ) != FILE_TYPE_DISK ||
+		!GetFileInformationByHandle( file, &info ) || info.nNumberOfLinks != 1 ||
+		(info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) ) return false;
+	HANDLE rawToken = nullptr;
+	if( !OpenProcessToken( GetCurrentProcess(), TOKEN_QUERY, &rawToken ) ) return false;
+	const TextureHandle token( rawToken );
+	DWORD size = 0;
+	GetTokenInformation( token.handle, TokenUser, nullptr, 0, &size );
+	if( size == 0 ) return false;
+	std::vector<unsigned char> tokenBytes( size );
+	if( !GetTokenInformation( token.handle, TokenUser, tokenBytes.data(), size, &size ) ) return false;
+	PSID owner = nullptr;
+	PSECURITY_DESCRIPTOR security = nullptr;
+	if( GetSecurityInfo( file, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+		&owner, nullptr, nullptr, nullptr, &security ) != ERROR_SUCCESS ) return false;
+	const bool owned = owner && EqualSid( owner, reinterpret_cast<TOKEN_USER*>( tokenBytes.data() )->User.Sid );
+	LocalFree( security );
+	return owned;
+}
+
+bool TextureMatches( HANDLE file, const std::vector<unsigned char>& encoded )
+{
+	std::array<unsigned char, 256> actual{};
+	std::size_t offset = 0;
+	while( offset < encoded.size() ) {
+		const std::size_t remaining = encoded.size() - offset;
+		const DWORD amount = static_cast<DWORD>( remaining < actual.size() ? remaining : actual.size() );
+		DWORD count = 0;
+		if( !ReadFile( file, actual.data(), amount, &count, nullptr ) || count == 0 ||
+			!std::equal( actual.begin(), actual.begin() + count, encoded.begin() + offset ) ) return false;
+		offset += count;
+	}
+	DWORD count = 0;
+	return ReadFile( file, actual.data(), 1, &count, nullptr ) && count == 0;
+}
+
+bool EnsurePrivateTexture( const std::string& parent, std::string& path,
+	const std::vector<unsigned char>& encoded )
+{
+	// Windows checks the opened leaf's reparse flag and token owner before
+	// reading/truncating that handle; no pathname check/write window exists.
+	path = parent + "rise_entity_template_default_texture.png";
+	const auto nativePath = std::filesystem::path( path ).wstring();
+	{
+		const TextureHandle input( CreateFileW( nativePath.c_str(), GENERIC_READ | READ_CONTROL,
+			FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr ) );
+		if( input.handle != INVALID_HANDLE_VALUE ) {
+			if( !IsOwnedTextureFile( input.handle ) ) return false;
+			if( TextureMatches( input.handle, encoded ) ) return true;
+		} else if( GetLastError() != ERROR_FILE_NOT_FOUND ) return false;
+	}
+	const TextureHandle output( CreateFileW( nativePath.c_str(), GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
+		0, nullptr, OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, nullptr ) );
+	if( !IsOwnedTextureFile( output.handle ) ) return false;
+	if( TextureMatches( output.handle, encoded ) ) return true;
+	LARGE_INTEGER start{};
+	if( !SetFilePointerEx( output.handle, start, nullptr, FILE_BEGIN ) || !SetEndOfFile( output.handle ) ) return false;
+	std::size_t offset = 0;
+	while( offset < encoded.size() ) {
+		DWORD count = 0;
+		if( !WriteFile( output.handle, encoded.data() + offset,
+			static_cast<DWORD>( encoded.size() - offset ), &count, nullptr ) || count == 0 ) return false;
+		offset += count;
+	}
+	return FlushFileBuffers( output.handle ) != 0;
+}
+#endif
 }
 
 std::string EntityTemplates::EnsureDefaultTextureFile()
@@ -1162,7 +1332,6 @@ std::string EntityTemplates::EnsureDefaultTextureFile()
 	if( !tmpEnv || !tmpEnv[0] ) tmpEnv = std::getenv( "TMP" );
 	std::string dir = ( tmpEnv && tmpEnv[0] ) ? tmpEnv : "/tmp";
 	if( dir.back() != '/' && dir.back() != '\\' ) dir += '/';
-	const std::string path = dir + "rise_entity_template_default_texture.png";
 
 	const std::vector<unsigned char>* encodedPointer = nullptr;
 	try {
@@ -1172,22 +1341,8 @@ std::string EntityTemplates::EnsureDefaultTextureFile()
 		GlobalLog()->PrintEx(eLog_Warning, "EntityTemplates: default PNG encoding failed: %s", failure.what());
 		return std::string();
 	}
-	const auto& encoded = *encodedPointer;
-
-	std::error_code error;
-	if( std::filesystem::is_regular_file( path, error ) && !error &&
-		std::filesystem::file_size( path, error ) == encoded.size() && !error ) {
-		std::ifstream input( path, std::ios::binary );
-		std::vector<unsigned char> actual( encoded.size() );
-		input.read( reinterpret_cast<char*>( actual.data() ), static_cast<std::streamsize>( actual.size() ) );
-		if( input && actual == encoded && input.peek() == std::char_traits<char>::eof() && !input.bad() ) return path;
-	}
-
-	const bool written = Implementation::DiskFileWriteBuffer::WriteAtomically( path,
-		[encodedPointer]( Implementation::DiskFileWriteBuffer& buffer ) {
-			return buffer.setBytes( encodedPointer->data(), static_cast<unsigned int>( encodedPointer->size() ) );
-		}, Implementation::DiskFileWriteBuffer::StagingPolicy::AllowInPlace );
-	return written ? path : std::string();
+	std::string path;
+	return EnsurePrivateTexture( dir, path, *encodedPointer ) ? path : std::string();
 
 }
 

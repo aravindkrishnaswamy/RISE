@@ -43,6 +43,7 @@
 #include <new>
 
 #ifndef _WIN32
+#include <cerrno>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <csignal>
@@ -137,7 +138,23 @@ namespace
 #endif
 		Check( changedTmp, "thumbnail cache: isolated temporary directory installed" );
 		if( !changedTmp ) return;
+#ifndef _WIN32
+		const fs::path cacheDirectory = scratch / ("rise_entity_templates_" + std::to_string( geteuid() ));
+		const fs::path target = cacheDirectory / "rise_entity_template_default_texture.png";
+		const fs::path victim = scratch / "sentinel_victim";
+		const std::string sentinel = "thumbnail cache must never overwrite this unrelated file";
+		{ std::ofstream output( victim ); output << sentinel; }
+		const auto victimIntact = [&] {
+			std::ifstream input( victim );
+			return std::string( std::istreambuf_iterator<char>( input ), std::istreambuf_iterator<char>() ) == sentinel;
+		};
+		// The old public cache location can already belong to another user.
+		// Migration must leave it untouched, even when it redirects elsewhere.
+		const fs::path legacy = scratch / "rise_entity_template_default_texture.png";
+		fs::create_symlink( victim, legacy );
+#else
 		const fs::path target = scratch / "rise_entity_template_default_texture.png";
+#endif
 		const auto readBytes = [&target] {
 			std::ifstream input( target, std::ios::binary );
 			return std::vector<char>( std::istreambuf_iterator<char>( input ), std::istreambuf_iterator<char>() );
@@ -149,6 +166,10 @@ namespace
 			"thumbnail encode retry: initial PNG allocation failure is diagnosed" );
 		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string(),
 			"thumbnail encode retry: recovered allocator generates the default texture" );
+#ifndef _WIN32
+		Check( victimIntact() && fs::is_symlink( fs::symlink_status( legacy ) ) && fs::read_symlink( legacy ) == victim,
+			"thumbnail symlink safety: legacy shared cache link and sentinel victim are untouched" );
+#endif
 		const auto complete = readBytes();
 		Check( complete.size() > 16 && static_cast<unsigned char>(complete.front()) == 0x89,
 			"thumbnail cache: generated payload has a PNG signature and exceeds the failure limit" );
@@ -176,13 +197,92 @@ namespace
 		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
 			"thumbnail cache: equal-length foreign contents are replaced" );
 #ifndef _WIN32
+		fs::remove( target );
+		fs::create_symlink( victim, target );
+		Check( EntityTemplates::EnsureDefaultTextureFile().empty() && victimIntact() &&
+			fs::is_symlink( fs::symlink_status( target ) ) && fs::read_symlink( target ) == victim,
+			"thumbnail symlink safety: cache leaf link is refused without changing its target or link" );
+		fs::remove( target );
+		fs::create_hard_link( victim, target );
+		Check( EntityTemplates::EnsureDefaultTextureFile().empty() && victimIntact() && fs::equivalent( target, victim ),
+			"thumbnail symlink safety: hardlinked sentinel is refused without changing either name" );
+		fs::remove( target );
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+			"thumbnail symlink safety: cache recovers after hostile leaf entries are removed" );
+		fs::permissions( cacheDirectory, fs::perms::owner_all | fs::perms::group_write );
+		Check( EntityTemplates::EnsureDefaultTextureFile().empty() && readBytes() == complete,
+			"thumbnail symlink safety: cache directory accessible to another user is refused" );
+		fs::permissions( cacheDirectory, fs::perms::owner_all );
+		const fs::path movedCache = scratch / "moved_cache";
+		fs::rename( cacheDirectory, movedCache );
+		fs::create_directory_symlink( movedCache, cacheDirectory );
+		Check( EntityTemplates::EnsureDefaultTextureFile().empty() &&
+			fs::is_symlink( fs::symlink_status( cacheDirectory ) ),
+			"thumbnail symlink safety: substituted cache directory link is refused unchanged" );
+		fs::remove( cacheDirectory );
+		fs::rename( movedCache, cacheDirectory );
+		// Changing ownership requires privilege; exercise the actual owner
+		// rejection whenever this runner is allowed to create that topology.
+		const uid_t foreignOwner = geteuid() == 0 ? 1 : 0;
+		if( chown( target.c_str(), foreignOwner, static_cast<gid_t>(-1) ) == 0 ) {
+			Check( EntityTemplates::EnsureDefaultTextureFile().empty() && readBytes() == complete,
+				"thumbnail symlink safety: foreign-owned cache entry is refused unchanged" );
+			Check( chown( target.c_str(), geteuid(), static_cast<gid_t>(-1) ) == 0,
+				"thumbnail symlink safety: foreign-owner fixture restores original ownership" );
+		} else {
+			std::printf( "SKIP: thumbnail foreign-owner fixture requires chown privilege\n" );
+		}
+		// Independent processes share one private cache. Every successful
+		// caller must immediately be able to consume the complete PNG, even
+		// when several callers originally observed the same partial entry.
+		bool concurrentCacheIntact = true;
+		for( unsigned int round = 0; round < 8 && concurrentCacheIntact; ++round ) {
+			{ std::ofstream partial( target, std::ios::binary | std::ios::trunc ); partial.put( '\0' ); }
+			int startPipe[2];
+			if( pipe( startPipe ) != 0 ) { concurrentCacheIntact = false; break; }
+			std::vector<pid_t> children;
+			std::fflush( nullptr );
+			for( unsigned int index = 0; index < 8; ++index ) {
+				const pid_t child = fork();
+				if( child == 0 ) {
+					close( startPipe[1] );
+					char token;
+					ssize_t received;
+					do { received = read( startPipe[0], &token, 1 ); } while( received < 0 && errno == EINTR );
+					close( startPipe[0] );
+					if( received != 1 ) _exit( 2 );
+					for( unsigned int call = 0; call < 32; ++call ) {
+						if( EntityTemplates::EnsureDefaultTextureFile() != target.string() || readBytes() != complete ) _exit( 1 );
+					}
+					_exit( 0 );
+				}
+				if( child < 0 ) { concurrentCacheIntact = false; break; }
+				children.push_back( child );
+			}
+			// Keep our read end open until release so a failed fork cannot
+			// make this fixture deliver SIGPIPE to the test process.
+			const char tokens[] = "rrrrrrrr";
+			ssize_t released;
+			do { released = write( startPipe[1], tokens, sizeof(tokens) - 1 ); } while( released < 0 && errno == EINTR );
+			if( released != static_cast<ssize_t>(sizeof(tokens) - 1) ) concurrentCacheIntact = false;
+			close( startPipe[0] );
+			close( startPipe[1] );
+			for( const pid_t child : children ) {
+				int status = 0;
+				pid_t joined;
+				do { joined = waitpid( child, &status, 0 ); } while( joined < 0 && errno == EINTR );
+				if( joined != child || !WIFEXITED( status ) || WEXITSTATUS( status ) != 0 ) concurrentCacheIntact = false;
+			}
+		}
+		Check( concurrentCacheIntact,
+			"thumbnail cache concurrency: shared-cache callers always consume a complete PNG after success" );
 		// Run the write limit in a child so logger streams and process-wide
 		// signal/rlimit state cannot affect the remaining test suite.
 		{ std::ofstream empty( target, std::ios::binary | std::ios::trunc ); }
-		const auto originalPermissions = fs::status( scratch ).permissions();
-		fs::permissions( scratch, fs::perms::owner_read | fs::perms::owner_exec );
+		const auto originalPermissions = fs::status( cacheDirectory ).permissions();
+		fs::permissions( cacheDirectory, fs::perms::owner_read | fs::perms::owner_exec );
 		std::error_code permissionError;
-		const fs::path probe = scratch / "permission_probe";
+		const fs::path probe = cacheDirectory / "permission_probe";
 		const bool createdProbe = fs::create_directory( probe, permissionError );
 		if( permissionError == std::errc::permission_denied ) {
 			std::fflush( nullptr );
@@ -224,7 +324,7 @@ namespace
 		} else {
 			std::printf( "SKIP: thumbnail cache read-only directory permissions are not enforced\n" );
 		}
-		fs::permissions( scratch, originalPermissions );
+		fs::permissions( cacheDirectory, originalPermissions );
 		if( createdProbe ) fs::remove( probe );
 #endif
 #endif

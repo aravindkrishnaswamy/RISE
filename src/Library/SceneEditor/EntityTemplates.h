@@ -175,7 +175,10 @@ namespace RISE
 		//! being configured, which a general-purpose template must not
 		//! assume).  Idempotent within a process: writes once, reuses
 		//! the file on repeat calls only when its bytes match the default
-		//! PNG. Incomplete or foreign cache entries are regenerated.
+		//! PNG. Incomplete owned cache entries are regenerated. POSIX uses
+		//! an owner-only directory under the configured temp directory;
+		//! the former shared cache path is left untouched. Links and
+		//! foreign-owned files are refused without changing their contents.
 		//! Returns an absolute path, or an empty string on write
 		//! failure (disk full, unwritable temp dir, etc.).
 		static std::string EnsureDefaultTextureFile();
