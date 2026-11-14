@@ -168,13 +168,14 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code
 	filename = file_name;
 	int openError = 0;
 	if( policy != OpenPolicy::Direct ) {
+		const bool exclusive = policy == OpenPolicy::ExclusiveStaging || policy == OpenPolicy::ExclusiveRecovery;
 		// Staging requires a newly created leaf. Regular destination opens
 		// defer truncation until the opened descriptor has been validated.
 		// POSIX staging uses a private directory and 0666 & ~umask to preserve
 		// new-output modes.
 #ifdef _WIN32
 		const int flags = _O_WRONLY | _O_CREAT | _O_BINARY | _O_NOINHERIT |
-			(policy == OpenPolicy::ExclusiveStaging ? _O_EXCL : 0);
+			(exclusive ? _O_EXCL : 0);
 		const int descriptor = ::_open(filename.c_str(), flags, _S_IREAD | _S_IWRITE);
 		if( descriptor >= 0 ) {
 			if( policy == OpenPolicy::RegularOutput ) {
@@ -200,8 +201,8 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code
 		// Do not block on a FIFO or truncate anything before validating the
 		// opened descriptor; preserve user-authored symlink destinations.
 		const int flags = O_WRONLY | O_CREAT | O_CLOEXEC |
-			(policy == OpenPolicy::ExclusiveStaging ? O_EXCL | O_NOFOLLOW : O_NONBLOCK);
-		const int descriptor = ::open(filename.c_str(), flags, 0666);
+			(exclusive ? O_EXCL | O_NOFOLLOW : O_NONBLOCK);
+		const int descriptor = ::open(filename.c_str(), flags, policy == OpenPolicy::ExclusiveRecovery ? 0600 : 0666);
 		if( descriptor >= 0 ) {
 			if( policy == OpenPolicy::RegularOutput ) {
 				struct stat info{};
@@ -390,6 +391,73 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	const std::function<bool(DiskFileWriteBuffer&)>& write )
 {
 	return WriteAtomically( path, write, StagingPolicy::Required );
+}
+
+bool DiskFileWriteBuffer::WriteNewFile( const std::string& path,
+	const std::function<bool(DiskFileWriteBuffer&)>& write, WriteDiagnostics* diagnostics )
+{
+	namespace fs = std::filesystem;
+	WriteDiagnostics result;
+	struct Report {
+		WriteDiagnostics& result;
+		WriteDiagnostics* destination;
+		~Report() { if( destination ) *destination = result; }
+	} report{ result, diagnostics };
+	fs::path target(path);
+	const auto fail = [&]( const char* operation, std::error_code error ) {
+		result.operation = operation;
+		result.error = error ? error : std::make_error_code(std::errc::io_error);
+		GlobalLog()->PrintEx(eLog_Error, "DiskFileWriteBuffer:: %s '%s' failed: %s (%d)", operation,
+			target.string().c_str(), result.error.message().c_str(), result.error.value());
+		return false;
+	};
+	std::error_code error;
+#ifndef _WIN32
+	const auto parent = fs::canonical(target.has_parent_path() ? target.parent_path() : fs::path("."), error);
+	if( error || !CheckStagingParents(parent, error) ) return fail("trust automatic output parent", error);
+	target = parent / target.filename();
+#else
+	target = fs::absolute(target, error);
+	if( error ) return fail("locate automatic output", error);
+#endif
+	// No status/canonical lookup of the leaf: exclusive creation itself rejects
+	// pre-existing files, symlinks and hardlinks without following or reusing them.
+	const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
+	std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer(nullptr, release);
+	const fs::path requested = target;
+	static std::atomic<unsigned long long> nextRecoveryId{0};
+	for( unsigned int attempt = 0; attempt < 16; ++attempt ) {
+		if( attempt ) target = requested.parent_path() / (requested.stem().string() + "-" +
+			std::to_string(nextRecoveryId.fetch_add(1, std::memory_order_relaxed) + 1) + requested.extension().string());
+		buffer.reset(new DiskFileWriteBuffer(target.string().c_str(), nullptr, OpenPolicy::ExclusiveRecovery));
+		GlobalLog()->PrintNew(buffer.get(), __FILE__, __LINE__, "automatic recovery write buffer");
+		if( buffer->ReadyToWrite() ) break;
+		if( buffer->writeError != std::errc::file_exists || attempt == 15 )
+			return fail("create automatic output exclusively", buffer->writeError);
+	}
+	bool encoded = false;
+	try {
+		encoded = write(*buffer);
+	} catch( const std::exception& failure ) {
+		GlobalLog()->PrintEx(eLog_Error, "DiskFileWriteBuffer:: Encoding automatic output '%s' failed: %s",
+			target.string().c_str(), failure.what());
+	}
+	const bool finished = buffer->Finish(true);
+	if( !finished || !encoded ) {
+		fail(finished ? "encode automatic output" : "finish automatic output", buffer->writeError);
+		// This call created the leaf (beneath trusted parents on POSIX). An
+		// open failure returns above, so old candidates are never removed.
+		fs::remove(target, error);
+		if( error ) {
+			result.cleanupPath = target.string();
+			result.cleanupError = error;
+			GlobalLog()->PrintEx(eLog_Warning, "DiskFileWriteBuffer:: Could not remove partial automatic output '%s': %s (%d)",
+				result.cleanupPath.c_str(), error.message().c_str(), error.value());
+		}
+		return false;
+	}
+	result.recoveryPath = target.string();
+	return true;
 }
 
 bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,

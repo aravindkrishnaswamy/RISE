@@ -64,7 +64,7 @@ void FileEncoderObserver::OnDenoiseComplete( unsigned int frame, uint64_t /*gene
 
 void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 {
-	if ( !store_ || !encoder_ ) return;
+	if ( !store_ || !encoder_ || store_->Width() == 0 || store_->Height() == 0 ) return;
 
 	// Determine the file extension from the encoder's first listed
 	// extension.  This is the canonical extension per
@@ -84,23 +84,32 @@ void FileEncoderObserver::WriteFile( unsigned int frame, const char* suffix )
 
 	// Stage each frame beside its destination. If staging is unavailable,
 	// allow the historical direct-write path for writable destinations.
-	// Failed direct writes and publication failures use the emergency path.
+	// Publication failures retain completed staging bytes. Other failures
+	// may try a new exclusive emergency file without trusting an old candidate.
 	const auto encode = [&]( DiskFileWriteBuffer& buffer ) {
 		encoder_->Encode( *store_, buffer, opts_ );
 		return true;
 	};
-	if( !DiskFileWriteBuffer::WriteAtomically( filename, encode, DiskFileWriteBuffer::StagingPolicy::AllowInPlace ) ) {
+	DiskFileWriteBuffer::WriteDiagnostics primary;
+	if( !DiskFileWriteBuffer::WriteAtomically(filename, encode, DiskFileWriteBuffer::StagingPolicy::AllowInPlace, &primary) ) {
+		if( !primary.recoveryPath.empty() ) {
+			GlobalLog()->PrintEx(eLog_Warning, "Could not publish '%s'; completed image retained at '%s'",
+				filename.c_str(), primary.recoveryPath.c_str());
+			return;
+		}
 		const std::string emergency = "fro_temp_" +
 			std::to_string( reinterpret_cast<uintptr_t>( this ) ) + suffix +
 			(bMultiple_ ? "_" : "") + frameNumber + "." + ext;
 		GlobalLog()->PrintEx( eLog_Warning,
 			"Could not publish '%s', trying emergency file '%s'",
 			filename.c_str(), emergency.c_str() );
-		if( !DiskFileWriteBuffer::WriteAtomically( emergency, encode, DiskFileWriteBuffer::StagingPolicy::AllowInPlace ) ) {
-			GlobalLog()->PrintEasyError( "FileEncoderObserver: Could not write the emergency file" );
+		DiskFileWriteBuffer::WriteDiagnostics recovery;
+		if( !DiskFileWriteBuffer::WriteNewFile(emergency, encode, &recovery) ) {
+			GlobalLog()->PrintEx(eLog_Error, "FileEncoderObserver: Could not write emergency file '%s': %s",
+				emergency.c_str(), recovery.error.message().c_str());
 			return;
 		}
-		filename = emergency;
+		filename = recovery.recoveryPath;
 	}
 	GlobalLog()->PrintEx( eLog_Event, "FileEncoderObserver:: Written to '%s'", filename.c_str() );
 }

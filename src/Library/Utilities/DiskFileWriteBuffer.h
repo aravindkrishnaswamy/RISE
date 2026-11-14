@@ -98,6 +98,13 @@ namespace RISE
 			static bool WriteAtomically( const std::string& path,
 				const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy,
 				WriteDiagnostics* diagnostics );
+			// Automatic recovery names must never resolve or overwrite existing
+			// leaves. Try the requested name first; EEXIST tries a monotonic suffix
+			// before its extension, up to 16 candidates. Other failures never retry.
+			// POSIX requires trusted parents and creates with 0600 reduced by umask.
+			// Success reports the actual absolute artifact in recoveryPath.
+			static bool WriteNewFile( const std::string& path,
+				const std::function<bool(DiskFileWriteBuffer&)>& write, WriteDiagnostics* diagnostics = nullptr );
 
 
 		protected:
@@ -105,7 +112,7 @@ namespace RISE
 			virtual ~DiskFileWriteBuffer( );
 
 		private:
-			enum class OpenPolicy { Direct, ExclusiveStaging, RegularOutput };
+			enum class OpenPolicy { Direct, ExclusiveStaging, ExclusiveRecovery, RegularOutput };
 			DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, OpenPolicy policy );
 			bool hasWritten = false;
 			bool writeFailed = false;
