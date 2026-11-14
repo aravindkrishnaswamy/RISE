@@ -18,7 +18,8 @@ source assets with the corrected build.
   stage their output and preserve the previous file on serialization or
   publication failure. Legacy 32-bit buffer queries saturate at `UINT_MAX`.
   Render output, viewport Save As, and thumbnails permit direct writes on
-  staging or rename permission failures, including through dangling symlinks.
+  staging-directory creation, staging-file open, or rename permission failures,
+  including through dangling symlinks.
   Rename fallback copies the completed image without repeating encoding.
   Existing output files need write access; read permission is not required.
   Other staging errors remain failures. A failed direct write can

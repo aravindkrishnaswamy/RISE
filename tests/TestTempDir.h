@@ -158,6 +158,8 @@ namespace TestSupport
 		if( child < 0 || waited != child || error ) return 1;
 		return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 #else
+		// Native Windows fixture isolation and crash cleanup remain a
+		// separate platform follow-up; this guardian currently uses fork.
 		return body();
 #endif
 	}

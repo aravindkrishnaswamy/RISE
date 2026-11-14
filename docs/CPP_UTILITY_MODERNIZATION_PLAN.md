@@ -28,7 +28,7 @@ requirements are recorded in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 | 2. Outputs beyond 4 GiB | Disk cursors, sizes, seeks and photon availability checks use 64 bits through an optional `IBuffer64` interface. Existing `IBuffer` virtual signatures remain intact and narrow disk queries saturate. On sparse-capable scratch filesystems, guarded fixtures cover writes, packet reads across the boundary, normal Job loads, and codec offsets. Photon saves require staging. |
 | 3. Spectral and piecewise tables | Both consume leading finite columns and tolerate extra columns. File headers/malformed rows are skipped with warnings. Inline rows need two values. NUL, empty results, I/O failure and unequal spectral counts fail. |
 | 4. Console input | Commands support standalone trailing `#` comments and leading full-line comments, including `render # comment`; raw tokenizers and options preserve hashes. Malformed numeric arguments, incomplete render rectangles and unknown media-path commands remain diagnosed hard errors. |
-| 5. Restricted staging parents | Render output, viewport Save As and thumbnails explicitly permit direct writes on staging/rename permission failures or through dangling symlinks. Other staging errors fail. Rename fallback copies completed bytes without re-encoding. Failed direct image writes may leave partial output. Photon saves retain staging-required failure safety. |
+| 5. Restricted staging parents | Render output, viewport Save As and thumbnails explicitly permit direct writes on staging creation/open or rename permission failures or through dangling symlinks. Other staging errors fail. Rename fallback copies completed bytes without re-encoding. Failed direct image writes may leave partial output. Photon saves retain staging-required failure safety. |
 | 6. Damaged TIFF strips | A compressed-strip fixture confirms partial decoding reports success with an opaque-black row. Strict rejection is retained and tested. |
 | 7. Windows path encoding | Existence checks use the native narrow path constructor shared with CRT/stream opens. Native Windows non-ASCII verification is still required. |
 | 8. Memory tracking | The scoped disk-writer construction shared by staged saves and image fallback registers its allocation with `PrintNew`. |
@@ -94,7 +94,7 @@ additional decisions explicit:
   filename and physical line, including spectral `file/nmfile/ampfile`.
 - Large-file test sections first probe sparse allocation with a 1 MiB hole
   on the fixture filesystem, and skip those sections if unsupported.
-  A parent owns each buffer/photon test's scratch directory and cleans it
+  On POSIX, a parent owns each buffer/photon test's scratch directory and cleans it
   after child exit or crash. Killing both processes can still leave scratch
   files, as with other externally interrupted tests.
 
@@ -126,7 +126,7 @@ fixture collision. Each finding was confirmed and fixed:
 | Existing-target probe required read permission | Open an existing-only write descriptor without creating or truncating the target. Write-only targets retain both staging policies, including direct image writes in restricted parents. |
 | Partial thumbnail accepted as a cache | Encode the known 4x4 default PNG once, validate cached bytes against that complete payload, regenerate partial/foreign entries, and return an empty path after failed publication. A limited direct-write fixture verifies partial data cannot become a usable cache and a later call repairs it. |
 | Repeated JPEG reads leaked decoded pixels | Reset and release the previous decode before each `BeginRead`, including failed reloads; reset output dimensions and internal image state. Valid reloads preserve every pixel. |
-| Concurrent parser fixtures collided | Parser and template tests run inside parent-owned scratch directories, extending the existing buffer/photon isolation. |
+| Concurrent parser fixtures collided | On POSIX, parser and template tests run inside parent-owned scratch directories, extending the existing buffer/photon isolation. The Windows wrapper still runs in-process; native Windows fixture isolation remains deferred with the excluded platform work. |
 
 
 The review fixes passed nine focused executables (including 139 buffer,
@@ -142,6 +142,41 @@ snapshot; the unfixed probe grew by 8,958,064 bytes). The four CLI write
 failure probes still reached TIFF/EXR finalization and exited cleanly.
 Multi-GiB sparse cases remain explicitly skipped on this host, and native
 Windows execution remains outstanding.
+
+
+### Second fresh review follow-up after `50ce03c74`
+
+The next independent round found two more P1 defects: the viewport `SaveTo`
+checker hid a destination's optional `IBuffer64`, and a restrictive umask
+could permit creating a staging directory while denying creation of its
+output file. `SaveTo` now chooses a wide checker only for actual wide
+buffers, forwards large queries/seeks, and latches failed seeks. Legacy
+buffers keep their original interface. Resize refusals remain advisory
+because streaming encoders use them as capacity hints, including on disk
+buffers that intentionally decline resizing.
+
+Stage-open errors are captured before logging can change `errno`. Explicit
+image fallback now handles permission-denied staging opens before the
+encoder runs; encoding and flush failures never replay the callback.
+The existing public constructor symbol and concrete layout are retained.
+New umask-policy and virtual large-buffer fixtures fail against the earlier
+code and pass with these corrections without creating large files.
+
+The round also identified Windows-only fixed-name fixture collisions.
+POSIX isolation and crash cleanup are verified; the Windows wrapper still
+runs in-process. Native Windows fixture isolation joins the platform work
+excluded from this host continuation. This is a disclosed remaining item,
+not a claim of cross-platform isolation.
+
+
+These host corrections passed seven focused executables (including 144
+buffer and 93 viewport checks), three targeted ASan/UBSan runs, and repeated
+clean make, Xcode Deployment/Opto and Blender LTO builds, with zero unexpected
+warnings. The staging-open and `SaveTo64` regressions were observed failing
+normally against `50ce03c74` before passing with the corrections. Four CLI
+TIFF/EXR limited-write probes still reached finalization and exited 1 without
+termination. Sparse multi-GiB cases remain explicitly skipped on this scratch
+filesystem.
 
 
 ### Host measurements and decisions
