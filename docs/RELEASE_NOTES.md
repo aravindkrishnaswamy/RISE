@@ -48,8 +48,10 @@ source assets with the corrected build.
   therefore differ from the former shifted-header decode.
 - JPEG, TGA, HDR, PNG, TIFF, and EXR reader reloads clear previous active
   images, publish dimensions only after success, and check pixel coordinates.
-  EXR data errors now return failure with an inactive image; FLOAT range and
-  offset data windows remain supported.
+  EXR data errors now return failure with an inactive image. RGB and plain
+  luminance Y/YA retain FLOAT range and offset windows; YC/YCA uses the SDK's
+  historical half-precision chroma reconstruction. Legacy HDR RLE accepts
+  chained multibyte repeat counts, including zero low-order bytes.
   Template thumbnail caches are reused only when their bytes match the
   generated default PNG. Partial or foreign entries are regenerated, and
   failed writes return no usable texture path. Failed initial PNG encoding

@@ -254,7 +254,7 @@ stop-on-error and straight-alpha conversion remain unchanged. HDR keeps
 its established RLE and orientation rules. PNG keeps its transforms and
 scanline/interlace loop without introducing automatic C++ objects across
 libpng's longjmp boundary. EXR decodes transactionally into reusable owned
-storage, checks widened window extents and a 2 GiB decoded RGBA-float budget,
+storage, checks widened window extents and a 2 GiB owned-pixel budget,
 uses the SDK's `Slice::Make` for offset addressing, and returns diagnosed
 failure on data errors. FLOAT values above half range and missing-channel
 fill remain covered. HDR/PNG/TIFF now also retain height for coordinate
@@ -281,6 +281,43 @@ mismatch. Three trials of eight concurrent image-suite copies passed all
 177 checks per copy and left no owned scratch directories. Multi-GiB sparse
 fixtures remain skipped on this host after the filesystem allocation probe;
 Windows/Android gates remain outside this host continuation.
+
+
+### Valid-format closure after `f70cbc550`
+
+The sixth fresh review round found no P1 and two confirmed format-coverage
+P2s. RGB-only FLOAT EXR slices silently produced black for luminance and
+chroma files, and legacy HDR RLE treated chained count bytes independently.
+Both are corrected with regressions that fail normally against the immutable
+prior library archive.
+
+EXR preserves the [SDK channel-selection and reconstruction rules](https://openexr.com/en/latest/ReadingAndWritingImageFiles.html):
+plain Y/YA takes precedence over RGB, reads luminance as FLOAT and replicates
+it to RGB; any RY/BY channel selects the SDK's historical half-precision
+YC/YCA reconstruction, including subsampling filters and chromaticities.
+RGB and plain Y/YA retain FLOAT values above 65,504. YC/YCA retains the
+historical half range and precision. The 2 GiB budget covers combined owned
+FLOAT/half pixel storage, including retained capacity; the SDK's internal
+scratch allocations are additional. Independent FLOAT Y/YA fixtures cover
+range, alpha and offset windows, and SDK-authored subsampled YC/YCA fixtures
+compare every decoded pixel against the SDK result.
+
+HDR legacy repeat packets now follow the [reference Radiance decoder](https://raw.githubusercontent.com/LBNL-ETA/Radiance/master/src/common/color.c):
+successive count bytes contribute little-endian base-256 digits, including
+zero low-order digits, and a literal resets the digit shift. Checked shifts,
+row bounds and packet reads reject oversized, over-shifted and truncated
+chains. New-RLE zero-length packets remain invalid. Regressions cover 256
+and 257 repeats, a literal reset, zero before a literal and malformed chains.
+
+At `ca6b63a84`, all 15 selected executables passed, including 188 image
+checks and 480 exact corpus matches. Six ASan/UBSan suites passed with
+container checks enabled. Clean make, Xcode Deployment/Opto and Blender LTO
+builds were warning-free (excluding the expected AppIntents notice). CLI
+write-failure and independent TGA checks also passed. Three further trials
+of eight concurrent image-suite copies passed and removed their scratch
+roots. The earlier immutable-archive run failed eight new valid-format
+assertions normally; the malformed-chain guards remained green. Sparse-file
+skips and excluded native Windows/Android verification remain unchanged.
 
 
 ### Host measurements and decisions
