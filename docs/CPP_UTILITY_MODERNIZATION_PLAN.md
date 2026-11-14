@@ -24,11 +24,11 @@ requirements are recorded in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 | Finding | Disposition |
 | --- | --- |
-| 1. 3DS metadata and empty meshes | Accept older/missing version chunks, skip empty meshes, and stop outer metadata scanning after the first complete mesh section. Consumed mesh bounds and indices remain checked. The old version gate actually inspected an arbitrary byte at offset 28. |
-| 2. Outputs beyond 4 GiB | Disk cursors, sizes, seeks and photon availability checks use 64 bits through an optional `IBuffer64` interface. Existing `IBuffer` virtual signatures remain intact and narrow disk queries saturate. Sparse fixtures cover writes, packet reads across the boundary, normal Job loads, and codec offsets. Photon saves require staging. |
+| 1. 3DS metadata and empty meshes | Accept older/missing version chunks, skip empty meshes, and preserve discovered meshes when later metadata scanning fails, including within truncated `EDIT3DS` containers. Consumed mesh bounds and indices remain checked. The old version gate inspected a fixed-offset byte at 28, normally the low byte of the mesh-version payload, without locating its chunk. |
+| 2. Outputs beyond 4 GiB | Disk cursors, sizes, seeks and photon availability checks use 64 bits through an optional `IBuffer64` interface. Existing `IBuffer` virtual signatures remain intact and narrow disk queries saturate. On sparse-capable scratch filesystems, guarded fixtures cover writes, packet reads across the boundary, normal Job loads, and codec offsets. Photon saves require staging. |
 | 3. Spectral and piecewise tables | Both consume leading finite columns and tolerate extra columns. File headers/malformed rows are skipped with warnings. Inline rows need two values. NUL, empty results, I/O failure and unequal spectral counts fail. |
-| 4. Console input | Token-boundary comments are supported, including `render # comment`. Malformed numeric arguments, incomplete render rectangles and unknown media-path commands remain diagnosed hard errors. |
-| 5. Restricted staging parents | Image output explicitly permits direct writes when staging is unavailable or a dangling symlink can be opened. Failed direct image writes may leave partial output. Photon saves retain staging-required failure safety. |
+| 4. Console input | Commands support standalone trailing `#` comments and leading full-line comments, including `render # comment`; raw tokenizers and options preserve hashes. Malformed numeric arguments, incomplete render rectangles and unknown media-path commands remain diagnosed hard errors. |
+| 5. Restricted staging parents | Render output, viewport Save As and thumbnails explicitly permit direct writes on staging/rename permission failures or through dangling symlinks. Other staging errors fail. Rename fallback copies completed bytes without re-encoding. Failed direct image writes may leave partial output. Photon saves retain staging-required failure safety. |
 | 6. Damaged TIFF strips | A compressed-strip fixture confirms partial decoding reports success with an opaque-black row. Strict rejection is retained and tested. |
 | 7. Windows path encoding | Existence checks use the native narrow path constructor shared with CRT/stream opens. Native Windows non-ASCII verification is still required. |
 | 8. Memory tracking | The scoped disk-writer construction shared by staged saves and image fallback registers its allocation with `PrintNew`. |
@@ -50,7 +50,7 @@ scoped writer ownership, TIFF metadata/scanline/directory failures propagate,
 and EXR finalization checks a latched stream error after OpenEXR closes its
 output. These failures preserve staged destinations and release references.
 
-Follow-up verification passed 13 focused executables, including 480 exact
+At checkpoint `3c37cb0f7`, follow-up verification passed 13 focused executables, including 480 exact
 corpus matches, all four photon families, 119 buffer checks, and 131 encoder
 checks. Clean make, Xcode Deployment and Opto builds, and the Blender native
 LTO link passed without compiler warnings. Xcode's expected AppIntents
@@ -66,6 +66,54 @@ The second fresh source round reported zero P1 findings and one fixture
 isolation P2, which was fixed. Native Windows execution of the non-ASCII
 path case remains outstanding because this workspace provides macOS and
 has no Windows runtime or MSVC toolchain.
+
+
+### Second-pass compatibility follow-up
+
+The user's second pass found an incomplete 3DS metadata-tail fix and image
+callers that still required staging. The current follow-up makes these
+additional decisions explicit:
+
+- Retain discovered 3DS meshes across malformed `EDIT3DS` metadata tails;
+  corrupt consumed geometry still fails. JPEG's decoder limit is `INT_MAX`
+  bytes and this 3DS loader's limit is `UINT_MAX`; larger inputs receive an
+  explicit error before payload reads instead of using saturated sizes.
+- All staged image publication callers opt into permission-only direct fallback.
+  A denied final rename copies already encoded bytes once. Photon saves
+  retain required staging and preserve old files on publication failure.
+- Image conversion and viewport `SaveTo` catch codec failures and release
+  temporary references. Resize conversion explicitly finalizes its writer.
+  The public write-only image also releases failed writers safely; callers
+  can finalize with `DumpImage(nullptr)` to receive an exception, while its
+  destructor logs failures.
+- Raw tokenizers and options retain hashes. Command parsing alone strips
+  full-line comments or a standalone trailing `#`. Missing and comma-form
+  inline control points remain errors: the old unchecked parser supplied
+  zero amplitude. Cylindrical UV axes remain lowercase `x`, `y`, or `z`.
+- Table errors identify missing files, read failures, or embedded NULs with
+  filename and physical line, including spectral `file/nmfile/ampfile`.
+- Large-file test sections first probe sparse allocation with a 1 MiB hole
+  on the fixture filesystem, and skip those sections if unsupported.
+  A parent owns each buffer/photon test's scratch directory and cleans it
+  after child exit or crash. Killing both processes can still leave scratch
+  files, as with other externally interrupted tests.
+
+
+Second-pass host validation passed 15 focused executables: 135 buffer checks,
+93 photon checks, 172 CST/command checks, 131 frame-encoder checks, 89 viewport
+checks, 438 template checks, and 480 exact corpus matches with zero drift,
+plus the image, output, source-hygiene, spectral and mesh suites. The large
+file sections explicitly skipped because the scratch filesystem's 1 MiB
+probe allocated the entire gap. Seven targeted ASan/UBSan executables passed.
+The new 3DS, rename-fallback, hash, diagnostic, and writer-lifetime regressions
+were observed failing normally against their previous implementations before
+passing with the fixes. A parent-cleanup probe removed a killed child's
+fixtures, including a read-only nested directory. Four CLI fault probes
+reached TIFF/EXR finalization (normal and resized), diagnosed write failure,
+and returned exit 1 without termination. Clean make, Xcode Deployment/Opto,
+and Blender native LTO builds passed without compiler warnings; only the
+expected Xcode AppIntents metadata notices were discounted. Native Windows
+verification remains outstanding.
 
 
 ### Host measurements and decisions
