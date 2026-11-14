@@ -19,8 +19,10 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <fcntl.h>
 #ifdef _WIN32
 #include <process.h>
+#include <io.h>
 #else
 #include <unistd.h>
 #endif
@@ -238,9 +240,17 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	const bool replacing = fs::exists( previous );
 	if( replacing ) {
 		if( !fs::is_regular_file( previous ) ) return false;
-		FILE* probe = fopen( target.string().c_str(), "r+b" );
-		if( !probe ) return false;
-		fclose( probe );
+		// Probe write access without requiring read permission or changing bytes.
+		// An existing-only descriptor also avoids creating a target if it vanishes.
+#ifdef _WIN32
+		const int probe = ::_open(target.string().c_str(), _O_WRONLY | _O_BINARY | _O_NOINHERIT);
+		if( probe < 0 ) return false;
+		if( ::_close(probe) != 0 ) return false;
+#else
+		const int probe = ::open(target.string().c_str(), O_WRONLY | O_CLOEXEC);
+		if( probe < 0 ) return false;
+		if( ::close(probe) != 0 ) return false;
+#endif
 	}
 	error.clear();
 	fs::path directory;

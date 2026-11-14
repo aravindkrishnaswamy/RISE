@@ -954,6 +954,35 @@ static void TestStagedOutputFallback()
 		return true;
 	}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace) && !invokedForBadParent,
 		"non-permission staging failures do not invoke the encoder" );
+	fs::permissions(path, fs::perms::owner_write);
+	FILE* readProbe = std::fopen(path.string().c_str(), "rb");
+	if( !readProbe ) {
+		for( const bool restrictedParent : { false, true } ) {
+			if( restrictedParent && !restricted ) continue;
+			for( const auto policy : { DiskFileWriteBuffer::StagingPolicy::Required,
+				DiskFileWriteBuffer::StagingPolicy::AllowInPlace } ) {
+				fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write);
+				std::ofstream(path) << "before write-only";
+				fs::permissions(path, fs::perms::owner_write);
+				if( restrictedParent ) fs::permissions(root, fs::perms::owner_read | fs::perms::owner_exec);
+				unsigned int calls = 0;
+				const bool saved = DiskFileWriteBuffer::WriteAtomically(path.string(), [&]( DiskFileWriteBuffer& buffer ) {
+					++calls;
+					return buffer.setBytes("write-only", 10);
+				}, policy);
+				fs::permissions(root, fs::perms::owner_all);
+				fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write);
+				const bool expected = !restrictedParent || policy == DiskFileWriteBuffer::StagingPolicy::AllowInPlace;
+				Check( saved == expected && calls == (expected ? 1U : 0U) &&
+					read(path) == (expected ? "write-only" : "before write-only"),
+					"write-only target compatibility preserves the staging policy without requiring read permission" );
+			}
+		}
+	} else {
+		std::fclose(readProbe);
+		std::cout << "SKIP: process can read a write-only target" << std::endl;
+	}
+	fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write);
 	const auto target = root / "created.bin";
 	const auto link = root / "broken-link.bin";
 	fs::create_symlink( target.filename(), link );
