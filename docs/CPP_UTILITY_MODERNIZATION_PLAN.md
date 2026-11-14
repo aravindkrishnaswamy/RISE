@@ -5,8 +5,8 @@
 ## Implementation checkpoint
 
 Compatibility tables summarize current behavior. Later follow-up sections are
-chronological checkpoints; the third-pass section supersedes earlier cache
-and image-publication details.
+chronological checkpoints; the latest third-pass review section supersedes
+earlier cache and image-publication details.
 
 - The local series covers spectral assignment and lookup, scene and asset records, scripts and descriptor ownership, buffer and codec failures, file output paths, Halton storage, and unused utilities. The later commits move manager and options lookups to owned keys with borrowed probes, use a monotonic clock for elapsed timing, normalize media roots, fix intrusive reference locking, and scope procedural scratch and hair file ownership.
 - Halton sample and migration outputs matched byte for byte. The TIFF reader correction changes one scene digest, `cc_tiff_painter.RISEscene`. Its golden entry was refreshed after independent TIFF decoding checks. The legacy expression evaluator moved to the migration tool. Valid comparison fixtures produce identical output, malformed expressions remain unexpanded, and nesting is bounded.
@@ -32,7 +32,7 @@ requirements are recorded in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 | 2. Outputs beyond 4 GiB | Disk cursors, sizes, seeks and photon availability checks use 64 bits through an optional `IBuffer64` interface. Existing `IBuffer` virtual signatures remain intact and narrow disk queries saturate. On sparse-capable scratch filesystems, guarded fixtures cover writes, packet reads across the boundary, normal Job loads, and codec offsets. Photon saves require staging. |
 | 3. Spectral and piecewise tables | Both consume leading finite columns and tolerate extra columns. File headers/malformed rows are skipped with warnings. Inline rows need two values. NUL, empty results, I/O failure and unequal spectral counts fail. |
 | 4. Console input | Commands support standalone trailing `#` comments and leading full-line comments, including `render # comment`; raw tokenizers and options preserve hashes. Malformed numeric arguments, incomplete render rectangles and unknown media-path commands remain diagnosed hard errors. |
-| 5. Restricted staging parents | Render output and viewport Save As preserve existing destination identity by copying completed staged bytes in place. New destinations use rename; eligible permission/EBUSY publication failures copy the completed stage. Denied staging creation/open or a dangling output symlink permits direct encoding. Failed copying retains the complete stage for recovery; direct encoding can leave partial output. Thumbnails use separate validated no-follow cache handles. Photon saves require staging and atomic replacement. |
+| 5. Restricted staging parents | Render output and viewport Save As preserve existing destination identity by copying completed staged bytes in place. New destinations use rename; eligible permission/EBUSY publication failures copy the completed stage. Denied or unsafe staging parents, denied staging opens, or a dangling output symlink permit direct encoding. Failed copying retains the complete stage for recovery; direct encoding can leave partial output. Thumbnails use separate validated no-follow cache handles. Photon saves require staging and atomic replacement. |
 | 6. Damaged TIFF strips | A compressed-strip fixture confirms partial decoding reports success with an opaque-black row. Strict rejection is retained and tested. |
 | 7. Windows path encoding | Existence checks use the native narrow path constructor shared with CRT/stream opens. Native Windows non-ASCII verification is still required. |
 | 8. Memory tracking | The scoped disk-writer construction shared by staged saves and image fallback registers its allocation with `PrintNew`. |
@@ -389,6 +389,75 @@ this unprivileged host; no claim of a native ownership-change test is made.
 Sparse multi-GiB fixtures and native Windows/Android execution remain
 excluded as previously recorded. Windows project/test linker lists include
 Advapi32; the tool project XML was parsed locally.
+
+
+### Fresh review of the third-pass changes
+
+The first independent round on `f33987880` found three P1s and three P2s.
+The filesystem findings were directory substitution through nonsticky
+writable parents and inherited macOS ACL grants overriding mode-bit privacy.
+The third P1 was a stale editor-only Voronoi border requirement and comment,
+which still rejected zero-argument nodes despite the parser accepting the
+default. The P2s covered relative temporary roots, EXR embedded-stream
+coordinates and stb's acceptance of physically truncated JPEG tails.
+
+The POSIX staging policy now checks canonical parent ancestry before any
+automatic directory is created: owners must be the effective user or root;
+foreign-writable directories must be sticky. On macOS it conservatively
+rejects extended ALLOW ACL entries, including benign owner-only grants,
+while retaining deny-only ACLs. This follows the [ACL model in Apple's filesystem documentation](https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/FileSystemDetails/FileSystemDetails.html):
+mode bits alone do not describe all access. No caller ACL is rewritten.
+`Required` fails with a diagnosed cause before invoking the encoder in an
+unsafe location. `AllowInPlace` opens the explicit user-authored destination
+and directly encodes once. This preserves legacy image writes there but
+has no completed stage for recovery. Required photon saves need trusted
+ancestry; a private child under an unsafe nonsticky ancestor is insufficient.
+Native Windows parent/DACL enforcement remains outside the excluded native
+Windows gate. The policy assumes trusted owners do not deliberately remove
+the security boundary during an operation.
+
+Cache roots use the same ancestry boundary and are canonical absolute paths.
+Unsafe roots are refused; existing cache directories and files also reject
+macOS ALLOW ACLs before repair. Deny-only ACLs and trusted sticky temp roots
+remain usable. Tests preserve and restore fixture ACLs, verify no automatic
+cache/stage is created under unsafe roots/ancestors, and check real inherited
+everyone grants on this macOS host. Relative `TMPDIR` results remain usable
+after changing directory. The obsolete Voronoi requirements and related GUI
+notes are removed; both 2D/3D nodes are built, derived and looked up without
+caller arguments.
+
+EXR input/output wrappers now have explicit stream origins; default origin
+zero preserves direct-wrapper callers. Readers use their saved construction
+cursor in both FLOAT and chroma paths. Writers establish blob-relative
+coordinates for each `BeginWrite`. Embedded reader reloads cover RGB and
+YC/YCA, and independent SDK checks decode isolated HALF/FLOAT writer blobs.
+
+JPEG preflight requires bounded segment/entropy-marker framing from SOI
+through EOI before calling stb. It handles progressive scans, restart/fill
+markers, stuffed bytes, DNL and trailing data. Physical truncation now fails
+with cleared state and healthy recovery. Independent tiny progressive and
+restart-coded fixtures compare decoded pixels. This is not a second JPEG
+entropy decoder: stb's best-effort interpretation of damaged entropy inside
+a structurally closed stream remains a deliberate compatibility choice.
+
+The `b351e8b9b` gate passed all 15 selected executables, with 165
+buffer/output, 234 image and 482 template checks, 192 source-hygiene
+checks and 480 exact corpus matches. Clean make, Xcode Deployment/Opto and
+Blender native LTO builds were warning-free except the expected AppIntents
+notice. Six ASan/UBSan suites passed with container checks enabled, plus the
+four CLI finalization-failure probes and independent TGA checks. The image
+binary also passed from an unrelated directory without a media-path variable,
+and 24 concurrent copies passed with complete scratch cleanup.
+
+Source-isolated RED runs against the preceding implementations failed
+normally: 10 template assertions (ancestry/ACL/absolute-path/Voronoi), six
+staging-parent/ACL assertions and eight EXR-prefix/JPEG-tail assertions.
+Corrected runs pass. The positive independent EXR writer, progressive JPEG
+and restart-marker checks preserve valid-format coverage; they are not
+claimed as individual RED regressions. macOS inherited ALLOW and deny-only
+ACL fixtures were executed on this host and restored afterward. The earlier
+sparse-file and privileged foreign-owner skips, and native Windows/Android
+verification exclusions, remain explicit limitations.
 
 
 ### Host measurements and decisions

@@ -20,14 +20,18 @@ source assets with the corrected build.
 - Disk buffers retain 64-bit size, cursor, and seek state. Photon-map saves
   stage their output and preserve the previous file on serialization or
   publication failure. Legacy 32-bit buffer queries saturate at `UINT_MAX`.
-  Render output and viewport Save As permit direct encoding after denied
-  staging creation/open or through dangling output symlinks. Existing image files receive completed
+  Render output and viewport Save As permit direct encoding after denied or
+  unsafe staging parents/opens, or through dangling output symlinks. Existing image files receive completed
   staged bytes in place to preserve inode, hardlinks, ownership, ACLs and
   extended attributes; new paths use rename, with completed-stage copying
   on eligible permission/EBUSY failures. Publication failure retains the
   complete staged image for recovery and logs its path and cause. POSIX
   staging directories are private from creation; staging leaves are created
-  exclusively rather than following pre-existing entries.
+  exclusively rather than following pre-existing entries. POSIX staging
+  checks canonical ancestry: root/current-user ownership, sticky protection
+  where foreign write is allowed, and no extended ALLOW ACLs on macOS.
+  Unsafe ancestry fails required photon staging before encoding; image
+  outputs can write directly there. Caller ACLs are not modified.
   Existing output files need write access; read permission is not required.
   Required photon saves keep atomic replacement and may change file identity
   and metadata. Residual staging paths are reported when cleanup is denied.
@@ -62,12 +66,17 @@ source assets with the corrected build.
   images, publish dimensions only after success, and check pixel coordinates.
   EXR data errors, including swallowed final-chunk short reads, return failure
   with an inactive image. PNG/JPEG reloads restore their construction cursor.
+  EXR embedded streams use offsets relative to their header. JPEG requires
+  complete marker framing through EOI; stb still handles entropy decoding
+  with its existing tolerance for damaged data in a closed stream.
   EXR RGB and plain luminance Y/YA retain FLOAT range and offset windows; YC/YCA uses the SDK's
   historical half-precision chroma reconstruction. Legacy HDR RLE accepts
   chained multibyte repeat counts, including zero low-order bytes.
   Template thumbnail writes validate opened handles and refuse symlinks,
   hardlinks and foreign-owned entries. POSIX uses a private per-user cache
-  directory and ignores the legacy shared cache name. Caches are reused only
+  directory and ignores the legacy shared cache name. Canonical ancestry and
+  macOS ACLs are validated; unsafe temp roots are refused. Returned paths
+  are absolute, including with relative `TMPDIR`. Caches are reused only
   when their bytes match the generated default PNG. Corrupt owned entries
   are regenerated; foreign-owned entries are refused, and
   failed writes return no usable texture path. Failed initial PNG encoding
@@ -81,10 +90,13 @@ source assets with the corrected build.
 - Media existence checks use the native narrow filename convention shared
   with the existing CRT and stream opens. Native Windows verification of
   non-ASCII paths remains outstanding.
+  Windows static-library consumers must link Advapi32 for cache owner checks;
+  the repository projects include this dependency.
 - `mediapath add` in scripts registers the authored path. Cylindrical object
   UV modification reads its size from the correct argument and requires a
   lowercase `x`, `y`, or `z` axis; other axes formerly produced degenerate UVs.
-  Voronoi 2D and 3D painters accept the default `border none`. These corrections can change
+  Voronoi 2D and 3D painters accept the default `border none`; editor nodes
+  can also be created without supplying a border. These corrections can change
   file resolution, UV mapping, and derived scene contents in existing scripts.
 - Concrete implementation types changed layout during this series.
   Clients constructing or subclassing them need rebuilding; this includes
