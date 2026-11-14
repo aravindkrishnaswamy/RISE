@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -23,6 +24,7 @@ static int g_failures = 0;
 static void Check( const bool ok, const std::string& what )
 {
 	++g_checks;
+	if( ok && std::getenv("RISE_RED_PROVE_MARKER") ) std::cout << "PASS: " << what << std::endl;
 	if( !ok ) {
 		++g_failures;
 		std::cout << "  FAIL: " << what << std::endl;
@@ -30,6 +32,96 @@ static void Check( const bool ok, const std::string& what )
 }
 
 namespace {
+
+void TestOutputBufferSizing()
+{
+	// Arithmetic-only large cases: never allocate these images.
+	if( sizeof(size_t) > sizeof(uint32_t) ) {
+		const auto boundary = checked_rgba_storage<float>( 32768, 32768 );
+		Check( boundary.values == (std::uint64_t{1} << 32) &&
+			boundary.bytes == (std::uint64_t{1} << 34),
+			"BlenderBufferSize: 32768 squared RGBA storage does not wrap its channel count" );
+		const auto larger = checked_rgba_storage<float>( 65535, 65535 );
+		const auto preview = checked_rgba_storage<unsigned short>( 65535, 65535 );
+		constexpr std::uint64_t values = 65535ULL * 65535ULL * 4ULL;
+		const size_t last = rgba_value_offset( 65534, 65534, 65535 );
+		Check( larger.values == values && preview.values == values &&
+			last == values - 4 && last > std::numeric_limits<uint32_t>::max(),
+			"BlenderBufferSize: final and preview indices preserve offsets above UINT_MAX" );
+	} else {
+		bool rejected = false;
+		try { checked_rgba_storage<float>( 32768, 32768 ); }
+		catch( const std::length_error& ) { rejected = true; }
+		Check( rejected, "BlenderBufferSize: 32-bit hosts reject unrepresentable storage" );
+	}
+	bool rejected = false;
+	try { checked_rgba_storage<float>( UINT32_MAX, UINT32_MAX ); }
+	catch( const std::length_error& ) { rejected = true; }
+	Check( rejected, "BlenderBufferSize: native byte/container overflow is rejected before allocation" );
+	Check( !valid_image_region(2, 2, 1, 0, 0, 1) && !valid_image_region(2, 2, 0, 1, 1, 0) &&
+		!valid_image_region(2, 2, 0, 0, 2, 1) && !valid_image_region(2, 2, 0, 0, 1, 2),
+		"BlenderBufferSize: inverted and out-of-bounds rectangles are rejected" );
+
+	struct Preview
+	{
+		std::vector<unsigned short> pixels;
+		unsigned int calls = 0;
+		bool dimensions = false;
+	} preview;
+	const auto capture = []( void* user, const unsigned short* pixels,
+		uint32_t width, uint32_t height, uint32_t fullWidth, uint32_t fullHeight,
+		uint32_t top, uint32_t left ) -> int {
+		auto& observed = *static_cast<Preview*>( user );
+		++observed.calls;
+		observed.dimensions = width == 1 && height == 2 && fullWidth == 2 && fullHeight == 2 &&
+			top == 0 && left == 1;
+		const auto layout = checked_rgba_storage<unsigned short>( width, height );
+		observed.pixels.assign( pixels, pixels + layout.values );
+		return 1;
+	};
+	MemoryRasterizerOutput output( capture, &preview );
+	const unsigned short image16[16] = {
+		0, 0, 0, 65535, 100, 200, 300, 400,
+		0, 0, 0, 65535, 500, 600, 700, 800
+	};
+	output.OutputImageRGBA16( image16, 2, 2, 0, 1, 1, 1 );
+	rise_blender_render_result result{};
+	const bool copied16 = output.CopyToResult( result );
+	Check( copied16 && result.width == 2 && result.height == 2 &&
+		result.rgba[4] == float(100) / 65535.0f && result.rgba[15] == float(800) / 65535.0f &&
+		preview.calls == 1 && preview.dimensions && preview.pixels ==
+			std::vector<unsigned short>({100, 200, 300, 400, 500, 600, 700, 800}),
+		"BlenderBufferSize: legacy receiver and packed preview preserve rectangle channels" );
+	rise_blender_free_render_result( &result );
+	const float image32[16] = {
+		0, 0, 0, 1, -1, 0.25f, 2, 1,
+		0, 0, 0, 1, 0.5f, 0.75f, 0.125f, 0.5f
+	};
+	output.OutputImageRGBA32F( image32, 2, 2, 0, 1, 1, 1 );
+	const bool copied32 = output.CopyToResult( result );
+	Check( copied32 && result.rgba[4] == -1 && result.rgba[6] == 2 && result.rgba[15] == 0.5f &&
+		preview.calls == 2 && preview.dimensions && preview.pixels ==
+			std::vector<unsigned short>({0, 16384, 65535, 65535, 32768, 49151, 8192, 32768}),
+		"BlenderBufferSize: float receiver retains HDR while preview clamps and packs its region" );
+	rise_blender_free_render_result( &result );
+	float nonfinite[16];
+	std::memcpy( nonfinite, image32, sizeof(nonfinite) );
+	const std::uint32_t nonfiniteBits[] = { 0x7fc00001U, 0x7f800000U, 0xff800000U };
+	std::memcpy( nonfinite + 4, nonfiniteBits, sizeof(nonfiniteBits) );
+	output.OutputImageRGBA32F( nonfinite, 2, 2, 0, 1, 1, 1 );
+	const bool copiedNonfinite = output.CopyToResult( result );
+	Check( copiedNonfinite && std::memcmp(result.rgba + 4, nonfiniteBits, sizeof(nonfiniteBits)) == 0 &&
+		preview.calls == 3 && preview.pixels ==
+			std::vector<unsigned short>({0, 65535, 0, 65535, 32768, 49151, 8192, 32768}),
+		"BlenderBufferSize: preview bounds NaN and infinities while final float samples retain their bits" );
+	rise_blender_free_render_result( &result );
+	output.OutputImageRGBA32F( image32, 2, 2, 0, 0, UINT32_MAX, UINT32_MAX );
+	output.OutputImageRGBA16( image16, 2, 2, 1, 1, 0, 0 );
+	Check( preview.calls == 3 && output.CopyToResult(result) &&
+		std::memcmp(result.rgba + 4, nonfiniteBits, sizeof(nonfiniteBits)) == 0,
+		"BlenderBufferSize: invalid receiver rectangles neither invoke preview nor corrupt the image" );
+	rise_blender_free_render_result( &result );
+}
 
 //! Row-major (Blender mathutils convention) identity + translation,
 //! matching `blender_matrix_to_rise_matrix`'s own documented layout.
@@ -454,16 +546,20 @@ void TestConstantAlphaPrecision() {
     job->release();
 }
 
-int main()
+int main( int argc, char** argv )
 {
 	std::cout << "=== Blender bridge Alpha test (DL-193) ===" << std::endl;
 
-	TestConstantAlphaPrecision();
-	TestAbiVersionAndAlphaFields();
-	TestOpaqueMaterialUnaffected();
-	TestAlphaCutoutUnderPixelPel();
-	TestAlphaCutoutUnderPT();
-	TestAlphaCutoutUnderBDPT();
+	TestOutputBufferSizing();
+	const bool bufferOnly = argc == 2 && std::strcmp(argv[1], "--buffer-only") == 0;
+	if( !bufferOnly ) {
+		TestConstantAlphaPrecision();
+		TestAbiVersionAndAlphaFields();
+		TestOpaqueMaterialUnaffected();
+		TestAlphaCutoutUnderPixelPel();
+		TestAlphaCutoutUnderPT();
+		TestAlphaCutoutUnderBDPT();
+	}
 
 	std::cout << "----------------------------------------" << std::endl;
 	std::cout << "checks: " << g_checks << "   failures: " << g_failures << std::endl;
