@@ -460,6 +460,38 @@ sparse-file and privileged foreign-owner skips, and native Windows/Android
 verification exclusions, remain explicit limitations.
 
 
+### Publication file-type availability follow-up
+
+Two reviewers in the next round reported no P1/P2 findings. A remaining
+availability check identified blocking opens after an earlier regular-file
+path check: a destination changed to a FIFO could block the write probe or
+completed-stage copying. The helper now opens destinations nonblocking on
+POSIX without truncation, validates the actual opened descriptor as regular,
+then truncates that same descriptor. Probes validate their opened descriptor
+too. A private open policy keeps the public constructor's historical direct
+stream/device semantics unchanged. The Windows branch uses its corresponding
+64-bit descriptor status/truncation APIs; native execution remains excluded.
+
+The bounded child regression changes a destination to a FIFO during encoding,
+with and without a reader. It observes a prompt diagnosed failure, one encoder
+invocation, unchanged FIFO identity/no written bytes and complete retained
+staging output. A child watchdog converts the preceding implementation's
+blocking behavior into an ordinary parent test failure. Both new assertions
+fail against the preceding library; the corrected targeted buffer suite passes
+169 checks. An independent control verifies public direct FIFO writes still
+work. No syscall-interposition harness is needed for this regression.
+
+The final availability gate passed all 15 selected executables (169 buffer,
+234 image, 482 template checks; 480 exact corpus matches), six targeted
+ASan/UBSan suites with container checks, and clean make, Xcode
+Deployment/Opto and Blender LTO builds without compiler warnings except the
+expected AppIntents notice. CLI TIFF/EXR finalization failures and independent
+TGA checks passed again. The previous cache/decoder concurrency and
+unrelated-working-directory checks remain recorded above; those sources
+are unchanged by this availability fix. Windows 64-bit CRT type spelling was
+checked against the official API reference; native execution remains pending.
+
+
 ### Host measurements and decisions
 
 - A 50,000-scalar append probe reduced backing allocations from 50,000 to 28, with identical logical size, cursor and checksum. Four warm host trials measured 75.33 ± 3.26 ms for exact-growth storage and 0.2245 ± 0.0065 ms for geometric capacity. These are append-probe measurements. A sanitizer differential review also exercised 192,000 buffer operations against a shadow model.

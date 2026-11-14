@@ -33,6 +33,9 @@ source assets with the corrected build.
   Unsafe ancestry fails required photon staging before encoding; image
   outputs can write directly there. Caller ACLs are not modified.
   Existing output files need write access; read permission is not required.
+  Atomic-helper opens validate the opened regular file before truncating;
+  a concurrent FIFO replacement cannot block POSIX publication. Direct
+  buffer construction retains its previous stream/device behavior.
   Required photon saves keep atomic replacement and may change file identity
   and metadata. Residual staging paths are reported when cleanup is denied.
   Other staging errors remain failures. In-place copying or direct encoding
