@@ -174,7 +174,8 @@ namespace RISE
 		//! scene-authored relative path would depend on RISE_MEDIA_PATH
 		//! being configured, which a general-purpose template must not
 		//! assume).  Idempotent within a process: writes once, reuses
-		//! the file on repeat calls (checks for existence first).
+		//! the file on repeat calls only when its bytes match the default
+		//! PNG. Incomplete or foreign cache entries are regenerated.
 		//! Returns an absolute path, or an empty string on write
 		//! failure (disk full, unwritable temp dir, etc.).
 		static std::string EnsureDefaultTextureFile();

@@ -24,6 +24,8 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <algorithm>
+#include <array>
 
 namespace RISE
 {
@@ -1124,31 +1126,50 @@ std::string EntityTemplates::EnsureDefaultTextureFile()
 	if( dir.back() != '/' && dir.back() != '\\' ) dir += '/';
 	const std::string path = dir + "rise_entity_template_default_texture.png";
 
-	// Idempotent: reuse an existing file from a prior call in this
-	// (or an earlier) process rather than rewriting every time.
-	const auto isCached = [&path] {
-		std::error_code error;
-		return std::filesystem::is_regular_file( path, error ) &&
-			std::filesystem::file_size( path, error ) > 0 && !error;
-	};
-	if( isCached() ) return path;
+	// Encode the known thumbnail once. Cache validation compares only this
+	// bounded payload, so partial or unrelated files are never reused.
+	static const std::vector<unsigned char> encoded = [] {
+		const auto release = []( const IReference* reference ) { reference->release(); };
+		IRasterImage* rawImage = nullptr;
+		RISE_API_CreateRISEColorRasterImage( &rawImage, 4, 4, RISEColor( RISEPel( 0.6, 0.6, 0.6 ), 1.0 ) );
+		std::unique_ptr<IRasterImage, decltype(release)> image( rawImage, release );
+		IMemoryBuffer* rawBuffer = nullptr;
+		RISE_API_CreateMemoryBuffer( &rawBuffer );
+		std::unique_ptr<IMemoryBuffer, decltype(release)> buffer( rawBuffer, release );
+		if( !image || !buffer ) return std::vector<unsigned char>{};
+		IRasterImageWriter* rawWriter = nullptr;
+		RISE_API_CreatePNGWriter( &rawWriter, *buffer, 8, eColorSpace_Rec709RGB_Linear );
+		std::unique_ptr<IRasterImageWriter, decltype(release)> writer( rawWriter, release );
+		if( !writer ) return std::vector<unsigned char>{};
+		image->DumpImage( writer.get() );
+		// PNGWriter's void API can report allocation/write failure by
+		// returning early; a complete PNG must contain its final IEND chunk.
+		constexpr std::array<unsigned char, 12> endChunk = {
+			0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xae, 0x42, 0x60, 0x82
+		};
+		const unsigned int size = buffer->getCurPos();
+		const auto* bytes = reinterpret_cast<const unsigned char*>( buffer->Pointer() );
+		if( size < endChunk.size() ||
+			!std::equal( endChunk.begin(), endChunk.end(), bytes + size - endChunk.size() ) )
+			return std::vector<unsigned char>{};
+		return std::vector<unsigned char>( bytes, bytes + size );
+	}();
+	if( encoded.empty() ) return std::string();
 
-	IRasterImage* img = nullptr;
-	if( !RISE_API_CreateRISEColorRasterImage( &img, 4, 4, RISEColor( RISEPel( 0.6, 0.6, 0.6 ), 1.0 ) ) || !img )
-		return std::string();
+	std::error_code error;
+	if( std::filesystem::is_regular_file( path, error ) && !error &&
+		std::filesystem::file_size( path, error ) == encoded.size() && !error ) {
+		std::ifstream input( path, std::ios::binary );
+		std::vector<unsigned char> actual( encoded.size() );
+		input.read( reinterpret_cast<char*>( actual.data() ), static_cast<std::streamsize>( actual.size() ) );
+		if( input && actual == encoded && input.peek() == std::char_traits<char>::eof() && !input.bad() ) return path;
+	}
 
-	const auto release = []( const IReference* reference ) { reference->release(); };
-	std::unique_ptr<IRasterImage, decltype(release)> image( img, release );
 	const bool written = Implementation::DiskFileWriteBuffer::WriteAtomically( path,
-		[img, release]( Implementation::DiskFileWriteBuffer& buffer ) {
-			IRasterImageWriter* writer = nullptr;
-			if( !RISE_API_CreatePNGWriter( &writer, buffer, 8, eColorSpace_Rec709RGB_Linear ) || !writer )
-				return false;
-			std::unique_ptr<IRasterImageWriter, decltype(release)> ownedWriter( writer, release );
-			img->DumpImage( writer );
-			return true;
+		[]( Implementation::DiskFileWriteBuffer& buffer ) {
+			return buffer.setBytes( encoded.data(), static_cast<unsigned int>( encoded.size() ) );
 		}, Implementation::DiskFileWriteBuffer::StagingPolicy::AllowInPlace );
-	return written || isCached() ? path : std::string();
+	return written ? path : std::string();
 
 }
 

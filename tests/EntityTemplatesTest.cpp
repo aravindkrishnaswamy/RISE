@@ -38,6 +38,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
+#include <iterator>
+
+#ifndef _WIN32
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <csignal>
+#include <unistd.h>
+#endif
 #include <string>
 #include <vector>
 
@@ -52,6 +61,7 @@
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/SceneEditor/EntityTemplates.h"
 #include "../src/Library/SceneEditor/CstIntrospection.h"
 #include "../src/Library/SceneEditor/ReferenceGraph.h"
 #include "../src/Library/Parsers/ChunkParserRegistry.h"
@@ -69,6 +79,125 @@ namespace
 	{
 		if( c ) { ++g_pass; std::printf( "  ok  : %s\n", what.c_str() ); }
 		else    { ++g_fail; std::printf( "  FAIL: %s\n", what.c_str() ); }
+	}
+
+	void TestDefaultTextureCacheIntegrity()
+	{
+#ifndef NO_PNG_SUPPORT
+		namespace fs = std::filesystem;
+		const fs::path scratch = RISE::TestSupport::ScratchTestRoot( "rise_entity_texture_" );
+		fs::create_directories( scratch );
+		struct RestoreScratch
+		{
+			fs::path path;
+			bool hadTmp = std::getenv( "TMPDIR" ) != nullptr;
+			std::string previousTmp = hadTmp ? std::getenv( "TMPDIR" ) : "";
+			~RestoreScratch()
+			{
+#ifdef _WIN32
+				_putenv_s( "TMPDIR", hadTmp ? previousTmp.c_str() : "" );
+#else
+				if( hadTmp ) setenv( "TMPDIR", previousTmp.c_str(), 1 );
+				else unsetenv( "TMPDIR" );
+#endif
+				std::error_code ignored;
+				fs::permissions( path, fs::perms::owner_all, ignored );
+				fs::remove_all( path, ignored );
+			}
+		} restore{ scratch };
+#ifdef _WIN32
+		const bool changedTmp = _putenv_s( "TMPDIR", scratch.string().c_str() ) == 0;
+#else
+		const bool changedTmp = setenv( "TMPDIR", scratch.string().c_str(), 1 ) == 0;
+#endif
+		Check( changedTmp, "thumbnail cache: isolated temporary directory installed" );
+		if( !changedTmp ) return;
+		const fs::path target = scratch / "rise_entity_template_default_texture.png";
+		const auto readBytes = [&target] {
+			std::ifstream input( target, std::ios::binary );
+			return std::vector<char>( std::istreambuf_iterator<char>( input ), std::istreambuf_iterator<char>() );
+		};
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string(),
+			"thumbnail cache: initial default texture generated" );
+		const auto complete = readBytes();
+		Check( complete.size() > 16 && static_cast<unsigned char>(complete.front()) == 0x89,
+			"thumbnail cache: generated payload has a PNG signature and exceeds the failure limit" );
+		if( complete.size() <= 16 ) return;
+		const auto completePermissions = fs::status(target).permissions();
+		fs::permissions(target, fs::perms::owner_read);
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+			"thumbnail cache: complete read-only PNG is reused without rewriting" );
+		fs::permissions(target, completePermissions);
+
+		{
+			std::ofstream truncated( target, std::ios::binary | std::ios::trunc );
+			truncated.write( complete.data(), 16 );
+		}
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+			"thumbnail cache: truncated nonempty cache is replaced with the complete default PNG" );
+		// Equal-length foreign contents must also be rejected. This includes
+		// unsigned PNG signature bytes, avoiding signed-char comparison bugs.
+		{
+			auto foreign = complete;
+			foreign.back() ^= 1;
+			std::ofstream changed( target, std::ios::binary | std::ios::trunc );
+			changed.write( foreign.data(), static_cast<std::streamsize>( foreign.size() ) );
+		}
+		Check( EntityTemplates::EnsureDefaultTextureFile() == target.string() && readBytes() == complete,
+			"thumbnail cache: equal-length foreign contents are replaced" );
+#ifndef _WIN32
+		// Run the write limit in a child so logger streams and process-wide
+		// signal/rlimit state cannot affect the remaining test suite.
+		{ std::ofstream empty( target, std::ios::binary | std::ios::trunc ); }
+		const auto originalPermissions = fs::status( scratch ).permissions();
+		fs::permissions( scratch, fs::perms::owner_read | fs::perms::owner_exec );
+		std::error_code permissionError;
+		const fs::path probe = scratch / "permission_probe";
+		const bool createdProbe = fs::create_directory( probe, permissionError );
+		if( permissionError == std::errc::permission_denied ) {
+			std::fflush( nullptr );
+			const pid_t child = fork();
+			if( child == 0 ) {
+				struct rlimit previousLimit{};
+				struct sigaction previousSignal{};
+				struct sigaction ignoredSignal{};
+				ignoredSignal.sa_handler = SIG_IGN;
+				sigemptyset( &ignoredSignal.sa_mask );
+				if( getrlimit( RLIMIT_FSIZE, &previousLimit ) != 0 ||
+					sigaction( SIGXFSZ, &ignoredSignal, &previousSignal ) != 0 ) _exit( 64 );
+				struct rlimit limited = previousLimit;
+				limited.rlim_cur = 16;
+				if( setrlimit( RLIMIT_FSIZE, &limited ) != 0 ) {
+					sigaction( SIGXFSZ, &previousSignal, nullptr );
+					_exit( 64 );
+				}
+				const bool refused = EntityTemplates::EnsureDefaultTextureFile().empty();
+				std::error_code sizeError;
+				const bool partial = fs::file_size( target, sizeError ) == 16 && !sizeError;
+				const bool restored = setrlimit( RLIMIT_FSIZE, &previousLimit ) == 0 &&
+					sigaction( SIGXFSZ, &previousSignal, nullptr ) == 0;
+				if( !restored ) _exit( 64 );
+				const bool recovered = EntityTemplates::EnsureDefaultTextureFile() == target.string() &&
+					readBytes() == complete;
+				_exit( (refused ? 0 : 1) | (partial ? 0 : 2) | (recovered ? 0 : 4) );
+			}
+			int status = 0;
+			const bool joined = child > 0 && waitpid( child, &status, 0 ) == child && WIFEXITED( status );
+			const int result = joined ? WEXITSTATUS( status ) : 64;
+			Check( joined && result < 64, "thumbnail cache: limited-write fixture completes normally" );
+			Check( result < 64 && (result & 1) == 0,
+				"thumbnail cache: failed in-place write returns no usable texture path" );
+			Check( result < 64 && (result & 2) == 0,
+				"thumbnail cache: failure fixture leaves a nonempty truncated PNG" );
+			Check( result < 64 && (result & 4) == 0,
+				"thumbnail cache: restored write limit regenerates the complete PNG" );
+		} else {
+			std::printf( "SKIP: thumbnail cache read-only directory permissions are not enforced\n" );
+		}
+		fs::permissions( scratch, originalPermissions );
+		if( createdProbe ) fs::remove( probe );
+#endif
+#endif
 	}
 
 	// Minimal base scene: film + camera + rasterizer (so LoadAsciiSceneViaCst
@@ -1252,9 +1381,10 @@ namespace
 	}
 }   // anonymous namespace
 
-int main()
+static int RunTests()
 {
 	std::printf( "=== EntityTemplatesTest ===\n" );
+	TestDefaultTextureCacheIntegrity();
 	TestAllTemplatesInstantiate();
 	TestObjectBootstrapMaterial();
 	TestDuplicateRoundTrip();
@@ -1272,4 +1402,9 @@ int main()
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
+}
+
+int main()
+{
+	return RISE::TestSupport::WithOwnedScratch( RunTests );
 }
