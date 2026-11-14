@@ -26,6 +26,7 @@ using namespace RISE::Implementation;
 
 PNGReader::PNGReader( IReadBuffer& buffer, const COLOR_SPACE color_space_ ) :
   pReadBuffer( buffer ),
+  buffer_start_pos( BufferPosition(buffer) ),
   pBuffer( 0 ),
   bufW( 0 ),
   bufH( 0 ),
@@ -69,7 +70,9 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 {
 	EndRead();
 	width = height = 0;
-	if( BufferBytesAvailable( pReadBuffer ) == 0 ) {
+	if( buffer_start_pos > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+		!BufferSeek(pReadBuffer, IBuffer::START, static_cast<std::int64_t>(buffer_start_pos)) ||
+		BufferBytesAvailable( pReadBuffer ) == 0 ) {
 		GlobalLog()->PrintSourceError( "PNGReader::BeginRead:: Passed empty buffer to read from", __FILE__, __LINE__ );
 		return false;
 	}

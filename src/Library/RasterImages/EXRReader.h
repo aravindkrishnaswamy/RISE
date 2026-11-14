@@ -43,6 +43,7 @@ namespace RISE
 		{
 		protected:
 			IReadBuffer& pBuffer;
+			bool failed = false;
 
 		public:
 			IStreamWrapper( IReadBuffer& buffer ) : Imf::IStream( "none" ), pBuffer( buffer )
@@ -50,10 +51,16 @@ namespace RISE
 
 			bool read( char c[/*n*/], int n )
 			{
-				if( n < 0 || !pBuffer.getBytes( c, static_cast<unsigned int>(n) ) )
+				if( n < 0 || !pBuffer.getBytes( c, static_cast<unsigned int>(n) ) ) {
+					failed = true;
 					throw std::runtime_error("EXR input read failed");
-				return true;
+				}
+				return BufferBytesAvailable(pBuffer) != 0;
 			}
+
+			// OpenEXR can catch a final uncompressed-chunk read exception and
+			// still return normally. Keep that failure visible to the decoder.
+			bool Failed() const { return failed; }
 
 			uint64_t tellg()
 			{
@@ -63,8 +70,10 @@ namespace RISE
 			void seekg( uint64_t pos )
 			{
 				if( pos > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
-					!BufferSeek(pBuffer, IBuffer::START, static_cast<std::int64_t>(pos)) )
+					!BufferSeek(pBuffer, IBuffer::START, static_cast<std::int64_t>(pos)) ) {
+					failed = true;
 					throw std::runtime_error("EXR input seek failed");
+				}
 			}
 		};
 	#endif

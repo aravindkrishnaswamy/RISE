@@ -51,9 +51,9 @@ bool TGAReader::BeginRead( unsigned int& width, unsigned int& height )
 	}
 	const auto descriptor = header[17];
 	const auto alphaBits = descriptor & 15;
-	if( header[1] != 0 || header[2] != 2 || header[16] != 32 ||
+	if( header[1] > 1 || header[2] != 2 || header[16] != 32 ||
 		(alphaBits != 0 && alphaBits != 8) || (descriptor & 0xc0) != 0 ) {
-		GlobalLog()->PrintEasyError( "TGAReader: Only uncompressed truecolor 32-bit TGAs with 0 or 8 alpha bits are supported; color maps, 24-bit pixels, RLE, and interleaving are unsupported" );
+		GlobalLog()->PrintEasyError( "TGAReader: Only uncompressed truecolor 32-bit TGAs with 0 or 8 alpha bits are supported; indexed images, 24-bit pixels, RLE, and interleaving are unsupported" );
 		return false;
 	}
 	const unsigned int imageWidth = DecodeLittleEndian<unsigned short, std::uint16_t>(header + 12);
@@ -64,12 +64,22 @@ bool TGAReader::BeginRead( unsigned int& width, unsigned int& height )
 		GlobalLog()->PrintEasyError( "TGAReader: Invalid or oversized image dimensions" );
 		return false;
 	}
-	const auto available = BufferBytesAvailable(pReadBuffer);
-	if( header[0] > available || byteCount > available - header[0] ) {
-		GlobalLog()->PrintEasyError( "TGAReader: Truncated image ID or pixels" );
+	// Truecolor images may carry an unused palette. Its declared storage
+	// still precedes the pixels, after the image ID; no palette lookup occurs.
+	const auto mapEntries = DecodeLittleEndian<unsigned short, std::uint16_t>(header + 5);
+	const auto mapDepth = header[7];
+	if( header[1] && mapEntries && mapDepth != 15 && mapDepth != 16 && mapDepth != 24 && mapDepth != 32 ) {
+		GlobalLog()->PrintEasyError("TGAReader: Unsupported unused color-map entry size");
 		return false;
 	}
-	if( !BufferSeek(pReadBuffer, IBuffer::CUR, header[0]) ) return false;
+	const std::uint64_t mapBytes = header[1] ? static_cast<std::uint64_t>(mapEntries) * ((mapDepth + 7u) / 8u) : 0;
+	const std::uint64_t metadataBytes = header[0] + mapBytes;
+	const auto available = BufferBytesAvailable(pReadBuffer);
+	if( metadataBytes > available || byteCount > available - metadataBytes ) {
+		GlobalLog()->PrintEasyError( "TGAReader: Truncated image ID, color map or pixels" );
+		return false;
+	}
+	if( !BufferSeek(pReadBuffer, IBuffer::CUR, static_cast<std::int64_t>(metadataBytes)) ) return false;
 	// Publish only after every row is read, so the temporary storage needs
 	// no initialization. Preserve the reader's recoverable allocation failure.
 	std::unique_ptr<unsigned char[]> pixels(new (std::nothrow) unsigned char[static_cast<size_t>(byteCount)]);

@@ -23,6 +23,7 @@
 #include <exception>
 #include "../Library/Utilities/RString.h"
 #include "../Library/Utilities/DiskFileWriteBuffer.h"
+#include "../Library/RasterImages/TGAWriter.h"
 #include <string.h>
 
 using namespace RISE;
@@ -168,6 +169,16 @@ static int Convert( int argc, char** argv )
 		reader->EndRead();
 		return 1;
 	}
+	// Decide whether the requested output can be represented before allocating
+	// the full source raster or opening (and truncating) the destination.
+	const unsigned int outputWidth = new_width ? new_width : width;
+	const unsigned int outputHeight = new_height ? new_height : height;
+	if( outputExtension == ".tga" ) Implementation::TGAWriter::ValidateDimensions(outputWidth, outputHeight);
+	if( outputWidth > std::numeric_limits<unsigned int>::max() / 8 / outputHeight ) {
+		reader->EndRead();
+		std::cerr << "Output image is too large\n";
+		return 1;
+	}
 
 	IRasterImage* pImage = nullptr;
 	RISE_API_CreateRISEColorRasterImage( &pImage, width, height, RISEColor() );
@@ -183,19 +194,6 @@ static int Convert( int argc, char** argv )
 	reader->EndRead();
 	ownedReader.reset();
 	inputBuffer.reset();
-	const unsigned int outputWidth = new_width ? new_width : width;
-	const unsigned int outputHeight = new_height ? new_height : height;
-	if( outputWidth > std::numeric_limits<unsigned int>::max() / 8 / outputHeight ) {
-		std::cerr << "Output image is too large\n";
-		return 1;
-	}
-
-	if( outputExtension == ".tga" &&
-		(outputWidth > std::numeric_limits<std::uint16_t>::max() ||
-		 outputHeight > std::numeric_limits<std::uint16_t>::max()) ) {
-		std::cerr << "TGA dimensions must be between 1 and 65535\n";
-		return 1;
-	}
 
 	IRasterImageWriter*			writer = 0;
 	

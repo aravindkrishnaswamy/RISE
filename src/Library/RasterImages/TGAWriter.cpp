@@ -44,14 +44,8 @@ TGAWriter::~TGAWriter( )
 	}
 }
 
-void TGAWriter::BeginWrite( const unsigned int width, const unsigned int height )
+void TGAWriter::ValidateDimensions( const unsigned int width, const unsigned int height )
 {
-	if( pBuffer ) {
-		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-		delete [] pBuffer;
-		pBuffer = nullptr;
-	}
-	bufW = bufH = 0;
 	if( !width || !height || width > std::numeric_limits<std::uint16_t>::max() ||
 		height > std::numeric_limits<std::uint16_t>::max() ) {
 		throw std::invalid_argument( "TGAWriter: Dimensions must be between 1 and 65535" );
@@ -61,6 +55,18 @@ void TGAWriter::BeginWrite( const unsigned int width, const unsigned int height 
 		width > (std::numeric_limits<size_t>::max() - headerSize) / 4 / height ) {
 		throw std::length_error( "TGAWriter: Image exceeds the output buffer size limit" );
 	}
+}
+
+void TGAWriter::BeginWrite( const unsigned int width, const unsigned int height )
+{
+	if( pBuffer ) {
+		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
+		delete [] pBuffer;
+		pBuffer = nullptr;
+	}
+	bufW = bufH = 0;
+	ValidateDimensions(width, height);
+	constexpr unsigned int headerSize = 18;
 	const auto bytes = static_cast<size_t>(width) * height * 4;
 	auto pixels = std::make_unique<unsigned char[]>( bytes );
 	const unsigned char header[headerSize] = {

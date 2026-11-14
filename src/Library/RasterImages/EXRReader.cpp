@@ -74,6 +74,7 @@ bool EXRReader::BeginRead( unsigned int& width, unsigned int& height )
 			IStreamWrapper inbuf( pReadBuffer );
 			Imf::InputFile in( inbuf );
 			const Imf::Header& hdr = in.header();
+			if( inbuf.Failed() ) throw std::runtime_error( "EXR incomplete header" );
 			dw = hdr.dataWindow();
 			const bool hasLuminance = hdr.channels().findChannel( "Y" ) != nullptr;
 			hasChroma = hdr.channels().findChannel( "RY" ) != nullptr ||
@@ -121,6 +122,7 @@ bool EXRReader::BeginRead( unsigned int& width, unsigned int& height )
 				fb.insert( "A", Imf::Slice::Make( Imf::FLOAT, pixels + 3u * sizeof(float), dw, xstride, ystride, 1, 1, 1.0 ) );
 				in.setFrameBuffer( fb );
 				in.readPixels( dw.min.y, dw.max.y );
+				if( inbuf.Failed() ) throw std::runtime_error( "EXR incomplete pixel data" );
 				if( hasLuminance ) {
 					for( std::size_t i = 0; i < floatCount; i += 4u )
 						decoded[i + 1u] = decoded[i + 2u] = decoded[i];
@@ -141,6 +143,7 @@ bool EXRReader::BeginRead( unsigned int& width, unsigned int& height )
 			// including chroma filtering, channel precedence and chromaticities.
 			in.setFrameBuffer( Imf::ComputeBasePointer( rgba.data(), dw ), 1, imageWidth );
 			in.readPixels( dw.min.y, dw.max.y );
+			if( inbuf.Failed() ) throw std::runtime_error( "EXR incomplete YCA pixel data" );
 			for( std::size_t i = 0; i < pixelCount; ++i ) {
 				decoded[i * 4u] = static_cast<float>( rgba[i].r );
 				decoded[i * 4u + 1u] = static_cast<float>( rgba[i].g );

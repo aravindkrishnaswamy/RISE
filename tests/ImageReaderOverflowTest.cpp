@@ -194,6 +194,14 @@ static void TestHDRWriterBounds()
 
 static void TestTGAWriterBounds()
 {
+	bool supportedBudget = true;
+	try { TGAWriter::ValidateDimensions(65535, 16384); }
+	catch( const std::exception& ) { supportedBudget = false; }
+	bool oversizedBudget = false;
+	try { TGAWriter::ValidateDimensions(65535, 16385); }
+	catch( const std::length_error& ) { oversizedBudget = true; }
+	Check(supportedBudget && oversizedBudget,
+		"TGA preflight checks the complete 32-bit output budget without allocating pixel storage");
 	auto rejectDimensions = []( unsigned int width, unsigned int height ) {
 		auto* buffer = new MemoryBuffer();
 		auto* writer = new TGAWriter( *buffer, eColorSpace_Rec709RGB_Linear );
@@ -316,23 +324,27 @@ static std::vector<char> ReadFileBytes( const std::string& path )
 	return std::vector<char>( (std::istreambuf_iterator<char>( f )), std::istreambuf_iterator<char>() );
 }
 
+static std::filesystem::path JPEGFixture()
+{
+#ifdef RISE_TEST_SOURCE_ROOT
+	const std::filesystem::path root(RISE_TEST_SOURCE_ROOT);
+#else
+	// Direct compiler invocations can provide an absolute source filename;
+	// repository builds supply the absolute root even with relative __FILE__.
+	const auto root = std::filesystem::path(__FILE__).parent_path().parent_path();
+	if( !root.is_absolute() ) throw std::runtime_error("ImageReaderOverflowTest requires RISE_TEST_SOURCE_ROOT or absolute __FILE__");
+#endif
+	return root / "scenes/Tests/Painters/textures/test_pattern.jpg";
+}
+
 static void TestJPEGReload()
 {
-	namespace fs = std::filesystem;
 	const auto sameColor = [](const RISEColor& a, const RISEColor& b) {
 		return a.base.r == b.base.r && a.base.g == b.base.g && a.base.b == b.base.b && a.a == b.a;
 	};
-	const fs::path relative = "scenes/Tests/Painters/textures/test_pattern.jpg";
-	fs::path fixture;
-	if( const char* media = std::getenv("RISE_MEDIA_PATH") ) {
-		if( fs::is_regular_file(fs::path(media) / relative) ) fixture = fs::path(media) / relative;
-	}
-	for( auto root = fs::current_path(); fixture.empty(); root = root.parent_path() ) {
-		if( fs::is_regular_file(root / relative) ) fixture = root / relative;
-		if( root == root.parent_path() ) break;
-	}
-	Check( !fixture.empty(), "JPEG reload: locate shipped JPEG fixture" );
-	if( fixture.empty() ) return;
+	const auto fixture = JPEGFixture();
+	Check( std::filesystem::is_regular_file(fixture), "JPEG reload: locate shipped JPEG fixture" );
+	if( !std::filesystem::is_regular_file(fixture) ) return;
 
 	auto* buffer = new MemoryBuffer( fixture.string().c_str() );
 	auto* reader = new JPEGReader( *buffer, eColorSpace_Rec709RGB_Linear );
@@ -345,7 +357,7 @@ static void TestJPEGReload()
 			for( unsigned int x = 0; x < width; ++x ) reader->ReadColor( expected[y*width+x], x, y );
 		}
 		for( unsigned int reload = 0; reload < 4; ++reload ) {
-			const bool reloaded = buffer->seek(IBuffer::START, 0) && reader->BeginRead(width, height);
+			const bool reloaded = reader->BeginRead(width, height);
 			bool identical = reloaded && width == 16 && height == 16;
 			if( identical ) {
 				for( unsigned int y = 0; y < height; ++y ) {
@@ -356,7 +368,7 @@ static void TestJPEGReload()
 					}
 				}
 			}
-			Check( identical, "JPEG reload: repeated rewind and decode preserves every pixel and dimensions" );
+			Check( identical, "JPEG reload: repeated BeginRead preserves every pixel and dimensions without caller rewind" );
 		}
 
 		Check( buffer->Resize(0, true), "JPEG reload: replace the source with an empty input" );
@@ -548,6 +560,23 @@ static void TestTGAFormat()
 		}
 	}
 	unsigned int width = 123, height = 456;
+	for( unsigned char mapDepth : {15, 16, 24, 32} ) {
+		auto mapped = MakeTGAHeader(1, 1, 32);
+		mapped[0] = 3; mapped[1] = 1; mapped[3] = 4; mapped[5] = 2; mapped[7] = mapDepth;
+		mapped[17] = 0x28;
+		for( unsigned char id : {'I','D','!'} ) AppendByte(mapped,id);
+		const unsigned int mapBytes = 2 * ((mapDepth + 7) / 8);
+		for( unsigned int i=0; i<mapBytes; ++i ) AppendByte(mapped,static_cast<unsigned char>(90+i));
+		for( unsigned char channel : {samples[0].b,samples[0].g,samples[0].r,samples[0].a} ) AppendByte(mapped,channel);
+		RISEColor actual,expected;
+		expected.SetFromIntegerized<Rec709RGBPel,unsigned char>(samples[0],255.0);
+		const bool decoded = RunTGA(mapped,width,height,&actual);
+		Check(decoded && width==1 && height==1 && sameColor(actual,expected),
+			"TGA reader: truecolor skips image ID and an unused color map without changing pixels");
+		mapped.resize(18+3+mapBytes-1);
+		Check(!RunTGA(mapped,width,height) && width==0 && height==0,
+			"TGA reader: truncated unused color map is rejected with empty dimensions");
+	}
 	for( size_t size : { size_t(17), size_t(20), valid.size() - 1 } ) {
 		auto truncated = valid;
 		truncated.resize(size);
@@ -557,7 +586,7 @@ static void TestTGAFormat()
 	for( unsigned int mode = 0; mode < 5; ++mode ) {
 		auto unsupported = valid;
 		if( mode == 0 ) unsupported[2] = 10; // RLE.
-		if( mode == 1 ) unsupported[1] = 1; // Color map.
+		if( mode == 1 ) unsupported[1] = 2; // Invalid color-map type.
 		if( mode == 2 ) unsupported[16] = 24;
 		if( mode == 3 ) unsupported[17] = 4; // Unsupported attribute depth.
 		if( mode == 4 ) unsupported[17] = 0x48; // Interleaved rows.
@@ -1075,16 +1104,7 @@ static void TestReaderFamilyReload()
 	auto hdr = MakeHDRHeader("-Y 2 +X 2\n");
 	for( int i=0; i<4; ++i ) for( unsigned char v : {128,64,32,129} ) AppendByte(hdr,v);
 	cases.push_back({"HDR", hdr, [](IReadBuffer& b) { IRasterImageReader* r=nullptr; RISE_API_CreateHDRReader(&r,b); return r; }});
-	std::filesystem::path jpeg;
-	const std::filesystem::path relative="scenes/Tests/Painters/textures/test_pattern.jpg";
-	if( const char* media=std::getenv("RISE_MEDIA_PATH") ) {
-		if( std::filesystem::is_regular_file(std::filesystem::path(media)/relative) ) jpeg=std::filesystem::path(media)/relative;
-	}
-	for( auto root=std::filesystem::current_path(); jpeg.empty(); root=root.parent_path() ) {
-		if( std::filesystem::is_regular_file(root/relative) ) jpeg=root/relative;
-		if( root==root.parent_path() ) break;
-	}
-	cases.push_back({"JPEG", jpeg.empty()?std::vector<char>{}:ReadFileBytes(jpeg.string()), [](IReadBuffer& b) { IRasterImageReader* r=nullptr; RISE_API_CreateJPEGReader(&r,b,eColorSpace_Rec709RGB_Linear); return r; }});
+	cases.push_back({"JPEG", ReadFileBytes(JPEGFixture().string()), [](IReadBuffer& b) { IRasterImageReader* r=nullptr; RISE_API_CreateJPEGReader(&r,b,eColorSpace_Rec709RGB_Linear); return r; }});
 #ifndef NO_PNG_SUPPORT
 	cases.push_back({"PNG", encoded("png"), [](IReadBuffer& b) { IRasterImageReader* r=nullptr; RISE_API_CreatePNGReader(&r,b,eColorSpace_Rec709RGB_Linear); return r; }});
 #endif
@@ -1103,20 +1123,31 @@ static void TestReaderFamilyReload()
 		const auto check = [&](bool ok,const char* suffix) { Check(ok,(std::string("reader family ")+item.name+": "+suffix).c_str()); };
 		check(!item.bytes.empty(), "valid fixture exists");
 		if( item.bytes.empty() ) { allReset=false; continue; }
-		auto* input = new MemoryBuffer(static_cast<unsigned int>(item.bytes.size()));
-		input->setBytes(item.bytes.data(),static_cast<unsigned int>(item.bytes.size())); input->seek(IBuffer::START,0);
+		// These blob formats start at the construction cursor. A prefix also
+		// catches accidental rewinds to byte zero and full-buffer JPEG slurps.
+		auto source = item.bytes;
+		const unsigned int start = std::strcmp(item.name,"PNG") == 0 || std::strcmp(item.name,"JPEG") == 0 ? 7 : 0;
+		source.insert(source.begin(), start, '!');
+		auto* input = new MemoryBuffer(static_cast<unsigned int>(source.size()));
+		input->setBytes(source.data(),static_cast<unsigned int>(source.size())); input->seek(IBuffer::START,start);
 		auto* reader = item.create(*input);
 		unsigned int width=0,height=0;
 		bool opened = reader && reader->BeginRead(width,height);
 		check(opened && width>=2 && height>=2, "initial decode has complete dimensions");
 		if( !opened ) { allReset=false; if(reader)reader->release();input->release();continue; }
 		const auto expectedWidth=width,expectedHeight=height;
-		RISEColor expected;reader->ReadColor(expected,0,0);
+		std::vector<RISEColor> expected(width*height);
+		for(unsigned int y=0;y<height;++y) for(unsigned int x=0;x<width;++x) reader->ReadColor(expected[y*width+x],x,y);
+		const auto pixelsMatch = [&]() {
+			bool match=width==expectedWidth && height==expectedHeight;
+			if(match) for(unsigned int y=0;y<height;++y) for(unsigned int x=0;x<width;++x) {
+				RISEColor pixel=poison;reader->ReadColor(pixel,x,y);match &= same(pixel,expected[y*width+x]);
+			}
+			return match;
+		};
 		for( int i=0; i<3; ++i ) {
-			input->seek(IBuffer::START,0);
 			const bool reloaded=reader->BeginRead(width,height);
-			RISEColor pixel=poison;if(reloaded)reader->ReadColor(pixel,0,0);
-			check(reloaded && width==expectedWidth && height==expectedHeight && same(pixel,expected), "repeated decode preserves pixels and dimensions");
+			check(reloaded && pixelsMatch(), "repeated BeginRead preserves every pixel without caller rewind");
 		}
 		check(input->Resize(0,true), "empty replacement input installed");
 		width=123;height=456;bool threw=false,failed=false;
@@ -1125,10 +1156,10 @@ static void TestReaderFamilyReload()
 		const bool reset=!threw && failed && width==0 && height==0 && same(stale,poison);
 		check(reset, "failed reload clears dimensions and previous pixels without throwing");
 		allReset &= reset;
-		input->Resize(static_cast<unsigned int>(item.bytes.size()),true);input->seek(IBuffer::START,0);
-		input->setBytes(item.bytes.data(),static_cast<unsigned int>(item.bytes.size()));input->seek(IBuffer::START,0);
+		input->Resize(static_cast<unsigned int>(source.size()),true);input->seek(IBuffer::START,0);
+		input->setBytes(source.data(),static_cast<unsigned int>(source.size()));
 		const bool recovered=reader->BeginRead(width,height);
-		check(recovered && width==expectedWidth && height==expectedHeight, "healthy input recovers after failed reload");
+		check(recovered && pixelsMatch(), "healthy input recovers every pixel after failed reload without caller rewind");
 		reader->EndRead();reader->EndRead();stale=poison;reader->ReadColor(stale,0,0);
 		check(same(stale,poison), "repeated EndRead leaves no active image");
 		reader->release();check(input->refcount()==1, "reader teardown releases its input");input->release();
@@ -1148,6 +1179,62 @@ static void TestReaderFamilyReload()
 }
 
 #ifndef NO_EXR_SUPPORT
+static void TestEXRTruncatedFinalChunk()
+{
+	const RISEColor poison(-1000,-2000,-3000,-4000);
+	const auto same=[](const RISEColor& a,const RISEColor& b) {
+		return a.base.r==b.base.r && a.base.g==b.base.g && a.base.b==b.base.b && a.a==b.a;
+	};
+	for( auto channels : {Imf::WRITE_RGBA,Imf::WRITE_Y,Imf::WRITE_YCA} ) {
+		auto* buffer=new MemoryBuffer();
+		std::vector<Imf::Rgba> pixels(16);
+		for(unsigned int i=0;i<16;++i) {
+			const float value=(i+1)/16.0f;
+			pixels[i]=Imf::Rgba(value,value,value,0.75f);
+		}
+		{
+			OStreamWrapper stream(*buffer);Imf::Header header(4,4);header.compression()=Imf::NO_COMPRESSION;
+			Imf::RgbaOutputFile output(stream,header,channels);
+			output.setFrameBuffer(pixels.data(),1,4);output.writePixels(4);
+		}
+		const std::vector<char> encoded(buffer->Pointer(),buffer->Pointer()+buffer->Size());
+		buffer->seek(IBuffer::START,0);
+		auto* reader=new EXRReader(*buffer,eColorSpace_Rec709RGB_Linear);
+		unsigned int width=0,height=0;
+		const bool opened=reader->BeginRead(width,height);
+		Check(opened && width==4 && height==4,"EXR final chunk: complete uncompressed input decodes");
+		std::vector<RISEColor> expected(16,poison);
+		if(opened) for(unsigned int i=0;i<16;++i) reader->ReadColor(expected[i],i%4,i/4);
+		for(unsigned int missing : {1,4}) {
+			buffer->Resize(static_cast<unsigned int>(encoded.size())-missing,true);
+			width=123;height=456;
+			const bool rejected=!reader->BeginRead(width,height);
+			RISEColor stale=poison;reader->ReadColor(stale,3,3);
+			Check(rejected && width==0 && height==0 && same(stale,poison),
+				"EXR final chunk: truncated uncompressed payload fails and clears previous pixels");
+			buffer->Resize(static_cast<unsigned int>(encoded.size()),true);buffer->seek(IBuffer::START,0);
+			buffer->setBytes(encoded.data(),static_cast<unsigned int>(encoded.size()));
+			bool recovered=reader->BeginRead(width,height) && width==4 && height==4;
+			if(recovered) for(unsigned int i=0;i<16;++i) {
+				RISEColor actual=poison;reader->ReadColor(actual,i%4,i/4);recovered &= same(actual,expected[i]);
+			}
+			Check(opened && recovered,"EXR final chunk: healthy replacement recovers every pixel without caller rewind");
+		}
+		reader->release();buffer->release();
+	}
+	// A full read ending exactly at EOF succeeds but returns false, as required
+	// by Imf::IStream; a later read past EOF must latch an actual failure.
+	char byte='x',actual=0;
+	auto* buffer=new MemoryBuffer(&byte,1,false);
+	IStreamWrapper stream(*buffer);
+	Check(!stream.read(&actual,1) && actual=='x' && !stream.Failed(),
+		"EXR stream: exact final-byte read reports EOF without a failure");
+	bool threw=false;
+	try { stream.read(&actual,1); } catch(const std::runtime_error&) { threw=true; }
+	Check(threw && stream.Failed(),"EXR stream: reading past EOF latches a persistent failure");
+	buffer->release();
+}
+
 static void TestEXRLuminance()
 {
 	const auto same = [](const RISEColor& actual,const RISEPel& expected,float alpha) {
@@ -1240,6 +1327,7 @@ static int RunTests()
 {
 	TestReaderFamilyReload();
 #ifndef NO_EXR_SUPPORT
+	TestEXRTruncatedFinalChunk();
 	TestEXROffsetWindow();
 	TestEXRLuminance();
 #endif

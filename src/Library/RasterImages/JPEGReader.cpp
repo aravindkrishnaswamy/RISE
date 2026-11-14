@@ -25,6 +25,7 @@ using namespace RISE::Implementation;
 
 JPEGReader::JPEGReader( IReadBuffer& buffer, const COLOR_SPACE color_space_ ) :
   pReadBuffer( buffer ),
+  buffer_start_pos( BufferPosition(buffer) ),
   pBuffer( 0 ),
   bufW( 0 ),
   bufH( 0 ),
@@ -44,7 +45,12 @@ bool JPEGReader::BeginRead( unsigned int& width, unsigned int& height )
 {
 	EndRead();
 	width = height = 0;
-	const auto sourceSize = BufferSize(pReadBuffer);
+	if( buffer_start_pos > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+		!BufferSeek(pReadBuffer, IBuffer::START, static_cast<std::int64_t>(buffer_start_pos)) ) {
+		GlobalLog()->PrintSourceError( "JPEGReader::BeginRead:: Input rewind failed", __FILE__, __LINE__ );
+		return false;
+	}
+	const auto sourceSize = BufferBytesAvailable(pReadBuffer);
 	if( sourceSize == 0 ) {
 		GlobalLog()->PrintSourceError( "JPEGReader::BeginRead:: Passed empty buffer to read from", __FILE__, __LINE__ );
 		return false;
