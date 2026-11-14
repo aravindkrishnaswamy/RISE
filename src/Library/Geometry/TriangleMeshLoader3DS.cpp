@@ -95,11 +95,13 @@ TriangleMeshLoader3DS::TriangleMeshLoader3DS( IReadBuffer* pBuffer_ ) :
 				break;
 			}
 		}
-		if( !terminated ) return;
+		if( !terminated ) continue; // The bounded object is unusable; its next sibling is still locatable.
 		if( child == start + 7 ) continue;  // dummy object with an empty name
 
 		for( unsigned int childEnd = 0; child < end; child = childEnd ) {
-			if( !ReadChunk( *pBuffer, child, end, id, childEnd ) ) return;
+			// The parent object end is known even when one child is malformed.
+			// Skip that object without losing later well-formed siblings.
+			if( !ReadChunk( *pBuffer, child, end, id, childEnd ) ) break;
 			if( id == OBJ_TRIMESH ) {
 				objptrs.push_back( child );
 				++nNumObjects;

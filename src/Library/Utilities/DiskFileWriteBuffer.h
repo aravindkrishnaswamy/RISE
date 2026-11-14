@@ -71,14 +71,26 @@ namespace RISE
 			// Close the output and report buffered write errors.
 			bool Finish( bool requireOutput = false );
 			enum class StagingPolicy { Required, AllowInPlace };
+			struct WriteDiagnostics {
+				std::string operation;
+				std::error_code error;
+				std::string recoveryPath;
+				std::string cleanupPath;
+				std::error_code cleanupError;
+			};
 			// Publish a completed, nonempty output beside the destination.
 			static bool WriteAtomically( const std::string& path,
 				const std::function<bool(DiskFileWriteBuffer&)>& write );
-			// AllowInPlace restores direct writes on staging creation/open or
-			// rename permission failures or when a dangling symlink can be opened through the CRT.
-			// A failed direct write may leave a partial destination.
+			// AllowInPlace copies completed staging bytes into existing files,
+			// preserving their inode, hardlinks and metadata. New files use rename.
+			// Permission-denied staging creation/open permits direct encoding.
+			// Failed in-place publication retains completed staging bytes for recovery;
+			// the destination may be partial. Required always publishes by rename.
 			static bool WriteAtomically( const std::string& path,
 				const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy );
+			static bool WriteAtomically( const std::string& path,
+				const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy,
+				WriteDiagnostics* diagnostics );
 
 
 		protected:
@@ -86,9 +98,10 @@ namespace RISE
 			virtual ~DiskFileWriteBuffer( );
 
 		private:
-			DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure );
+			DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, bool exclusiveCreate );
 			bool hasWritten = false;
 			bool writeFailed = false;
+			std::error_code writeError;
 			std::uint64_t logicalSize = 0;
 			std::uint64_t cursor = 0;
 		};

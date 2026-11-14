@@ -20,6 +20,7 @@
 #include <limits>
 #include <memory>
 #include <fcntl.h>
+#include <sys/stat.h>
 #ifdef _WIN32
 #include <process.h>
 #include <io.h>
@@ -38,20 +39,49 @@
 using namespace RISE::Implementation;
 
 DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name ) :
-	DiskFileWriteBuffer(file_name, nullptr)
+	DiskFileWriteBuffer(file_name, nullptr, false)
 {
 }
 
-DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure )
+DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, bool exclusiveCreate )
 {
 	if( openFailure ) openFailure->clear();
 	if( !file_name ) return;
 	filename = file_name;
-	hFile.reset( fopen( filename.c_str(), "wb" ) );
+	int openError = 0;
+	if( exclusiveCreate ) {
+		// The staging leaf must be newly created. Never truncate or follow an
+		// entry planted between directory creation and this open. POSIX uses a
+		// private directory and 0666 & ~umask to preserve new-output modes.
+#ifdef _WIN32
+		const int descriptor = ::_open(filename.c_str(),
+			_O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT, _S_IREAD | _S_IWRITE);
+		if( descriptor >= 0 ) {
+			hFile.reset(::_fdopen(descriptor, "wb"));
+			if( !hFile ) {
+				openError = errno;
+				::_close(descriptor);
+			}
+		} else openError = errno;
+#else
+		const int descriptor = ::open(filename.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);
+		if( descriptor >= 0 ) {
+			hFile.reset(::fdopen(descriptor, "wb"));
+			if( !hFile ) {
+				openError = errno;
+				::close(descriptor);
+			}
+		} else openError = errno;
+#endif
+	} else {
+		hFile.reset(fopen(filename.c_str(), "wb"));
+		if( !hFile ) openError = errno;
+	}
 
 	if( !hFile ) {
-		if( openFailure ) *openFailure = std::error_code(errno, std::generic_category());
-		GlobalLog()->PrintEx( eLog_Warning, "DiskFileWriteBuffer:: Failed to open file \'%s\'", file_name );
+		writeError = std::error_code(openError, std::generic_category());
+		if( openFailure ) *openFailure = writeError;
+		GlobalLog()->PrintEx( eLog_Warning, "DiskFileWriteBuffer:: Failed to open file '%s': %s", file_name, writeError.message().c_str() );
 	}
 }
 
@@ -118,13 +148,17 @@ bool DiskFileWriteBuffer::setBytes( const void* pSource, unsigned int amount )
 {
 	if( !pSource || !hFile || ferror( hFile.get() ) ) {
 		writeFailed = true;
+		if( !writeError ) writeError = std::make_error_code(!pSource ? std::errc::invalid_argument : std::errc::io_error);
 		return false;
 	}
 	if( amount > std::numeric_limits<std::uint64_t>::max() - cursor ) {
 		writeFailed = true;
+		writeError = std::make_error_code(std::errc::value_too_large);
 		return false;
 	}
+	errno = 0;
 	const size_t written = fwrite( pSource, 1, amount, hFile.get() );
+	if( written != amount && !writeError ) writeError = errno ? std::error_code(errno, std::generic_category()) : std::make_error_code(std::errc::io_error);
 	cursor += written;
 	logicalSize = std::max( logicalSize, cursor );
 	hasWritten |= written != 0;
@@ -149,13 +183,16 @@ bool DiskFileWriteBuffer::seek( eSeek type, int amount )
 
 bool DiskFileWriteBuffer::seek64( eSeek type, std::int64_t amount )
 {
+	errno = 0;
 	if( !DiskBuffer::seek64( type, amount ) ) {
 		writeFailed = true;
+		if( !writeError ) writeError = errno ? std::error_code(errno, std::generic_category()) : std::make_error_code(std::errc::io_error);
 		return false;
 	}
 	const auto position = DiskBuffer::getCurPos64();
 	if( position == std::numeric_limits<std::uint64_t>::max() ) {
 		writeFailed = true;
+		if( !writeError ) writeError = std::make_error_code(std::errc::value_too_large);
 		return false;
 	}
 	cursor = static_cast<std::uint64_t>(position);
@@ -188,12 +225,16 @@ bool DiskFileWriteBuffer::ReadyToWrite() const
 bool DiskFileWriteBuffer::Finish( bool requireOutput )
 {
 	if( !hFile ) {
+		if( !writeError ) writeError = std::make_error_code(std::errc::bad_file_descriptor);
 		return false;
 	}
 	const bool written = !writeFailed && !ferror( hFile.get() ) && (!requireOutput || hasWritten);
+	if( !written && !writeError ) writeError = std::make_error_code(std::errc::io_error);
+	errno = 0;
 	const bool closed = fclose( hFile.release() ) == 0;
+	if( !closed && !writeError ) writeError = errno ? std::error_code(errno, std::generic_category()) : std::make_error_code(std::errc::io_error);
 	if( !written || !closed ) {
-		GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Failed to write `%s`", filename.c_str() );
+		GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Failed to write '%s': %s", filename.c_str(), writeError.message().c_str() );
 		return false;
 	}
 	return true;
@@ -208,20 +249,47 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy )
 {
+	return WriteAtomically(path, write, policy, nullptr);
+}
+
+bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
+	const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy,
+	WriteDiagnostics* diagnostics )
+{
 	namespace fs = std::filesystem;
-	const auto writeFile = [&]( const fs::path& file, const std::function<bool(DiskFileWriteBuffer&)>& encode, std::error_code* openFailure = nullptr ) {
+	WriteDiagnostics result;
+	struct Report {
+		WriteDiagnostics& result;
+		WriteDiagnostics* destination;
+		~Report() { if( destination ) *destination = result; }
+	} report{ result, diagnostics };
+	const auto fail = [&]( const char* operation, const fs::path& file, std::error_code failure ) {
+		if( !failure ) failure = std::make_error_code(std::errc::io_error);
+		result.operation = operation;
+		result.error = failure;
+		GlobalLog()->PrintEx(eLog_Error, "DiskFileWriteBuffer:: %s '%s' failed: %s (%d)",
+			operation, file.string().c_str(), failure.message().c_str(), failure.value());
+		return false;
+	};
+	const auto writeFile = [&]( const fs::path& file, const std::function<bool(DiskFileWriteBuffer&)>& encode,
+		std::error_code* openFailure = nullptr, bool exclusiveCreate = false ) {
 		const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
 		std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer(
-			new DiskFileWriteBuffer( file.string().c_str(), openFailure ), release );
+			new DiskFileWriteBuffer( file.string().c_str(), openFailure, exclusiveCreate ), release );
 		GlobalLog()->PrintNew( buffer.get(), __FILE__, __LINE__, "disk file write buffer" );
-		if( !buffer->ReadyToWrite() ) return false;
+		if( !buffer->ReadyToWrite() ) return fail("open output", file, buffer->writeError);
 		bool encoded = false;
 		try {
 			encoded = encode( *buffer );
 		} catch( const std::exception& failure ) {
 			GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Encoding `%s` failed: %s", file.string().c_str(), failure.what() );
 		}
-		return buffer->Finish( true ) && encoded;
+		const bool finished = buffer->Finish( true );
+		if( !finished ) return fail("finish output", file, buffer->writeError);
+		if( !encoded ) return fail("encode output", file, std::make_error_code(std::errc::io_error));
+		result.operation.clear();
+		result.error.clear();
+		return true;
 	};
 	const auto permissionFailure = []( const std::error_code& failure ) {
 		return failure == std::errc::permission_denied || failure == std::errc::operation_not_permitted;
@@ -235,29 +303,30 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	fs::path target( path );
 	std::error_code error;
 	const auto link = fs::symlink_status( target, error );
-	if( error && error != std::errc::no_such_file_or_directory ) return false;
+	if( error && error != std::errc::no_such_file_or_directory ) return fail("inspect destination", target, error);
 	if( fs::is_symlink( link ) ) {
 		target = fs::canonical( target, error );
 		if( error ) {
-			return error == std::errc::no_such_file_or_directory &&
-				policy == StagingPolicy::AllowInPlace && writeFile( fs::path(path), write );
+			if( error == std::errc::no_such_file_or_directory && policy == StagingPolicy::AllowInPlace )
+				return writeFile(fs::path(path), write);
+			return fail("resolve destination symlink", path, error);
 		}
 	}
 	const auto previous = fs::status( target, error );
-	if( error && error != std::errc::no_such_file_or_directory ) return false;
+	if( error && error != std::errc::no_such_file_or_directory ) return fail("inspect destination", target, error);
 	const bool replacing = fs::exists( previous );
 	if( replacing ) {
-		if( !fs::is_regular_file( previous ) ) return false;
+		if( !fs::is_regular_file( previous ) ) return fail("inspect regular destination", target, std::make_error_code(std::errc::invalid_argument));
 		// Probe write access without requiring read permission or changing bytes.
 		// An existing-only descriptor also avoids creating a target if it vanishes.
 #ifdef _WIN32
 		const int probe = ::_open(target.string().c_str(), _O_WRONLY | _O_BINARY | _O_NOINHERIT);
-		if( probe < 0 ) return false;
-		if( ::_close(probe) != 0 ) return false;
+		if( probe < 0 ) return fail("probe destination write access", target, std::error_code(errno, std::generic_category()));
+		if( ::_close(probe) != 0 ) return fail("close destination probe", target, std::error_code(errno, std::generic_category()));
 #else
 		const int probe = ::open(target.string().c_str(), O_WRONLY | O_CLOEXEC);
-		if( probe < 0 ) return false;
-		if( ::close(probe) != 0 ) return false;
+		if( probe < 0 ) return fail("probe destination write access", target, std::error_code(errno, std::generic_category()));
+		if( ::close(probe) != 0 ) return fail("close destination probe", target, std::error_code(errno, std::generic_category()));
 #endif
 	}
 	error.clear();
@@ -265,53 +334,105 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	for( unsigned int attempt = 0; attempt < 16; ++attempt ) {
 		directory = target.parent_path() / (".rise-write-" + std::to_string( pid ) + "-" +
 			std::to_string( nextId.fetch_add( 1, std::memory_order_relaxed ) ));
-		if( fs::create_directory( directory, error ) ) break;
+#ifdef _WIN32
+		if( fs::create_directory(directory, error) ) break;
+#else
+		// Restrict access in the creation syscall: chmod afterward would leave
+		// a window in which a permissive umask exposes the staging leaf.
+		if( ::mkdir(directory.c_str(), 0700) == 0 ) {
+			error.clear();
+			break;
+		}
+		error = std::error_code(errno, std::generic_category());
+#endif
 		directory.clear();
 		if( error && error != std::errc::file_exists ) break;
 	}
-	if( directory.empty() ) return policy == StagingPolicy::AllowInPlace &&
-		permissionFailure(error) && writeFile( target, write );
+	if( directory.empty() ) {
+		if( policy == StagingPolicy::AllowInPlace && permissionFailure(error) ) return writeFile(target, write);
+		return fail("create staging directory", target.parent_path(), error ? error : std::make_error_code(std::errc::file_exists));
+	}
 
 	const fs::path staging = directory / "output";
 	struct Cleanup {
 		const fs::path& file;
 		const fs::path& directory;
+		WriteDiagnostics& result;
+		bool retain = false;
 		~Cleanup() {
-			std::error_code ignored;
-			fs::remove( file, ignored );
-			fs::remove( directory, ignored );
+			std::error_code error;
+			if( retain ) {
+				result.recoveryPath = fs::absolute(file, error).string();
+				if( error ) result.recoveryPath = file.string();
+				GlobalLog()->PrintEx(eLog_Error, "DiskFileWriteBuffer:: Completed output retained for recovery at '%s'", result.recoveryPath.c_str());
+				return;
+			}
+			fs::remove(file, error);
+			fs::path remaining = file;
+			if( !error ) {
+				fs::remove(directory, error);
+				remaining = directory;
+			}
+			if( error ) {
+				result.cleanupError = error;
+				std::error_code absoluteError;
+				result.cleanupPath = fs::absolute(remaining, absoluteError).string();
+				if( absoluteError ) result.cleanupPath = remaining.string();
+				GlobalLog()->PrintEx(eLog_Warning, "DiskFileWriteBuffer:: Could not remove staging path '%s': %s (%d)",
+					result.cleanupPath.c_str(), error.message().c_str(), error.value());
+			}
 		}
-	} cleanup{ staging, directory };
+	} cleanup{ staging, directory, result };
 	std::error_code stagingOpenFailure;
-	if( !writeFile( staging, write, &stagingOpenFailure ) ) {
+	if( !writeFile( staging, write, &stagingOpenFailure, true ) ) {
 		// No callback ran if opening the staging file failed. Permission-only
 		// fallback is safe here; encoding/flush failures must never replay it.
-		return policy == StagingPolicy::AllowInPlace && permissionFailure(stagingOpenFailure) &&
-			writeFile(target, write);
+		if( policy == StagingPolicy::AllowInPlace && permissionFailure(stagingOpenFailure) ) return writeFile(target, write);
+		return false;
 	}
-	if( replacing ) {
+	// Retain a complete encoded image if publication fails. Never replay the
+	// encoder after this point, including failure while closing an in-place copy.
+	cleanup.retain = true;
+	bool copyInPlace = replacing && policy == StagingPolicy::AllowInPlace;
+	if( replacing && !copyInPlace ) {
 		fs::permissions( staging, previous.permissions(), error );
-		if( error ) return false;
+		if( error ) return fail("set staging permissions", staging, error);
 	}
-	fs::rename( staging, target, error );
-	if( !error ) return true;
-	if( policy != StagingPolicy::AllowInPlace || !permissionFailure(error) ) return false;
+	if( !copyInPlace ) {
+		fs::rename(staging, target, error);
+		if( !error ) {
+			cleanup.retain = false;
+			return true;
+		}
+		copyInPlace = policy == StagingPolicy::AllowInPlace &&
+			(permissionFailure(error) || error == std::errc::device_or_resource_busy);
+		if( !copyInPlace ) return fail("rename staging output", target, error);
+	}
 
 	// The encoder has already succeeded. Copy its completed bytes rather than
 	// invoking a potentially stateful callback a second time.
-	// Our staging file may have inherited permissions belonging to another
-	// target owner. Make this private copy readable after rename has failed;
-	// keeping an open read handle during rename would deny deletion on Windows.
+	// In-place publication keeps hardlinks, owner, ACLs and xattrs attached to
+	// the existing inode, including writable files whose mount forbids rename.
 	fs::permissions(staging, fs::perms::owner_read, fs::perm_options::add, error);
-	if( error ) return false;
+	if( error ) return fail("make staged output readable", staging, error);
 	std::unique_ptr<FILE, decltype(&fclose)> input(fopen(staging.string().c_str(), "rb"), &fclose);
-	if( !input ) return false;
-	return writeFile( target, [&]( DiskFileWriteBuffer& output ) {
+	if( !input ) return fail("open staged output for copying", staging, std::error_code(errno, std::generic_category()));
+	std::error_code readFailure;
+	const bool copied = writeFile( target, [&]( DiskFileWriteBuffer& output ) {
 		unsigned char bytes[65536];
 		for( ;; ) {
+			errno = 0;
 			const auto count = fread(bytes, 1, sizeof(bytes), input.get());
+			if( ferror(input.get()) ) {
+				readFailure = errno ? std::error_code(errno, std::generic_category()) : std::make_error_code(std::errc::io_error);
+				return false;
+			}
 			if( count && !output.setBytes(bytes, static_cast<unsigned int>(count)) ) return false;
 			if( count != sizeof(bytes) ) return feof(input.get()) && !ferror(input.get());
 		}
 	} );
+	if( readFailure ) return fail("read staged output for copying", staging, readFailure);
+	if( !copied ) return false;
+	cleanup.retain = false;
+	return true;
 }

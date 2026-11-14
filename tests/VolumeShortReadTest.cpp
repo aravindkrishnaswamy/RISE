@@ -54,6 +54,14 @@
 #include <iterator>
 #include <stdexcept>
 #include <functional>
+#ifndef _WIN32
+#include <csignal>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#if defined(__APPLE__) || defined(__linux__)
+#include <sys/xattr.h>
+#endif
+#endif
 #ifndef NO_TIFF_SUPPORT
 #include <tiffio.h>
 #include "../src/Library/RasterImages/TIFFCommon.h"
@@ -684,6 +692,16 @@ static void Test3DSCompatibility()
 	Append3DSBytes( emptyWithoutFaces, Make3DSObject(false, false) );
 	Check3DSLoad( Make3DSChunk(0x4d4d, Make3DSChunk(0x3d3d, emptyWithoutFaces)), -1, true, 3 );
 	const auto edit = Make3DSChunk( 0x3d3d, Make3DSObject( false, false ) );
+	auto emptyMain = Make3DSChunk(0x4d4d, {});
+	Append3DSBytes(emptyMain, edit);
+	Check3DSLoad(emptyMain, -1, false, 0,
+		"3DS strict-prefix: MAIN end excludes physically present EDIT geometry");
+	Bytes3DS malformedMainPrefix;
+	Append3DSWord(malformedMainPrefix, 0xafff);
+	Append3DSUInt(malformedMainPrefix, 1);
+	Append3DSBytes(malformedMainPrefix, edit);
+	Check3DSLoad(Make3DSChunk(0x4d4d, malformedMainPrefix), -1, false, 0,
+		"3DS strict-prefix: malformed MAIN child does not resynchronize into later EDIT geometry");
 	auto truncatedTail = Make3DSChunk( 0x4d4d, edit );
 	truncatedTail[2] += 100;
 	Check3DSLoad( truncatedTail, -1, true, 3 );
@@ -724,6 +742,16 @@ static void Test3DSCompatibility()
 	Append3DSBytes( objectWithBadChild, badLength );
 	checkMetadataTail( Make3DSChunk(0x4000, objectWithBadChild), 0,
 		"3DS retained-prefix: malformed trailing object child" );
+
+	// The bad object's own length still locates its next sibling.
+	for(bool prefix : {false,true}) {
+		Bytes3DS objects;
+		if(prefix) Append3DSBytes(objects,Make3DSObject(false,false));
+		Append3DSBytes(objects,Make3DSChunk(0x4000,objectWithBadChild));
+		Append3DSBytes(objects,Make3DSObject(false,false));
+		Check3DSLoad(Make3DSChunk(0x4d4d,Make3DSChunk(0x3d3d,objects)),-1,true,prefix?6:3,
+			"3DS bounded bad object skips to later valid sibling");
+	}
 
 	// A discovered mesh remains subject to exact record-size validation. Keep
 	// container lengths correct while declaring more records than are present.
@@ -891,10 +919,13 @@ static void TestStagedOutputFallback()
 		return std::string( std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() );
 	};
 	std::ofstream( path ) << "original";
+	DiskFileWriteBuffer::WriteDiagnostics diagnostics;
 	Check( !DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer ) {
 		buffer.setBytes("partial", 7);
 		return buffer.setBytes(nullptr, 1);
-	}) && read(path) == "original", "failed staged write preserves the previous file" );
+	}, DiskFileWriteBuffer::StagingPolicy::Required, &diagnostics) && read(path) == "original" &&
+		diagnostics.error == std::errc::invalid_argument && diagnostics.operation == "finish output",
+		"failed staged write preserves the previous file and reports its cause" );
 	Check( !DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer ) -> bool {
 		buffer.setBytes("partial", 7);
 		throw std::runtime_error("encoder fixture failure");
@@ -907,6 +938,99 @@ static void TestStagedOutputFallback()
 		return buffer.setBytes("complete", 8);
 	}) && read(path) == "complete", "successful staged write replaces the file" );
 #ifndef _WIN32
+	for( const auto policy : { DiskFileWriteBuffer::StagingPolicy::Required,
+		DiskFileWriteBuffer::StagingPolicy::AllowInPlace } ) {
+		const auto newTarget = root / "private-stage-new-output.bin";
+		bool privateStaging = false;
+		bool saved = false;
+		{
+			struct RestoreMask { mode_t previous; ~RestoreMask() { ::umask(previous); } } mask{ ::umask(0) };
+			saved = DiskFileWriteBuffer::WriteAtomically(newTarget.string(), [&](DiskFileWriteBuffer& buffer) {
+				for( const auto& entry : fs::directory_iterator(root) ) {
+					if( entry.is_directory() && entry.path().filename().string().find(".rise-write-") == 0 ) {
+						const auto permissions = entry.status().permissions();
+						privateStaging = (permissions & fs::perms::owner_all) == fs::perms::owner_all &&
+							(permissions & (fs::perms::group_all | fs::perms::others_all)) == fs::perms::none;
+					}
+				}
+				return buffer.setBytes("private staging", 15);
+			}, policy);
+		}
+		struct stat published{};
+		Check(saved && privateStaging && read(newTarget) == "private staging" &&
+			::stat(newTarget.string().c_str(), &published) == 0 && (published.st_mode & 0777) == 0666,
+			"permissive umask keeps staging directory private and preserves new-output publication permissions");
+		fs::remove(newTarget);
+	}
+	const auto alias = root / "image-hardlink.bin";
+	fs::create_hard_link(path, alias);
+	struct stat beforeCopy{};
+	const bool hadIdentity = ::stat(path.string().c_str(), &beforeCopy) == 0;
+	const bool copied = DiskFileWriteBuffer::WriteAtomically(path.string(), []( DiskFileWriteBuffer& buffer) {
+		return buffer.setBytes("same inode", 10);
+	}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace);
+	struct stat afterCopy{};
+	Check(copied && hadIdentity && ::stat(path.string().c_str(), &afterCopy) == 0 &&
+		beforeCopy.st_ino == afterCopy.st_ino && beforeCopy.st_dev == afterCopy.st_dev &&
+		beforeCopy.st_uid == afterCopy.st_uid && beforeCopy.st_gid == afterCopy.st_gid &&
+		beforeCopy.st_mode == afterCopy.st_mode && read(alias) == "same inode" && read(path) == "same inode",
+		"in-place staged publication preserves inode ownership permissions and hardlinks");
+	fs::remove(alias);
+#if defined(__APPLE__) || defined(__linux__)
+	const char* attribute = "user.rise-publication-test";
+	const char attributeValue[] = "retained metadata";
+#ifdef __APPLE__
+	const bool attributeSet = ::setxattr(path.string().c_str(), attribute, attributeValue, sizeof(attributeValue), 0, 0) == 0;
+#else
+	const bool attributeSet = ::setxattr(path.string().c_str(), attribute, attributeValue, sizeof(attributeValue), 0) == 0;
+#endif
+	if( attributeSet ) {
+		const bool saved = DiskFileWriteBuffer::WriteAtomically(path.string(), [](DiskFileWriteBuffer& buffer) {
+			return buffer.setBytes("with metadata", 13);
+		}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace);
+		char restoredAttribute[sizeof(attributeValue)] = {};
+#ifdef __APPLE__
+		const auto count = ::getxattr(path.string().c_str(), attribute, restoredAttribute, sizeof(restoredAttribute), 0, 0);
+#else
+		const auto count = ::getxattr(path.string().c_str(), attribute, restoredAttribute, sizeof(restoredAttribute));
+#endif
+		Check(saved && count == static_cast<ssize_t>(sizeof(attributeValue)) &&
+			std::memcmp(attributeValue, restoredAttribute, sizeof(attributeValue)) == 0,
+			"in-place staged publication preserves extended attributes");
+	} else std::cout << "SKIP: scratch filesystem cannot store the publication xattr fixture" << std::endl;
+#endif
+	// A seek flushes the completed staging stream before arming the process
+	// size limit. Only the subsequent in-place copy encounters EFBIG. Running
+	// in a child isolates both the resource limit and SIGXFSZ disposition.
+	const pid_t child = ::fork();
+	if( child == 0 ) {
+		struct rlimit previousLimit{};
+		if( ::getrlimit(RLIMIT_FSIZE, &previousLimit) != 0 || previousLimit.rlim_cur < 131072 ) ::_exit(77);
+		std::signal(SIGXFSZ, SIG_IGN);
+		const std::string payload(131072, 'r');
+		unsigned int calls = 0;
+		bool armed = false;
+		DiskFileWriteBuffer::WriteDiagnostics failure;
+		const bool saved = DiskFileWriteBuffer::WriteAtomically(path.string(), [&](DiskFileWriteBuffer& buffer) {
+			++calls;
+			if( !buffer.setBytes(payload.data(), static_cast<unsigned int>(payload.size())) || !buffer.seek64(IBuffer::START, 0) ) return false;
+			struct rlimit copyLimit = previousLimit;
+			copyLimit.rlim_cur = 1024;
+			armed = ::setrlimit(RLIMIT_FSIZE, &copyLimit) == 0;
+			return armed;
+		}, DiskFileWriteBuffer::StagingPolicy::AllowInPlace, &failure);
+		const bool recovered = !saved && armed && calls == 1 && failure.error == std::errc::file_too_large &&
+			failure.operation == "finish output" && !failure.recoveryPath.empty() &&
+			read(failure.recoveryPath) == payload && fs::file_size(path) <= 1024;
+		::_exit(recovered ? 0 : 1);
+	}
+	int childStatus = 0;
+	const bool waited = child > 0 && ::waitpid(child, &childStatus, 0) == child;
+	if( waited && WIFEXITED(childStatus) && WEXITSTATUS(childStatus) == 77 )
+		std::cout << "SKIP: process file-size budget cannot construct the completed-stage fixture" << std::endl;
+	else Check(waited && WIFEXITED(childStatus) && WEXITSTATUS(childStatus) == 0,
+		"failed in-place copy reports EFBIG and retains complete staging bytes for recovery without re-encoding");
+	for( const auto& entry : fs::directory_iterator(root) ) if( entry.is_directory() ) fs::remove_all(entry.path());
 	fs::permissions( root, fs::perms::owner_read | fs::perms::owner_exec );
 	std::error_code permissionError;
 	const bool restricted = !fs::create_directory( root / "permission-probe", permissionError );
@@ -936,11 +1060,16 @@ static void TestStagedOutputFallback()
 				++calls;
 				fs::permissions(root, fs::perms::owner_read | fs::perms::owner_exec);
 				return buffer.setBytes("encoded once", 12);
-			}, policy);
+			}, policy, &diagnostics);
 			fs::permissions(root, fs::perms::owner_all);
 			const bool allow = policy == DiskFileWriteBuffer::StagingPolicy::AllowInPlace;
 			Check( saved == allow && calls == 1 && read(path) == (allow ? "encoded once" : "before rename"),
-				"rename permission fallback copies completed bytes and invokes encoder once" );
+				"restricted-parent publication copies completed image bytes and invokes encoder once" );
+			Check(allow ? (diagnostics.cleanupError == std::errc::permission_denied &&
+				!diagnostics.cleanupPath.empty() && fs::is_directory(diagnostics.cleanupPath)) :
+				(diagnostics.error == std::errc::permission_denied && diagnostics.operation == "rename staging output" &&
+				 !diagnostics.recoveryPath.empty() && read(diagnostics.recoveryPath) == "encoded once"),
+				"restricted-parent publication reports residual cleanup or recoverable staged output with cause and path");
 		}
 		// Cleanup may have been denied while the callback restricted the parent.
 		for( const auto& entry : fs::directory_iterator(root) ) {
