@@ -169,10 +169,14 @@ namespace RISE
 			//! IRasterizerOutput push API.  Asserts srcRect aligns
 			//! with the FrameStore's tile grid; the tile lock is
 			//! managed internally (BeginTile/EndTile bracketing
-			//! happen inside).
+			//! happen inside).  @a dstClip, when non-null, limits the
+			//! copy to destination pixels inside that INCLUSIVE rect;
+			//! the tile's other pixels keep their previous content
+			//! (the source is not read there).
 			void CopyTileFromRasterImage( size_t tileX, size_t tileY,
 			                              const IRasterImage& src,
-			                              const Rect& srcRect );
+			                              const Rect& srcRect,
+			                              const Rect* dstClip = nullptr );
 
 			//! Mark the current frame complete.  Bumps the global
 			//! generation counter and fires observers'

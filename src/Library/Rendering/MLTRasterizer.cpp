@@ -44,7 +44,10 @@
 //       fully-converged image.
 //
 //  SPLATTING MATH:
-//    Each splat is pre-weighted by invTotalMutations = 1/totalMutations.
+//    Each splat is pre-weighted by invTotalMutations = 1/performed, where
+//    performed = perChain * chains is the mutation count actually run
+//    (MLTMutationSchedule; it differs from the requested budget by fewer
+//    than `chains` mutations).
 //    After round r of R total rounds, the film contains approximately
 //    (r/R) of the final accumulated value.  To produce a correctly-
 //    exposed image at round r, we resolve with:
@@ -608,7 +611,8 @@ void MLTRasterizer::InitChain(
 //   The normalization constant b = b_mean * numPixels where b_mean
 //   is the average per-sample luminance from bootstrap.
 //   Each splat is weighted by invTotalMutations * b / luminance,
-//   where totalMutations is the FULL budget across ALL rounds.
+//   where the total is the PERFORMED mutation count across ALL rounds
+//   and chains (MLTMutationSchedule::performed).
 //   This ensures that after all rounds complete, the film contains
 //   the correct total accumulation.
 //////////////////////////////////////////////////////////////////////
@@ -626,9 +630,13 @@ void MLTRasterizer::RunChainSegment(
 {
 	// invTotalMutations is over the FULL budget, not per-round.
 	// This ensures correct accumulation across all rounds.
-	const Scalar totalMutations = static_cast<Scalar>( nMutationsPerPixel ) *
-		static_cast<Scalar>( width ) * static_cast<Scalar>( height );
-	const Scalar invTotalMutations = 1.0 / totalMutations;
+	// Normalize by the mutations ACTUALLY PERFORMED across all rounds
+	// and chains (perChain * chains, see MLTMutationSchedule), not by the
+	// requested budget: the two differ by up to chains-1 mutations, and
+	// the requested product can exceed 32 bits.
+	const MLTMutationSchedule schedule =
+		ComputeMLTMutationSchedule( nMutationsPerPixel, width, height, nChains );
+	const Scalar invTotalMutations = 1.0 / static_cast<Scalar>( schedule.performed );
 
 	for( unsigned int m = 0; m < numMutations; m++ )
 	{
@@ -887,7 +895,8 @@ bool MLTRasterizer::RenderFrameOfMLT(
 	// b_mean = mean luminance per bootstrap sample.  The full
 	// normalization is b_mean * numPixels, because the primary
 	// sample space integral covers all pixels and we divide by
-	// totalMutations (= numPixels * mutationsPerPixel).
+	// the performed mutation total (~ numPixels * mutationsPerPixel;
+	// see MLTMutationSchedule).
 	const Scalar b_mean = luminanceSum / static_cast<Scalar>( nBootstrap );
 
 	if( b_mean <= 0 ) {
@@ -924,9 +933,14 @@ bool MLTRasterizer::RenderFrameOfMLT(
 	// These states persist across all progressive rendering rounds.
 	//////////////////////////////////////////////////////////////////
 
-	const unsigned int effectiveChains = nChains > 0 ? nChains : 1;
-	const unsigned int totalMutations = nMutationsPerPixel * width * height;
-	const unsigned int mutationsPerChain = totalMutations / effectiveChains;
+	// 64-bit schedule shared with RunChainSegment's normalization (see
+	// MLTMutationSchedule in MLTRasterizer.h).  Every chain runs at least
+	// one mutation, so the performed total may differ from the requested
+	// budget by fewer than effectiveChains mutations.
+	const MLTMutationSchedule schedule =
+		ComputeMLTMutationSchedule( nMutationsPerPixel, width, height, nChains );
+	const unsigned int effectiveChains = schedule.effectiveChains;
+	const std::uint64_t mutationsPerChain = schedule.perChain;
 
 	//////////////////////////////////////////////////////////////////
 	// Auto-calculate progressive rounds from bootstrap timing.
@@ -946,7 +960,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 		threads = MAX_THREADS;
 	}
 
-	unsigned int numRounds = 1;
+	std::uint64_t numRounds = 1;
 	const unsigned int bootstrapMs = ElapsedMilliseconds(bootstrapTimerStart, bootstrapTimerEnd);
 
 	if( bootstrapMs > 0 && nBootstrap > 0 )
@@ -956,7 +970,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 
 		// Estimated total render time in ms (divide by thread count for parallelism)
 		const int effectiveThreads = threads > 0 ? threads : 1;
-		const double estTotalMs = msPerSample * static_cast<double>( totalMutations ) / static_cast<double>( effectiveThreads );
+		const double estTotalMs = msPerSample * static_cast<double>( schedule.performed ) / static_cast<double>( effectiveThreads );
 
 		// Target per-round wall time.  Every round ends with an
 		// OutputIntermediateImage + Progress callback, which is the
@@ -971,35 +985,34 @@ bool MLTRasterizer::RenderFrameOfMLT(
 		// the render loop below), the UI stays updated well inside
 		// the 5–10 s target range.
 		const double targetRoundMs = 2500.0;
-		const unsigned int computedRounds = static_cast<unsigned int>( estTotalMs / targetRoundMs + 0.5 );
-
 		// Clamp to reasonable range: at least 2 rounds (so we get at
-		// least one intermediate update), at most totalMutations/chains
-		// (each round must have at least 1 mutation per chain).
-		numRounds = computedRounds < 2 ? 2 : computedRounds;
-		if( numRounds > mutationsPerChain ) {
-			numRounds = mutationsPerChain;
-		}
+		// least one intermediate update), at most mutationsPerChain
+		// (each round must have at least 1 mutation per chain; a
+		// one-mutation-per-chain budget therefore gets a single round).
+		numRounds = MLTRoundCountFromEstimate( estTotalMs / targetRoundMs + 0.5, 2, mutationsPerChain );
 
 		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap took %u ms for %u samples (%.3f ms/sample)",
 			bootstrapMs, nBootstrap, msPerSample );
-		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Estimated total render time: %.1f s, targeting %.1f s/round -> %u rounds",
-			estTotalMs / 1000.0, targetRoundMs / 1000.0, numRounds );
+		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Estimated total render time: %.1f s, targeting %.1f s/round -> %llu rounds",
+			estTotalMs / 1000.0, targetRoundMs / 1000.0, static_cast<unsigned long long>( numRounds ) );
 	}
 	else
 	{
-		// Bootstrap was too fast to measure — use a reasonable default
-		numRounds = 20;
-		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap too fast to time, using %u rounds", numRounds );
+		// Bootstrap was too fast to measure — use a reasonable default,
+		// never more rounds than per-chain mutations.
+		numRounds = ClampMLTRoundCount( 20, mutationsPerChain );
+		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap too fast to time, using %llu rounds",
+			static_cast<unsigned long long>( numRounds ) );
 	}
 
-	unsigned int mutationsPerChainPerRound = mutationsPerChain / numRounds;
+	// At least 1 mutation per chain per round (clamped to UINT_MAX).
+	unsigned int effectiveMutPerRound = MLTMutationsPerRound( mutationsPerChain, numRounds );
 
-	// Ensure at least 1 mutation per chain per round
-	unsigned int effectiveMutPerRound = mutationsPerChainPerRound > 0 ? mutationsPerChainPerRound : 1;
-
-	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Total mutations: %u, Per chain: %u, Per chain per round: %u, Rounds: %u",
-		totalMutations, mutationsPerChain, effectiveMutPerRound, numRounds );
+	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Requested mutations: %llu, Performed: %llu, Per chain: %llu, Per chain per round: %u, Rounds: %llu",
+		static_cast<unsigned long long>( schedule.budget ),
+		static_cast<unsigned long long>( schedule.performed ),
+		static_cast<unsigned long long>( mutationsPerChain ),
+		effectiveMutPerRound, static_cast<unsigned long long>( numRounds ) );
 
 	if( progress ) {
 		progress->SetTitle( "MLT Init Chains: " );
@@ -1051,7 +1064,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 	// 4. Output the progressive image
 	// 5. Report progress
 	//
-	// The scaling math: each splat is weighted by 1/totalMutations.
+	// The scaling math: each splat is weighted by 1/performed mutations.
 	// After round r+1 of R, approximately ((r+1)/R) of all mutations
 	// have run, so the film holds ((r+1)/R) of the final value.
 	// Dividing by sampleCount = (r+1)/R gives the correct image.
@@ -1083,14 +1096,20 @@ bool MLTRasterizer::RenderFrameOfMLT(
 	// stable ~2.5 s update cadence after a single corrective round
 	// regardless of how bad the initial estimate was.
 	const double targetRoundWallMs   = 2500.0;
-	unsigned int mutationsDonePerChain = 0;
+	std::uint64_t mutationsDonePerChain = 0;
 
-	for( unsigned int round = 0; round < numRounds && !cancelled; round++ )
+	// The loop is driven by the remaining per-chain work, not by the
+	// (adaptively resized, informational) round count: it ends exactly
+	// when mutationsPerChain mutations have run per chain, or on cancel.
+	for( std::uint64_t round = 0; mutationsDonePerChain < mutationsPerChain && !cancelled; round++ )
 	{
 		// For the last round, use remaining mutations to avoid rounding loss
-		const unsigned int mutThisRound = ( round == numRounds - 1 )
-			? ( mutationsPerChain - mutationsDonePerChain )
-			: effectiveMutPerRound;
+		// The planned last round absorbs the remainder; no round ever
+		// exceeds the remaining work (MLTMutationsThisRound).
+		const unsigned int mutThisRound = MLTMutationsThisRound(
+			mutationsPerChain - mutationsDonePerChain,
+			effectiveMutPerRound,
+			round + 1 >= numRounds );
 
 		const auto roundTimerStart = std::chrono::steady_clock::now();
 
@@ -1182,27 +1201,24 @@ bool MLTRasterizer::RenderFrameOfMLT(
 				static_cast<double>( mutThisRound );
 			const double desiredMutPerRound =
 				targetRoundWallMs / actualMsPerChainMut;
-			unsigned int newMutPerRound = desiredMutPerRound < 1.0
-				? 1u
-				: static_cast<unsigned int>( desiredMutPerRound );
-			if( newMutPerRound < 1 ) newMutPerRound = 1;
-
-			const unsigned int remainingMut = mutationsPerChain > mutationsDonePerChain
+			const std::uint64_t remainingMut = mutationsPerChain > mutationsDonePerChain
 				? mutationsPerChain - mutationsDonePerChain
 				: 0u;
+			// Total rounds = 1 (already done) + ceil(remaining / newMutPerRound);
+			// computed without overflow (MLTAdaptiveRoundResize).
+			unsigned int newMutPerRound = 1;
+			std::uint64_t newNumRounds = 1;
+			MLTAdaptiveRoundResize( desiredMutPerRound, remainingMut, newMutPerRound, newNumRounds );
 			if( remainingMut > 0 && newMutPerRound != effectiveMutPerRound ) {
-				const unsigned int newRemainingRounds =
-					( remainingMut + newMutPerRound - 1 ) / newMutPerRound;
-				// Total rounds = 1 (already done) + newRemainingRounds
-				const unsigned int newNumRounds = 1 + newRemainingRounds;
 
 				GlobalLog()->PrintEx( eLog_Event,
 					"MLTRasterizer:: Adaptive round resize — round 0 took %u ms "
 					"(%.4f ms/mut), adjusting effectiveMutPerRound %u → %u, "
-					"numRounds %u → %u for a ~%.1f s UI cadence",
+					"numRounds %llu → %llu for a ~%.1f s UI cadence",
 					roundWallMs, actualMsPerChainMut,
 					effectiveMutPerRound, newMutPerRound,
-					numRounds, newNumRounds,
+					static_cast<unsigned long long>( numRounds ),
+					static_cast<unsigned long long>( newNumRounds ),
 					targetRoundWallMs / 1000.0 );
 
 				effectiveMutPerRound = newMutPerRound;
@@ -1228,7 +1244,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 		// which would make round/numRounds discontinuous.
 		const Scalar fraction =
 			static_cast<Scalar>( mutationsDonePerChain ) /
-			static_cast<Scalar>( mutationsPerChain > 0 ? mutationsPerChain : 1 );
+			static_cast<Scalar>( mutationsPerChain );
 		const bool isFinalRound = ( mutationsDonePerChain >= mutationsPerChain );
 
 		// Each round allocates a fresh image — SplatFilm::Resolve is

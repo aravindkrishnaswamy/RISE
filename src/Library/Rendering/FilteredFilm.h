@@ -72,6 +72,10 @@ namespace RISE
 
 			~FilteredFilm() override;
 
+			//! Snapshot row.size() pixels of row @a y starting at @a startX
+			//! under that row's mutex (the lock Splat takes).
+			void CopyRow( const unsigned int y, const unsigned int startX, std::vector<FilteredPixel>& row ) const;
+
 		public:
 			// Zero extents produce a no-op film; native-size/vector overflow
 			// throws length_error before allocating film storage.
@@ -96,8 +100,12 @@ namespace RISE
 				const IPixelFilter& filter				///< [in] Pixel filter for weight evaluation
 				);
 
-			//! After rendering: resolves accumulated contributions into the final image.
-			//! Each pixel's value is colorSum / weightSum.
+			//! Resolves accumulated contributions into the image (overwrites
+			//! pixels whose weightSum is nonzero); each value is
+			//! colorSum / weightSum.  Safe to call concurrently with Splat
+			//! writers (each row is read under its row mutex) and with other
+			//! Resolve calls on disjoint target regions.  The caller must not
+			//! hold any of this film's row mutexes.
 			void Resolve(
 				IRasterImage& target,					///< [out] Target image to receive resolved result
 				const Rect* region = 0					///< [in] Optional inclusive write region

@@ -137,9 +137,15 @@ void FilteredFilm::Resolve(
 		endX = r_min( region->right, width-1 );
 		endY = r_min( region->bottom, height-1 );
 	}
+	// Splat() writes a row under rowMutexes[row] while a preview
+	// composition may resolve concurrently: snapshot each row's span under
+	// that lock, release it, then write the target (no lock held across
+	// the target, one row lock at a time).
+	std::vector<FilteredPixel> row( static_cast<std::size_t>( endX - startX ) + 1 );
 	for( unsigned int y=startY; y<=endY; y++ ) {
+		CopyRow( y, startX, row );
 		for( unsigned int x=startX; x<=endX; x++ ) {
-			const FilteredPixel& pixel = pixels[static_cast<std::size_t>(y) * width + x];
+			const FilteredPixel& pixel = row[x - startX];
 
 			if( fabs(pixel.weightSum) > 1e-10 ) {
 				const XYZPel resolvedXYZ = pixel.colorSum * (1.0 / pixel.weightSum);
@@ -149,6 +155,17 @@ void FilteredFilm::Resolve(
 	}
 }
 
+void FilteredFilm::CopyRow(
+	const unsigned int y,
+	const unsigned int startX,
+	std::vector<FilteredPixel>& row
+	) const
+{
+	std::lock_guard<RMutex> rowLock( *rowMutexes[y] );
+	const FilteredPixel* src = &pixels[static_cast<std::size_t>( y ) * width + startX];
+	std::copy( src, src + row.size(), row.begin() );
+}
+
 void FilteredFilm::Unresolve(
 	IRasterImage& target
 	) const
@@ -156,9 +173,12 @@ void FilteredFilm::Unresolve(
 	// Inverse of Resolve: subtract the previously-written XYZ-resolved
 	// RISEPel value.  Mirror Resolve's conversion choice so the round-
 	// trip cancels exactly.
+	if( width == 0 || height == 0 ) return;
+	std::vector<FilteredPixel> row( width );
 	for( unsigned int y=0; y<height; y++ ) {
+		CopyRow( y, 0, row );
 		for( unsigned int x=0; x<width; x++ ) {
-			const FilteredPixel& pixel = pixels[static_cast<std::size_t>(y) * width + x];
+			const FilteredPixel& pixel = row[x];
 
 			if( fabs(pixel.weightSum) > 1e-10 ) {
 				RISEColor existing = target.GetPEL( x, y );

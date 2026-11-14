@@ -73,6 +73,10 @@ namespace RISE
 
 			~SplatFilm() override;
 
+			//! Shared body of Resolve / Unresolve.  Reads each row under its
+			//! row mutex (one at a time, released before touching the target).
+			void ApplyResolved( IRasterImage& target, const Scalar sampleCount, const Rect* region, const bool subtract ) const;
+
 		public:
 			// Zero extents produce a no-op film. Unrepresentable index/native
 			// storage counts throw length_error before allocating film storage.
@@ -164,8 +168,12 @@ namespace RISE
 				std::size_t count
 				);
 
-			//! After rendering: resolves accumulated splats into the final image.
+			//! Resolves accumulated splats into the image (additive).
 			//! Divides each pixel's accumulated color by the total number of samples.
+			//! Safe to call concurrently with Splat/BatchCommit writers (each row
+			//! is read under its row mutex; a row reflects whole committed
+			//! batches) and with other Resolve calls on disjoint target regions.
+			//! The caller must not hold any of this film's row mutexes.
 			void Resolve(
 				IRasterImage& target,					///< [in/out] Target image to receive resolved splats
 				const Scalar sampleCount,				///< [in] Total number of samples taken

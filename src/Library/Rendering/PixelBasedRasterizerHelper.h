@@ -498,12 +498,54 @@ namespace RISE
 				}
 			}
 
-			/// Returns a reference to the image that should be sent to
-			/// OutputIntermediateImage.  The default just returns the
-			/// primary image.  BDPT overrides this to return a scratch
-			/// copy with resolved splats composited in, avoiding any
-			/// mutation of the primary accumulation buffer.
-			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
+			/// Returns the image the caller hands to OutputIntermediateImage
+			/// together with @a region.  The primary accumulation buffer is
+			/// never mutated: when a FilteredFilm (or, in
+			/// BidirectionalRasterizerBase, a SplatFilm) is active the result
+			/// is a scratch image composed from the primary plus the films;
+			/// otherwise it is @a primary itself.
+			///
+			/// Contract:
+			///  * @a region non-null: only the pixels inside that INCLUSIVE
+			///    rect, clamped to the image, are valid in the returned
+			///    image (film contributions are additionally limited to the
+			///    active output / splat region, exactly as a full-frame
+			///    composition would produce them).  Pixels outside it may
+			///    hold anything, including another caller's composition.
+			///    An empty or wholly off-image region composes nothing.
+			///  * @a region null: the whole image is valid.
+			///  * The returned reference is valid until the caller's
+			///    consumers have returned; consumers must not retain it.
+			///  * Concurrent calls are allowed only for pairwise-DISJOINT
+			///    regions on the same primary (the per-block worker shape:
+			///    each worker passes its own finished tile).  A null region
+			///    must not run concurrently with any other call.
+			///  * The scratch image is never allocated or resized here; it is
+			///    prepared single-threaded before any worker pass (render
+			///    dimensions are constant within a pass).  If it is missing
+			///    or its dimensions do not match @a primary, the primary is
+			///    returned unchanged (one warning per process).
+			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const;
+
+			/// Clamps an inclusive region to a w x h image (null = whole
+			/// image).  False when nothing of it lies on the image.
+			static bool ClampRegionToImage( const Rect* region, unsigned int w, unsigned int h, Rect& out );
+
+			/// Inclusive intersection of @a a with @a b (null @a b = no
+			/// limit).  False when the intersection is empty.
+			static bool IntersectRegion( const Rect& a, const Rect* b, Rect& out );
+
+			/// Copies src -> dst over an inclusive region already clamped
+			/// to both images.
+			static void CopyRegion( const IRasterImage& src, IRasterImage& dst, const Rect& r );
+
+			/// Region the single-threaded per-pass preview composes: the
+			/// render's clamped output crop (ConfigureOutputRegion), or null
+			/// (whole image) when there is none.  An invalid crop renders the
+			/// full frame (BoundsFromRect), so it composes the full frame too.
+			const Rect* PreviewCompositionRegion() const {
+				return mHasActiveOutputRegion ? &mActiveOutputRegion : 0;
+			}
 
 			// Our own functions
 			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;

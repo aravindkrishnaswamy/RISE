@@ -1,6 +1,6 @@
 # C++ utility modernization plan
 
-**Status:** Host follow-up work on `codex/cpp-utility-modernization` has reached a major roadblock: parallel BDPT intermediate output needs a synchronized snapshot contract. The branch is not ready for final sign-off. Completed increments have host verification; native Windows and Android verification remain outstanding. Audit baseline `5fc6acaef`.
+**Status:** Host follow-up work on `codex/cpp-utility-modernization` reached a major roadblock (parallel BDPT intermediate output needed a synchronized snapshot contract). That roadblock and the two further P1s recorded with it (MLT small budgets, thread-pool submission failure) are fixed in the working tree after `680f0c44b`, uncommitted, and have had one fresh review round (see "Resolution of the snapshot, MLT budget and submission blockers"). The branch is not ready for final sign-off: there is no whole-branch zero-P1 claim, Xcode Opto and Blender builds were not rerun for these fixes, and native Windows and Android verification remain outstanding. Completed increments have host verification. Audit baseline `5fc6acaef`.
 
 ## Implementation checkpoint
 
@@ -1061,13 +1061,19 @@ Three fresh reviewers covered MLT ownership/progress, film/snapshot contracts,
 and design/cost/documentation fidelity. They found no newly introduced defect
 in this bounded increment, confirmed the snapshot roadblock below, and
 identified the additional small-budget and submission-failure defects recorded
-there. The review has not converged to whole-branch zero P1s.
+there (all three are since fixed in the working tree; see the resolution
+subsection that follows the roadblock). The review has not converged to
+whole-branch zero P1s.
 
-### Major roadblock: parallel BDPT intermediate snapshots
+### Major roadblock: parallel BDPT intermediate snapshots (resolved; kept as history)
+
+Status: the text below is the record as written at the roadblock. The three
+defects it names are fixed in the uncommitted working tree; see "Resolution
+of the snapshot, MLT budget and submission blockers" after this section.
 
 The host continuation stops here under the user's instruction to continue until
-completion or a major roadblock. This is an unresolved P1, not a documented
-acceptance of the race. The completed cache, publication, codec and lifetime
+completion or a major roadblock. At the time this was an unresolved P1, not a
+documented acceptance of the race. The completed cache, publication, codec and lifetime
 fixes remain available for branch review; there is no whole-branch zero-P1 claim.
 
 After a tile finishes, `PixelBasedRasterizerHelper::SPRasterizeSingleBlock`
@@ -1129,8 +1135,8 @@ Proposed work after review:
    Blender, sanitizers and fresh independent reviewers. Native Windows and
    Android follow-up is required for their consumer contracts.
 
-Fresh source review also identified two unresolved P1s to handle when work
-resumes. These were present before the latest MLT ownership increment; their
+Fresh source review also identified two P1s to handle when work resumed
+(both since fixed; see the resolution subsection). These were present before the latest MLT ownership increment; their
 provenance does not make them acceptable. Neither was executed as a crashing
 or multi-billion-mutation counterfactual:
 
@@ -1158,9 +1164,126 @@ or multi-billion-mutation counterfactual:
   allocation-failure tests that verify no escaped closure, no hanging latch,
   exact completion/cancellation and a healthy subsequent call under sanitizers.
 
-Accordingly, the latest resource tests establish cleanup for the exercised
-callback failures and normal task execution, not safety under failed task
-submission or correctness of every accepted MLT budget.
+Accordingly, the latest resource tests at that point established cleanup for
+the exercised callback failures and normal task execution, not safety under
+failed task submission or correctness of every accepted MLT budget. The
+resolution subsection below supersedes this limitation.
+
+### Resolution of the snapshot, MLT budget and submission blockers
+
+All three defects were present on master before this branch. They are fixed
+in the working tree after `680f0c44b`. The changes are uncommitted and have
+had one fresh review round; this is not a whole-branch zero-P1 claim.
+Evidence below is as reported by the implementing worker and was not
+independently re-run unless stated.
+
+**(a) Tile previews.** Decision: region-only composition. It was chosen over
+a lock spanning composition and consumers, and over per-worker frames,
+because the consumer map showed that every pixel-reading consumer (callback
+dispatch in `Job.cpp`, Win32 window output) reads synchronously inside the
+rect it is handed and retains nothing, and the GUI viewport sinks are no-ops
+on this path. No lock is held across consumers and there are no per-worker
+frame buffers.
+
+`GetIntermediateOutputImage(primary, region)` composes only the inclusive
+region. Only pixels inside it are valid in the returned image; concurrent
+calls are allowed only for pairwise-disjoint regions on the same primary,
+and a null region (whole image) must not run concurrently with any other
+call. The primary is never mutated, and the returned reference must not be
+retained past the consumers.
+
+Scratch images are prepared single-threaded before worker passes
+(`EnsureCompositionScratch`, called from `PreRenderSetup`, which also covers
+the BDPT path-guiding training pass where the old lazy allocation ran on
+workers, and from `RasterizeScene`). The getter never allocates; if the
+scratch is missing or its dimensions do not match, it returns the primary
+and logs one warning per process. The same shared-scratch defect in the base
+getter (PT with a wide filter) is fixed the same way.
+
+`SplatFilm` and `FilteredFilm` `Resolve`/`Unresolve` now take the writers'
+per-row mutex, copy the row, unlock, then write the target, so one row lock
+is held at a time and none across the target. `FrameStore::CopyTileFromRasterImage`
+gained an optional inclusive clip, and the unbound `ViewportFrameStore` path
+uses it, so it no longer reads source pixels outside its region. Behaviour
+change: FrameStore pixels of an overlapped tile outside the region keep their
+previous content. `ResolveSplatIntoScratch` had no callers and was removed.
+
+Evidence (implementing worker reported). New `tests/IntermediateCompositionTest.cpp`:
+120 passed, 0 failed on the fix. Against the HEAD production files its oracle
+rows read 59/29, the concurrent compose row 0/2 (97,538 and 74,845
+mismatched pixels), film rows 3/2 (28,219 torn `SplatFilm` pixels, 12,620
+`FilteredFilm`) and scratch rows 2/7. `ViewportFrameStoreTest` 108/0
+(107/1 on HEAD). TSan with the films, rasterizer bases, `FrameStore`,
+`ViewportFrameStore` and `ThreadLocalSplatBuffer` instrumented: clean on the
+fix; on HEAD 8 warnings in the film `Resolve` reads and 3 on the lazy scratch
+allocation. The HEAD concurrent-compose row is red functionally but not under
+TSan (the inline image setters resolve to the uninstrumented archive copy;
+inferred). ASan/UBSan clean. The final image is unchanged within noise on
+`cornellbox_bdpt_materials` at 192x192, 16 spp (mean 0.894351 sd 5.1e-4 vs
+0.894846 sd 9.1e-4, n=3 each). Cost: 1024x1024 at 1 spp BDPT 1.79-1.87 s
+before vs 1.51-1.56 s after (about 17% faster); 512x512 at 4 spp no
+measurable difference. Gate suites green: `FrameStoreTest` 360/0,
+`LuminarySamplerAreaTest` 90/0, `AnimationRasterizerParityTest` 102/0,
+`SpectralSplatActiveCountTest` 30/0, `SpectralSplatIntegralNormalizationTest`
+21/0, `BDPTStrategyBalanceTest` 0 failed, `SourceHygieneTest` 192/0.
+
+**(b) MLT budgets.** One shared 64-bit schedule in `MLTRasterizer.h`
+(`ComputeMLTMutationSchedule` and helpers) is used by both rasterizers:
+saturating budget, every chain performs at least one mutation, performed
+total = perChain x chains (this may exceed a tiny budget by fewer than
+`chains`), splat normalization and the preview fraction use the performed
+total, rounds are clamped to [1, perChain] in both timing branches, the loop
+is driven by remaining work, there is no unsigned underflow, and
+float-to-integer conversions are guarded. Also found and fixed in the same
+change: the 32-bit budget product wrapped above 2^32 mutations (3840x2160 at
+about 518 mutations/pixel) while normalization used the true product, and
+truncation of budget/chains left the image dark by performed/budget.
+
+Evidence (worker reported). New `tests/MLTMutationScheduleTest.cpp` 28/0.
+With the two rasterizer `.cpp` files at HEAD: 16/9; budget 4 with 3 chains
+rendered at 0.750 of reference (RGB 0.750000, spectral 0.749786, HWSS
+0.750012); 2x2 with 8 chains produced a black frame on arm64 (integer divide
+by zero does not trap there); the too-fast-bootstrap case hung and was
+killed after 60 s. Round cadence, RNG order and progress arguments for
+ordinary budgets are unchanged. Not covered by a render: budgets above 2^32
+(helper and loop simulation only); x86 SIGFPE behaviour is inferred.
+
+**(c) Thread-pool submission.** The `ThreadPool::ParallelFor` enqueue is now
+transactional: on any exception in the push loop it pops exactly its own
+tasks under the still-held queue lock and rethrows. No task of a failed
+submission runs, nothing is notified, and unrelated queued tasks keep their
+order. Evidence (worker reported): `ThreadPoolExceptionSafetyTest` 15/0 with
+a new case sweeping 305 allocation-failure points over 300 tasks using a
+thread-local countdown in a replaced global `operator new`; 14/1 with HEAD
+`ThreadPool.cpp`; ASan/UBSan and TSan runs of that test clean (test and
+`ThreadPool.cpp` instrumented only).
+
+**(d) Verification and review.** Clean make rebuild: rc 0, zero warnings.
+Xcode Deployment clean build (RISE-GUI): succeeded, zero warnings. One fresh round of three independent
+reviewers (thread pool and MLT; preview concurrency; film locking and
+`FrameStore` clip) found no P0 or P1, by code reading, not by running. This is
+one review round on uncommitted changes, not a whole-branch zero-P1 claim.
+Windows, Android, Xcode Opto and Blender builds were not rerun for these
+changes.
+
+**(e) Open P2s recorded by that review.**
+
+- `ScanlineRasterizeSequence::GetNextRegion` returns rects two rows tall
+  under inclusive bounds, so neighbouring regions share a row. Pre-existing;
+  reachable only with `raster_sequence_type 0` on non-progressive renders;
+  it violates the disjoint-region contract. Not fixed.
+- The composition scratch is now always allocated for VCM and after BDPT
+  animation, and is kept until the rasterizer is destroyed (32 bytes/pixel,
+  about 265 MB at 4K).
+- `IntermediateCompositionTest`'s real-render rows would also pass on HEAD
+  and do not prove that the scratch (rather than the primary fallback) was
+  delivered; there are no PT, VCM or animation render rows.
+- `CallbackRasterizerOutputDispatch` allocates a full-frame float buffer per
+  tile delivery.
+- `nBootstrap == 0` in MLT may divide by zero (pre-existing, not traced).
+- `Win32WindowRasterizerOutput` does not clamp its region.
+- The new `ThreadPool` test assumes one heap allocation per pushed task
+  (true for libc++/libstdc++, unverified for MSVC).
 
 ### Host measurements and decisions
 

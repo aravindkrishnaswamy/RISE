@@ -303,6 +303,45 @@ namespace
 		Check( tileFires.load() == tileFiresBeforeBoundary + 1,
 			"intermediate single-pixel region on tile boundary fires exactly 1 tile callback (L4 round-3 P2 boundary)" );
 
+		// Region-only copy: the source is valid ONLY inside the region
+		// (the rasterizer composes previews per tile into a shared
+		// scratch, and neighbouring regions may be mid-composition).
+		// A non-tile-aligned region spanning four FrameStore tiles must
+		// copy exactly its own pixels; the rest of those tiles keep
+		// their previous content and the sentinel outside the region is
+		// never read into the store.
+		{
+			const Rect region( 5, 7, 40, 45 );	// top, left, bottom, right
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x ) {
+					const bool in = x >= region.left && x <= region.right && y >= region.top && y <= region.bottom;
+					img->SetPEL( x, y, in ? RISEColor( RISEPel( 0.25, 0.125, 0.75 ), 1.0 )
+					                      : RISEColor( RISEPel( 9.0, -3.0, 7.0 ), 0.5 ) );
+				}
+			const int fires = tileFires.load();
+			vfs->OutputIntermediateImage( *img, &region );
+			Check( tileFires.load() == fires + 4,
+				"non-aligned region spanning 2x2 FrameStore tiles fires 4 tile callbacks" );
+			const IRasterImage& store = vfs->GetFrameStore()->AsBeautyRasterImage();
+			unsigned insideBad = 0, sentinelCopied = 0, previousLost = 0;
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x ) {
+					const RISEColor c = store.GetPEL( x, y );
+					const bool in = x >= region.left && x <= region.right && y >= region.top && y <= region.bottom;
+					if ( in ) {
+						if ( c.base.r != 0.25 || c.base.g != 0.125 || c.base.b != 0.75 ) ++insideBad;
+					} else {
+						if ( c.base.r == 9.0 ) ++sentinelCopied;
+						else if ( c.base.r != 0.5 || c.base.g != 0.5 || c.base.b != 0.5 ) ++previousLost;
+					}
+				}
+			Check( insideBad == 0, "region-only intermediate: pixels inside the region are copied" );
+			Check( sentinelCopied == 0,
+				"region-only intermediate: no source pixel outside the region is read into the store (" +
+				std::to_string( sentinelCopied ) + " copied)" );
+			Check( previousLost == 0, "region-only intermediate: pixels outside the region keep their previous content" );
+		}
+
 		safe_release( img );
 		vfs->release();
 	}

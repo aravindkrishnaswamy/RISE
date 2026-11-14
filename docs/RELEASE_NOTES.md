@@ -2,14 +2,18 @@
 
 ## C++ utility modernization, unreleased
 
-Known unresolved issue: parallel BDPT tile previews compose into a shared
-scratch image without synchronized snapshot ownership or source reads.
-Concurrent composition and callback consumption can race. This branch still
-requires the snapshot work described in the modernization plan before final
-sign-off; output-adapter serialization alone does not fix it. Fresh review also
-found unresolved small-budget MLT scheduling errors and unsafe unwinding if
-thread-pool task submission fails partway. The plan records their fixes and
-required regression coverage.
+- MLT: tiny mutation budgets no longer hang or render a black frame, and
+  budgets above 2^32 mutations are honoured. Images at budgets not divisible
+  by the chain count are no longer slightly dark.
+- BDPT and wide-filter PT tile previews are composed per tile, which is
+  thread-safe and faster on large frames.
+- A failed parallel task submission under memory pressure can no longer run
+  stale tasks.
+
+These fixes are in the working tree, uncommitted and reviewed for one round
+only; the modernization plan ("Resolution of the snapshot, MLT budget and
+submission blockers") records the evidence and the open P2s. The branch is
+still not signed off.
 
 Regenerate photon maps, irradiance caches, serialized meshes, and other
 binary assets written through RISE’s scalar serializers by the historical

@@ -318,6 +318,11 @@ void BDPTRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect
 	const unsigned int width = pFilm->GetWidth();
 	const unsigned int height = pFilm->GetHeight();
 	ConfigureSplatRegion( pRect, width, height );
+	// Composition scratch for per-block previews.  Prepared here,
+	// single-threaded, BEFORE any worker pass (path-guiding training
+	// dispatches blocks right after this, and every animation frame runs
+	// PreRenderSetup); GetIntermediateOutputImage never allocates.
+	EnsureCompositionScratch( width, height );
 
 	// Share the RayCaster's prepared LightSampler with the integrator.
 	pIntegrator->SetLightSampler( pCaster ? pCaster->GetLightSampler() : 0 );
@@ -913,8 +918,9 @@ void BDPTRasterizerBase::RasterizeScene(
 		}
 	} );
 
-	safe_release( pScratchImage );
-	pScratchImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+	// Single-threaded (no pass in flight).  Normally a no-op after
+	// PreRenderSetup; also covers subclasses that override it.
+	EnsureCompositionScratch( width, height );
 
 	// Allocate FilteredFilm for wide-support reconstruction (approach
 	// C: uniform sub-pixel jitter + per-sample splat across neighbours
@@ -1105,7 +1111,7 @@ void BDPTRasterizerBase::RasterizeScene(
 					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
 				}
 
-				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
+				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage, ActiveSplatRegion() );
 				RasterizerOutputListType::const_iterator r, s;
 				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 					(*r)->OutputIntermediateImage( outputImage, pRect );

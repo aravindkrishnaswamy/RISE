@@ -701,11 +701,24 @@ namespace RISE
 			// per-tile write in BeginTile/EndTile, which fires
 			// OnTileComplete for that tile.  The rasterizer's
 			// just-rendered region may not align with the
-			// FrameStore's tile grid; we copy the WHOLE FrameStore
-			// tile for any tile that overlaps, which incidentally
-			// re-reads pixels outside the rendered region (those
-			// pixels are still present in the rasterizer's image
-			// from previous-state, so the copy is correct).
+			// FrameStore's tile grid; the copy is CLIPPED to the
+			// region so pixels of an overlapping FrameStore tile
+			// outside it keep their previous content.  The source
+			// must not be read outside the region: per the
+			// GetIntermediateOutputImage contract only the region's
+			// pixels are valid, and another worker may be composing
+			// a neighbouring region into the same scratch image.
+			// Inclusive copy clip in source == destination pixels (the
+			// chain is sized to the source image by EnsureChain).
+			const Rect clip( rTop, rLeft,
+				rExcBottom > 0 ? rExcBottom - 1u : 0u,
+				rExcRight  > 0 ? rExcRight  - 1u : 0u );
+			if ( pRegion && ( rExcBottom == 0 || rExcRight == 0 ||
+			                  rTop >= rExcBottom || rLeft >= rExcRight ) ) {
+				snap->release();
+				return;
+			}
+
 			const size_t te  = snap->TileEdge();
 			const size_t tcX = snap->TileCountX();
 			const size_t tcY = snap->TileCountY();
@@ -727,7 +740,8 @@ namespace RISE
 						std::min( ( ty + 1 ) * te,
 						          static_cast<size_t>( snap->Height() ) ) );
 					const Rect srcRect( dstY0, dstX0, dstY1, dstX1 );
-					snap->CopyTileFromRasterImage( tx, ty, pImage, srcRect );
+					snap->CopyTileFromRasterImage( tx, ty, pImage, srcRect,
+						pRegion ? &clip : nullptr );
 				}
 			}
 

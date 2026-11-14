@@ -16,6 +16,7 @@
 #include "../Utilities/ExpressionMemo.h"
 #include "PixelBasedRasterizerHelper.h"
 #include <algorithm>
+#include <atomic>
 #include <vector>
 #include "../Utilities/RTime.h"
 #include "../Utilities/Profiling.h"
@@ -180,7 +181,58 @@ bool PixelBasedRasterizerHelper::UseFilteredFilm() const
 	return hw > 0.501 || hh > 0.501;
 }
 
-IRasterImage& PixelBasedRasterizerHelper::GetIntermediateOutputImage( IRasterImage& primary ) const
+bool PixelBasedRasterizerHelper::ClampRegionToImage( const Rect* region, unsigned int w, unsigned int h, Rect& out )
+{
+	if( w == 0 || h == 0 ) return false;
+	if( !region ) {
+		out = Rect( 0, 0, h - 1, w - 1 );
+		return true;
+	}
+	if( region->left > region->right || region->top > region->bottom ||
+		region->left >= w || region->top >= h ) return false;
+	out = Rect( region->top, region->left, r_min( region->bottom, h - 1 ), r_min( region->right, w - 1 ) );
+	return true;
+}
+
+bool PixelBasedRasterizerHelper::IntersectRegion( const Rect& a, const Rect* b, Rect& out )
+{
+	if( !b ) {
+		out = a;
+		return a.left <= a.right && a.top <= a.bottom;
+	}
+	const unsigned int top = r_max( a.top, b->top );
+	const unsigned int left = r_max( a.left, b->left );
+	const unsigned int bottom = r_min( a.bottom, b->bottom );
+	const unsigned int right = r_min( a.right, b->right );
+	if( left > right || top > bottom ) return false;
+	out = Rect( top, left, bottom, right );
+	return true;
+}
+
+void PixelBasedRasterizerHelper::CopyRegion( const IRasterImage& src, IRasterImage& dst, const Rect& r )
+{
+	for( unsigned int y=r.top; y<=r.bottom; y++ ) {
+		for( unsigned int x=r.left; x<=r.right; x++ ) {
+			dst.SetPEL( x, y, src.GetPEL( x, y ) );
+		}
+	}
+}
+
+namespace
+{
+	void WarnScratchMismatchOnce( const char* who )
+	{
+		static std::atomic<bool> warned{ false };
+		bool expected = false;
+		if( warned.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"%s:: intermediate composition scratch is missing or does not match the image; "
+				"returning the uncomposited image (scratch must be prepared before the pass)", who );
+		}
+	}
+}
+
+IRasterImage& PixelBasedRasterizerHelper::GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const
 {
 	if( !pFilteredFilm || !pFilteredScratch ) {
 		return primary;
@@ -188,18 +240,23 @@ IRasterImage& PixelBasedRasterizerHelper::GetIntermediateOutputImage( IRasterIma
 
 	const unsigned int w = primary.GetWidth();
 	const unsigned int h = primary.GetHeight();
-
-	// Copy the current primary image into the scratch buffer
-	for( unsigned int y=0; y<h; y++ ) {
-		for( unsigned int x=0; x<w; x++ ) {
-			pFilteredScratch->SetPEL( x, y, primary.GetPEL( x, y ) );
-		}
+	if( pFilteredScratch->GetWidth() != w || pFilteredScratch->GetHeight() != h ) {
+		WarnScratchMismatchOnce( "PixelBasedRasterizerHelper::GetIntermediateOutputImage" );
+		return primary;
 	}
 
-	// Resolve the film into the scratch copy
-	pFilteredFilm->Resolve(
-		*pFilteredScratch,
-		mHasActiveOutputRegion ? &mActiveOutputRegion : 0 );
+	// Compose only the delivered region: copy the primary there, then
+	// resolve the film over its intersection with the active output region.
+	Rect composed( 0, 0, 0, 0 );
+	if( !ClampRegionToImage( region, w, h, composed ) ) {
+		return primary;
+	}
+	CopyRegion( primary, *pFilteredScratch, composed );
+
+	Rect filmRegion( 0, 0, 0, 0 );
+	if( IntersectRegion( composed, mHasActiveOutputRegion ? &mActiveOutputRegion : 0, filmRegion ) ) {
+		pFilteredFilm->Resolve( *pFilteredScratch, &filmRegion );
+	}
 
 	return *pFilteredScratch;
 }
@@ -709,9 +766,11 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 	}
 
 	if( !skipBlockOutput ) {
-		// Get the image for intermediate output.  BDPT returns a scratch
-		// copy with resolved splats; other rasterizers return the primary.
-		IRasterImage& outputImage = GetIntermediateOutputImage( image );
+		// Get the image for intermediate output.  With an active film the
+		// result is a shared scratch composed ONLY over this block's rect
+		// (other workers compose their own disjoint blocks concurrently),
+		// so consumers must read inside `rect` only; otherwise the primary.
+		IRasterImage& outputImage = GetIntermediateOutputImage( image, &rect );
 
 		// Also iterate through outputs and get them to intermediate rasterize
 		RasterizerOutputListType::const_iterator	r, s;
@@ -1308,7 +1367,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
 				}
 
-				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
+				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage, PreviewCompositionRegion() );
 				RasterizerOutputListType::const_iterator r, s;
 				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 					(*r)->OutputIntermediateImage( outputImage, pRect );
@@ -2122,7 +2181,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 					progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
 				}
 
-				IRasterImage& outputImage = GetIntermediateOutputImage( image );
+				IRasterImage& outputImage = GetIntermediateOutputImage( image, PreviewCompositionRegion() );
 				RasterizerOutputListType::const_iterator r, s;
 				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 					(*r)->OutputIntermediateImage( outputImage, pRect );

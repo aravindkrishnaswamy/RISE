@@ -96,10 +96,20 @@ namespace RISE
 				const unsigned int imageHeight
 				) const;
 
-			/// Returns a scratch image with resolved splats composited
-			/// on top of the current primary, for progressive display.
-			/// Scratch buffer is lazily allocated on first call.
-			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const override;
+			/// Returns a scratch image with the filtered film and resolved
+			/// splats composited on top of the current primary, for
+			/// progressive display.  Region contract (only the delivered
+			/// region is composed; disjoint regions may compose concurrently;
+			/// the scratch is never allocated here) is documented on
+			/// PixelBasedRasterizerHelper::GetIntermediateOutputImage.
+			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const override;
+
+			/// Prepare (or keep, when the dimensions match) the composition
+			/// scratch.  Call single-threaded before any pass whose workers
+			/// can reach GetIntermediateOutputImage: PreRenderSetup (covers
+			/// path-guiding training, the main pass and every animation
+			/// frame) and RasterizeScene.
+			void EnsureCompositionScratch( const unsigned int w, const unsigned int h ) const;
 
 			/// Final flush: composite the t==1 splat film onto the
 			/// image before forwarding to the outputs.  Shared by VCM
@@ -111,12 +121,6 @@ namespace RISE
 			void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
 			void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
 			void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
-
-			/// Copy `src` into the scratch buffer and resolve the splat
-			/// film on top.  Shared body for the Flush* overrides that
-			/// both algorithms use.  Caller must verify `pSplatFilm` is
-			/// non-null before calling.
-			IRasterImage& ResolveSplatIntoScratch( const IRasterImage& src ) const;
 
 			/// Configure the region used by every splat/filter preview and
 			/// by non-adaptive regional light-path normalization.

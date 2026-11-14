@@ -401,7 +401,8 @@ namespace RISE
 
 		void FrameStore::CopyTileFromRasterImage( size_t tileX, size_t tileY,
 		                                          const IRasterImage& src,
-		                                          const Rect& srcRect )
+		                                          const Rect& srcRect,
+		                                          const Rect* dstClip )
 		{
 			// Phase-1 ingest path: copy beauty pixels + alpha from
 			// the existing rasterizer's IRasterImage into our typed
@@ -421,11 +422,27 @@ namespace RISE
 			const unsigned int dstY1 = static_cast<unsigned int>(
 				std::min( ( tileY + 1 ) * tileEdge_, height_ ) );
 
+			// Optional destination clip (inclusive): pixels outside it keep
+			// their previous content and their source pixels are not read.
+			// An empty clip copies nothing but still brackets the tile.
+			unsigned int cx0 = dstX0, cy0 = dstY0, cx1 = dstX1, cy1 = dstY1;
+			if ( dstClip ) {
+				if ( dstClip->left > dstClip->right || dstClip->top > dstClip->bottom ) {
+					cx1 = cx0;
+					cy1 = cy0;
+				} else {
+					cx0 = std::max( cx0, dstClip->left );
+					cy0 = std::max( cy0, dstClip->top );
+					cx1 = static_cast<unsigned int>( std::min<uint64_t>( cx1, uint64_t( dstClip->right ) + 1 ) );
+					cy1 = static_cast<unsigned int>( std::min<uint64_t>( cy1, uint64_t( dstClip->bottom ) + 1 ) );
+				}
+			}
+
 			FrameStoreTileBracket bracket( this, tileX, tileY, tileX + 1, tileY + 1 );
 
-			for ( unsigned int dy = dstY0; dy < dstY1; ++dy ) {
+			for ( unsigned int dy = cy0; dy < cy1; ++dy ) {
 				const unsigned int sy = srcRect.top + ( dy - dstY0 );
-				for ( unsigned int dx = dstX0; dx < dstX1; ++dx ) {
+				for ( unsigned int dx = cx0; dx < cx1; ++dx ) {
 					const unsigned int sx = srcRect.left + ( dx - dstX0 );
 					if ( sx >= src.GetWidth() || sy >= src.GetHeight() ) continue;
 

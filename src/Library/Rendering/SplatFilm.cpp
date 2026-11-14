@@ -279,10 +279,11 @@ void SplatFilm::BatchCommit(
 	}
 }
 
-void SplatFilm::Resolve(
+void SplatFilm::ApplyResolved(
 	IRasterImage& target,
 	const Scalar sampleCount,
-	const Rect* region
+	const Rect* region,
+	const bool subtract
 	) const
 {
 	if( sampleCount <= 0 || width == 0 || height == 0 ) {
@@ -300,22 +301,39 @@ void SplatFilm::Resolve(
 		endY = r_min( region->bottom, height - 1 );
 	}
 
+	// Writers (BatchCommit) mutate a row under rowMutexes[row] while a
+	// preview composition may resolve concurrently.  Snapshot each row's
+	// span under that same lock, release it, then write the target: no row
+	// lock is held across the target's SetPEL/GetPEL (lock-free for every
+	// in-tree target) and only one row lock is ever held at a time.
+	std::vector<SplatPixel> row( static_cast<std::size_t>( endX - startX ) + 1 );
 	for( unsigned int y=startY; y<=endY; y++ ) {
+		{
+			std::lock_guard<RMutex> rowLock( *rowMutexes[y] );
+			const SplatPixel* src = &pixels[static_cast<std::size_t>( y ) * width + startX];
+			std::copy( src, src + row.size(), row.begin() );
+		}
 		for( unsigned int x=startX; x<=endX; x++ ) {
-			const SplatPixel& pixel = pixels[y * width + x];
-
+			const SplatPixel& pixel = row[x - startX];
 			if( pixel.weight > 0 ) {
-				// Get the existing color in the target
-				RISEColor existing = target.GetPEL( x, y );
-
-				// Scale the accumulated splat by the total sample count and add
-				RISEPel splatPel = pixel.color * invSamples;
-				RISEColor combined( existing.base + splatPel, existing.a );
-
+				// Scale the accumulated splat by the total sample count and
+				// add it to (or, for Unresolve, subtract it from) the target.
+				const RISEColor existing = target.GetPEL( x, y );
+				const RISEPel splatPel = pixel.color * invSamples;
+				const RISEColor combined( subtract ? existing.base - splatPel : existing.base + splatPel, existing.a );
 				target.SetPEL( x, y, combined );
 			}
 		}
 	}
+}
+
+void SplatFilm::Resolve(
+	IRasterImage& target,
+	const Scalar sampleCount,
+	const Rect* region
+	) const
+{
+	ApplyResolved( target, sampleCount, region, false );
 }
 
 void SplatFilm::Unresolve(
@@ -324,33 +342,7 @@ void SplatFilm::Unresolve(
 	const Rect* region
 	) const
 {
-	if( sampleCount <= 0 || width == 0 || height == 0 ) {
-		return;
-	}
-
-	const Scalar invSamples = 1.0 / sampleCount;
-	unsigned int startX = 0, startY = 0, endX = width - 1, endY = height - 1;
-	if( region ) {
-		if( region->left > region->right || region->top > region->bottom ||
-			region->left >= width || region->top >= height ) return;
-		startX = region->left;
-		startY = region->top;
-		endX = r_min( region->right, width - 1 );
-		endY = r_min( region->bottom, height - 1 );
-	}
-
-	for( unsigned int y=startY; y<=endY; y++ ) {
-		for( unsigned int x=startX; x<=endX; x++ ) {
-			const SplatPixel& pixel = pixels[y * width + x];
-
-			if( pixel.weight > 0 ) {
-				RISEColor existing = target.GetPEL( x, y );
-				RISEPel splatPel = pixel.color * invSamples;
-				RISEColor combined( existing.base - splatPel, existing.a );
-				target.SetPEL( x, y, combined );
-			}
-		}
-	}
+	ApplyResolved( target, sampleCount, region, true );
 }
 
 void SplatFilm::Clear()

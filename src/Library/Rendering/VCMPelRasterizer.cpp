@@ -110,9 +110,9 @@ void VCMPelRasterizer::FlushDenoisedToOutputs( const IRasterImage& img, const Re
 	VCMRasterizerBase::FlushDenoisedToOutputs( img, rcRegion, frame );
 }
 
-IRasterImage& VCMPelRasterizer::GetIntermediateOutputImage( IRasterImage& primary ) const
+IRasterImage& VCMPelRasterizer::GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const
 {
-	return VCMRasterizerBase::GetIntermediateOutputImage( primary );
+	return VCMRasterizerBase::GetIntermediateOutputImage( primary, region );
 }
 
 //////////////////////////////////////////////////////////////////////

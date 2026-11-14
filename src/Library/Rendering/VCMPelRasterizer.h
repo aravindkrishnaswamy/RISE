@@ -69,7 +69,7 @@ namespace RISE
 			void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 			void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 			void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
-			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
+			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const;
 
 			void IntegratePixel(
 				const RuntimeContext& rc,

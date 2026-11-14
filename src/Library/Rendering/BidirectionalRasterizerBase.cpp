@@ -149,8 +149,29 @@ void BidirectionalRasterizerBase::SplatContributionToFilm(
 	}
 }
 
+void BidirectionalRasterizerBase::EnsureCompositionScratch(
+	const unsigned int w,
+	const unsigned int h
+	) const
+{
+	// Single-threaded by contract (PreRenderSetup / RasterizeScene, before
+	// any worker pass).  Reallocate only when the dimensions changed, so
+	// the per-pass call keeps one buffer for the whole render.  (L8 round
+	// 10: a stale-dimension scratch used to be written out of bounds.)
+	if( pScratchImage &&
+	    ( pScratchImage->GetWidth()  != w ||
+	      pScratchImage->GetHeight() != h ) )
+	{
+		safe_release( pScratchImage );
+	}
+	if( !pScratchImage && w > 0 && h > 0 ) {
+		pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
+	}
+}
+
 IRasterImage& BidirectionalRasterizerBase::GetIntermediateOutputImage(
-	IRasterImage& primary
+	IRasterImage& primary,
+	const Rect* region
 	) const
 {
 	if( !pSplatFilm && !pFilteredFilm ) {
@@ -160,77 +181,47 @@ IRasterImage& BidirectionalRasterizerBase::GetIntermediateOutputImage(
 	const unsigned int w = primary.GetWidth();
 	const unsigned int h = primary.GetHeight();
 
-	// Lazy allocation: only pay the scratch cost once we actually need
-	// to compose splats or filtered film.
-	//
-	// L8 round 10 — also reallocate when the dims have CHANGED since
-	// the previous render.  Pre-fix the dim-check was missing, so a
-	// resize-then-render sequence kept the OLD-dim scratch image
-	// alive and the `SetPEL(x, y, ...)` loop wrote out-of-bounds past
-	// its `RISEColor[oldW * oldH]` buffer.  At smaller-new-dim that's
-	// silent corruption; at larger-new-dim it's a `EXC_BAD_ACCESS`
-	// crash on the first row past `oldH` (the user-reported
-	// segmentation fault on render-after-resize).  `RISERasterImage`
-	// doesn't expose a resize helper, so a discard + re-alloc is the
-	// simplest correct fix; the scratch buffer is short-lived
-	// (one render) so the per-render alloc cost is acceptable.
-	if( pScratchImage &&
-	    ( pScratchImage->GetWidth()  != w ||
-	      pScratchImage->GetHeight() != h ) )
+	// The scratch is prepared single-threaded before any worker pass
+	// (EnsureCompositionScratch); it is never allocated here because
+	// workers call this concurrently for their own finished tiles.
+	if( !pScratchImage ||
+	    pScratchImage->GetWidth()  != w ||
+	    pScratchImage->GetHeight() != h )
 	{
-		safe_release( pScratchImage );
-	}
-	if( !pScratchImage ) {
-		pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
+		static std::atomic<bool> warned{ false };
+		bool expected = false;
+		if( warned.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"BidirectionalRasterizerBase::GetIntermediateOutputImage:: composition scratch is "
+				"missing or does not match the image; returning the uncomposited image" );
+		}
+		return primary;
 	}
 
-	// Copy the current primary image into the scratch buffer.
-	for( unsigned int y = 0; y < h; y++ ) {
-		for( unsigned int x = 0; x < w; x++ ) {
-			pScratchImage->SetPEL( x, y, primary.GetPEL( x, y ) );
+	// Compose only the delivered region.  Copy the primary there, then
+	// overlay the filter-reconstructed eye-subpath image (approach C) and
+	// add the t=1 splats, both limited to the region's intersection with
+	// the active splat region -- the same pixels a full-frame composition
+	// would have produced inside the region.  Order matters:
+	// FilteredFilm::Resolve OVERWRITES pixels where weightSum > 0, so it
+	// goes first; SplatFilm::Resolve ADDs on top.  Primary is never
+	// mutated.
+	Rect composed( 0, 0, 0, 0 );
+	if( !ClampRegionToImage( region, w, h, composed ) ) {
+		return primary;
+	}
+	CopyRegion( primary, *pScratchImage, composed );
+
+	Rect filmRegion( 0, 0, 0, 0 );
+	if( IntersectRegion( composed, ActiveSplatRegion(), filmRegion ) ) {
+		if( pFilteredFilm ) {
+			pFilteredFilm->Resolve( *pScratchImage, &filmRegion );
+		}
+		if( pSplatFilm ) {
+			pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ), &filmRegion );
 		}
 	}
 
-	// Overlay the filter-reconstructed eye-subpath image (approach C)
-	// on top of the per-pixel box accumulation, then add t=1 splats.
-	// Order matters: FilteredFilm::Resolve OVERWRITES pixels where
-	// weightSum > 0, so it must go first; SplatFilm::Resolve ADDs on
-	// top.  Primary is never mutated.
-	if( pFilteredFilm ) {
-		pFilteredFilm->Resolve( *pScratchImage, ActiveSplatRegion() );
-	}
-	if( pSplatFilm ) {
-		pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ), ActiveSplatRegion() );
-	}
-
-	return *pScratchImage;
-}
-
-IRasterImage& BidirectionalRasterizerBase::ResolveSplatIntoScratch(
-	const IRasterImage& src
-	) const
-{
-	const unsigned int w = src.GetWidth();
-	const unsigned int h = src.GetHeight();
-	// L8 round 10 — sibling of the dim-check fix in
-	// `GetIntermediateOutputImage` above.  Same `pScratchImage`
-	// cached pointer, same `SetPEL(x, y, ...)` loop, same
-	// out-of-bounds-on-resize bug if the dim-check is missing.
-	if( pScratchImage &&
-	    ( pScratchImage->GetWidth()  != w ||
-	      pScratchImage->GetHeight() != h ) )
-	{
-		safe_release( pScratchImage );
-	}
-	if( !pScratchImage ) {
-		pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
-	}
-	for( unsigned int y = 0; y < h; y++ ) {
-		for( unsigned int x = 0; x < w; x++ ) {
-			pScratchImage->SetPEL( x, y, src.GetPEL( x, y ) );
-		}
-	}
-	pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ), ActiveSplatRegion() );
 	return *pScratchImage;
 }
 
@@ -335,8 +326,8 @@ void BidirectionalRasterizerBase::FlushPreDenoisedToOutputs( const IRasterImage&
 	}
 	// Resolve splats into the canonical for the DURATION of the flush,
 	// then subtract them back out so OIDN's denoise input stays
-	// splat-free.  The previous scratch-composite path
-	// (ResolveSplatIntoScratch) fed only the legacy IRasterizerOutput
+	// splat-free.  The previous scratch-composite path (a since-removed
+	// ResolveSplatIntoScratch helper) fed only the legacy IRasterizerOutput
 	// chain — bound-mode FrameStore observers (FileEncoderObserver,
 	// the post-L8 CLI file outputs) read the CANONICAL at
 	// MarkPreDenoiseComplete and wrote the plain (non-_denoised) file
