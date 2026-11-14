@@ -492,6 +492,46 @@ are unchanged by this availability fix. Windows 64-bit CRT type spelling was
 checked against the official API reference; native execution remains pending.
 
 
+### EXR associated-alpha closure
+
+The next fresh round returned two clean reviews and one confirmed codec P2:
+EXRReader returned associated RGB as straight `RISEColor`, so subsequent
+RGBA EXR writing multiplied alpha again and PNG/TGA conversion darkened
+translucent colors. The reader now divides RGB by any nonzero alpha in
+double precision before the selected color-space conversion. Missing alpha
+stays one. Zero-alpha RGB is left undivided and retained through the selected
+color conversion, preserving prior additive/hidden-data reads. Existing
+straight-alpha writers still cannot round-trip additive zero-alpha EXR data;
+EXR writing premultiplies it to zero as before. RGB-only EXR output also
+retains its existing composite-over-black behavior rather than changing the
+meaning of the no-alpha option.
+
+Independent SDK-authored HALF/FLOAT fixtures cover fractional, negative,
+above-one and tiny alpha, a straight quotient above FLOAT range, missing
+alpha and nonlinear color-space selection. YA/YCA expectations derive from
+SDK associated values divided by alpha. Fixed quantized PNG/TGA pixels and
+independent SDK decoding of subsequent EXR writes prove the conversion
+path; separate SDK oracles retain RGB-only flattening. A HALF fixture setup
+mismatch was caught before validation and corrected to use HALF-backed
+framebuffer slices. The new regression then fails normally against the
+previous reader (eight failed checks), and the corrected image suite passes
+250 checks.
+
+The associated-alpha gate passed all 15 selected executables, six targeted
+ASan/UBSan suites with container checks, and clean make, Xcode
+Deployment/Opto and Blender native LTO builds without compiler warnings
+apart from the expected AppIntents notice. The 480 corpus hashes still
+match; no golden refresh was needed. The image binary passed all 250 checks
+from an unrelated directory without `RISE_MEDIA_PATH`. To verify this FP
+change under shipping optimization, the same 250-check executable was
+linked with the actual Opto EXRReader/EXRWriter objects (confirmed full LTO,
+fast-math and disabled finite-math-only) and the immutable gate archive;
+all checks passed with an explicitly full-LTO final link. Other library
+objects in that focused executable came from the make gate archive. CLI
+finalization-failure and independent TGA checks also remain green. Prior
+platform/privilege/sparse-fixture exclusions remain unchanged.
+
+
 ### Host measurements and decisions
 
 - A 50,000-scalar append probe reduced backing allocations from 50,000 to 28, with identical logical size, cursor and checksum. Four warm host trials measured 75.33 ± 3.26 ms for exact-growth storage and 0.2245 ± 0.0065 ms for geometric capacity. These are append-probe measurements. A sanitizer differential review also exercised 192,000 buffer operations against a shadow model.

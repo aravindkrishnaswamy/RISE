@@ -72,6 +72,10 @@ source assets with the corrected build.
   EXR embedded streams use offsets relative to their header. JPEG requires
   complete marker framing through EOI; stb still handles entropy decoding
   with its existing tolerance for damaged data in a closed stream.
+  Standard associated EXR RGB is unassociated in double before color
+  conversion, correcting repeated alpha attenuation and dark PNG/TGA
+  conversions. Zero-alpha RGB remains undivided; EXR rewriting still
+  premultiplies it to zero. RGB-only EXR export still composites over black.
   EXR RGB and plain luminance Y/YA retain FLOAT range and offset windows; YC/YCA uses the SDK's
   historical half-precision chroma reconstruction. Legacy HDR RLE accepts
   chained multibyte repeat counts, including zero low-order bytes.
