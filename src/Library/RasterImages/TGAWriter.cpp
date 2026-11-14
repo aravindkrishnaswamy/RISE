@@ -15,6 +15,10 @@
 #include "pch.h"
 #include "TGAWriter.h"
 #include "../Interfaces/ILog.h"
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <stdexcept>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -22,6 +26,8 @@ using namespace RISE::Implementation;
 TGAWriter::TGAWriter( IWriteBuffer& buffer, const COLOR_SPACE color_space_ ) :
   pWriteBuffer( buffer ),
   pBuffer( 0 ),
+  bufW( 0 ),
+  bufH( 0 ),
   color_space( color_space_ )
 {
 	pWriteBuffer.addref();
@@ -40,46 +46,42 @@ TGAWriter::~TGAWriter( )
 
 void TGAWriter::BeginWrite( const unsigned int width, const unsigned int height )
 {
-	// Write the header
-	// Make sure there's enough room in the buffer first
-	pWriteBuffer.Resize( width*height*4 + 18 );
-
-	unsigned char b = 0;
-	pWriteBuffer.seek( IBuffer::CUR, 0 );
-
-	pWriteBuffer.setBytes( &b, 1 );		// ID length
-	pWriteBuffer.setBytes( &b, 1 );		// Color Map Type
-	b=2; pWriteBuffer.setBytes( &b, 1 );	// Image Type
-	b=0;
-	for( int i=0; i<5; i++ ) {
-		pWriteBuffer.setBytes( &b, 1 );	// Color Map Specification
+	if( pBuffer ) {
+		GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
+		delete [] pBuffer;
+		pBuffer = nullptr;
 	}
-	unsigned short s=0;
-	pWriteBuffer.setUWord( s );
-	pWriteBuffer.setUWord( s );
-//	pWriteBuffer.setBytes( &s, 2);		// X origin
-//	pWriteBuffer.setBytes( &s, 2);		// Y origin
-	s = (unsigned short)(width);
-//	pWriteBuffer.setBytes( &s, 2);		// X size
-	pWriteBuffer.setUWord( s );
-	s = (unsigned short)(height);
-//	pWriteBuffer.setBytes( &s, 2);		// Y size
-	pWriteBuffer.setUWord( s );
-	b = 32;
-	pWriteBuffer.setBytes( &b, 1 );		// bits / pixel
-	b = 8;
-	pWriteBuffer.setBytes( &b, 1 );		// Image descriptor
-
-	// Setup the buffer
+	bufW = bufH = 0;
+	if( !width || !height || width > std::numeric_limits<std::uint16_t>::max() ||
+		height > std::numeric_limits<std::uint16_t>::max() ) {
+		throw std::invalid_argument( "TGAWriter: Dimensions must be between 1 and 65535" );
+	}
+	constexpr unsigned int headerSize = 18;
+	if( width > (std::numeric_limits<unsigned int>::max() - headerSize) / 4 / height ||
+		width > (std::numeric_limits<size_t>::max() - headerSize) / 4 / height ) {
+		throw std::length_error( "TGAWriter: Image exceeds the output buffer size limit" );
+	}
+	const auto bytes = static_cast<size_t>(width) * height * 4;
+	auto pixels = std::make_unique<unsigned char[]>( bytes );
+	const unsigned char header[headerSize] = {
+		0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		static_cast<unsigned char>(width), static_cast<unsigned char>(width >> 8),
+		static_cast<unsigned char>(height), static_cast<unsigned char>(height >> 8), 32, 8
+	};
+	// Resize is advisory: disk and borrowed buffers may already have capacity.
+	pWriteBuffer.Resize( static_cast<unsigned int>(bytes + headerSize) );
+	if( !pWriteBuffer.setBytes(header, headerSize) ) {
+		throw std::runtime_error( "TGAWriter: Failed to write image header" );
+	}
 	bufW = width;
 	bufH = height;
-	pBuffer = new unsigned char[width*height*4];
+	pBuffer = pixels.release();
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 }
 
 void TGAWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y )
 {
-	if( pBuffer ) {
+	if( pBuffer && x < bufW && y < bufH ) {
 		RGBA8	p;
 
 		switch( color_space )
@@ -104,7 +106,7 @@ void TGAWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsi
 			} break;
 		}
 
-		const unsigned int idx = y*bufW*4+x*4;
+		const auto idx = (static_cast<size_t>(y) * bufW + x) * 4;
 
 		pBuffer[idx] = p.b;
 		pBuffer[idx+1] = p.g;
@@ -116,7 +118,11 @@ void TGAWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsi
 void TGAWriter::EndWrite( )
 {
 	// Write out the data to the memory buffer, in backward y order
-	for( int y=bufH-1; y>=0; y-- ) {
-		pWriteBuffer.setBytes( (void*)&pBuffer[y*bufW*4], 4*bufW );
+	if( !pBuffer ) return;
+	for( unsigned int y = bufH; y > 0; --y ) {
+		const auto offset = static_cast<size_t>(y - 1) * bufW * 4;
+		if( !pWriteBuffer.setBytes(pBuffer + offset, 4 * bufW) ) {
+			throw std::runtime_error( "TGAWriter: Failed to write image pixels" );
+		}
 	}
 }

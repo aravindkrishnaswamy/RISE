@@ -48,6 +48,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <filesystem>
+#include <stdexcept>
 
 #include <zlib.h>						// crc32 for the crafted PNG chunks
 
@@ -58,6 +59,7 @@
 #include "../src/Library/RasterImages/PNGReader.h"
 #include "../src/Library/RasterImages/TIFFReader.h"
 #include "../src/Library/RasterImages/JPEGReader.h"
+#include "../src/Library/RasterImages/TGAWriter.h"
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "TestTempDir.h"
 
@@ -180,6 +182,103 @@ static void TestHDRWriterBounds()
 	buffer->release();
 }
 
+static void TestTGAWriterBounds()
+{
+	auto rejectDimensions = []( unsigned int width, unsigned int height ) {
+		auto* buffer = new MemoryBuffer();
+		auto* writer = new TGAWriter( *buffer, eColorSpace_Rec709RGB_Linear );
+		bool rejected = false;
+		try { writer->BeginWrite(width, height); }
+		catch( const std::invalid_argument& ) { rejected = true; }
+		catch( const std::length_error& ) { rejected = true; }
+		Check( rejected && buffer->getCurPos() == 0,
+			"TGA writer: invalid dimensions throw before emitting any header" );
+		writer->release();
+		buffer->release();
+		return rejected;
+	};
+	const bool widthRejected = rejectDimensions(65536, 1);
+	const bool heightRejected = rejectDimensions(1, 65536);
+	rejectDimensions(0, 1);
+	rejectDimensions(1, 0);
+	// The old writer allocates gigabytes for this overflow case. First prove
+	// that dimension validation exists, keeping the baseline RED run bounded.
+	const bool validated = widthRejected && heightRejected;
+	if( validated ) rejectDimensions(65535, 65535);
+
+	for( bool wide : { false, true } ) {
+		const unsigned int width = wide ? 65535 : 1;
+		const unsigned int height = wide ? 1 : 65535;
+		auto* buffer = new MemoryBuffer();
+		auto* writer = new TGAWriter( *buffer, eColorSpace_Rec709RGB_Linear );
+		writer->BeginWrite(width, height);
+		const RISEColor black(0, 0, 0, 1);
+		for( unsigned int y = 0; y < height; ++y ) {
+			for( unsigned int x = 0; x < width; ++x ) writer->WriteColor(black, x, y);
+		}
+		writer->EndWrite();
+		const unsigned char expectedHeader[] = {
+			0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			static_cast<unsigned char>(wide ? 255 : 1), static_cast<unsigned char>(wide ? 255 : 0),
+			static_cast<unsigned char>(wide ? 1 : 255), static_cast<unsigned char>(wide ? 0 : 255), 32, 8
+		};
+		bool exact = buffer->getCurPos() == 18 + 4 * 65535 &&
+			std::memcmp(buffer->Pointer(), expectedHeader, sizeof(expectedHeader)) == 0;
+		const auto* bytes = reinterpret_cast<const unsigned char*>(buffer->Pointer());
+		for( unsigned int offset = 18; exact && offset < buffer->getCurPos(); offset += 4 ) {
+			exact = bytes[offset] == 0 && bytes[offset+1] == 0 && bytes[offset+2] == 0 && bytes[offset+3] == 255;
+		}
+		Check( exact, "TGA writer: 65535-axis image preserves exact header, byte count, and BGRA pixels" );
+		writer->release();
+		buffer->release();
+	}
+
+	if( !validated ) return; // Avoid exercising known unsafe baseline paths.
+	auto* buffer = new MemoryBuffer();
+	auto* writer = new TGAWriter( *buffer, eColorSpace_Rec709RGB_Linear );
+	writer->EndWrite();
+	Check( buffer->getCurPos() == 0, "TGA writer: EndWrite before BeginWrite emits no bytes" );
+	writer->BeginWrite(2, 1);
+	writer->WriteColor(RISEColor(1, 0, 0, 1), 0, 0);
+	buffer->seek(IBuffer::START, 0);
+	writer->BeginWrite(1, 1);
+	writer->WriteColor(RISEColor(0, 0, 0, 1), 0, 0);
+	writer->WriteColor(RISEColor(1, 1, 1, 1), 1, 0);
+	writer->WriteColor(RISEColor(1, 1, 1, 1), 0, 1);
+	writer->EndWrite();
+	const unsigned char expected[] = { 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 8, 0, 0, 0, 255 };
+	Check( buffer->getCurPos() == sizeof(expected) && std::memcmp(buffer->Pointer(), expected, sizeof(expected)) == 0,
+		"TGA writer: repeated BeginWrite resets pixels and invalid coordinates cannot alter output" );
+	writer->BeginWrite(1, 1);
+	const auto before = buffer->getCurPos();
+	bool rejected = false;
+	try { writer->BeginWrite(0, 1); }
+	catch( const std::invalid_argument& ) { rejected = true; }
+	writer->WriteColor(RISEColor(1, 1, 1, 1), 0, 0);
+	writer->EndWrite();
+	Check( rejected && buffer->getCurPos() == before,
+		"TGA writer: invalid replacement clears previous active image" );
+	writer->release();
+	buffer->release();
+
+	for( unsigned int capacity : { 17U, 20U } ) {
+		char storage[20] = {};
+		auto* borrowed = new MemoryBuffer(storage, capacity, false);
+		auto* failed = new TGAWriter( *borrowed, eColorSpace_Rec709RGB_Linear );
+		bool reported = false;
+		try {
+			failed->BeginWrite(1, 1);
+			failed->WriteColor(RISEColor(0, 0, 0, 1), 0, 0);
+			failed->EndWrite();
+		} catch( const std::runtime_error& ) { reported = true; }
+		if( capacity == 17 ) failed->EndWrite();
+		Check( reported && borrowed->getCurPos() == (capacity == 17 ? 0U : 18U),
+			"TGA writer: header and pixel write failures surface as exceptions without an active failed header" );
+		failed->release();
+		borrowed->release();
+	}
+}
+
 //----------------------------------------------------------------------
 // Byte-buffer helpers.
 //----------------------------------------------------------------------
@@ -274,9 +373,7 @@ static bool RunTGA( std::vector<char>& bytes, unsigned int& w, unsigned int& h,
 {
 	w = h = 0;
 	MemoryBuffer* mb = new MemoryBuffer( bytes.data(), static_cast<unsigned int>( bytes.size() ), false );
-	mb->addref();
 	TGAReader* reader = new TGAReader( *mb, eColorSpace_Rec709RGB_Linear );
-	reader->addref();
 	const bool ok = reader->BeginRead( w, h );
 	if( ok && px0 && w >= 1 && h >= 1 )           reader->ReadColor( *px0, 0, 0 );
 	if( ok && pxCorner && w >= 1 && h >= 1 )       reader->ReadColor( *pxCorner, w-1, h-1 );
@@ -337,11 +434,13 @@ static std::vector<char> MakeTGAHeader( unsigned short w, unsigned short h, unsi
 {
 	std::vector<char> v;
 	for( int i = 0; i < 12; ++i ) AppendByte( v, 0 );		// 12-byte preheader
+	v[2] = 2; // Uncompressed truecolor image.
 	AppendByte( v, (unsigned char)( w & 0xFF ) );
 	AppendByte( v, (unsigned char)( (w >> 8) & 0xFF ) );
 	AppendByte( v, (unsigned char)( h & 0xFF ) );
 	AppendByte( v, (unsigned char)( (h >> 8) & 0xFF ) );
 	AppendByte( v, bpp );
+	AppendByte( v, 8 ); // Eight alpha bits; bottom-left origin.
 	return v;
 }
 
@@ -359,13 +458,10 @@ static void TestTGA()
 	std::vector<char> zh = MakeTGAHeader( 4, 0, 32 );
 	Check( !RunTGA( zh, w, h ), "A: zero-height TGA returns false" );
 
-	// Valid 2x2: TGA stores each pixel as [A,B,G,R] (ReadColor's mapping) and
-	// reads scanlines backwards-y, so both rows are populated.  All four
-	// pixels are set to A=255,B=10,G=100,R=200 -> decoded R>G>B, which both
-	// verifies the channel de-interleave and exercises the (size_t)y*width*4
-	// row offset (pixel (1,1) lives in the other scanline).
+	// Independently specified BGRA pixels follow the complete 18-byte header.
+	// Both rows have R>G>B and full alpha.
 	std::vector<char> good = MakeTGAHeader( 2, 2, 32 );
-	for( int p = 0; p < 4; ++p ) { AppendByte( good, 255 ); AppendByte( good, 10 ); AppendByte( good, 100 ); AppendByte( good, 200 ); }
+	for( int p = 0; p < 4; ++p ) { AppendByte( good, 10 ); AppendByte( good, 100 ); AppendByte( good, 200 ); AppendByte( good, 255 ); }
 	RISEColor tga0, tgaCorner;
 	const bool tgaOk = RunTGA( good, w, h, &tga0, &tgaCorner );
 	Check( tgaOk && w == 2 && h == 2, "A: valid 2x2 TGA decodes" );
@@ -373,6 +469,118 @@ static void TestTGA()
 		"A: TGA pixel (0,0) decodes R>G>B (channel order)" );
 	Check( tgaOk && tgaCorner.base.r > tgaCorner.base.g && tgaCorner.base.g > tgaCorner.base.b,
 		"A: TGA pixel (1,1) decodes R>G>B (backwards-y row offset)" );
+}
+
+static void TestTGAFormat()
+{
+	const RGBA8 samples[] = { {200, 100, 10, 64}, {20, 210, 50, 128},
+		{60, 70, 220, 192}, {230, 90, 80, 255} };
+	// Explicit file-order tables for bottom-left, bottom-right, top-left,
+	// and top-right origins. Samples themselves are always in top-left order.
+	const unsigned int orders[4][4] = { {2, 3, 0, 1}, {3, 2, 1, 0}, {0, 1, 2, 3}, {1, 0, 3, 2} };
+	auto sameColor = []( const RISEColor& actual, const RISEColor& expected ) {
+		return std::fabs(actual.base.r - expected.base.r) < 1e-12 &&
+			std::fabs(actual.base.g - expected.base.g) < 1e-12 &&
+			std::fabs(actual.base.b - expected.base.b) < 1e-12 && std::fabs(actual.a - expected.a) < 1e-12;
+	};
+	std::vector<char> valid;
+	bool checkedLayout = false;
+	for( unsigned int origin = 0; origin < 4; ++origin ) {
+		for( unsigned char alphaBits : { 0, 8 } ) {
+			auto bytes = MakeTGAHeader(2, 2, 32);
+			bytes[0] = 3;
+			bytes[17] = static_cast<char>(origin * 0x10 + alphaBits);
+			for( unsigned char idByte : { 'I', 'D', '!' } ) AppendByte(bytes, idByte);
+			for( const auto index : orders[origin] ) {
+				const auto& pixel = samples[index];
+				for( unsigned char channel : { pixel.b, pixel.g, pixel.r, pixel.a } ) AppendByte(bytes, channel);
+			}
+			auto* buffer = new MemoryBuffer(bytes.data(), static_cast<unsigned int>(bytes.size()), false);
+			auto* reader = new TGAReader(*buffer, eColorSpace_Rec709RGB_Linear);
+			unsigned int width = 0, height = 0;
+			bool exact = reader->BeginRead(width, height) && width == 2 && height == 2;
+			if( exact ) {
+				for( unsigned int i = 0; i < 4; ++i ) {
+					RISEColor actual, expected;
+					reader->ReadColor(actual, i % 2, i / 2);
+					auto sample = samples[i];
+					if( alphaBits == 0 ) sample.a = 255;
+					expected.SetFromIntegerized<Rec709RGBPel, unsigned char>(sample, 255.0);
+					exact &= sameColor(actual, expected);
+				}
+			}
+			Check( exact, "TGA reader: 18-byte BGRA header, ID, both origin axes, and descriptor alpha decode exactly" );
+			if( exact ) {
+				const RISEColor poison(-1000, -2000, -3000, -4000);
+				RISEColor outside = poison;
+				reader->ReadColor(outside, 2, 0);
+				reader->ReadColor(outside, 0, 2);
+				Check( sameColor(outside, poison), "TGA reader: out-of-range coordinates preserve caller color" );
+			}
+			checkedLayout |= exact;
+			reader->release();
+			buffer->release();
+			valid = bytes;
+		}
+	}
+	unsigned int width = 123, height = 456;
+	for( size_t size : { size_t(17), size_t(20), valid.size() - 1 } ) {
+		auto truncated = valid;
+		truncated.resize(size);
+		Check( !RunTGA(truncated, width, height) && width == 0 && height == 0,
+			"TGA reader: truncated header, ID, or final pixel fails with empty dimensions" );
+	}
+	for( unsigned int mode = 0; mode < 5; ++mode ) {
+		auto unsupported = valid;
+		if( mode == 0 ) unsupported[2] = 10; // RLE.
+		if( mode == 1 ) unsupported[1] = 1; // Color map.
+		if( mode == 2 ) unsupported[16] = 24;
+		if( mode == 3 ) unsupported[17] = 4; // Unsupported attribute depth.
+		if( mode == 4 ) unsupported[17] = 0x48; // Interleaved rows.
+		Check( !RunTGA(unsupported, width, height), "TGA reader: unsupported encodings are rejected explicitly" );
+	}
+	if( !checkedLayout ) return; // The baseline reader cannot safely run bounds/reset probes.
+	auto* buffer = new MemoryBuffer(static_cast<unsigned int>(valid.size()));
+	buffer->setBytes(valid.data(), static_cast<unsigned int>(valid.size()));
+	auto* reader = new TGAReader(*buffer, eColorSpace_Rec709RGB_Linear);
+	Check( reader->BeginRead(width, height), "TGA reader: initial decode for failed-reload regression" );
+	Check( buffer->Resize(0, true), "TGA reader: shrink input for failed-reload regression" );
+	const bool failedReload = !reader->BeginRead(width, height);
+	const RISEColor poison(-1000, -2000, -3000, -4000);
+	RISEColor stale = poison;
+	reader->ReadColor(stale, 0, 0);
+	Check( failedReload && width == 0 && height == 0 && sameColor(stale, poison),
+		"TGA reader: failed reload clears dimensions and previous pixels" );
+	reader->EndRead();
+	reader->EndRead();
+	reader->release();
+	buffer->release();
+
+	auto* encoded = new MemoryBuffer();
+	auto* writer = new TGAWriter(*encoded, eColorSpace_Rec709RGB_Linear);
+	writer->BeginWrite(2, 2);
+	for( unsigned int i = 0; i < 4; ++i ) {
+		RISEColor color;
+		color.SetFromIntegerized<Rec709RGBPel, unsigned char>(samples[i], 255.0);
+		writer->WriteColor(color, i % 2, i / 2);
+	}
+	writer->EndWrite();
+	writer->release();
+	auto* decoded = new TGAReader(*encoded, eColorSpace_Rec709RGB_Linear);
+	bool roundTrip = decoded->BeginRead(width, height) && width == 2 && height == 2;
+	if( roundTrip ) {
+		for( unsigned int i = 0; i < 4; ++i ) {
+			RISEColor color;
+			decoded->ReadColor(color, i % 2, i / 2);
+			const auto actual = color.Integerize<Rec709RGBPel, unsigned char>(255.0);
+			roundTrip &= std::abs(int(actual.r) - samples[i].r) <= 1 &&
+				std::abs(int(actual.g) - samples[i].g) <= 1 &&
+				std::abs(int(actual.b) - samples[i].b) <= 1 && actual.a == samples[i].a;
+		}
+	}
+	Check( roundTrip, "TGA reader: writer roundtrip preserves all RGBA pixels and image orientation" );
+	decoded->release();
+	encoded->release();
 }
 
 //======================================================================
@@ -789,11 +997,13 @@ int main( int /*argc*/, char* /*argv*/[] )
 {
 	TestRasterStorage();
 	TestHDRWriterBounds();
+	TestTGAWriterBounds();
 	TestJPEGReload();
 	std::cout << "ImageReaderOverflowTest — header-driven write-side overflows are rejected"
 		<< std::endl;
 
 	TestTGA();
+	TestTGAFormat();
 	TestHDRNewRLE();
 	TestHDROldRLE();
 #ifndef NO_PNG_SUPPORT

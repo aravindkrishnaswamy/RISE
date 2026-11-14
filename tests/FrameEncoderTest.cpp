@@ -912,7 +912,6 @@ void TestHDR10PNGEncoder_L5c()
 
 static void TestEncoderFailureOwnership()
 {
-#if !defined(NO_EXR_SUPPORT) || !defined(NO_TIFF_SUPPORT)
 	class RejectingBuffer final : public MemoryBuffer {
 	public:
 		bool reject = true;
@@ -931,7 +930,7 @@ static void TestEncoderFailureOwnership()
 	spec.width = spec.height = 1;
 	spec.tileEdge = 8;
 	auto* store = new FrameStore(spec);
-	std::vector<const char*> formats;
+	std::vector<const char*> formats{ "tga" };
 #ifndef NO_EXR_SUPPORT
 	formats.push_back("exr");
 #endif
@@ -951,7 +950,7 @@ static void TestEncoderFailureOwnership()
 			const auto lastWrite = complete->written - 1;
 			complete->release();
 			// Budgets inject early failures and failure at the last write.
-			for( unsigned int budget : { 0U, 16U, 64U, lastWrite } ) {
+			for( unsigned int budget : { 0U, std::min(16U, lastWrite), std::min(64U, lastWrite), lastWrite } ) {
 				auto* buffer = new RejectingBuffer();
 				buffer->budget = budget;
 				bool failed = false;
@@ -966,7 +965,8 @@ static void TestEncoderFailureOwnership()
 				IRasterImageReader* reader = nullptr;
 				if( std::strcmp(format, "exr") == 0 )
 					RISE_API_CreateEXRReader(&reader, *buffer, opts.colorSpace);
-				else RISE_API_CreateTIFFReader(&reader, *buffer, opts.colorSpace);
+				else if( std::strcmp(format, "tiff") == 0 ) RISE_API_CreateTIFFReader(&reader, *buffer, opts.colorSpace);
+				else RISE_API_CreateTGAReader(&reader, *buffer, opts.colorSpace);
 				unsigned int width = 0, height = 0;
 				Check( reader && reader->BeginRead(width, height) && width == 1 && height == 1,
 					"retried encoder output decodes as a complete image" );
@@ -977,7 +977,7 @@ static void TestEncoderFailureOwnership()
 	}
 
 	store->release();
-#endif
+
 }
 
 int main()

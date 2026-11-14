@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -186,6 +187,13 @@ static int Convert( int argc, char** argv )
 	const unsigned int outputHeight = new_height ? new_height : height;
 	if( outputWidth > std::numeric_limits<unsigned int>::max() / 8 / outputHeight ) {
 		std::cerr << "Output image is too large\n";
+		return 1;
+	}
+
+	if( outputExtension == ".tga" &&
+		(outputWidth > std::numeric_limits<std::uint16_t>::max() ||
+		 outputHeight > std::numeric_limits<std::uint16_t>::max()) ) {
+		std::cerr << "TGA dimensions must be between 1 and 65535\n";
 		return 1;
 	}
 
