@@ -719,8 +719,9 @@ and combines bounded mantissas with exponent scaling for floating HDR
 channels, avoiding both premature underflow and overflow. Its input
 preconditions and positive normalization maximum are explicit. Direct 8/16-bit
 and floating oracles cover zero/fractional/maximum alpha, large integer
-samples and runtime large floating inputs. The 32-bit float callback already
-multiplied alpha; that formula is unchanged.
+samples and runtime large floating inputs. The 32-bit float callback now
+multiplies source-double RGB and alpha before narrowing once to float, so a
+representable product survives source values outside binary32 range.
 
 Automatic emergency files now use exclusive no-follow creation under trusted
 parents, requesting POSIX 0600 permissions reduced by umask. Existing symbolic
@@ -803,6 +804,101 @@ not a full GUI runtime or full-render TSan verification. The broader
 not claimed to have been repeated after the final callback/range changes.
 Native Windows/Android, privileged owner changes, live cross-user directory
 substitution and sparse-file exclusions remain as previously recorded.
+
+### Downstream callback and writer follow-up
+
+The next fresh round found four P2s downstream of the previous fixes: 32F
+association narrowed operands too early; Blender still used unsigned RGBA
+allocation/index products; callback exceptions bypassed manual tile unlocks;
+and RGBEA silently ignored failed writes. The writer-pattern sweep also found
+the same failure reporting in HDR. These findings are fixed together with a
+P3 cleanup gap after exclusive recovery creation but failed stream adoption.
+
+32F callback association now uses the original double operands before one
+float conversion. Runtime bit oracles cover both huge RGB with fractional
+alpha and tiny alpha whose final RGB product remains representable. HDR and
+RGBEA validate complete header-plus-payload sizes, allocate before output,
+throw on header/payload failures, and deactivate failed writes; valid wire
+encodings remain unchanged. Automatic recovery cleans only its own newly
+created leaf if FILE stream adoption fails, preserving colliding names.
+
+Still and animation block writes now own their overlapping tile locks through
+an exception-safe scope. Explicit publication unlocks every acquired tile
+before rethrowing the first notification failure; cleanup during unwinding
+contains notification failures and preserves the original exception. Bulk
+writes and tile-copy ingest use the same ownership guard. Partial acquisition
+releases its acquired prefix. Existing identity gates, pixel iteration and
+successful publication order are preserved. The internal concrete
+FrameStoreBulkBracket layout changed; clients including that implementation
+header must rebuild. Public interface vtables and the C construction API are
+unchanged.
+
+Blender uses checked `size_t` storage, preview offsets and result-copy byte
+counts, bounded by native byte and container limits. Its dimension-only ABI
+adds no arbitrary 32-bit scalar ceiling. Allocation-free boundary oracles
+cover 32768 squared (2^32 RGBA scalars) and offsets beyond `UINT_MAX`; tiny
+fixtures check both receiver formats and packed previews. Preview NaN and
+negative infinity map to zero, positive infinity to maximum, while final
+float samples retain their bits. The C render entry point contains failures,
+cleans partial results and releases the job before stack callbacks disappear.
+
+The next exception-lifetime sweep separated authored sampler ownership from
+per-pass execution state. Scoped sampling overrides live between joined
+worker phases; configuration getters keep reporting the authored kernel.
+Pel and shared NM/HWSS integration paths, BDPT/VCM normalization hooks and
+training paths use the active kernel. No temporary sampler `const_cast` is
+needed. Full still/animation drivers scope image references through the
+virtual release hook, temporary sequences/samplers/images, progressive film
+pointers and progress state. Failures preserve their original exception and
+permit a healthy retry. Concurrent renders on one rasterizer remain
+unsupported. PixelBasedRasterizerHelper's concrete layout changed; clients
+constructing/subclassing it must rebuild. Custom `IntegratePixel` implementations
+should query protected `ActiveSampling()` for per-pass execution; `pSampling`
+now consistently denotes authored configuration. Public signatures/vtables
+remain unchanged. The retired RGB spectral rasterizer is excluded from the
+supported builds and still uses its obsolete sampling API; it is not an active
+consumer of this execution-state path.
+
+Tile publication now unlocks the whole acquired rectangle before its first
+observer notification. A synchronous full-frame observer read cannot wait
+on another tile held by that same bracket. Publication order and notification
+exception aggregation remain defined, and a bounded independent readback
+fixture checks full-frame pixels, generations and bracket reuse. Observer
+comments now describe shared tile locks and synchronous delivery rather than
+the retired seqlock model.
+
+The final host gate passes clean make, Xcode Deployment/Opto and native
+Blender LTO builds with zero compiler warnings (apart from the previously
+excluded AppIntents tooling notice). Thirteen selected test executables pass;
+Blender's full suite has 41 checks and FrameStore has 220, including its
+97-case focused exception mode. PT/BDPT/VCM RGB and spectral animation parity
+pass at default cadence and with requested uneven batches: 12 selected runs.
+VCM merging retains its existing one-sample iteration policy; its VC-only
+case exercises the requested 3,3,2 batches.
+
+Five targeted ASan/UBSan suites pass, plus a separate four-check actual Blender
+C export callback-failure/retry probe. Targeted TSan passes 33 callback checks
+and all 97 exception/readback checks with Job, FrameStore, the helper, the
+thread pool and test instrumented. An initial partial run left the pool's
+atomic latch uninstrumented and reported closure reuse; instrumenting that
+synchronization dependency removed the report without suppressions or a
+production code change. This is focused TSan coverage, not a full-render claim.
+
+Actual Opto objects under full LTO and fast-math pass seven focused programs
+and all 12 selected animation parity runs. The Blender Opto program covers
+buffer arithmetic/previews; the later C export fault probe is verified
+separately in normal and sanitizer builds. The final test-only addition and
+stale lock-comment corrections pass an additional make/test warning check.
+
+Source-isolated old implementations fail normally with two float-range,
+six HDR/RGBEA write-error and 18 tile-cleanup assertions. Disabling only
+recovery adoption cleanup fails four leaked-leaf assertions. For the final
+lifetime step, the old helper fails 44 image-reference, sampler-state and
+retry assertions; the old publication guard fails three bounded synchronous
+readback assertions. These proofs retain current headers and other library
+objects, and do not count a process crash or harness timeout as success.
+Native Windows/Android and the previously disclosed privileged/filesystem
+exclusions remain unverified.
 
 ### Host measurements and decisions
 

@@ -50,7 +50,8 @@ source assets with the corrected build.
 - Automatic emergency images are created exclusively with owner-only POSIX
   permissions; existing names are skipped using bounded collision suffixes.
   Completed retained stages are reused without another encode. Explicit output
-  paths retain their documented symlink behavior.
+  paths retain their documented symlink behavior. A failed stream adoption
+  removes only the newly created recovery leaf.
 - PPM output validates complete sizes, bounds pixel coordinates and reports
   write failures. Its historical straight RGB bytes still ignore alpha.
   The shared premultiplication helper used by 16-bit callbacks now multiplies
@@ -60,7 +61,16 @@ source assets with the corrected build.
   and allocate only the selected 16-bit/32-bit format.
   Delivery and cache access are serialized per adapter. Receiver policy is
   refreshed on each valid export; callbacks must copy borrowed data and avoid
-  render/FrameStore re-entry or reverse lock waits.
+  render/FrameStore re-entry or reverse lock waits. Float association multiplies
+  double RGB and alpha before narrowing, preserving representable products.
+  Blender uses checked native-sized full-frame and preview storage/indexing.
+  Still/animation tile locks are released when callbacks or observers throw.
+  Whole-region unlock precedes notification, allowing synchronous observer
+  readback. Full render failures release temporary resources and restore pass
+  state; authored sampler configuration stays separate from per-pass kernels.
+  Clients constructing/subclassing PixelBasedRasterizerHelper must rebuild.
+- HDR and RGBEA writers report invalid sizes and header/payload write failures
+  by exception, with failed writer state deactivated for safe retries.
 - Spectral and piecewise-function tables accept their leading finite
   columns, skip file headers and malformed rows, and ignore extra columns.
   Inline control points require two whitespace-separated values: replace
