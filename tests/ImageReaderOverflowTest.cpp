@@ -51,6 +51,7 @@
 #include <functional>
 #include <filesystem>
 #include <stdexcept>
+#include <cmath>
 
 #include <zlib.h>						// crc32 for the crafted PNG chunks
 
@@ -1321,6 +1322,187 @@ static void TestReaderFamilyReload()
 }
 
 #ifndef NO_EXR_SUPPORT
+static void WriteSDKAssociatedEXR( MemoryBuffer& buffer, const std::vector<float>& rgba,
+	Imf::PixelType storedType = Imf::FLOAT, bool alpha = true )
+{
+	const auto width=static_cast<unsigned int>(rgba.size()/4);
+	OStreamWrapper stream(buffer);Imf::Header header(width,1);
+	const char* names[]={"R","G","B","A"};
+	Imf::FrameBuffer frame;
+	std::vector<Imath::half> halfPixels;
+	if(storedType==Imf::HALF) {
+		halfPixels.reserve(rgba.size());
+		for(float value : rgba)halfPixels.emplace_back(value);
+	}
+	for(unsigned int channel=0;channel<(alpha?4u:3u);++channel) {
+		header.channels().insert(names[channel],Imf::Channel(storedType));
+		if(storedType==Imf::HALF) {
+			frame.insert(names[channel],Imf::Slice::Make(Imf::HALF,halfPixels.data()+channel,
+				header.dataWindow(),4*sizeof(Imath::half),width*4*sizeof(Imath::half)));
+		} else {
+			frame.insert(names[channel],Imf::Slice::Make(Imf::FLOAT,rgba.data()+channel,
+				header.dataWindow(),4*sizeof(float),width*4*sizeof(float)));
+		}
+	}
+	Imf::OutputFile file(stream,header);file.setFrameBuffer(frame);file.writePixels(1);
+}
+
+static bool SameStraightEXRColor( const RISEColor& actual, const RISEPel& expected, double alpha )
+{
+	const auto close=[](double a,double b){return std::fabs(a-b)<=1e-12*std::max(1.0,std::fabs(b));};
+	return close(actual.base.r,expected.r) && close(actual.base.g,expected.g) &&
+		close(actual.base.b,expected.b) && actual.a==alpha;
+}
+
+static void TestEXRStraightAlpha()
+{
+	for(bool floats : {false,true}) {
+		const float tiny=std::ldexp(1.0f,floats?-100:-14);
+		const float large=floats?std::ldexp(1.0f,100):1.0f;
+		const std::vector<float> associated={
+			7,8,9,0, 0.25f,0.125f,0.5f,0.5f, 1,0.5f,2,2,
+			-0.125f,0.0625f,-0.25f,-0.25f, large,1,tiny,tiny, 0.125f,0.25f,0.5f,1
+		};
+		// Power-of-two cases have exact quotients, including a FLOAT input
+		// whose straight result is 2^200 and therefore requires double division.
+		const double expected[][4]={
+			{7,8,9,0},{0.5,0.25,1,0.5},{0.5,0.25,1,2},{0.5,-0.25,1,-0.25},
+			{std::ldexp(1.0,floats?200:14),std::ldexp(1.0,floats?100:14),1,tiny},{0.125,0.25,0.5,1}
+		};
+		auto* input=new MemoryBuffer();WriteSDKAssociatedEXR(*input,associated,floats?Imf::FLOAT:Imf::HALF);
+		for(auto space : {eColorSpace_Rec709RGB_Linear,eColorSpace_sRGB}) {
+			input->seek(IBuffer::START,0);auto* reader=new EXRReader(*input,space);
+			unsigned int width=0,height=0;
+			bool exact=reader->BeginRead(width,height) && width==6 && height==1;
+			RISEColor decoded[6];
+			if(exact) for(unsigned int i=0;i<6;++i) {
+				RISEColor actual;reader->ReadColor(actual,i,0);
+				decoded[i]=actual;
+				const auto& p=expected[i];
+				const RISEPel straight=space==eColorSpace_sRGB?RISEPel(sRGBPel(p[0],p[1],p[2])):
+					RISEPel(Rec709RGBPel(p[0],p[1],p[2]));
+				exact &= SameStraightEXRColor(actual,straight,p[3]);
+			}
+			Check(exact,space==eColorSpace_sRGB?
+				"EXR straight alpha: SDK FLOAT/HALF associated RGB unassociates before nonlinear color conversion":
+				"EXR straight alpha: SDK FLOAT/HALF retains zero-alpha RGB and handles negative above-one tiny alpha without losing range");
+			reader->release();
+			if(exact && space==eColorSpace_Rec709RGB_Linear) {
+				auto* output=new MemoryBuffer();
+				auto* writer=new EXRWriter(*output,space,eExrCompression_None,true,floats);
+				writer->BeginWrite(6,1);for(unsigned int i=0;i<6;++i)writer->WriteColor(decoded[i],i,0);
+				writer->EndWrite();writer->release();output->seek(IBuffer::START,0);
+				std::vector<float> stored(24);
+				{
+					IStreamWrapper stream(*output);Imf::InputFile file(stream);Imf::FrameBuffer frame;
+					const char* names[]={"R","G","B","A"};
+					for(unsigned int c=0;c<4;++c)frame.insert(names[c],Imf::Slice::Make(Imf::FLOAT,stored.data()+c,
+						file.header().dataWindow(),4*sizeof(float),24*sizeof(float)));
+					file.setFrameBuffer(frame);file.readPixels(0,0);exact=!stream.Failed();
+				}
+				for(unsigned int i=0;i<24;++i)exact &= stored[i]==(i<3?0.0f:associated[i]);
+				Check(exact,"EXR straight alpha: repeated EXR read/write preserves associated pixels and existing zero-alpha premultiplication");
+				output->release();
+			}
+		}
+		input->release();
+	}
+	auto* opaque=new MemoryBuffer();WriteSDKAssociatedEXR(*opaque,{0.125f,0.25f,0.5f,0},Imf::FLOAT,false);
+	opaque->seek(IBuffer::START,0);auto* reader=new EXRReader(*opaque,eColorSpace_Rec709RGB_Linear);
+	unsigned int width=0,height=0;RISEColor actual;
+	const bool opened=reader->BeginRead(width,height);if(opened)reader->ReadColor(actual,0,0);
+	Check(opened && width==1 && height==1 && SameStraightEXRColor(actual,RISEPel(Rec709RGBPel(0.125,0.25,0.5)),1),
+		"EXR straight alpha: missing alpha remains opaque with unchanged RGB");
+	reader->release();opaque->release();
+}
+
+static void TestEXRAlphaAcrossFormats()
+{
+	auto* source=new MemoryBuffer();
+	WriteSDKAssociatedEXR(*source,{0.25f,0.125f,0.5f,0.5f, 0.0625f,0.125f,0.1875f,0.25f, 0.125f,0.5f,1,0});
+	source->seek(IBuffer::START,0);auto* sourceReader=new EXRReader(*source,eColorSpace_Rec709RGB_Linear);
+	unsigned int width=0,height=0;const bool opened=sourceReader->BeginRead(width,height);
+	Check(opened && width==3 && height==1,"EXR straight alpha: independent associated fixture opens for format conversion");
+	if(!opened || width!=3 || height!=1) {sourceReader->release();source->release();return;}
+	RISEColor straight[3];for(unsigned int i=0;i<3;++i)sourceReader->ReadColor(straight[i],i,0);
+	sourceReader->release();source->release();
+	// The established 8-bit writers truncate quantization: .5->127, .25->63.
+	const RGBA8 expected[]={{127,63,255,127},{63,127,191,63},{31,127,255,0}};
+	std::vector<const char*> formats={"tga"};
+#ifndef NO_PNG_SUPPORT
+	formats.push_back("png");
+#endif
+	for(const char* format : formats) {
+		const bool png=std::strcmp(format,"png")==0;
+		auto* encoded=new MemoryBuffer();IRasterImageWriter* writer=nullptr;
+		if(png) RISE_API_CreatePNGWriter(&writer,*encoded,8,eColorSpace_Rec709RGB_Linear);
+		else RISE_API_CreateTGAWriter(&writer,*encoded,eColorSpace_Rec709RGB_Linear);
+		Check(writer!=nullptr,"EXR straight alpha: target straight-RGBA writer exists");
+		if(!writer){encoded->release();continue;}
+		writer->BeginWrite(3,1);for(unsigned int i=0;i<3;++i)writer->WriteColor(straight[i],i,0);
+		writer->EndWrite();writer->release();encoded->seek(IBuffer::START,0);
+		IRasterImageReader* decoder=nullptr;
+		if(png) RISE_API_CreatePNGReader(&decoder,*encoded,eColorSpace_Rec709RGB_Linear);
+		else RISE_API_CreateTGAReader(&decoder,*encoded,eColorSpace_Rec709RGB_Linear);
+		bool exact=decoder && decoder->BeginRead(width,height) && width==3 && height==1;
+		RISEColor recovered[3];
+		if(exact) for(unsigned int i=0;i<3;++i) {
+			decoder->ReadColor(recovered[i],i,0);RISEColor wanted;
+			wanted.SetFromIntegerized<Rec709RGBPel,unsigned char>(expected[i],255.0);
+			exact &= SameStraightEXRColor(recovered[i],wanted.base,wanted.a);
+		}
+		Check(exact,png?"EXR straight alpha: PNG preserves expected quantized straight RGB and alpha":
+			"EXR straight alpha: TGA preserves expected quantized straight RGB and alpha");
+		if(decoder)decoder->release();encoded->release();
+		if(!exact)continue;
+		auto* roundTrip=new MemoryBuffer();auto* exr=new EXRWriter(*roundTrip,eColorSpace_Rec709RGB_Linear,eExrCompression_None,true,true);
+		exr->BeginWrite(3,1);for(unsigned int i=0;i<3;++i)exr->WriteColor(recovered[i],i,0);
+		exr->EndWrite();exr->release();roundTrip->seek(IBuffer::START,0);
+		float associated[12]={};
+		{
+			IStreamWrapper stream(*roundTrip);Imf::InputFile file(stream);Imf::FrameBuffer frame;
+			const char* channels[]={"R","G","B","A"};
+			for(unsigned int c=0;c<4;++c)frame.insert(channels[c],Imf::Slice::Make(Imf::FLOAT,associated+c,
+				file.header().dataWindow(),4*sizeof(float),12*sizeof(float)));
+			file.setFrameBuffer(frame);file.readPixels(0,0);exact=!stream.Failed();
+		}
+		for(unsigned int i=0;i<3;++i) {
+			const double alpha=expected[i].a*(1.0/255.0);
+			const unsigned char rgb[]={expected[i].r,expected[i].g,expected[i].b};
+			for(unsigned int c=0;c<3;++c)
+				exact &= associated[i*4+c]==static_cast<float>((rgb[c]*(1.0/255.0))*alpha);
+			exact &= associated[i*4+3]==static_cast<float>(alpha);
+		}
+		Check(exact,png?"EXR straight alpha: PNG back-to-EXR has independently decoded associated RGB and alpha":
+			"EXR straight alpha: TGA back-to-EXR has independently decoded associated RGB and alpha");
+		roundTrip->release();
+	}
+}
+
+static void TestEXRWithoutAlphaFlattens()
+{
+	for(bool floats : {false,true}) {
+		auto* buffer=new MemoryBuffer();
+		auto* writer=new EXRWriter(*buffer,eColorSpace_Rec709RGB_Linear,eExrCompression_None,false,floats);
+		writer->BeginWrite(2,1);
+		writer->WriteColor(RISEColor(0.25,0.5,0.75,0.25),0,0);
+		writer->WriteColor(RISEColor(0.5,0.25,0.125,0),1,0);
+		writer->EndWrite();writer->release();buffer->seek(IBuffer::START,0);
+		bool exact=false;
+		{
+			IStreamWrapper stream(*buffer);Imf::RgbaInputFile file(stream);
+			Imf::Rgba pixels[2];file.setFrameBuffer(pixels,1,2);file.readPixels(0,0);
+			exact=!stream.Failed() && file.header().channels().findChannel("A")==nullptr &&
+				float(pixels[0].r)==0.0625f && float(pixels[0].g)==0.125f && float(pixels[0].b)==0.1875f &&
+				float(pixels[0].a)==1 && float(pixels[1].r)==0 && float(pixels[1].g)==0 &&
+				float(pixels[1].b)==0 && float(pixels[1].a)==1;
+		}
+		Check(exact,floats?"EXR straight alpha: RGB-only FLOAT export deliberately flattens over black and omits alpha":
+			"EXR straight alpha: RGB-only HALF export deliberately flattens over black and omits alpha");
+		buffer->release();
+	}
+}
+
 static void TestEXREmbeddedWriter()
 {
 	for(bool floats : {false,true}) {
@@ -1423,7 +1605,7 @@ static void TestEXRLuminance()
 		auto* buffer=new MemoryBuffer();
 		const Imath::Box2i window(Imath::V2i(-3,7),Imath::V2i(-2,8));
 		const float values[]={0.5f,100000,200000,400000};
-		const float opacity[]={0.25f,0.5f,0.75f,1};
+		const float opacity[]={0.0f,0.5f,0.75f,1};
 		{
 			OStreamWrapper stream(*buffer);Imf::Header header(2,2);header.dataWindow()=window;
 			header.channels().insert("Y",Imf::Channel(Imf::FLOAT));
@@ -1437,7 +1619,9 @@ static void TestEXRLuminance()
 		unsigned int width=0,height=0;bool exact=reader->BeginRead(width,height) && width==2 && height==2;
 		if(exact) for(unsigned int i=0;i<4;++i) {
 			RISEColor actual;reader->ReadColor(actual,i%2,i/2);
-			exact &= same(actual,RISEPel(Rec709RGBPel(values[i],values[i],values[i])),alpha?opacity[i]:1);
+			const double a=alpha?opacity[i]:1;
+			const double straight=a!=0?double(values[i])/a:double(values[i]);
+			exact &= same(actual,RISEPel(Rec709RGBPel(straight,straight,straight)),float(a));
 		}
 		Check(exact,alpha?"EXR luminance: FLOAT YA preserves range alpha and offset window":
 			"EXR luminance: FLOAT Y preserves range and fills opaque alpha");
@@ -1447,7 +1631,7 @@ static void TestEXRLuminance()
 		auto* buffer=new MemoryBuffer();
 		const Imath::Box2i window(Imath::V2i(-2,4),Imath::V2i(1,7));
 		std::vector<Imf::Rgba> source(16),reference(16);
-		for(unsigned int i=0;i<16;++i) source[i]=Imf::Rgba(0.25f+0.125f*(i%4),0.2f+0.1f*(i/4),0.75f-0.125f*(i%4),0.5f);
+		for(unsigned int i=0;i<16;++i) source[i]=Imf::Rgba(0.25f+0.125f*(i%4),0.2f+0.1f*(i/4),0.75f-0.125f*(i%4),i==0?0.0f:0.5f);
 		{
 			OStreamWrapper stream(*buffer);Imf::Header header(4,4);header.dataWindow()=window;
 			Imf::RgbaOutputFile file(stream,header,channels);
@@ -1466,7 +1650,10 @@ static void TestEXRLuminance()
 		unsigned int width=0,height=0;bool exact=reader->BeginRead(width,height) && width==4 && height==4;
 		if(exact) for(unsigned int i=0;i<16;++i) {
 			RISEColor actual;reader->ReadColor(actual,i%4,i/4);const auto& p=reference[i];
-			exact &= same(actual,RISEPel(Rec709RGBPel(float(p.r),float(p.g),float(p.b))),float(p.a));
+			const double alpha=float(p.a);
+			const RISEPel straight(Rec709RGBPel(alpha!=0?double(float(p.r))/alpha:double(float(p.r)),
+				alpha!=0?double(float(p.g))/alpha:double(float(p.g)),alpha!=0?double(float(p.b))/alpha:double(float(p.b))));
+			exact &= same(actual,straight,float(p.a));
 		}
 		Check(exact,channels==Imf::WRITE_YC?"EXR luminance: prefixed subsampled YC matches independent SDK conversion":
 			"EXR luminance: prefixed subsampled YCA matches independent SDK conversion and alpha");
@@ -1508,6 +1695,9 @@ static int RunTests()
 {
 	TestReaderFamilyReload();
 #ifndef NO_EXR_SUPPORT
+	TestEXRStraightAlpha();
+	TestEXRAlphaAcrossFormats();
+	TestEXRWithoutAlphaFlattens();
 	TestEXREmbeddedWriter();
 	TestEXRTruncatedFinalChunk();
 	TestEXROffsetWindow();

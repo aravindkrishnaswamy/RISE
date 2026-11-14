@@ -173,10 +173,15 @@ void EXRReader::ReadColor( RISEColor& c, const unsigned int x, const unsigned in
 	if( x >= img_width || y >= img_height || floatbuffer.empty() ) return;
 	const std::size_t idx =
 		( static_cast<std::size_t>( y ) * img_width + x ) * 4u;
-	const float pr = floatbuffer[idx + 0u];
-	const float pg = floatbuffer[idx + 1u];
-	const float pb = floatbuffer[idx + 2u];
-	const float pa = floatbuffer[idx + 3u];
+	const double pa = floatbuffer[idx + 3u];
+	// EXR stores associated RGB, while RISEColor carries straight RGB.
+	// Divide in the encoded color space before its transfer/primary conversion.
+	// Double arithmetic preserves quotients beyond FLOAT's range. At exact
+	// zero alpha, retain stored RGB for additive/hidden-data compatibility;
+	// the EXR writer still premultiplies such RGB back to zero.
+	const double pr = pa != 0 ? static_cast<double>(floatbuffer[idx + 0u]) / pa : floatbuffer[idx + 0u];
+	const double pg = pa != 0 ? static_cast<double>(floatbuffer[idx + 1u]) / pa : floatbuffer[idx + 1u];
+	const double pb = pa != 0 ? static_cast<double>(floatbuffer[idx + 2u]) / pa : floatbuffer[idx + 2u];
 
 	switch( color_space )
 	{
