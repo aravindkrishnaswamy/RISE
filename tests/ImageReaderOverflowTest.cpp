@@ -27,6 +27,7 @@
 //          (valid-PNG decode is covered by the broader scene-test suite,
 //          which loads real .png textures)
 //    TIFF: valid 2x2 decodes; a 65535^2-patched TIFF is safely rejected
+//    JPEG: repeated decode preserves pixels; failed reload clears stale state
 //  Under AddressSanitizer the crafted cases trap on the pre-fix code
 //  (heap-buffer-overflow); on the fixed code they return false cleanly.
 //
@@ -46,6 +47,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstdint>
+#include <filesystem>
 
 #include <zlib.h>						// crc32 for the crafted PNG chunks
 
@@ -55,6 +57,7 @@
 #include "../src/Library/RasterImages/HDRReader.h"
 #include "../src/Library/RasterImages/PNGReader.h"
 #include "../src/Library/RasterImages/TIFFReader.h"
+#include "../src/Library/RasterImages/JPEGReader.h"
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "TestTempDir.h"
 
@@ -70,7 +73,11 @@ static int failCount = 0;
 
 static void Check( bool cond, const char* name )
 {
-	if( cond ) { ++passCount; }
+	if( cond ) {
+		++passCount;
+		const char* marker = std::getenv("RISE_RED_PROVE_MARKER");
+		if( marker && std::strstr(name, marker) ) std::cout << "  PASS: " << name << std::endl;
+	}
 	else { ++failCount; std::cout << "  FAIL: " << name << std::endl; }
 }
 
@@ -198,6 +205,63 @@ static std::vector<char> ReadFileBytes( const std::string& path )
 {
 	std::ifstream f( path.c_str(), std::ios::binary );
 	return std::vector<char>( (std::istreambuf_iterator<char>( f )), std::istreambuf_iterator<char>() );
+}
+
+static void TestJPEGReload()
+{
+	namespace fs = std::filesystem;
+	const auto sameColor = [](const RISEColor& a, const RISEColor& b) {
+		return a.base.r == b.base.r && a.base.g == b.base.g && a.base.b == b.base.b && a.a == b.a;
+	};
+	const fs::path relative = "scenes/Tests/Painters/textures/test_pattern.jpg";
+	fs::path fixture;
+	if( const char* media = std::getenv("RISE_MEDIA_PATH") ) {
+		if( fs::is_regular_file(fs::path(media) / relative) ) fixture = fs::path(media) / relative;
+	}
+	for( auto root = fs::current_path(); fixture.empty(); root = root.parent_path() ) {
+		if( fs::is_regular_file(root / relative) ) fixture = root / relative;
+		if( root == root.parent_path() ) break;
+	}
+	Check( !fixture.empty(), "JPEG reload: locate shipped JPEG fixture" );
+	if( fixture.empty() ) return;
+
+	auto* buffer = new MemoryBuffer( fixture.string().c_str() );
+	auto* reader = new JPEGReader( *buffer, eColorSpace_Rec709RGB_Linear );
+	unsigned int width = 0, height = 0;
+	const bool decoded = reader->BeginRead( width, height );
+	Check( decoded && width == 16 && height == 16, "JPEG reload: decode the shipped 16x16 fixture" );
+	if( decoded && width == 16 && height == 16 ) {
+		std::vector<RISEColor> expected( width * height );
+		for( unsigned int y = 0; y < height; ++y ) {
+			for( unsigned int x = 0; x < width; ++x ) reader->ReadColor( expected[y*width+x], x, y );
+		}
+		for( unsigned int reload = 0; reload < 4; ++reload ) {
+			const bool reloaded = buffer->seek(IBuffer::START, 0) && reader->BeginRead(width, height);
+			bool identical = reloaded && width == 16 && height == 16;
+			if( identical ) {
+				for( unsigned int y = 0; y < height; ++y ) {
+					for( unsigned int x = 0; x < width; ++x ) {
+						RISEColor pixel;
+						reader->ReadColor( pixel, x, y );
+						identical &= sameColor(pixel, expected[y*width+x]);
+					}
+				}
+			}
+			Check( identical, "JPEG reload: repeated rewind and decode preserves every pixel and dimensions" );
+		}
+
+		Check( buffer->Resize(0, true), "JPEG reload: replace the source with an empty input" );
+		width = 123;
+		height = 456;
+		Check( !reader->BeginRead(width, height) && width == 0 && height == 0,
+			"JPEG reload: failed decode clears output dimensions" );
+		const RISEColor poison( -1000, -2000, -3000, -4000 );
+		RISEColor pixel = poison;
+		reader->ReadColor( pixel, 0, 0 );
+		Check( sameColor(pixel, poison), "JPEG reload: failed decode cannot read the previous image" );
+	}
+	reader->release();
+	buffer->release();
 }
 
 //----------------------------------------------------------------------
@@ -725,6 +789,7 @@ int main( int /*argc*/, char* /*argv*/[] )
 {
 	TestRasterStorage();
 	TestHDRWriterBounds();
+	TestJPEGReload();
 	std::cout << "ImageReaderOverflowTest — header-driven write-side overflows are rejected"
 		<< std::endl;
 

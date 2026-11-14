@@ -36,16 +36,14 @@ JPEGReader::JPEGReader( IReadBuffer& buffer, const COLOR_SPACE color_space_ ) :
 
 JPEGReader::~JPEGReader( )
 {
+	EndRead();
 	pReadBuffer.release();
-
-	if( pBuffer ) {
-		stbi_image_free( pBuffer );
-		pBuffer = 0;
-	}
 }
 
 bool JPEGReader::BeginRead( unsigned int& width, unsigned int& height )
 {
+	EndRead();
+	width = height = 0;
 	const auto sourceSize = BufferSize(pReadBuffer);
 	if( sourceSize == 0 ) {
 		GlobalLog()->PrintSourceError( "JPEGReader::BeginRead:: Passed empty buffer to read from", __FILE__, __LINE__ );
@@ -128,4 +126,6 @@ void JPEGReader::EndRead( )
 		stbi_image_free( pBuffer );
 		pBuffer = 0;
 	}
+	bufW = bufH = 0;
+	nChannels = 0;
 }
