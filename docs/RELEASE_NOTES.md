@@ -4,7 +4,8 @@
 
 - MLT: tiny mutation budgets no longer hang or render a black frame, and
   budgets above 2^32 mutations are honoured. Images at budgets not divisible
-  by the chain count are no longer slightly dark.
+  by the chain count are no longer slightly dark. A single chain can now run
+  more than 2^32 mutations without its sampler state wrapping.
 - BDPT and wide-filter PT tile previews are composed per tile, which is
   thread-safe and faster on large frames.
 - A failed parallel task submission under memory pressure can no longer run
@@ -18,11 +19,15 @@
 - MLT rejects `bootstrap_samples 0` at load with a named error; it used to
   read and write past empty arrays and could crash.
 - Tile-preview delivery to callback outputs (Blender bridge) no longer
-  allocates a frame per tile, and its buffers are freed after each render.
+  allocates a frame per tile, and its buffers are freed after each render
+  started through the Job render entry points, including one that fails or
+  is cancelled.
 
 The first three fixes are in commit `2566595ae`, reviewed for one round only;
-the follow-up fixes for the P2s that round recorded have had one review round
-and their corrections are not yet re-reviewed. The
+the follow-up fixes for the P2s that round recorded are in `53805a047` (two
+review rounds). The fixes for a later review's findings (callback buffers
+after failed renders, MLT sampler counters past 2^32, region endpoints at
+`UINT_MAX`) are not yet committed or reviewed. The
 modernization plan ("Resolution of the snapshot, MLT budget and submission
 blockers") records the evidence. The branch is still not signed off.
 

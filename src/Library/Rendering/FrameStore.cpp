@@ -117,16 +117,20 @@ namespace RISE
 				                            : 0;
 				const unsigned int y0 = rc ? rc->top
 				                            : 0;
-				const unsigned int xEnd = rc
-				    ? rc->right + 1u   // inclusive → exclusive end
-				    : static_cast<unsigned int>( parent_.width_ );
-				const unsigned int yEnd = rc
-				    ? rc->bottom + 1u  // inclusive → exclusive end
-				    : static_cast<unsigned int>( parent_.height_ );
-				const unsigned int xClamp = std::min( xEnd,
-				    static_cast<unsigned int>( parent_.width_ ) );
-				const unsigned int yClamp = std::min( yEnd,
-				    static_cast<unsigned int>( parent_.height_ ) );
+				// Inclusive → exclusive end in 64 bits, THEN clamp: a
+				// 32-bit `right + 1` wrapped UINT_MAX ("to the edge",
+				// which RasterImage::Clear honours) to 0 and cleared
+				// nothing.
+				const uint64_t xEnd = rc
+				    ? uint64_t( rc->right ) + 1u
+				    : uint64_t( parent_.width_ );
+				const uint64_t yEnd = rc
+				    ? uint64_t( rc->bottom ) + 1u
+				    : uint64_t( parent_.height_ );
+				const unsigned int xClamp = static_cast<unsigned int>(
+				    std::min<uint64_t>( xEnd, uint64_t( parent_.width_ ) ) );
+				const unsigned int yClamp = static_cast<unsigned int>(
+				    std::min<uint64_t>( yEnd, uint64_t( parent_.height_ ) ) );
 				for ( unsigned int y = y0; y < yClamp; ++y ) {
 					for ( unsigned int x = x0; x < xClamp; ++x ) {
 						parent_.beauty_->At( x, y ) = c.base;

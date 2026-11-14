@@ -16,6 +16,7 @@
 #ifndef WriteOnlyRasterImage_
 #define WriteOnlyRasterImage_
 
+#include <algorithm>
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IRasterImageWriter.h"
 #include "../Utilities/PEL.h"
@@ -77,12 +78,19 @@ namespace RISE
 			void Clear( const RISEColor& p, const Rect* rc )
 			{
 				if( pWriter ) {
+					// Same inclusive-region contract as RISERasterImage::Clear:
+					// endpoints are clamped to the image (UINT_MAX = "to the
+					// edge"); empty images and wholly outside or inverted
+					// regions write nothing.
+					if( !width || !height ) return;
 					unsigned int startx = 0, endx = width-1, starty = 0, endy = height-1;
 					if( rc ) {
+						if( rc->left > rc->right || rc->top > rc->bottom ||
+							rc->left >= width || rc->top >= height ) return;
 						startx = rc->left;
-						endx = rc->right;
+						endx = std::min( rc->right, width-1 );
 						starty = rc->top;
-						endy = rc->bottom;
+						endy = std::min( rc->bottom, height-1 );
 					}
 
 					for( unsigned int j=starty; j<=endy; j++ ) {

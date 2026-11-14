@@ -1,6 +1,6 @@
 # C++ utility modernization plan
 
-**Status:** Host follow-up work on `codex/cpp-utility-modernization` reached a major roadblock (parallel BDPT intermediate output needed a synchronized snapshot contract). That roadblock and the two further P1s recorded with it (MLT small budgets, thread-pool submission failure) are fixed in commit `2566595ae` and have had one fresh review round (see "Resolution of the snapshot, MLT budget and submission blockers"); the P2s that round recorded are addressed in a follow-up (part (e) of that subsection). The branch is not ready for final sign-off: there is no whole-branch zero-P1 claim, Xcode Opto and Blender builds were not rerun for these fixes, and native Windows and Android verification remain outstanding. Completed increments have host verification. Audit baseline `5fc6acaef`.
+**Status:** Host follow-up work on `codex/cpp-utility-modernization` reached a major roadblock (parallel BDPT intermediate output needed a synchronized snapshot contract). That roadblock and the two further P1s recorded with it (MLT small budgets, thread-pool submission failure) are fixed in commit `2566595ae` and have had one fresh review round (see "Resolution of the snapshot, MLT budget and submission blockers"); the P2s that round recorded are addressed in the follow-up commit `53805a047` (part (e) of that subsection; two review rounds, the second with no P0 or P1). Three findings of a later independent review of `680f0c44b..53805a047` are fixed but uncommitted and unreviewed (part (f)). The branch is not ready for final sign-off: there is no whole-branch zero-P1 claim, Xcode Opto and Blender builds were not rerun for these fixes, and native Windows and Android verification remain outstanding. Completed increments have host verification. Audit baseline `5fc6acaef`.
 
 ## Implementation checkpoint
 
@@ -1267,13 +1267,12 @@ Windows, Android, Xcode Opto and Blender builds were not rerun for these
 changes.
 
 **(e) P2s recorded by that review, and their follow-up.** The follow-up
-is not committed at the time of writing and has had one review round, whose
-findings (a Hilbert regression among them) are addressed below but not
-re-reviewed. Numbers are from the implementing worker's runs. Both clean
-builds (make and Xcode Deployment RISE-GUI) were warning-free on the tree
-BEFORE this follow-up and must be rerun; for the follow-up only the make
-build was run (zero warnings). Windows, Android, Xcode Opto and Blender were
-not rebuilt.
+is committed as `53805a047`. It had two review rounds: the first found a
+Hilbert regression among other findings (addressed below), and the second
+found no P0 or P1. Numbers are from the implementing worker's runs. Both
+clean builds (make and Xcode Deployment RISE-GUI) were warning-free on the
+tree BEFORE this follow-up; for the follow-up only the make build was run
+(zero warnings). Windows, Android, Xcode Opto and Blender were not rebuilt.
 
 - Fixed: raster sequences overlapped, escaped their range or read out of
   bounds. Morton (the default for ordinary renders, `raster_sequence_type`
@@ -1387,6 +1386,122 @@ not rebuilt.
   allocation per pushed task; it requires at least one failing point and
   that the sweep reaches an uninjected submission.
 - `VCMPelRasterizer.h` now marks all of its overrides `override`.
+
+**(f) Findings of a later independent review of `680f0c44b..53805a047`.**
+Implementer-reported and uncommitted at the time of writing. A review round
+on the three fixes below found no P0 or P1; its P2s are addressed in the
+follow-up at the end of this part, which is not yet reviewed. Both clean
+builds (make, Xcode Deployment RISE-GUI) were warning-free on the tree
+before that small follow-up; for the follow-up only the make build was run
+(zero warnings). Numbers below are from the implementing worker's runs.
+
+- P1, fixed: callback buffers survived a render that never reached a final
+  delivery. The dispatcher freed its frame-sized buffers only after a final
+  `OutputImage`, so a receiver or later output that threw, a cancelled still,
+  or a cancelled animation left them allocated for the Job's lifetime, and a
+  retry at the same size and format reused them without zeroing (the
+  receiver saw the previous render's pixels outside its rect). Decision:
+  bracket every Job render entry point rather than add a begin/end
+  notification to `IRasterizerOutput`. `IRasterizerOutput` has no per-render
+  notification, adding one is a public-interface change, and every rasterizer
+  type would have to call it; callback dispatchers are only ever created by
+  `Job::AddCallbackRasterizerOutput`, and every in-tree host that uses them
+  (Blender bridge, 3ds Max) renders through `Job::Rasterize`. The Job now
+  registers each dispatcher it creates (one counted reference, dropped by
+  `RemoveRasterizerOutputs` and the destructor) and a
+  `Job::CallbackOutputRenderScope` in `Rasterize`, `RasterizeRegion`,
+  `RasterizeAnimation` and both `RasterizeAnimationUsingOptions` releases
+  their buffers on entry and on every exit, under each dispatcher's mutex. The
+  per-final-delivery free stays. Coverage: `ManagedJob`, DRISE, the ASCII
+  command parser, the CLI and the GUIs reach these entry points; the agent's
+  ephemeral rasterizers and the AutoRasterizer probe never carry a callback
+  output; `SceneEditController`'s legacy production render calls the Job's
+  rasterizer directly and is not covered, but no host attaching callback
+  outputs uses the scene editor, and the next Job-entry render releases on
+  entry. New `tests/CallbackOutputRenderScopeTest.cpp`: real PT and BDPT
+  renders through the IJob entry points, both receiver formats, cases
+  receiver throws, progress cancels, animation cancelled, a later output
+  throws, and success; after each, no dispatcher owns a buffer and a retry
+  region render never shows a nonzero pixel outside the rects already
+  delivered in that render. 208/0; with the HEAD `Job.cpp`/`Job.h` plus only
+  the test probe, 184/24 (every case red on both checks except the cancelled
+  still, whose rasterizers still deliver a final image, and success).
+  Sanitizers (test, `Job.cpp`, `FrameStore.cpp`, `ViewportFrameStore.cpp`
+  instrumented): ASan/UBSan and TSan clean, 208/0 each (the first TSan run's
+  17 reports were all in the test harness's unsynchronized counters, now
+  atomic).
+- P2, fixed: the 64-bit per-chain MLT budget could drive a chain past
+  2^32 iterations while `PSSMLTSampler` kept 32-bit iteration stamps, so the
+  lazy catch-up comparisons broke at the wrap. Decision: widen
+  `currentIteration`, `lastLargeStepIteration` and both `PrimarySample`
+  stamps to 64 bits (`PrimarySample` 24 to 32 bytes) rather than cap the
+  schedule. Ordinary budgets are bit-identical: a driver dumping 5,970,972
+  draws (6 seeds, large-step probabilities 0, 0.3 and 0.9, 20,000 iterations,
+  legacy, extra-tier and alpha streams, accepts and rejects) is byte-identical
+  between HEAD and the fix (ASan/UBSan run of the suite with the sampler
+  instrumented: clean). New `PSSMLTStreamAliasingTest` test I seeds a
+  sampler at 2^32-40 and compares 410 draws over 120 iterations with a twin
+  seeded at 1000: identical on the fix, 253 of 410 differ on HEAD. Cost on
+  `scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene`, 10 interleaved pairs:
+  bootstrap 1705 to 1715 ms (+0.6%, paired t 0.96), total 6736 to 6769 ms
+  (+0.5%, t 1.06), not resolvable. Audit of the rest of the MLT path: the
+  round loop, remaining-work counts, splat normalization, progress and
+  timing are already 64-bit or saturating; per-round and per-segment counts
+  are clamped to `UINT_MAX` by the schedule helpers; `MLTAdaptiveRoundResize`
+  can wrap its informational round count to 0 only for a saturated
+  2^64-mutation budget, which makes every round "planned last" and still
+  takes `min(remaining, UINT_MAX)` (not changed). The lazy catch-up still
+  applies one mutation per skipped iteration, so a lane untouched for very
+  many iterations with a large-step probability near 0 is slow by design.
+- P2, fixed: the unbound `ViewportFrameStore::OutputIntermediateImage`
+  added 1 to the inclusive endpoint before clamping, so `UINT_MAX` ("to the
+  edge") wrapped to 0 and a valid region copied nothing and fired no tile
+  notification. The endpoint is now clamped first. Sibling audit: the same
+  wrap was live in `FrameStore`'s beauty view `Clear` (cleared nothing), and
+  `RISEWriteOnlyRasterImage::Clear` did not clamp at all (an endpoint past the
+  image looped writing out-of-range coordinates, forever at `UINT_MAX`); both
+  fixed to the `RISERasterImage::Clear` contract. Already safe:
+  `CopyTileFromRasterImage` (64-bit clip), `ClampRegionToImage`/
+  `IntersectRegion`/`CopyRegion` and `BoundsFromRect` (clamp before use),
+  `SplatFilm`/`FilteredFilm` `Resolve`, `OIDNDenoiser`'s region path and
+  `RegionalPixelCount` (clamp first), the callback dispatcher (clamps), the
+  Blender and 3ds Max receivers (handed clamped rects), `FrameSink` (ignores
+  the region), and `Win32WindowRasterizerOutput` (adds 1 only below the
+  clamp; read, not compiled). `ViewportFrameStoreTest` 116/0 (110/6 on HEAD)
+  and `FrameStoreTest` 362/0 (360/2 on HEAD).
+- Follow-up to that review's P2s:
+  - Registry lifetime. Each entry now records the rasterizer its
+    dispatcher is attached to (outputs are never replayed onto another
+    rasterizer) and is dropped where that rasterizer's outputs go away:
+    `DestroyContainers` (so `ClearAll`, reload, variant switch and edit
+    re-derive), `RegisterAndActivateRasterizer` replacing an instance, and
+    `RemoveRasterizerOutputs`, which now drops only the active rasterizer's
+    entries (it frees only that rasterizer's outputs). Comments state that
+    `ReleaseRenderBuffers` and the dispatcher destructor never call the
+    receiver, and that a receiver must not call Job render or
+    output-management entry points from its callback (non-recursive
+    `dispatchMutex`). New test rows: four `ClearAll` + reload cycles keep the
+    registry at one entry and drop it to zero after each reload; replacing
+    `pixelpel_rasterizer` drops its entry; `RemoveRasterizerOutputs` on one
+    of two rasterizers leaves the other's dispatcher registered and still
+    delivering. With the previous round's registry behaviour these rows read
+    9 failures (232/9).
+  - The three animation entry points never released their raster sequence
+    (pre-existing). All five entry points now use a scoped release declared
+    before the callback-output scope, so the sequence is released after that
+    scope ends, on return or unwind. `leaks --atExit` on the callback test:
+    0 leaks; with only the three animation releases removed, 24 leaks
+    (`MortonRasterizeSequence`). ASan's LeakSanitizer was not used on this
+    macOS host; `leaks` is the check that was run.
+  - The cancel rows were vacuous at 64x64 (about 4 tiles). The frame is now
+    256x256 and each cancel row first renders the same job uncancelled:
+    still renders 4 deliveries cancelled vs 130 uncancelled, animations
+    14-26 vs 387; the check requires fewer than half. A new row isolates
+    release on ENTRY: a failed direct rasterizer call (not bracketed, like
+    `SceneEditController`'s legacy production render) leaves the buffer
+    held, and the next Job-entry region render shows no stale pixel; with
+    the entry release removed it fails 4 of 4 (237/4).
+  - `CallbackOutputRenderScopeTest` 241/0.
 
 ### Host measurements and decisions
 

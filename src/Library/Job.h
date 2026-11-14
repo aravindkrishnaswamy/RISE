@@ -53,11 +53,13 @@
 #include "Utilities/OidnConfig.h"
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <vector>
 
 namespace RISE
 {
+	namespace Implementation { class CallbackRasterizerOutputDispatch; }   // Job.cpp-local; see mCallbackOutputs
 	namespace Cst { struct Document; typedef std::int64_t NodeId; }   // P5 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of Job.h (NodeId == Cst.h's, a legal typedef redeclaration)
 
 	//! Job - This is used to simplify the creation of a job, all things can be
@@ -3530,6 +3532,47 @@ namespace RISE
 									);
 
 	private:
+		//! Callback-output render scope (2026-11-14).  Every
+		//! CallbackRasterizerOutputDispatch this Job creates through
+		//! AddCallbackRasterizerOutput is registered here (one counted
+		//! reference each), so every Job render entry point can release the
+		//! dispatchers' frame-sized conversion buffers when the render ends,
+		//! however it ends (receiver or other-output throw, cancellation,
+		//! cancelled animation, early return), and before it starts.  The
+		//! dispatcher otherwise frees them only after a final OutputImage.
+		//! A render that calls the rasterizer directly instead of a Job
+		//! entry point (SceneEditController's legacy production render)
+		//! is not bracketed; the next Job-entry render releases on entry.
+		//! Each entry records the rasterizer the dispatcher was attached to
+		//! (no output is ever replayed onto another rasterizer), and the
+		//! entry is dropped exactly where that rasterizer's outputs go away:
+		//! RemoveRasterizerOutputs (active rasterizer only), the replacement
+		//! of a registered rasterizer, DestroyContainers (ClearAll, reload,
+		//! variant switch, edit re-derive) and ~Job.
+		//! Guarded by mCallbackOutputsMutex; never held across a render.
+		//! A receiver (IJobRasterizerOutput) must not call Job render or
+		//! output-management entry points from inside its callback: the
+		//! dispatcher holds its non-recursive dispatchMutex across the
+		//! receiver call, and those entry points take it (self-deadlock).
+		class CallbackOutputRenderScope;
+		friend class CallbackOutputRenderScope;
+		struct CallbackOutputEntry
+		{
+			Implementation::CallbackRasterizerOutputDispatch*	dispatch;	///< one counted reference
+			const IRasterizer*									owner;		///< identity only, never dereferenced
+		};
+		std::vector<CallbackOutputEntry> mCallbackOutputs;
+		std::mutex mCallbackOutputsMutex;
+		void ReleaseCallbackOutputRenderBuffers_() noexcept;
+		//! Drops the entries attached to `owner`, or all entries when
+		//! `owner` is null.  Call BEFORE the owner's outputs are released.
+		void DropCallbackOutputRegistry_( const IRasterizer* owner = nullptr ) noexcept;
+	public:
+		//! Test seam (2026-11-14): number of registered callback dispatchers.
+		//! Not part of IJobPriv.
+		size_t						ForTest_CallbackOutputRegistrySize();
+	private:
+
         bool AddIndexedMeshDirections(
             const char* name, const float* vertices, const float* normals, const float* coords,
             const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,

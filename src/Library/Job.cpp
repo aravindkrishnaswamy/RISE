@@ -453,7 +453,7 @@ Job::Job( )
 
 Job::~Job( )
 {
-	DestroyContainers();
+	DestroyContainers();	// also drops the callback-output registry
 }
 
 // L6b — lazy-allocate (or reuse) the canonical FrameStore.  The
@@ -696,6 +696,9 @@ void Job::InitializeContainers()
 
 void Job::DestroyContainers()
 {
+	// Every registered rasterizer (and with it every callback output)
+	// is released below; drop the callback-output registry first.
+	DropCallbackOutputRegistry_();
 	safe_shutdown_and_release( pScene );
 	// pRasterizer is a borrowed pointer into rasterizerRegistry; the
 	// map below owns the addrefs.  Walk the registry and release each
@@ -10992,7 +10995,8 @@ namespace RISE {
 			std::mutex				dispatchMutex;
 			// Float delivery buffer, reused across intermediate deliveries
 			// like pBuffer (both guarded by dispatchMutex, both freed after a
-			// final OutputImage).  The receiver contract is a FULL-FRAME
+			// final OutputImage and whenever a Job render entry point starts
+			// or ends, see ReleaseRenderBuffers).  The receiver contract is a FULL-FRAME
 			// array indexed (y*width+x)*4 with the valid rect passed
 			// alongside, so the buffer is frame-sized.  Outside the delivered
 			// rect it holds zeros or earlier tiles of the same render.
@@ -11009,6 +11013,9 @@ namespace RISE {
 				width = height = 0;
 			}
 
+			// INVARIANT: must never call the receiver (pObj): the Job's
+			// registry may release the last reference after the host has
+			// destroyed its receiver.
 			virtual ~CallbackRasterizerOutputDispatch() { ClearBuffer_(); }
 
 		public:
@@ -11023,6 +11030,33 @@ namespace RISE {
 			CallbackRasterizerOutputDispatch( IJobRasterizerOutput& pObj_ ) :
 			  pObj( pObj_ ), pBuffer( 0 ), width( 0 ), height( 0 ), bPremultipliedAlpha( false ), color_space( eColorSpace_sRGB )
 			{
+			}
+
+			//! Ends the render's use of the frame-sized conversion buffers.
+			//! Called by the owning Job when any render entry point starts
+			//! and when it returns or unwinds (Job::CallbackOutputRenderScope),
+			//! so a render that never reaches a final OutputImage (a throw,
+			//! a cancel, a cancelled animation) neither keeps the buffers for
+			//! the Job's lifetime nor hands its pixels to the next render.
+			//! Takes dispatchMutex, so it waits for an in-progress receiver
+			//! call rather than freeing under it; at a render's exit the
+			//! workers have joined and no delivery is in flight.
+			//! INVARIANT: must never call the receiver (pObj) -- it runs at
+			//! render entry/exit and from registry drops, possibly after the
+			//! host has torn its receiver down.
+			void ReleaseRenderBuffers()
+			{
+				std::lock_guard<std::mutex> lock(dispatchMutex);
+				ClearBuffer_();
+			}
+
+			//! Test hook: whether either conversion buffer currently owns
+			//! storage.  Unsynchronized by design (a const reader cannot take
+			//! dispatchMutex without making it mutable): call it only while no
+			//! render is delivering to this output.
+			bool HoldsRenderBuffersUnsynchronized() const
+			{
+				return pBuffer!=nullptr || floatBuffer.capacity()!=0;
 			}
 
 			//! Outputs an intermediate scanline of rasterized data
@@ -11163,8 +11197,110 @@ namespace RISE {
 		{
 			return CreateCallbackRasterizerOutputDispatch_(receiver);
 		}
+
+		// Test-only probe: whether any callback dispatcher attached to
+		// `rasterizer` still owns a conversion buffer.  Call only between
+		// renders (see HoldsRenderBuffersUnsynchronized).
+		bool ForTest_CallbackOutputsHoldRenderBuffers(const IRasterizer& rasterizer)
+		{
+			struct Probe final : IEnumCallback<IRasterizerOutput> {
+				bool holds=false;
+				bool operator()(const IRasterizerOutput& output) override {
+					if(const auto* dispatch=dynamic_cast<const CallbackRasterizerOutputDispatch*>(&output))
+						holds = holds || dispatch->HoldsRenderBuffersUnsynchronized();
+					return true;
+				}
+			} probe;
+			rasterizer.EnumerateRasterizerOutputs(probe);
+			return probe.holds;
+		}
 	}
 }
+
+//! RAII bracket around one render of a Job entry point: releases every
+//! registered callback dispatcher's conversion buffers on entry and on
+//! every exit (return or unwind).  Entry release guarantees a render never
+//! starts with a previous render's pixels even if that render bypassed the
+//! Job entry points (see Job.h's mCallbackOutputs comment).
+class Job::CallbackOutputRenderScope
+{
+public:
+	explicit CallbackOutputRenderScope( Job& job ) : mJob( job ) { mJob.ReleaseCallbackOutputRenderBuffers_(); }
+	~CallbackOutputRenderScope() { mJob.ReleaseCallbackOutputRenderBuffers_(); }
+	CallbackOutputRenderScope( const CallbackOutputRenderScope& ) = delete;
+	CallbackOutputRenderScope& operator=( const CallbackOutputRenderScope& ) = delete;
+private:
+	Job& mJob;
+};
+
+namespace
+{
+	//! Releases a render entry point's raster sequence on every exit.
+	//! Declared BEFORE the CallbackOutputRenderScope so the sequence is
+	//! released after that scope ends.
+	struct ScopedRasterizeSequenceRelease
+	{
+		IRasterizeSequence*& seq;
+		~ScopedRasterizeSequenceRelease() { safe_release( seq ); }
+	};
+}
+
+void Job::ReleaseCallbackOutputRenderBuffers_() noexcept
+{
+	try {
+		std::lock_guard<std::mutex> lock( mCallbackOutputsMutex );
+		for( const CallbackOutputEntry& entry : mCallbackOutputs ) {
+			entry.dispatch->ReleaseRenderBuffers();
+		}
+	} catch( ... ) {
+		// std::mutex::lock can only fail with a system_error on a
+		// resource-deadlock/OS error; a release is best-effort (the
+		// dispatcher still frees after its next final delivery and in
+		// its destructor) and must not escape a destructor.
+		GlobalLog()->PrintEasyError( "Job: failed to release callback output render buffers" );
+	}
+}
+
+void Job::DropCallbackOutputRegistry_( const IRasterizer* owner ) noexcept
+{
+	// Partition in place (no allocation, cannot throw once locked); the
+	// dropped references are released after the registry lock is gone.
+	std::vector<CallbackOutputEntry> dropped;
+	try {
+		std::lock_guard<std::mutex> lock( mCallbackOutputsMutex );
+		if( !owner ) {
+			dropped.swap( mCallbackOutputs );
+		} else {
+			const auto keepEnd = std::stable_partition( mCallbackOutputs.begin(), mCallbackOutputs.end(),
+				[owner]( const CallbackOutputEntry& e ) { return e.owner != owner; } );
+			dropped.assign( keepEnd, mCallbackOutputs.end() );
+			mCallbackOutputs.erase( keepEnd, mCallbackOutputs.end() );
+		}
+	} catch( ... ) {
+		GlobalLog()->PrintEasyError( "Job: failed to drop the callback output registry" );
+		return;
+	}
+	for( CallbackOutputEntry& entry : dropped ) {
+		entry.dispatch->ReleaseRenderBuffers();
+		safe_release( entry.dispatch );
+	}
+}
+
+size_t Job::ForTest_CallbackOutputRegistrySize()
+{
+	std::lock_guard<std::mutex> lock( mCallbackOutputsMutex );
+	return mCallbackOutputs.size();
+}
+
+namespace RISE { namespace Implementation {
+	// Test-only: the callback-output registry size of a Job, or SIZE_MAX if
+	// `job` is not a Job.
+	size_t ForTest_JobCallbackOutputRegistrySize( IJob& job )
+	{
+		Job* concrete = dynamic_cast<Job*>( &job );
+		return concrete ? concrete->ForTest_CallbackOutputRegistrySize() : static_cast<size_t>( -1 );
+	}
+} }
 
 //! Creates a user callback rasterizer output
 //! This should be called after a rasterizer has been set
@@ -11178,10 +11314,23 @@ bool Job::AddCallbackRasterizerOutput(
 		return false;
 	}
 
-	IRasterizerOutput* pRo = CreateCallbackRasterizerOutputDispatch_( *pObj );
+	// Reserve the registry slot first so the registration below cannot
+	// fail after the rasterizer already owns the dispatcher.
+	std::lock_guard<std::mutex> registryLock( mCallbackOutputsMutex );
+	mCallbackOutputs.reserve( mCallbackOutputs.size()+1 );
 
-	pRasterizer->AddRasterizerOutput( pRo );
-	safe_release( pRo );
+	Implementation::CallbackRasterizerOutputDispatch* pRo =
+		new Implementation::CallbackRasterizerOutputDispatch( *pObj );
+	GlobalLog()->PrintNew( pRo, __FILE__, __LINE__, "callback rasterizer output dispatch" );
+
+	try {
+		pRasterizer->AddRasterizerOutput( pRo );
+	} catch( ... ) {
+		safe_release( pRo );
+		throw;
+	}
+	// The creation reference becomes the registry's reference.
+	mCallbackOutputs.push_back( CallbackOutputEntry{ pRo, pRasterizer } );
 
 	return true;
 }
@@ -11889,17 +12038,12 @@ bool Job::Rasterize(
 	// propagated up through RasterizeScene (ThreadPool::ParallelFor has
 	// surfaced such exceptions to the caller since commit 2692d1af,
 	// instead of std::terminate'ing) -- otherwise a throw here leaks the
-	// refcounted sequence object.  Release-and-rethrow keeps the success
-	// path's release at the exact same point (right after RasterizeScene
-	// returns) as before this fix.
-	try {
-		pRasterizer->RasterizeScene( *pScene, 0, pSeq );
-	}
-	catch( ... ) {
-		safe_release( pSeq );
-		throw;
-	}
-	safe_release( pSeq );
+	// refcounted sequence object.  The scoped release (declared before the
+	// callback-output scope) frees it after RasterizeScene returns or
+	// unwinds, once the callback-output scope has ended.
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };
+	CallbackOutputRenderScope callbackOutputs( *this );
+	pRasterizer->RasterizeScene( *pScene, 0, pSeq );
 
 	return true;
 }
@@ -11938,6 +12082,8 @@ bool Job::RasterizeAnimation(
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };	// was never released (pre-existing leak)
+	CallbackOutputRenderScope callbackOutputs( *this );
 	pRasterizer->RasterizeSceneAnimation( *pScene, time_start, time_end, num_frames, do_fields, invert_fields, 0, 0, pSeq );
 
 	return true;
@@ -11996,14 +12142,9 @@ bool Job::RasterizeRegion(
 	// on every exit, including a worker exception propagated up through
 	// RasterizeScene since ThreadPool::ParallelFor stopped
 	// std::terminate'ing on those (commit 2692d1af).
-	try {
-		pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
-	}
-	catch( ... ) {
-		safe_release( pSeq );
-		throw;
-	}
-	safe_release( pSeq );
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };
+	CallbackOutputRenderScope callbackOutputs( *this );
+	pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
 
 	return true;
 }
@@ -12596,6 +12737,10 @@ bool Job::RemoveRasterizerOutputs(
 			"Job::RemoveRasterizerOutputs:: no rasterizer is set, nothing to remove" );
 		return false;
 	}
+	// Only the active rasterizer's outputs are freed, so only the
+	// dispatchers attached to it leave the registry; those on other
+	// registered rasterizers stay attached and keep their entries.
+	DropCallbackOutputRegistry_( pRasterizer );
 	pRasterizer->FreeRasterizerOutputs();
 	return true;
 }
@@ -15840,6 +15985,8 @@ bool Job::RasterizeAnimationUsingOptions(
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
 
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };	// was never released (pre-existing leak)
+	CallbackOutputRenderScope callbackOutputs( *this );
 	pRasterizer->RasterizeSceneAnimation( *pScene,
 		aTs, aTe, aNf, aDf, aInvf, 0, 0, pSeq );
 
@@ -15876,6 +16023,8 @@ bool Job::RasterizeAnimationUsingOptions(
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
 
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };	// was never released (pre-existing leak)
+	CallbackOutputRenderScope callbackOutputs( *this );
 	pRasterizer->RasterizeSceneAnimation( *pScene,
 		aTs, aTe, aNf, aDf, aInvf, 0, &frame, pSeq );
 
@@ -15956,6 +16105,9 @@ void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* p
 		if( pRasterizer == it->second.instance ) {
 			pRasterizer = 0;   // breaks the dangling-borrow
 		}
+		// Outputs are not replayed onto the replacement; drop the
+		// callback dispatchers attached to the instance being released.
+		DropCallbackOutputRegistry_( it->second.instance );
 		safe_release( it->second.instance );
 		it->second.instance = pRaster;
 		it->second.params   = params;

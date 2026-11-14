@@ -53,6 +53,7 @@
 #include "../src/Library/Rendering/FrameEncoders.h"
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "../src/Library/RasterImages/WriteOnlyRasterImage.h"
+#include <limits>
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/Interfaces/IFrameEncoder.h"
@@ -340,6 +341,73 @@ namespace
 				"region-only intermediate: no source pixel outside the region is read into the store (" +
 				std::to_string( sentinelCopied ) + " copied)" );
 			Check( previousLost == 0, "region-only intermediate: pixels outside the region keep their previous content" );
+		}
+
+		// Inclusive endpoint UINT_MAX means "to the image edge".  The
+		// endpoint must be clamped before the inclusive->exclusive +1,
+		// which used to wrap it to 0 and drop a valid, intersecting
+		// region (no pixels copied, no tile notification).
+		{
+			const unsigned int kMax = std::numeric_limits<unsigned int>::max();
+			const Rect toEdge( 40, 48, kMax, kMax );	// top, left, bottom, right
+			std::vector<RISEColor> before( 64*64 );
+			{
+				const IRasterImage& store = vfs->GetFrameStore()->AsBeautyRasterImage();
+				for ( unsigned y = 0; y < 64; ++y )
+					for ( unsigned x = 0; x < 64; ++x ) before[y*64+x] = store.GetPEL( x, y );
+			}
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x ) {
+					const bool in = x >= 48 && y >= 40;
+					img->SetPEL( x, y, in ? RISEColor( RISEPel( 0.0625, 0.5, 0.875 ), 1.0 )
+					                      : RISEColor( RISEPel( 9.0, -3.0, 7.0 ), 0.5 ) );
+				}
+			const int fires = tileFires.load();
+			vfs->OutputIntermediateImage( *img, &toEdge );
+			Check( tileFires.load() == fires + 1,
+				"UINT_MAX-endpoint region [40..edge]x[48..edge] fires exactly its one overlapping tile callback (got " +
+				std::to_string( tileFires.load() - fires ) + ")" );
+			const IRasterImage& store = vfs->GetFrameStore()->AsBeautyRasterImage();
+			unsigned insideBad = 0, outsideChanged = 0;
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x ) {
+					const RISEColor c = store.GetPEL( x, y );
+					if ( x >= 48 && y >= 40 ) {
+						if ( c.base.r != 0.0625 || c.base.g != 0.5 || c.base.b != 0.875 ) ++insideBad;
+					} else {
+						const RISEColor& b = before[y*64+x];
+						if ( c.base.r != b.base.r || c.base.g != b.base.g || c.base.b != b.base.b || c.a != b.a ) ++outsideChanged;
+					}
+				}
+			Check( insideBad == 0, "UINT_MAX-endpoint region: every pixel to the edge is copied (" +
+				std::to_string( insideBad ) + " missing)" );
+			Check( outsideChanged == 0, "UINT_MAX-endpoint region: sentinel outside the region untouched (" +
+				std::to_string( outsideChanged ) + " changed)" );
+
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x )
+					img->SetPEL( x, y, RISEColor( RISEPel( 0.375, 0.25, 0.125 ), 1.0 ) );
+			const Rect whole( 0, 0, kMax, kMax );
+			const int firesWhole = tileFires.load();
+			vfs->OutputIntermediateImage( *img, &whole );
+			Check( tileFires.load() == firesWhole + 4,
+				"UINT_MAX-endpoint whole-frame region fires all 4 tile callbacks (got " +
+				std::to_string( tileFires.load() - firesWhole ) + ")" );
+			unsigned wholeBad = 0;
+			for ( unsigned y = 0; y < 64; ++y )
+				for ( unsigned x = 0; x < 64; ++x ) {
+					const RISEColor c = store.GetPEL( x, y );
+					if ( c.base.r != 0.375 || c.base.g != 0.25 || c.base.b != 0.125 ) ++wholeBad;
+				}
+			Check( wholeBad == 0, "UINT_MAX-endpoint whole-frame region copies every pixel" );
+
+			// Fully outside and inverted regions stay empty.
+			const int firesEmpty = tileFires.load();
+			const Rect outside( 64, 64, kMax, kMax );
+			const Rect inverted( 10, 30, 5, kMax );
+			vfs->OutputIntermediateImage( *img, &outside );
+			vfs->OutputIntermediateImage( *img, &inverted );
+			Check( tileFires.load() == firesEmpty, "outside / inverted UINT_MAX regions fire nothing" );
 		}
 
 		safe_release( img );
@@ -832,6 +900,44 @@ namespace
 				"write-only rebind retains a writer owned solely by the image" );
 			image->release();
 			Check( destroyed, "write-only rebind releases the retained writer at destruction" );
+		}
+
+		// Clear's inclusive region is clamped to the image like
+		// RISERasterImage::Clear: UINT_MAX means "to the edge" (it used to
+		// loop forever, writing coordinates outside the image).
+		struct CountingWriter final : IRasterImageWriter, Reference
+		{
+			unsigned int writes = 0, outOfRange = 0;
+			void BeginWrite( unsigned int, unsigned int ) override {}
+			void WriteColor( const RISEColor&, unsigned int x, unsigned int y ) override
+			{
+				++writes;
+				if( x >= 3 || y >= 2 ) ++outOfRange;
+				if( writes > 1000 ) throw std::runtime_error( "runaway Clear" );
+			}
+			void EndWrite() override {}
+		};
+		{
+			auto* counter = new CountingWriter();
+			auto* clearImage = new RISEWriteOnlyRasterImage( 3, 2 );
+			clearImage->DumpImage( counter );
+			counter->writes = 0;
+			const unsigned int kMax = std::numeric_limits<unsigned int>::max();
+			const Rect toEdge( 0, 1, kMax, kMax );
+			bool threw = false;
+			try { clearImage->Clear( RISEColor( RISEPel( 1, 1, 1 ), 1 ), &toEdge ); }
+			catch( const std::exception& ) { threw = true; }
+			Check( !threw && counter->writes == 4 && counter->outOfRange == 0,
+				"write-only Clear with a UINT_MAX endpoint clears exactly to the edge (writes=" +
+				std::to_string( counter->writes ) + ", out of range=" + std::to_string( counter->outOfRange ) + ")" );
+			counter->writes = 0;
+			const Rect outside( 5, 0, kMax, kMax );
+			threw = false;
+			try { clearImage->Clear( RISEColor( RISEPel( 1, 1, 1 ), 1 ), &outside ); }
+			catch( const std::exception& ) { threw = true; }
+			Check( !threw && counter->writes == 0, "write-only Clear with a wholly outside region writes nothing" );
+			clearImage->release();
+			counter->release();
 		}
 	}
 

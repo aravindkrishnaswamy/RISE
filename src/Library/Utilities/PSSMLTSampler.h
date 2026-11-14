@@ -113,12 +113,18 @@ namespace RISE
 			/// Tracks the current accepted value, a backup for rejection,
 			/// and the iteration at which it was last modified (for lazy
 			/// catch-up of mutations across iterations).
+			///
+			/// The iteration stamps are 64-bit, matching the 64-bit
+			/// per-chain mutation budget (MLTMutationSchedule::perChain):
+			/// a chain may run more than UINT_MAX iterations, and the lazy
+			/// catch-up below compares and subtracts these stamps, which a
+			/// 32-bit counter would wrap mid-chain (2026-11-14).
 			struct PrimarySample
 			{
 				Scalar		value;				///< Current accepted value in [0,1)
 				Scalar		backup;				///< Saved value for rejection rollback
-				unsigned int lastModIteration;	///< Iteration when last mutated
-				unsigned int backupIteration;	///< Iteration of the backup
+				std::uint64_t lastModIteration;	///< Iteration when last mutated
+				std::uint64_t backupIteration;	///< Iteration of the backup
 
 				PrimarySample() :
 				value( 0 ),
@@ -157,7 +163,7 @@ namespace RISE
 			// catastrophic: the film/lens/aperture block's first 6
 			// draws alone (stream 2048, sample 0..5) require
 			// `idx = 2048 + 4096*5 = 22528`, i.e. 22529 materialised
-			// `PrimarySample` slots (~528 KB; see
+			// `PrimarySample` slots (~528 KB at the 24-byte slots of that time; see
 			// docs/DL08_PSSMLT_LANE_LAYOUT.md for the exact byte count
 			// and the measured bootstrap-time regression, ~5x on
 			// `scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene`) on
@@ -266,7 +272,7 @@ namespace RISE
 			std::vector<ModifiedLane>		modifiedIndices;	///< Lanes modified in current proposal (for fast rollback)
 			unsigned int alphaIndex = 0;
 			unsigned int					sampleIndex;		///< Current consumption position within current stream
-			unsigned int					currentIteration;	///< Global mutation counter
+			std::uint64_t					currentIteration;	///< Global mutation counter (64-bit: see PrimarySample)
 
 			// kLegacyNumStreams is the row width of the ORIGINAL flat
 			// vector `X` -- fixed at 49 forever (BDPT's streams 0-47 plus
@@ -300,7 +306,7 @@ namespace RISE
 			// Mutation parameters
 			Scalar							largeStepProb;		///< Probability of a large (independent) step
 			bool							isLargeStep;		///< Whether the current proposal is a large step
-			unsigned int					lastLargeStepIteration;	///< Last iteration that was a large step
+			std::uint64_t					lastLargeStepIteration;	///< Last iteration that was a large step
 
 			// Exponential perturbation range (Kelemen's log-uniform trick).
 			// s1 and s2 define the min/max perturbation magnitudes.
@@ -390,7 +396,7 @@ namespace RISE
 			Scalar GetLargeStepProb() const { return largeStepProb; }
 
 			/// \return The current iteration number.
-			unsigned int GetCurrentIteration() const { return currentIteration; }
+			std::uint64_t GetCurrentIteration() const { return currentIteration; }
 
 			/// Re-seed the internal mutation RNG without disturbing the
 			/// primary sample vector or iteration counters.  Used by

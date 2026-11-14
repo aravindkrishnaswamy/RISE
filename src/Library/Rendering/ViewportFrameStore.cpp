@@ -679,9 +679,8 @@ namespace RISE
 			// (per IRasterizerOutput.h:33-36).
 			//
 			// We convert to exclusive bounds (rExc{Right,Bottom}
-			// = pRegion->{right,bottom} + 1, clamped to image
-			// size) before the tile-coverage math below — that
-			// math (`(rExcRight + te - 1) / te`) is the standard
+			// = min(pRegion->{right,bottom}, size-1) + 1) before
+			// the tile-coverage math below — that math (`(rExcRight + te - 1) / te`) is the standard
 			// half-open ceiling division for a [0, end) range.
 			// Without the conversion, single-pixel regions sitting
 			// exactly on a tile boundary (e.g. Rect(32, 32, 32, 32)
@@ -689,11 +688,15 @@ namespace RISE
 			// callbacks.  See L4 round-3 P2.
 			const unsigned int rTop      = pRegion ? pRegion->top  : 0;
 			const unsigned int rLeft     = pRegion ? pRegion->left : 0;
+			// Clamp the INCLUSIVE endpoint to the image first and only
+			// then convert to exclusive: `bottom + 1` on an unclamped
+			// endpoint wraps UINT_MAX ("to the edge") to 0, which read
+			// as an empty region and copied nothing.
 			const unsigned int rExcBottom = pRegion
-				? std::min<unsigned int>( pRegion->bottom + 1u, srcH )
+				? ( pRegion->bottom >= srcH ? srcH : pRegion->bottom + 1u )
 				: srcH;
 			const unsigned int rExcRight  = pRegion
-				? std::min<unsigned int>( pRegion->right  + 1u, srcW )
+				? ( pRegion->right >= srcW ? srcW : pRegion->right + 1u )
 				: srcW;
 
 			// Iterate FrameStore tiles overlapping the region;

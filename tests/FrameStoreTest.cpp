@@ -1678,6 +1678,28 @@ namespace
 		Check( beauty->At( 5, 3 ).r == 0.0,
 			"shim Clear leaves outside-rect untouched" );
 
+		// An inclusive UINT_MAX endpoint means "to the edge" (as for
+		// RISERasterImage::Clear); a 32-bit `right + 1` wrapped it to 0
+		// and cleared nothing.
+		{
+			const unsigned int kMax = std::numeric_limits<unsigned int>::max();
+			RISEColor grey( RISEPel( 0.25, 0.25, 0.25 ), 0.5 );
+			Rect toEdge( 2, 5, kMax, kMax );	// rows 2..3, columns 5..7
+			img.Clear( grey, &toEdge );
+			unsigned bad = 0;
+			for( unsigned y = 0; y < 4; ++y )
+				for( unsigned x = 0; x < 8; ++x ) {
+					const bool in = x >= 5 && y >= 2;
+					const double r = beauty->At( x, y ).r;
+					if( in ? ( r != 0.25 || !ApproxEq( alpha->At( x, y ), 0.5f, 1e-6f ) ) : r == 0.25 ) ++bad;
+				}
+			Check( bad == 0, "shim Clear with a UINT_MAX endpoint clears exactly to the edge (" +
+				std::to_string( bad ) + " wrong)" );
+			Rect outside( 4, 8, kMax, kMax );
+			img.Clear( white, &outside );
+			Check( beauty->At( 7, 3 ).r == 0.25, "shim Clear with a wholly outside UINT_MAX region writes nothing" );
+		}
+
 		store->release();
 	}
 
