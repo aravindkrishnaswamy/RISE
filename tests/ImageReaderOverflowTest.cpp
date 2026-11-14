@@ -27,7 +27,8 @@
 //          (valid-PNG decode is covered by the broader scene-test suite,
 //          which loads real .png textures)
 //    TIFF: valid 2x2 decodes; a 65535^2-patched TIFF is safely rejected
-//    JPEG: repeated decode preserves pixels; failed reload clears stale state
+//    EXR : FLOAT RGB/Y/YA range, offset windows, SDK YC/YCA reconstruction
+//    All six readers: repeat decode, failed reload, recovery, end, and bounds
 //  Under AddressSanitizer the crafted cases trap on the pre-fix code
 //  (heap-buffer-overflow); on the fixed code they return false cleanly.
 //
@@ -726,6 +727,35 @@ static void TestHDROldRLE()
 	Check( ok && last.base.r > 0.0 && last.base.r < last.base.g && last.base.g < last.base.b,
 		"C: old-RLE run copies the previous pixel (back-reference)" );
 
+	// Reference Radiance old-RLE counts are little-endian byte chains.
+	const auto chained = [&](unsigned int width, const std::vector<unsigned char>& packets,
+		const RISEColor& expectedLast, const char* label) {
+		auto bytes = MakeHDRHeader(("-Y 1 +X " + std::to_string(width) + "\n").c_str());
+		for(auto byte : packets) AppendByte(bytes,byte);
+		RISEColor first, final;
+		const bool decoded=RunHDR(bytes,w,h,&first,&final);
+		Check(decoded && w==width && h==1 && first.base.r==px0.base.r &&
+			final.base.r==expectedLast.base.r && final.base.g==expectedLast.base.g &&
+			final.base.b==expectedLast.base.b,label);
+	};
+	chained(257,{10,20,30,130, 1,1,1,0, 1,1,1,1},px0,
+		"C: old-RLE chained count accepts zero low byte and emits 256 repeats");
+	chained(258,{10,20,30,130, 1,1,1,1, 1,1,1,1},px0,
+		"C: old-RLE chained count emits 257 repeats");
+	chained(259,{10,20,30,130, 1,1,1,1, 11,21,31,131, 1,1,1,0, 1,1,1,1},px1,
+		"C: old-RLE chained count shift resets after a literal");
+	chained(2,{10,20,30,130, 1,1,1,0, 11,21,31,131},px1,
+		"C: old-RLE zero count can precede a literal");
+	for(const auto& packets : std::vector<std::vector<unsigned char>>{
+		{10,20,30,130, 1,1,1,0},
+		{10,20,30,130, 1,1,1,0, 1,1,1,0, 1,1,1,1},
+		{10,20,30,130, 1,1,1,0, 1,1,1,0, 1,1,1,0, 1,1,1,0, 1,1,1,0}}) {
+		auto bytes=MakeHDRHeader("-Y 1 +X 258\n");
+		for(auto byte : packets) AppendByte(bytes,byte);
+		Check(!RunHDR(bytes,w,h) && w==0 && h==0,
+			"C: old-RLE chained count rejects truncated oversized and over-shifted packets");
+	}
+
 	// Crafted old-RLE run at pixel 0: (1,1,1,5) at scanline start references
 	// pos-step == -1 -> the back-reference bounds guard must reject.
 	std::vector<char> badrun = MakeHDRHeader( "-Y 1 +X 4\n" );
@@ -1118,6 +1148,64 @@ static void TestReaderFamilyReload()
 }
 
 #ifndef NO_EXR_SUPPORT
+static void TestEXRLuminance()
+{
+	const auto same = [](const RISEColor& actual,const RISEPel& expected,float alpha) {
+		const auto close=[](double a,double b){return std::fabs(a-b)<=1e-12*std::max(1.0,std::fabs(b));};
+		return close(actual.base.r,expected.r) && close(actual.base.g,expected.g) &&
+			close(actual.base.b,expected.b) && actual.a==alpha;
+	};
+	for(bool alpha : {false,true}) {
+		auto* buffer=new MemoryBuffer();
+		const Imath::Box2i window(Imath::V2i(-3,7),Imath::V2i(-2,8));
+		const float values[]={0.5f,100000,200000,400000};
+		const float opacity[]={0.25f,0.5f,0.75f,1};
+		{
+			OStreamWrapper stream(*buffer);Imf::Header header(2,2);header.dataWindow()=window;
+			header.channels().insert("Y",Imf::Channel(Imf::FLOAT));
+			if(alpha) header.channels().insert("A",Imf::Channel(Imf::FLOAT));
+			Imf::OutputFile file(stream,header);Imf::FrameBuffer frame;
+			frame.insert("Y",Imf::Slice::Make(Imf::FLOAT,values,window,sizeof(float),2*sizeof(float)));
+			if(alpha) frame.insert("A",Imf::Slice::Make(Imf::FLOAT,opacity,window,sizeof(float),2*sizeof(float)));
+			file.setFrameBuffer(frame);file.writePixels(2);
+		}
+		buffer->seek(IBuffer::START,0);auto* reader=new EXRReader(*buffer,eColorSpace_Rec709RGB_Linear);
+		unsigned int width=0,height=0;bool exact=reader->BeginRead(width,height) && width==2 && height==2;
+		if(exact) for(unsigned int i=0;i<4;++i) {
+			RISEColor actual;reader->ReadColor(actual,i%2,i/2);
+			exact &= same(actual,RISEPel(Rec709RGBPel(values[i],values[i],values[i])),alpha?opacity[i]:1);
+		}
+		Check(exact,alpha?"EXR luminance: FLOAT YA preserves range alpha and offset window":
+			"EXR luminance: FLOAT Y preserves range and fills opaque alpha");
+		reader->release();buffer->release();
+	}
+	for(auto channels : {Imf::WRITE_YC,Imf::WRITE_YCA}) {
+		auto* buffer=new MemoryBuffer();
+		const Imath::Box2i window(Imath::V2i(-2,4),Imath::V2i(1,7));
+		std::vector<Imf::Rgba> source(16),reference(16);
+		for(unsigned int i=0;i<16;++i) source[i]=Imf::Rgba(0.25f+0.125f*(i%4),0.2f+0.1f*(i/4),0.75f-0.125f*(i%4),0.5f);
+		{
+			OStreamWrapper stream(*buffer);Imf::Header header(4,4);header.dataWindow()=window;
+			Imf::RgbaOutputFile file(stream,header,channels);
+			file.setFrameBuffer(Imf::ComputeBasePointer(source.data(),window),1,4);file.writePixels(4);
+		}
+		buffer->seek(IBuffer::START,0);
+		{
+			IStreamWrapper stream(*buffer);Imf::RgbaInputFile file(stream);
+			file.setFrameBuffer(Imf::ComputeBasePointer(reference.data(),window),1,4);file.readPixels(4,7);
+		}
+		buffer->seek(IBuffer::START,0);auto* reader=new EXRReader(*buffer,eColorSpace_Rec709RGB_Linear);
+		unsigned int width=0,height=0;bool exact=reader->BeginRead(width,height) && width==4 && height==4;
+		if(exact) for(unsigned int i=0;i<16;++i) {
+			RISEColor actual;reader->ReadColor(actual,i%4,i/4);const auto& p=reference[i];
+			exact &= same(actual,RISEPel(Rec709RGBPel(float(p.r),float(p.g),float(p.b))),float(p.a));
+		}
+		Check(exact,channels==Imf::WRITE_YC?"EXR luminance: subsampled YC matches independent SDK conversion":
+			"EXR luminance: subsampled YCA matches independent SDK conversion and alpha");
+		reader->release();buffer->release();
+	}
+}
+
 static void TestEXROffsetWindow()
 {
 	auto* buffer=new MemoryBuffer();
@@ -1153,6 +1241,7 @@ static int RunTests()
 	TestReaderFamilyReload();
 #ifndef NO_EXR_SUPPORT
 	TestEXROffsetWindow();
+	TestEXRLuminance();
 #endif
 	TestRasterStorage();
 	TestHDRWriterBounds();

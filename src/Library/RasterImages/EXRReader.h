@@ -75,8 +75,11 @@ namespace RISE
 
 		#ifndef NO_EXR_SUPPORT
 			// Interleaved R,G,B,A float scanline buffer.  Read through
-			// Imf::InputFile with FLOAT framebuffer slices so 32-bit
-			// FLOAT EXRs round-trip at full range; half-stored EXRs are
+			// Imf::InputFile with FLOAT framebuffer slices for RGB and
+			// plain Y/YA, so 32-bit FLOAT channels retain their full range.
+			// YC/YCA uses the SDK's historical half-precision RgbaInputFile
+			// reconstruction, including its chroma filters/chromaticities.
+			// In the direct FLOAT path, half-stored EXRs are
 			// converted half->float losslessly by OpenEXR.  (The former
 			// Imf::RgbaInputFile path stored Imf::Rgba (FP16), turning
 			// any channel > 65504 into +Inf on read — read-side twin of

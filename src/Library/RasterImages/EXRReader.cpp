@@ -64,38 +64,90 @@ bool EXRReader::BeginRead( unsigned int& width, unsigned int& height )
 			!BufferSeek(pReadBuffer, IBuffer::START, static_cast<std::int64_t>(buffer_start_pos)) )
 			throw std::runtime_error( "EXR input rewind failed" );
 
-		IStreamWrapper inbuf( pReadBuffer );
-		// FLOAT slices preserve the full channel range, including files
-		// stored as FLOAT instead of the narrower historical half format.
-		Imf::InputFile in( inbuf );
-		const Imf::Header& hdr = in.header();
-		const Imath::Box2i dw = hdr.dataWindow();
-		const std::int64_t w = static_cast<std::int64_t>( dw.max.x ) - dw.min.x + 1;
-		const std::int64_t h = static_cast<std::int64_t>( dw.max.y ) - dw.min.y + 1;
-		constexpr std::uint64_t bytesPerPixel = 4u * sizeof(float);
-		const std::uint64_t maxBytes = std::min<std::uint64_t>(
-			2ULL * 1024 * 1024 * 1024, std::numeric_limits<std::size_t>::max() );
-		if( w <= 0 || h <= 0 || static_cast<std::uint64_t>( w ) >
-			maxBytes / bytesPerPixel / static_cast<std::uint64_t>( h ) )
-			throw std::runtime_error( "EXR invalid or too-large decoded image dimensions" );
+		Imath::Box2i dw;
+		unsigned int imageWidth = 0;
+		unsigned int imageHeight = 0;
+		bool hasChroma = false;
+		{
+			// Finish this InputFile before rewinding for the SDK's YCA
+			// decoder: two live decoders must not share an input cursor.
+			IStreamWrapper inbuf( pReadBuffer );
+			Imf::InputFile in( inbuf );
+			const Imf::Header& hdr = in.header();
+			dw = hdr.dataWindow();
+			const bool hasLuminance = hdr.channels().findChannel( "Y" ) != nullptr;
+			hasChroma = hdr.channels().findChannel( "RY" ) != nullptr ||
+				hdr.channels().findChannel( "BY" ) != nullptr;
+			const std::int64_t w = static_cast<std::int64_t>( dw.max.x ) - dw.min.x + 1;
+			const std::int64_t h = static_cast<std::int64_t>( dw.max.y ) - dw.min.y + 1;
+			constexpr std::uint64_t floatBytesPerPixel = 4u * sizeof(float);
+			// YCA conversion additionally owns the SDK's half-RGBA result.
+			// Apply the combined pixel budget before allocating either image.
+			const std::uint64_t bytesPerPixel = floatBytesPerPixel +
+				(hasChroma ? sizeof(Imf::Rgba) : 0);
+			const std::uint64_t maxBytes = std::min<std::uint64_t>(
+				2ULL * 1024 * 1024 * 1024, std::numeric_limits<std::size_t>::max() );
+			if( w <= 0 || h <= 0 || static_cast<std::uint64_t>( w ) >
+				maxBytes / bytesPerPixel / static_cast<std::uint64_t>( h ) )
+				throw std::runtime_error( "EXR invalid or too-large decoded image dimensions" );
 
-		const auto imageWidth = static_cast<unsigned int>( w );
-		const auto imageHeight = static_cast<unsigned int>( h );
-		decoded.assign( static_cast<std::size_t>( imageWidth ) * imageHeight * 4u, 0.0f );
-		const std::size_t xstride = bytesPerPixel;
-		const std::size_t ystride = static_cast<std::size_t>( imageWidth ) * xstride;
-		char* const pixels = reinterpret_cast<char*>( decoded.data() );
+			imageWidth = static_cast<unsigned int>( w );
+			imageHeight = static_cast<unsigned int>( h );
+			const std::size_t pixelCount = static_cast<std::size_t>( imageWidth ) * imageHeight;
+			const std::size_t floatCount = pixelCount * 4u;
+			const std::uint64_t halfBytes = hasChroma ? pixelCount * sizeof(Imf::Rgba) : 0;
+			// A retained allocation from a larger RGB image must not defeat
+			// the combined budget on a later YCA read.
+			if( decoded.capacity() < floatCount ||
+				decoded.capacity() > (maxBytes - halfBytes) / sizeof(float) )
+				std::vector<float>().swap( decoded );
+			decoded.assign( floatCount, 0.0f );
 
-		// Let OpenEXR compute offset-window addressing without forming an
-		// out-of-array pointer in application code. Missing RGB channels are
-		// zero and missing alpha is one, matching the previous reader.
-		Imf::FrameBuffer fb;
-		fb.insert( "R", Imf::Slice::Make( Imf::FLOAT, pixels, dw, xstride, ystride, 1, 1, 0.0 ) );
-		fb.insert( "G", Imf::Slice::Make( Imf::FLOAT, pixels + sizeof(float), dw, xstride, ystride, 1, 1, 0.0 ) );
-		fb.insert( "B", Imf::Slice::Make( Imf::FLOAT, pixels + 2u * sizeof(float), dw, xstride, ystride, 1, 1, 0.0 ) );
-		fb.insert( "A", Imf::Slice::Make( Imf::FLOAT, pixels + 3u * sizeof(float), dw, xstride, ystride, 1, 1, 1.0 ) );
-		in.setFrameBuffer( fb );
-		in.readPixels( dw.min.y, dw.max.y );
+			if( !hasChroma ) {
+				// The SDK gives Y precedence over RGB whenever it is present.
+				// Read plain Y/YA as FLOAT so values above half's range survive;
+				// otherwise preserve the full FLOAT RGB/alpha channel range.
+				const std::size_t xstride = floatBytesPerPixel;
+				const std::size_t ystride = static_cast<std::size_t>( imageWidth ) * xstride;
+				char* const pixels = reinterpret_cast<char*>( decoded.data() );
+				Imf::FrameBuffer fb;
+				if( hasLuminance ) {
+					fb.insert( "Y", Imf::Slice::Make( Imf::FLOAT, pixels, dw, xstride, ystride, 1, 1, 0.0 ) );
+				} else {
+					fb.insert( "R", Imf::Slice::Make( Imf::FLOAT, pixels, dw, xstride, ystride, 1, 1, 0.0 ) );
+					fb.insert( "G", Imf::Slice::Make( Imf::FLOAT, pixels + sizeof(float), dw, xstride, ystride, 1, 1, 0.0 ) );
+					fb.insert( "B", Imf::Slice::Make( Imf::FLOAT, pixels + 2u * sizeof(float), dw, xstride, ystride, 1, 1, 0.0 ) );
+				}
+				fb.insert( "A", Imf::Slice::Make( Imf::FLOAT, pixels + 3u * sizeof(float), dw, xstride, ystride, 1, 1, 1.0 ) );
+				in.setFrameBuffer( fb );
+				in.readPixels( dw.min.y, dw.max.y );
+				if( hasLuminance ) {
+					for( std::size_t i = 0; i < floatCount; i += 4u )
+						decoded[i + 1u] = decoded[i + 2u] = decoded[i];
+				}
+			}
+		}
+
+		if( hasChroma ) {
+			if( !BufferSeek(pReadBuffer, IBuffer::START, static_cast<std::int64_t>(buffer_start_pos)) )
+				throw std::runtime_error( "EXR YCA input rewind failed" );
+			const std::size_t pixelCount = static_cast<std::size_t>( imageWidth ) * imageHeight;
+			std::vector<Imf::Rgba> rgba( pixelCount );
+			IStreamWrapper inbuf( pReadBuffer );
+			Imf::RgbaInputFile in( inbuf );
+			if( in.dataWindow() != dw )
+				throw std::runtime_error( "EXR data window changed during YCA decode" );
+			// Preserve the SDK's historical half-precision YCA reconstruction,
+			// including chroma filtering, channel precedence and chromaticities.
+			in.setFrameBuffer( Imf::ComputeBasePointer( rgba.data(), dw ), 1, imageWidth );
+			in.readPixels( dw.min.y, dw.max.y );
+			for( std::size_t i = 0; i < pixelCount; ++i ) {
+				decoded[i * 4u] = static_cast<float>( rgba[i].r );
+				decoded[i * 4u + 1u] = static_cast<float>( rgba[i].g );
+				decoded[i * 4u + 2u] = static_cast<float>( rgba[i].b );
+				decoded[i * 4u + 3u] = static_cast<float>( rgba[i].a );
+			}
+		}
 
 		floatbuffer.swap( decoded );
 		img_width = width = imageWidth;

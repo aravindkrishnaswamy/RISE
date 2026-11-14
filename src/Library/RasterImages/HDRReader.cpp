@@ -16,6 +16,7 @@
 #include <sstream>
 #include <string_view>
 #include <new>
+#include <limits>
 #include <string.h>					// for strlen and strncmp
 #include "HDRReader.h"
 #include "../Interfaces/ILog.h"
@@ -138,9 +139,9 @@ bool HDRReader::BeginRead( unsigned int& outputWidth, unsigned int& outputHeight
 	// The Radiance RLE run lengths are file-controlled and can advance the
 	// write cursor arbitrarily; without a clamp a crafted run walks off the
 	// buffer (heap OOB write) independent of the allocation-overflow above.
-	// On any out-of-range write (or a zero-length run, which makes no forward
-	// progress and would spin forever on a truncated file) we reject the
-	// whole file rather than corrupt the heap.
+	// Reject out-of-range writes and new-RLE zero-length packets. Old-RLE
+	// repeat-count bytes may be zero; their bounded shift and checked packet
+	// reads keep those chains finite without rejecting valid multibyte counts.
 	const long long nBytesSigned = (long long)nBytes;
 	auto RejectMalformed = [this]() -> bool {
 		GlobalLog()->Print( eLog_Error, "HDRReader: Malformed / out-of-bounds RLE scanline data; rejecting file" );
@@ -234,7 +235,8 @@ bool HDRReader::BeginRead( unsigned int& outputWidth, unsigned int& outputHeight
 			// All it contains is either runs or raw data, runs have their header, which we
 			// check for right away.
 			int pos = start;
-			for( unsigned int x=0; x<width; x++ ) {
+			unsigned int repeatShift = 0;
+			for( unsigned int x = 0; x < width; ) {
 				if( x > 0 && !pReadBuffer.getBytes( col, 4 ) ) {
 					return RejectMalformed();
 				}
@@ -242,25 +244,19 @@ bool HDRReader::BeginRead( unsigned int& outputWidth, unsigned int& outputHeight
 				// Check for the RLE header for this scanline
 				if( col[0] == 1 && col[1] == 1 && col[2] == 1 ) {
 
-					// Do the run
-
-					int num = ((int) col[3])&0xFF;
-
-					// A count of zero would underflow the `x += num-1`
-					// accounting below (x is unsigned) and repeats nothing;
-					// treat it as malformed.
-					if( num == 0 || x == 0 ) {
+					// Successive markers contribute little-endian base-256
+					// repeat counts. A zero low byte is valid (0,1 means 256).
+					// Bound the shift before evaluating it, and compare before
+					// shifting so malformed counts cannot wrap or overrun a row.
+					if( x == 0 || repeatShift >= std::numeric_limits<unsigned int>::digits ) {
 						return RejectMalformed();
 					}
-
-					// The run must not exceed the pixels remaining in this
-					// scanline (parity with the new-RLE `x + runLen > width`
-					// clamp).  Without this a long run would corrupt later
-					// scanlines in-buffer before the global end-check below
-					// stopped it.  x < width here, so `width - x` >= 1.
-					if( (unsigned int)num > width - x ) {
+					const auto countByte = static_cast<unsigned int>(static_cast<unsigned char>(col[3]));
+					if( countByte > ((width - x) >> repeatShift) ) {
 						return RejectMalformed();
 					}
+					const auto num = countByte << repeatShift;
+					repeatShift += 8;
 
 					// The run repeats the PREVIOUS pixel; bounds-check that
 					// back-reference (at the first pixel of a scanline it can
@@ -274,7 +270,7 @@ bool HDRReader::BeginRead( unsigned int& outputWidth, unsigned int& outputHeight
 					unsigned char b = pBuffer[prev+2];
 					unsigned char e = pBuffer[prev+3];
 
-					for( int i=0; i<num; i++ ) {
+					for( unsigned int i = 0; i < num; ++i ) {
 						const long long idx = (long long)pos*4;
 						if( idx < 0 || idx+3 >= nBytesSigned ) {
 							return RejectMalformed();
@@ -286,7 +282,7 @@ bool HDRReader::BeginRead( unsigned int& outputWidth, unsigned int& outputHeight
 						pos += step;
 					}
 
-					x += num-1;
+					x += num;
 				} else {
 
 					// No runs here, so just store the 4 bytes just read into
@@ -303,6 +299,8 @@ bool HDRReader::BeginRead( unsigned int& outputWidth, unsigned int& outputHeight
 					pBuffer[idx+2] = col[2];
 					pBuffer[idx+3] = col[3];
 					pos += step;
+					++x;
+					repeatShift = 0;
 				}
 			}
 		}
