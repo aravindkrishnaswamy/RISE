@@ -4,6 +4,10 @@
 
 ## Implementation checkpoint
 
+Compatibility tables summarize current behavior. Later follow-up sections are
+chronological checkpoints; the third-pass section supersedes earlier cache
+and image-publication details.
+
 - The local series covers spectral assignment and lookup, scene and asset records, scripts and descriptor ownership, buffer and codec failures, file output paths, Halton storage, and unused utilities. The later commits move manager and options lookups to owned keys with borrowed probes, use a monotonic clock for elapsed timing, normalize media roots, fix intrusive reference locking, and scope procedural scratch and hair file ownership.
 - Halton sample and migration outputs matched byte for byte. The TIFF reader correction changes one scene digest, `cc_tiff_painter.RISEscene`. Its golden entry was refreshed after independent TIFF decoding checks. The legacy expression evaluator moved to the migration tool. Valid comparison fixtures produce identical output, malformed expressions remain unexpanded, and nesting is bounded.
 - An arm64 probe rebuilt the old scalar writer branches with `RISE_BIG_ENDIAN` and confirmed lost high bits and reversed double halves in both disk and memory output. Files from those branches can contain irreversible loss. The new disk and memory writers matched independent little-endian scalar fixtures. Independent PNG scanline inspection confirmed network-order 16-bit RGBA samples.
@@ -28,7 +32,7 @@ requirements are recorded in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 | 2. Outputs beyond 4 GiB | Disk cursors, sizes, seeks and photon availability checks use 64 bits through an optional `IBuffer64` interface. Existing `IBuffer` virtual signatures remain intact and narrow disk queries saturate. On sparse-capable scratch filesystems, guarded fixtures cover writes, packet reads across the boundary, normal Job loads, and codec offsets. Photon saves require staging. |
 | 3. Spectral and piecewise tables | Both consume leading finite columns and tolerate extra columns. File headers/malformed rows are skipped with warnings. Inline rows need two values. NUL, empty results, I/O failure and unequal spectral counts fail. |
 | 4. Console input | Commands support standalone trailing `#` comments and leading full-line comments, including `render # comment`; raw tokenizers and options preserve hashes. Malformed numeric arguments, incomplete render rectangles and unknown media-path commands remain diagnosed hard errors. |
-| 5. Restricted staging parents | Render output, viewport Save As and thumbnails explicitly permit direct writes on staging creation/open or rename permission failures or through dangling symlinks. Other staging errors fail. Rename fallback copies completed bytes without re-encoding. Failed direct image writes may leave partial output. Photon saves retain staging-required failure safety. |
+| 5. Restricted staging parents | Render output and viewport Save As preserve existing destination identity by copying completed staged bytes in place. New destinations use rename; eligible permission/EBUSY publication failures copy the completed stage. Denied staging creation/open or a dangling output symlink permits direct encoding. Failed copying retains the complete stage for recovery; direct encoding can leave partial output. Thumbnails use separate validated no-follow cache handles. Photon saves require staging and atomic replacement. |
 | 6. Damaged TIFF strips | A compressed-strip fixture confirms partial decoding reports success with an opaque-black row. Strict rejection is retained and tested. |
 | 7. Windows path encoding | Existence checks use the native narrow path constructor shared with CRT/stream opens. Native Windows non-ASCII verification is still required. |
 | 8. Memory tracking | The scoped disk-writer construction shared by staged saves and image fallback registers its allocation with `PrintNew`. |
@@ -88,8 +92,8 @@ additional decisions explicit:
   destructor logs failures.
 - Raw tokenizers and options retain hashes. Command parsing alone strips
   full-line comments or a standalone trailing `#`. Missing and comma-form
-  inline control points remain errors: the old unchecked parser supplied
-  zero amplitude. Cylindrical UV axes remain lowercase `x`, `y`, or `z`.
+  inline control points are newly rejected: the old unchecked parser supplied
+  zero amplitude. Cylindrical UV axes now require lowercase `x`, `y`, or `z`.
 - Table errors identify missing files, read failures, or embedded NULs with
   filename and physical line, including spectral `file/nmfile/ampfile`.
 - Large-file test sections first probe sparse allocation with a 1 MiB hole
@@ -124,7 +128,7 @@ fixture collision. Each finding was confirmed and fixed:
 | Finding | Correction |
 | --- | --- |
 | Existing-target probe required read permission | Open an existing-only write descriptor without creating or truncating the target. Write-only targets retain both staging policies, including direct image writes in restricted parents. |
-| Partial thumbnail accepted as a cache | Encode the known 4x4 default PNG once, validate cached bytes against that complete payload, regenerate partial/foreign entries, and return an empty path after failed publication. A limited direct-write fixture verifies partial data cannot become a usable cache and a later call repairs it. |
+| Partial thumbnail accepted as a cache | Encode the known 4x4 default PNG once, validate cached bytes against that complete payload, regenerate partial/unrelated owned entries, and return an empty path after failed publication. A limited direct-write fixture verifies partial data cannot become a usable cache and a later call repairs it. |
 | Repeated JPEG reads leaked decoded pixels | Reset and release the previous decode before each `BeginRead`, including failed reloads; reset output dimensions and internal image state. Valid reloads preserve every pixel. |
 | Concurrent parser fixtures collided | On POSIX, parser and template tests run inside parent-owned scratch directories, extending the existing buffer/photon isolation. The Windows wrapper still runs in-process; native Windows fixture isolation remains deferred with the excluded platform work. |
 
@@ -318,6 +322,73 @@ of eight concurrent image-suite copies passed and removed their scratch
 roots. The earlier immutable-archive run failed eight new valid-format
 assertions normally; the malformed-chain guards remained green. Sparse-file
 skips and excluded native Windows/Android verification remain unchanged.
+
+
+### Third-pass cache safety and compatibility follow-up
+
+The follow-up review of `3c37cb0f7..cfb685dc9` found one new P1: the
+byte-exact thumbnail-cache repair followed a planted symlink and overwrote
+its target. The cache now validates the opened object before changing any
+bytes. POSIX uses an owned private `rise_entity_templates_<uid>` directory,
+directory-relative no-follow opens, effective-user ownership checks,
+single-link regular files and exclusive writer locks with validation again
+under the lock. The legacy shared cache name is ignored. Windows uses
+opened-handle reparse/owner/link checks and requires Advapi32; native
+Windows execution remains excluded. The PNG bytes remain unchanged.
+A sibling audit also found that permissive umasks exposed the predictable
+staging leaf. POSIX staging directories now use `mkdir(..., 0700)` in the
+creation syscall, and staging files use exclusive no-follow creation.
+Windows staging uses exclusive creation; native DACL verification remains
+part of the excluded Windows gate. Direct user-authored output opens retain
+their prior symlink semantics. A permissive-umask regression checks both
+staging privacy and the requested permissions of newly published outputs.
+Regression victims behind symbolic and hard links stay unchanged, and a
+shared-parent multi-process test verifies complete PNG consumption while
+repairing a partial cache. Automatic cache paths are protected separately
+from user-authored output paths, where following an explicit symlink is
+intentional. Consumers still receive a pathname; same-user changes after
+return are outside the cache write operation.
+
+| Follow-up finding | Disposition |
+| --- | --- |
+| Existing image inode, hardlinks, owner, ACLs and xattrs changed by rename | Existing `AllowInPlace` image destinations receive completed staged bytes in place. This preserves their identity and metadata, and handles writable file bind mounts without a rename. New image paths use rename. Required photon saves deliberately retain atomic replacement, including its inode/metadata consequences. |
+| Failed in-place copy removed both versions | A failed post-encode publication retains the complete staged payload for recovery, reports its path and never reruns the encoder. The destination can be partial. Direct encoding after denied staging creation/open has no completed stage to retain. |
+| Write failures lacked causes; cleanup could leave a directory | Additive diagnostics and logs identify operation, native cause, recovery path and residual cleanup path. Removing a staging directory cannot be guaranteed after the parent loses write permission; the residual path/error is reported. |
+| Large TGA output rejected after CLI truncation | The reported >4 GiB CLI truncation case was already blocked by the generic output budget. Shared TGA validation now runs before source-raster allocation and output opening. The writer retains its checked `UINT_MAX` total-buffer budget, in addition to 16-bit axis limits; the CLI's generic raster budget is tighter. |
+| Truncated EXR final chunk returned success with zero pixels | The stream wrapper latches failed reads/seeks even when the SDK catches its exception internally. Both direct FLOAT and SDK chroma paths reject the decode and retain no active image. |
+| PNG/JPEG reload required the caller to rewind | Both save and restore their construction cursor. JPEG reads the remaining source span. Tests no longer seek before repeats/recovery and include embedded PNG/JPEG data. Their concrete layouts changed; clients must rebuild. |
+| TIFF unassociated-alpha precision | Retain the libtiff 8-bit associated-RGBA conversion and subsequent unassociation. This is a display-oriented decode, not a lossless TIFF round trip: e.g. channel 200 at alpha 128 can return 199, with greater loss at very low alpha. The existing independent TIFF checks use a quantization tolerance. |
+| HDR XYZE and scanline-leading repeat markers | Keep diagnosed rejection. XYZE needs a distinct XYZ-to-RGB conversion; interpreting it as RGBE gives wrong colors. A leading repeat has no preceding pixel in that scanline and previously accessed before the row/buffer. These stricter rejections are explicit compatibility changes. |
+| Unused TGA color maps | Truecolor images can carry unused 15/16/24/32-bit map entries; skip their bounded storage after the ID and verify pixel bytes. Truncated maps remain errors. Indexed-color decoding remains unsupported. |
+| Malformed 3DS child inside a bounded object | Skip the bad object to its known parent end, preserving later valid sibling objects as well as the prefix. Consumed mesh records remain strict. |
+| Malformed prefix or short MAIN length before EDIT3DS | Keep bounded container traversal and reject. The loader does not scan arbitrary payload bytes for a coincidental section marker. This intentionally differs from the historical bytewise recovery. |
+| Image test depended on launch directory | A target-specific absolute source-root definition locates the shipped JPEG fixture. Validation includes launch from an unrelated scratch directory without `RISE_MEDIA_PATH`. |
+| Plan called new parser rejections existing behavior | Wording now identifies comma/missing-amplitude `cp` and lowercase-axis checks as new strictness. |
+
+Validation through `01cb6cc2c` passed all 15 selected executables, including
+155 buffer/output checks, 214 image-reader checks, 456 template checks,
+192 source-hygiene checks and 480 exact scene-corpus matches. Clean make,
+Xcode Deployment/Opto and Blender native LTO builds passed without compiler
+warnings, apart from the expected Xcode AppIntents notice. Six targeted
+ASan/UBSan suites passed with container checks enabled. Four CLI TIFF/EXR
+write-failure paths and independent TGA boundary/orientation checks passed.
+A 65,535-by-65,535 TGA request was rejected before opening its writer and
+left the existing destination unchanged. The canonical image test passed
+from an unrelated directory without `RISE_MEDIA_PATH`; three trials of
+eight concurrent copies also passed all 214 checks and removed their roots.
+
+The thumbnail sentinel and existing-hardlink regressions failed normally
+against the earlier library and passed after the fixes. An isolated reader
+RED run failed 15 assertions normally with the earlier EXR/PNG/JPEG code;
+its matching corrected build passed from scratch. Both new permissive-umask
+privacy guards failed normally against the preceding staged writer and
+passed with private creation. The cache concurrency regression covers eight
+processes across eight rounds, with 32 ensure-and-consume operations per
+process. The foreign-owner fixture is privilege-gated and was skipped on
+this unprivileged host; no claim of a native ownership-change test is made.
+Sparse multi-GiB fixtures and native Windows/Android execution remain
+excluded as previously recorded. Windows project/test linker lists include
+Advapi32; the tool project XML was parsed locally.
 
 
 ### Host measurements and decisions
