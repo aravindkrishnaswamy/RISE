@@ -581,7 +581,7 @@ namespace RISE
 			const auto release = []( FrameStore* store ) { store->release(); };
 			std::unique_ptr<FrameStore, decltype(release)> snap(
 				SnapshotFrameStore( chainMutex_, framestore_ ), release );
-			if ( !snap ) return false;
+			if ( !snap || snap->Width() == 0 || snap->Height() == 0 ) return false;
 
 			const bool written = DiskFileWriteBuffer::WriteAtomically( path,
 				[&]( DiskFileWriteBuffer& buffer ) {
@@ -608,7 +608,7 @@ namespace RISE
 			const auto release = []( FrameStore* store ) { store->release(); };
 			std::unique_ptr<FrameStore, decltype(release)> snap(
 				SnapshotFrameStore( chainMutex_, framestore_ ), release );
-			if ( !snap ) return false;
+			if ( !snap || snap->Width() == 0 || snap->Height() == 0 ) return false;
 			const auto encode = [&]( CheckedWriteBuffer& checked ) {
 				try {
 					encoder->Encode( *snap, checked, opts );

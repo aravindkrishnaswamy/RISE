@@ -17,6 +17,7 @@
 #include "../Interfaces/ILog.h"
 #include <limits>
 #include <new>
+#include <stdexcept>
 #ifndef NO_PNG_SUPPORT
 	#include <png.h>
 	#include <zlib.h>
@@ -25,9 +26,28 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	thread_local bool failPNGWriteAfterHeader = false;
+}
+
+bool RISE::Implementation::ForTest_SetPNGWriteFailureAfterHeader( bool enabled )
+{
+	const bool previous = failPNGWriteAfterHeader;
+	failPNGWriteAfterHeader = enabled;
+	return previous;
+}
+
+bool RISE::Implementation::ForTest_PNGWriteFailureAfterHeader()
+{
+	return failPNGWriteAfterHeader;
+}
+
 PNGWriter::PNGWriter( IWriteBuffer& buffer, const unsigned char bpp_, const COLOR_SPACE color_space_ ) :
   pWriteBuffer( buffer ),
   pBuffer( 0 ),
+  bufW( 0 ),
+  bufH( 0 ),
   bpp( bpp_ ),
   color_space( color_space_ )
 {
@@ -57,20 +77,19 @@ void PNGWriter::BeginWrite( const unsigned int width, const unsigned int height 
 		delete [] pBuffer;
 		pBuffer = nullptr;
 	}
+	bufW = bufH = 0;
 	const size_t pixelBytes = 4 * (bpp >> 3);
 	if( width == 0 || height == 0 || width > 0x7fffffffU || height > 0x7fffffffU ||
 		width > std::numeric_limits<size_t>::max() / pixelBytes / height ) {
-		GlobalLog()->PrintEasyError( "PNGWriter: Invalid image dimensions" );
-		return;
+		throw std::runtime_error( "PNGWriter: Invalid image dimensions" );
 	}
-	bufW = width;
-	bufH = height;
 	pBuffer = new (std::nothrow) unsigned char[static_cast<size_t>(width) * height * pixelBytes];
 	if( !pBuffer ) {
-		GlobalLog()->PrintEasyError( "PNGWriter: Could not allocate pixel buffer" );
-		return;
+		throw std::bad_alloc();
 	}
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
+	bufW = width;
+	bufH = height;
 }
 
 void PNGWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y )
@@ -154,6 +173,7 @@ void PNGWriter::WriteColor( const RISEColor& c, const unsigned int x, const unsi
 void PNGWriter::EndWrite( )
 {
 	GlobalLog()->PrintSourceError( "PNGWriter::EndWrite NO PNG SUPPORT was compiled!  No output will be written", __FILE__, __LINE__ );
+	throw std::runtime_error( "PNG encoding is unavailable: NO_PNG_SUPPORT" );
 }
 
 #else
@@ -163,9 +183,14 @@ png_write_data(png_structp png_ptr, png_bytep data, png_size_t length)
 {
 	IWriteBuffer*	pBuffer = (IWriteBuffer*)png_get_io_ptr(png_ptr);
 
-	if( !pBuffer || length > std::numeric_limits<unsigned int>::max() ||
-		!pBuffer->setBytes( data, static_cast<unsigned int>(length) ) )
-		png_error( png_ptr, "PNG output write failed" );
+	bool written = false;
+	try {
+		written = pBuffer && length <= std::numeric_limits<unsigned int>::max() &&
+			pBuffer->setBytes( data, static_cast<unsigned int>(length) );
+	} catch( ... ) {
+		// Leave the catch before invoking libpng's longjmp cleanup path.
+	}
+	if( !written ) png_error( png_ptr, "PNG output write failed" );
 }
 
 static void
@@ -182,21 +207,19 @@ void PNGWriter::EndWrite( )
 		png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 
 		if( !png_ptr ) {
-			GlobalLog()->PrintSourceError( "PNGWriter:: Could not allocate structure", __FILE__, __LINE__ );
-			return;
+			throw std::runtime_error( "PNGWriter: Could not allocate PNG structure" );
 		}
 
 		png_infop info_ptr = png_create_info_struct(png_ptr);
 
 		if( !info_ptr ) {
 			png_destroy_write_struct(&png_ptr, NULL);
-			GlobalLog()->PrintSourceError( "PNGWriter:: Could not create info structure", __FILE__, __LINE__ );
-			return;
+			throw std::runtime_error( "PNGWriter: Could not allocate PNG info structure" );
 		}
 
 		if( setjmp( png_jmpbuf(png_ptr) ) ) {
 			png_destroy_write_struct( &png_ptr, &info_ptr );
-			return;
+			throw std::runtime_error( "PNGWriter: libpng encoding failed" );
 		}
 
 		// Set a write function to write to our buffer rather than a file
@@ -231,6 +254,8 @@ void PNGWriter::EndWrite( )
 		   PNG_FILTER_TYPE_DEFAULT);
 
 		png_write_info( png_ptr, info_ptr );
+		if( ForTest_PNGWriteFailureAfterHeader() )
+			png_error( png_ptr, "injected PNG codec failure after header" );
 		for( unsigned int y=0; y<bufH; y++ ) {
 			png_write_row(png_ptr, &pBuffer[static_cast<size_t>(y)*bufW*4*(bpp>>3)]);
 		}

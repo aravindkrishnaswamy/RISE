@@ -1142,8 +1142,8 @@ const std::vector<unsigned char>& DefaultTextureBytes()
 		std::unique_ptr<IRasterImageWriter, decltype(release)> writer( rawWriter, release );
 		if( !writer ) throw std::runtime_error("Could not create default PNG writer");
 		image->DumpImage( writer.get() );
-		// PNGWriter's void API can report allocation/write failure by
-		// returning early; a complete PNG must contain its final IEND chunk.
+		// PNGWriter reports encoding failures by exception. Also verify the
+		// known payload ends with IEND before accepting it for cache repair.
 		constexpr std::array<unsigned char, 12> endChunk = {
 			0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xae, 0x42, 0x60, 0x82
 		};

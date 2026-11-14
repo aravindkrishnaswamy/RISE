@@ -20,6 +20,7 @@
 
 #include <cmath>   // P3: std::round for the downscale dims rounding rule
 #include <limits>
+#include <memory>
 #ifndef NO_PNG_SUPPORT
 #include <png.h>
 #include <zlib.h>
@@ -291,8 +292,7 @@ namespace
 	//! Shared PNG-encode tail for ToPng / ToPngDownscaled: write `w`x`h`
 	//! pixels from `pels` (row-major) through the tree's PNGWriter (the
 	//! REQUESTED `colorSpace`'s Integerize + libpng) into an in-memory
-	//! buffer.  Returns an empty vector on a writer-creation failure or
-	//! zero dims.
+	//! buffer. Returns an empty vector on encoding/allocation failure or zero dims.
 	//!
 	//! When `displayTransform != eDisplayTransform_None` OR `exposureEV != 0`,
 	//! the PNGWriter is wrapped in the SAME `DisplayTransformWriter` the CLI
@@ -316,53 +316,52 @@ namespace
 		std::vector<unsigned char> out;
 		if( w == 0 || h == 0 ) return out;
 
-		// `new` yields refcount 1 (Reference starts at 1) -- that is our
-		// owning ref; PNGWriter addrefs it internally.  Do NOT add an extra
-		// addref here or the buffer leaks.
-		Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer();
+		try {
+			const auto release=[](auto* p){if(p)p->release();};
+			std::unique_ptr<Implementation::MemoryBuffer,decltype(release)> buffer(
+				new Implementation::MemoryBuffer(),release);
+			IRasterImageWriter* rawWriter=nullptr;
+			const bool created=RISE_API_CreatePNGWriter(&rawWriter,*buffer,8,static_cast<COLOR_SPACE>(colorSpace));
+			std::unique_ptr<IRasterImageWriter,decltype(release)> writer(rawWriter,release);
+			if(!created || !writer)return out;
 
-		IRasterImageWriter* writer = nullptr;
-		if( !RISE_API_CreatePNGWriter( &writer, *buffer, /*bpp=*/8, static_cast<COLOR_SPACE>( colorSpace ) ) || !writer ) {
-			safe_release( buffer );
-			return out;
-		}
-
-		// Interpose the exposure + tone-curve stage when non-identity, exactly
-		// mirroring the LDR-only gate in FrameEncoders.cpp (tone curve != none
-		// OR total EV != 0).  The wrapper addref's `writer`; we keep our own
-		// owning ref on `writer` and release both at the end.
-		const DISPLAY_TRANSFORM dt = static_cast<DISPLAY_TRANSFORM>( displayTransform );
-		IRasterImageWriter* effective = writer;
-		Implementation::DisplayTransformWriter* dtw = nullptr;
-		if( dt != eDisplayTransform_None || exposureEV != 0.0 ) {
-			dtw = new Implementation::DisplayTransformWriter(
-				*writer, static_cast<Scalar>( exposureEV ), dt );
-			effective = dtw;
-		}
-
-		effective->BeginWrite( w, h );
-		for( unsigned int y = 0; y < h; ++y ) {
-			for( unsigned int x = 0; x < w; ++x ) {
-				effective->WriteColor( pels[ static_cast<std::size_t>( y ) * w + x ], x, y );
+			// Interpose the exposure + tone-curve stage when non-identity, exactly
+			// mirroring the LDR-only gate in FrameEncoders.cpp (tone curve != none
+			// OR total EV != 0).  The wrapper addref's `writer`; we keep our own
+			// owning ref on `writer` and release both at the end.
+			const DISPLAY_TRANSFORM dt = static_cast<DISPLAY_TRANSFORM>( displayTransform );
+			IRasterImageWriter* effective = writer.get();
+			std::unique_ptr<Implementation::DisplayTransformWriter,decltype(release)> dtw(nullptr,release);
+			if( dt != eDisplayTransform_None || exposureEV != 0.0 ) {
+				dtw.reset(new Implementation::DisplayTransformWriter(
+					*writer, static_cast<Scalar>( exposureEV ), dt ));
+				effective = dtw.get();
 			}
-		}
-		effective->EndWrite();   // flushes the encoded PNG bytes into `buffer`
-		safe_release( dtw );      // no-op when identity (dtw stayed null)
 
-		// MemoryBuffer::setBytes grows exactly (Resize to cursor+amount), so
-		// the write cursor is the authoritative encoded length; Size() may
-		// equal it but the cursor is the safest source of truth.
-		const unsigned int nBytes = buffer->getCurPos();
-		const char* p = buffer->Pointer();
-		if( p && nBytes > 0 ) {
-			out.assign(
-				reinterpret_cast<const unsigned char*>( p ),
-				reinterpret_cast<const unsigned char*>( p ) + nBytes );
-		}
+			effective->BeginWrite( w, h );
+			for( unsigned int y = 0; y < h; ++y ) {
+				for( unsigned int x = 0; x < w; ++x ) {
+					effective->WriteColor( pels[ static_cast<std::size_t>( y ) * w + x ], x, y );
+				}
+			}
+			effective->EndWrite();   // flushes the encoded PNG bytes into `buffer`
 
-		safe_release( writer );
-		safe_release( buffer );
-		return out;
+			// The write cursor is the authoritative encoded length; capacity may
+			// exceed the logical payload.
+			const unsigned int nBytes = buffer->getCurPos();
+			const char* p = buffer->Pointer();
+			if( p && nBytes > 0 ) {
+				out.assign(
+					reinterpret_cast<const unsigned char*>( p ),
+					reinterpret_cast<const unsigned char*>( p ) + nBytes );
+			}
+
+			return out;
+		} catch(...) {
+			// Preserve the agent sink's empty-image failure boundary. Owners
+			// release the wrapper, writer, and buffer even after partial output.
+			return {};
+		}
 	}
 }
 

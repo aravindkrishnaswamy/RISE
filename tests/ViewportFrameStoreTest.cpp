@@ -38,6 +38,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -554,6 +555,71 @@ namespace
 		safe_release( img );
 		l2Store->release();
 		vfs->release();
+	}
+
+	void TestEmptyBoundFrameSavePreflight()
+	{
+		struct CountingEncoder final : IFrameEncoder, Reference
+		{
+			unsigned int calls = 0;
+			std::string FormatName() const override { return "counting"; }
+			std::vector<std::string> Extensions() const override { return { "counting" }; }
+			bool SupportsHDR() const override { return false; }
+			bool SupportsAOVs() const override { return false; }
+			void Encode( const FrameStore&, IWriteBuffer& dst, const EncodeOpts& ) override
+			{
+				++calls;
+				if( !dst.setBytes("encoded", 7) ) throw std::runtime_error("counting encoder write failed");
+			}
+		} encoder;
+		auto* viewport = new ViewportFrameStore();
+		const std::string path = MakeTempPath() + "_empty_bound.counting";
+		const std::string fileSentinel = "file sentinel";
+		const std::vector<unsigned char> expectedFile(fileSentinel.begin(), fileSentinel.end());
+		const char bufferSentinel[] = "buffer sentinel";
+		EncodeOpts opts;
+		for( const auto& dimensions : { std::pair<size_t, size_t>{0, 0}, {0, 2}, {2, 0} } ) {
+			FrameStore::Spec spec;
+			spec.width = dimensions.first;
+			spec.height = dimensions.second;
+			auto* empty = new FrameStore(spec);
+			viewport->BindFrameStore(empty);
+			empty->release();
+			std::ofstream(path, std::ios::binary | std::ios::trunc) << fileSentinel;
+			std::vector<unsigned char> preserved;
+			Check(!viewport->SaveAs(path, &encoder, opts) && encoder.calls == 0 &&
+				ReadFileAllBytes(path, preserved) && preserved == expectedFile,
+				"empty-bound preflight: SaveAs rejects either zero dimension before encoding or changing the existing file");
+			char storage[sizeof(bufferSentinel)];
+			std::memcpy(storage, bufferSentinel, sizeof(storage));
+			auto* destination = new MemoryBuffer(storage, static_cast<unsigned int>(sizeof(storage)), false);
+			Check(destination->seek(IBuffer::START, 4), "empty-bound preflight: prefill destination and advance its cursor");
+			const auto previousSize = destination->Size();
+			const auto previousPosition = destination->getCurPos();
+			Check(!viewport->SaveTo(*destination, &encoder, opts) && encoder.calls == 0 &&
+				destination->Size() == previousSize && destination->getCurPos() == previousPosition &&
+				std::memcmp(storage, bufferSentinel, sizeof(storage)) == 0,
+				"empty-bound preflight: SaveTo rejects either zero dimension without encoding or changing destination bytes size or cursor");
+			destination->release();
+		}
+		FrameStore::Spec healthySpec;
+		healthySpec.width = healthySpec.height = 1;
+		auto* healthy = new FrameStore(healthySpec);
+		viewport->BindFrameStore(healthy);
+		healthy->release();
+		encoder.calls = 0;
+		std::vector<unsigned char> encodedFile;
+		const std::vector<unsigned char> expectedEncoded = { 'e', 'n', 'c', 'o', 'd', 'e', 'd' };
+		Check(viewport->SaveAs(path, &encoder, opts) && encoder.calls == 1 &&
+			ReadFileAllBytes(path, encodedFile) && encodedFile == expectedEncoded,
+			"empty-bound preflight: positive-dimension rebind permits SaveAs and invokes encoder once");
+		auto* destination = new MemoryBuffer();
+		Check(viewport->SaveTo(*destination, &encoder, opts) && encoder.calls == 2 && destination->getCurPos() == 7 &&
+			std::memcmp(destination->Pointer(), "encoded", 7) == 0,
+			"empty-bound preflight: positive-dimension rebind permits SaveTo and emits complete bytes");
+		destination->release();
+		viewport->release();
+		std::remove(path.c_str());
 	}
 
 	void TestSaveToLargeBufferExtension()
@@ -1240,6 +1306,7 @@ int main()
 	TestIntermediateMultiTile();
 	TestRenderToBuffer();
 	TestSaveAsByteIdenticalToL2();
+	TestEmptyBoundFrameSavePreflight();
 	TestWriteOnlyFinalizationFailure();
 	TestSaveToLargeBufferExtension();
 	TestRasterizerSwap();
