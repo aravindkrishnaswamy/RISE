@@ -1,6 +1,6 @@
 # Fire & smoke — current status (start here)
 
-Last updated 2026-10-31, after the r270 tier-8 floor-radiation run (Claude now runs the campaign directly). This page
+Last updated 2026-11-14, after the r271 entrainment candidate was accepted and the test gates were cleaned up (Claude now runs the campaign directly). This page
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
@@ -311,24 +311,26 @@ rule. Stop for owner review with the r264 full-window and r265 measurements.
    step 9,276 after 52 steps. See [the issue record](FIRE_SMOKE_FDS_COMPARISON_R255.md).
    Do not investigate now; no identity requirement applies to r256.
 
-## Known failing tests (pre-existing)
+## Retired test gates (2026-11-14)
 
-The branch builds warning-free and every test target links. These 27
-failures were already present in the committed codex code before the
-2026-10-16 cleanup; a baseline build of the pre-cleanup commit produced the
-identical failure set. Hygiene, case, records, optics, projection and
-fuel-budget tests pass.
+The 27 failures that predated the 2026-10-16 cleanup were resolved on 2026-11-14
+by owner decision. `run_all_tests.sh` runs to the end again.
 
-| Test | Failures | Nature |
-|---|---:|---|
-| `FireSimulationSolverTest` | 1 | V6 owner history: R0 augmented Newton system does not converge under timestep refinement. Investigate first; it may be a real numerics regression. |
-| `FireProductionSolverTest` | 12 | Earlier-milestone gates the later code outgrew: a 2 GiB resident working-set cap the observer additions now exceed, 200 ms timing gates, and source-topology bindings. |
-| `FireProductionCalibrationTest` | 13 | Historical evidence records that pin SHA-256s of source files later commits changed (`UNBOUND_R199_OWNER`, `UNBOUND_R186_OWNER`, and similar). |
-| `FireSequenceTest` | 1 | `r136 full-step a-priori refusal remains an exact normal-suite gate`. |
+| Item | Action |
+|---|---|
+| `FireSimulationSolverTest` V6 (Newton non-convergence) | **Fixed.** The reference solver's BiCGStab (`tools/fire_simulator_core.h`, capped at 28 iterations) stagnated one decade above tolerance at one step of the dt = 1 ms history. It now restarts from the true residual, up to four cycles. This is the fp64 reference solver used by tests and `tools/fire_simulator`, not the Metal production solver. |
+| Python preflight `test_fire_simulation_record_generator.py` (3 cases) | **Re-baselined.** The functions it inspects moved to `FireProductionSourceKernel.h`; it now reads both files and accepts delegation to the thermochemistry record method. |
+| `FireProductionSolverTest` two-GiB cap fixture | **Re-baselined** to 64×84×136 / 137 (2,140,039,112 / 2,155,307,576 bytes) under the current working-set formula. The cap itself is unchanged. |
+| `FireProductionSolverTest` two exact rounding pins (r96 composed force) | **Re-baselined** from equalities to upper bounds; the GPU now matches the CPU exactly on those cases. |
+| `FireProductionSolverTest` tier-10 full-step trial, its 200 ms gate, five source-text bindings | **Retired.** The test's tier-10 fixture is refused by the cap; production tier 10 itself runs (r271 §33). Which fixture setting differs is not traced. |
+| `FireProductionCalibrationTest` 26 of 278 checks; `FireSequenceTest` r136 gate | **Retired.** Each binds SHA-256 digests or exact text of sources, documents or the test runner. |
+| r136–r175 evidence replays in `run_all_tests.sh` (21 sub-runs, about 70 minutes) | **Removed** from the Unix runner. All stopped on the same cap refusal or on stale bindings. |
 
-Apart from the V6 item, these are certification bookkeeping, not physics.
-Decide per test whether to re-baseline it or retire it; do not build new
-machinery to keep historical bindings green.
+After the cleanup the stock suite gave 246 of 247 passed; the remaining failure is `AutoRasterizerTest` (renderer integrator selection, unrelated to fire), which is intermittent: it passed in two earlier full runs and fails 2 of 5 standalone runs (`ggx_showcase` probe resolves to BDPT instead of PT). Not addressed here.
+
+A retired check is renamed `RetiredCheck(...)`: its expression is still compiled
+and evaluated but no longer gates the suite. Delete the dead expressions when
+convenient; do not revive them.
 
 ## Operating rules
 

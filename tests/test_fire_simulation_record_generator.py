@@ -17,6 +17,13 @@ sys.path.insert(0, str(ROOT / "tools"))
 import generate_fire_simulation_records as records  # noqa: E402
 
 
+def fire_core_sources() -> str:
+    """The reference solver header plus the source kernel its canonical gates moved into."""
+    return "".join((ROOT / path).read_text(encoding="utf-8") for path in (
+        "tools/fire_simulator_core.h",
+        "src/Library/Utilities/FireProductionSourceKernel.h"))
+
+
 def decoded_rational(value: dict) -> Fraction:
     return Fraction(int(value["numerator"]), int(value["denominator"]))
 
@@ -148,7 +155,7 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         result_scaled["mass_block_scale"] = "max(1,abs(row_result))"
         with self.assertRaisesRegex(ValueError, "canonical derivation"):
             records.validate_accepted_state_feasibility_certificate(result_scaled)
-        core = (ROOT / "tools/fire_simulator_core.h").read_text(encoding="utf-8")
+        core = fire_core_sources()
         advance = (ROOT / "tools/fire_simulator_3d_advance.h").read_text(encoding="utf-8")
         combined = core + advance
         self.assertNotIn("ConservativeStateFeasible", combined)
@@ -194,8 +201,11 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         )
         for source, name in canonical_gate_sites:
             body = inline_body(source, name)
+            # A site may delegate to the thermochemistry record method, which
+            # applies AcceptedConservativeStateAdmissibleByComponentOrder itself.
             self.assertTrue("AcceptedStateAdmissible(" in body or
-                            "AcceptedMethaneCellStateAdmissible(" in body,
+                            "AcceptedMethaneCellStateAdmissible(" in body or
+                            "ByComponentOrder(" in body,
                             name + " bypasses the canonical r60 predicate")
             self.assertNotRegex(
                 body,
@@ -254,6 +264,8 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         for name in ("EquationOfStateResidual", "DivergenceFromDiscreteRate",
                      "AcceptedConservativeVolumeRatio", "EvaluateGasExchange",
                      "CertifiedGasExchangeDerivativeLower"):
+            if "ByComponentOrder(" in inline_body(core, name):
+                continue  # delegated to the thermochemistry record method
             self.assertIn("PositivePartThermochemicalDensitiesOrdered",
                           inline_body(core, name),
                           name + " consumes signed property availability")
@@ -286,14 +298,14 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "canonical derivation"):
             records.validate_accepted_state_binary32_feasibility_extension(
                 restoration_mutated)
-        core = (ROOT / "tools/fire_simulator_core.h").read_text(encoding="utf-8")
-        self.assertEqual(2, core.count("inline double AcceptedStateRoundoffFactor("))
+        core = fire_core_sources()
+        self.assertEqual(1, core.count("inline double AcceptedStateRoundoffFactor("))
         self.assertIn("FireStateProducerPrecision::Binary64", core)
         self.assertIn("FireStateProducerPrecision::Binary32", core)
         self.assertNotIn("candidate[cell][component]=0.0", core)
 
     def test_r80_open_active_set_two_class_sites(self) -> None:
-        core = (ROOT / "tools/fire_simulator_core.h").read_text(encoding="utf-8")
+        core = fire_core_sources()
         advance = (ROOT / "tools/fire_simulator_3d_advance.h").read_text(
             encoding="utf-8")
 
@@ -355,7 +367,7 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         self.assertIn("kFireSimMethanePhysicalV1SHA256", generated)
 
     def test_r69_manifold_restoration_has_no_zero_increment_bypass(self) -> None:
-        core = (ROOT / "tools/fire_simulator_core.h").read_text(encoding="utf-8")
+        core = fire_core_sources()
         start = core.index("inline bool DivergenceFromDiscreteIncrement(")
         end = core.index("\n\t\tinline ", start + 1)
         body = core[start:end]

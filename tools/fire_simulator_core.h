@@ -2128,11 +2128,23 @@ namespace RISE
 				s(count,0.0),t(count,0.0),pHat,sHat;
 			double rhoPrevious=1.0,alpha=1.0,omega=1.0;
 			static const std::size_t maximumIterations=28u;
+			// BiCGStab can stagnate once the shadow residual is nearly orthogonal to
+			// the residual; restart from the true residual of the current iterate.
+			static const std::size_t maximumCycles=4u;
+			for( std::size_t cycle=0; cycle<maximumCycles; ++cycle ) {
+			if(cycle>0u){
+				if(!applyOperator(solution,t)) return false;
+				for(std::size_t i=0;i<count;++i){r[i]=rightHandSide[i]-t[i];
+					if(!std::isfinite(r[i])) return false;}
+				rHat=r;p.assign(count,0.0);v.assign(count,0.0);
+				rhoPrevious=1.0;alpha=1.0;omega=1.0;
+			}
 			for( std::size_t iteration=0; iteration<maximumIterations; ++iteration ) {
 				const double maximum=parallelMaximum(r);
 				if(maximum<=tolerance) return true;
 				const double rho=OpenVectorDot3D(rHat,r);
-				if(!std::isfinite(rho) || rho==0.0) return false;
+				if(!std::isfinite(rho)) return false;
+				if(rho==0.0) break;
 				const double beta=(rho/rhoPrevious)*(alpha/omega);
 				if(!std::isfinite(beta)) return false;
 				ParallelFireSlices(count,workerCount,[&](const std::size_t i){
@@ -2159,6 +2171,7 @@ namespace RISE
 						finite.store(false,std::memory_order_relaxed);});
 				if(!finite.load(std::memory_order_relaxed))return false;
 				rhoPrevious=rho;
+			}
 			}
 			return false;
 		}
