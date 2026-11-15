@@ -34,10 +34,34 @@
 #include "../Utilities/GeometricUtilities.h"
 #include <limits>
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
+#include <unordered_map>
+#include <unordered_set>
 #include "CSGObject.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+	inline bool HasCustomNonEpochSubtree( const IObjectPriv* pObj, std::unordered_set<const CSGObject*>& visited )
+	{
+		if( !pObj ) {
+			return false;
+		}
+		if( const CSGObject* pCsg = dynamic_cast<const CSGObject*>( pObj ) ) {
+			if( !visited.insert( pCsg ).second ) {
+				return false;
+			}
+			return HasCustomNonEpochSubtree( pCsg->GetOperandA(), visited ) ||
+				HasCustomNonEpochSubtree( pCsg->GetOperandB(), visited );
+		}
+		if( !dynamic_cast<const Implementation::Object*>( pObj ) ) {
+			return true;
+		}
+		const IGeometry* pGeom = pObj->GetGeometry();
+		return pGeom && dynamic_cast<const Implementation::Geometry*>( pGeom ) == 0;
+	}
+}
 
 CSGObject::CSGObject( const CSG_OP& op_ ) :
   pObjectA( 0 ),
@@ -45,10 +69,12 @@ CSGObject::CSGObject( const CSG_OP& op_ ) :
   op( op_ ),
   m_certBits( -1 )
 {
+	Geometry::BumpGlobalGeometryShapeEpoch();
 }
 
 CSGObject::~CSGObject( )
 {
+	Geometry::BumpGlobalGeometryShapeEpoch();
 	// RELEASE OUR CONSUMPTION, not "make it visible again".  Since 87 step 3b an
 	// operand is routinely shared by N composites (a `source` instance of a subtree
 	// containing a `csg_object` re-Finalizes it with `obja` / `objb` unchanged), and
@@ -223,7 +249,14 @@ bool CSGObject::AssignObjects( IObjectPriv* objA, IObjectPriv* objB )
 	pObjectA->AddConsumer();
 	pObjectB->AddConsumer();
 
+	{
+		std::unordered_set<const CSGObject*> visited;
+		if( HasCustomNonEpochSubtree( pObjectA, visited ) || HasCustomNonEpochSubtree( pObjectB, visited ) ) {
+			Geometry::NoteCustomCsgOperandSeen();
+		}
+	}
 	m_certBits.store( -1, std::memory_order_relaxed );	// DL-617: recomputed on first use
+	Geometry::BumpGlobalGeometryShapeEpoch();
 
 	return true;
 }
@@ -232,6 +265,7 @@ void CSGObject::SetOperation( const CSG_OP& op_ )
 {
 	op = op_;
 	m_certBits.store( -1, std::memory_order_relaxed );	// DL-617: the certificate depends on the operation
+	Geometry::BumpGlobalGeometryShapeEpoch();
 }
 
 namespace
@@ -5347,13 +5381,58 @@ namespace
 		return h;
 	}
 
-	inline unsigned long long HashOperandState( unsigned long long h, const IObjectPriv* pChild )
+	struct CsgShapeRevTlsMemo
+	{
+		unsigned long long shapeEpoch;
+		unsigned long long globalPoseEpoch;
+		unsigned long long threadPoseEpoch;
+		const TimeIndexed::ThreadSlots* tlsSlots;
+		unsigned int activeDepth;
+		std::unordered_map<const CSGObject*, unsigned long long> epochMemo;
+		std::unordered_map<const CSGObject*, unsigned long long> callMemo;
+
+		CsgShapeRevTlsMemo() :
+		  shapeEpoch( 0 ),
+		  globalPoseEpoch( 0 ),
+		  threadPoseEpoch( 0 ),
+		  tlsSlots( 0 ),
+		  activeDepth( 0 )
+		{}
+	};
+
+	inline CsgShapeRevTlsMemo& ThreadCsgShapeRevMemo()
+	{
+		static thread_local CsgShapeRevTlsMemo memo;
+		return memo;
+	}
+
+	inline bool IsLeafObjectEpochTracked( const IObjectPriv* pChild, const CSGObject*& outCsg )
+	{
+		outCsg = 0;
+		if( !pChild ) {
+			return true;
+		}
+		outCsg = dynamic_cast<const CSGObject*>( pChild );
+		if( outCsg ) {
+			return true;
+		}
+		if( !dynamic_cast<const Implementation::Object*>( pChild ) ) {
+			return false;
+		}
+		const IGeometry* pGeom = pChild->GetGeometry();
+		return !pGeom || dynamic_cast<const Implementation::Geometry*>( pGeom ) != 0;
+	}
+
+	inline unsigned long long HashOperandState( unsigned long long h, const IObjectPriv* pChild, CsgShapeRevTlsMemo& tls, bool& outTracked )
 	{
 		const unsigned long long ptrBits = static_cast<unsigned long long>( reinterpret_cast<uintptr_t>( pChild ) );
 		h ^= ptrBits + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
 		if( !pChild ) {
+			outTracked = true;
 			return h;
 		}
+		const CSGObject* pChildCsg = 0;
+		const bool leafTracked = IsLeafObjectEpochTracked( pChild, pChildCsg );
 		const unsigned long long rev = pChild->ShapeRevision();
 		h ^= rev + 0x9e3779b97f4a7c15ULL + ( h << 6 ) + ( h >> 2 );
 		const Matrix4 m = pChild->GetFinalTransformMatrix();
@@ -5361,17 +5440,70 @@ namespace
 		h = HashScalarBits( h, m._10 ); h = HashScalarBits( h, m._11 ); h = HashScalarBits( h, m._12 ); h = HashScalarBits( h, m._13 );
 		h = HashScalarBits( h, m._20 ); h = HashScalarBits( h, m._21 ); h = HashScalarBits( h, m._22 ); h = HashScalarBits( h, m._23 );
 		h = HashScalarBits( h, m._30 ); h = HashScalarBits( h, m._31 ); h = HashScalarBits( h, m._32 ); h = HashScalarBits( h, m._33 );
-		const BoundingBox b = pChild->getBoundingBox();
-		h = HashScalarBits( h, b.ll.x ); h = HashScalarBits( h, b.ll.y ); h = HashScalarBits( h, b.ll.z );
-		h = HashScalarBits( h, b.ur.x ); h = HashScalarBits( h, b.ur.y ); h = HashScalarBits( h, b.ur.z );
+		if( pChildCsg ) {
+			outTracked = ( tls.epochMemo.find( pChildCsg ) != tls.epochMemo.end() );
+		} else {
+			outTracked = leafTracked;
+			if( !leafTracked ) {
+				const BoundingBox b = pChild->getBoundingBox();
+				h = HashScalarBits( h, b.ll.x ); h = HashScalarBits( h, b.ll.y ); h = HashScalarBits( h, b.ll.z );
+				h = HashScalarBits( h, b.ur.x ); h = HashScalarBits( h, b.ur.y ); h = HashScalarBits( h, b.ur.z );
+			}
+		}
 		return h;
 	}
 }
 
 unsigned long long CSGObject::ShapeRevision() const
 {
+	CsgShapeRevTlsMemo& tls = ThreadCsgShapeRevMemo();
+	const unsigned long long sEpoch = Geometry::GlobalGeometryShapeEpoch();
+	const unsigned long long gPoseEpoch = Transformable::GlobalTransformPoseEpoch();
+	const unsigned long long tPoseEpoch = Transformable::ThreadTransformPoseEpoch();
+	const TimeIndexed::ThreadSlots* curSlots = TimeIndexed::tlsSlots;
+	if( tls.shapeEpoch != sEpoch ||
+		tls.globalPoseEpoch != gPoseEpoch ||
+		tls.threadPoseEpoch != tPoseEpoch ||
+		tls.tlsSlots != curSlots ) {
+		tls.shapeEpoch = sEpoch;
+		tls.globalPoseEpoch = gPoseEpoch;
+		tls.threadPoseEpoch = tPoseEpoch;
+		tls.tlsSlots = curSlots;
+		tls.epochMemo.clear();
+	}
+
+	const std::unordered_map<const CSGObject*, unsigned long long>::const_iterator itEpoch = tls.epochMemo.find( this );
+	if( itEpoch != tls.epochMemo.end() ) {
+		return itEpoch->second;
+	}
+	if( tls.activeDepth > 0 ) {
+		const std::unordered_map<const CSGObject*, unsigned long long>::const_iterator itCall = tls.callMemo.find( this );
+		if( itCall != tls.callMemo.end() ) {
+			return itCall->second;
+		}
+	}
+
+	struct CallDepthGuard
+	{
+		CsgShapeRevTlsMemo& m;
+		explicit CallDepthGuard( CsgShapeRevTlsMemo& m_ ) : m( m_ ) { ++m.activeDepth; }
+		~CallDepthGuard()
+		{
+			if( --m.activeDepth == 0 && !m.callMemo.empty() ) {
+				m.callMemo.clear();
+			}
+		}
+	} depthGuard( tls );
+
+	bool trackedA = true, trackedB = true;
 	unsigned long long h = 0x517cc1b727220a95ULL ^ static_cast<unsigned long long>( op );
-	h = HashOperandState( h, pObjectA );
-	h = HashOperandState( h, pObjectB );
+	h = HashOperandState( h, pObjectA, tls, trackedA );
+	h = HashOperandState( h, pObjectB, tls, trackedB );
+
+	if( trackedA && trackedB ) {
+		tls.epochMemo[this] = h;
+	} else {
+		tls.callMemo[this] = h;
+	}
 	return h;
 }

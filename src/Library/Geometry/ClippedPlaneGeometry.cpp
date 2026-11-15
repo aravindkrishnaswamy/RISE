@@ -776,6 +776,7 @@ void ClippedPlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 	case PTD_ID:
 		{
 			vP[val.getID()-PTA_ID] = *(Point3*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	}

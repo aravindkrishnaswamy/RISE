@@ -20,11 +20,21 @@
 #include <cassert>
 #include <iostream>
 #include <type_traits>
+#include <utility>
 
 #include "../src/Library/Utilities/IORStack.h"
 #include "TestStubObject.h"
 
 using namespace RISE;
+
+static_assert(
+	std::is_nothrow_move_constructible<IORStack>::value,
+	"IORStack must be nothrow-move-constructible so std::vector<IORStack> moves without copying"
+);
+static_assert(
+	std::is_nothrow_move_assignable<IORStack>::value,
+	"IORStack must be nothrow-move-assignable"
+);
 
 // Compile-time guard: the Scalar constructor must be `explicit`, so
 // that passing a bare `0` / `1.0` to a `const IORStack&` parameter
@@ -112,6 +122,69 @@ static void TestCannotPopEnvironment( const IObject* stub )
 	std::cout << "TestCannotPopEnvironment passed!" << std::endl;
 }
 
+static void TestMoveInlineAndSpilled( const IObject* stub )
+{
+	std::cout << "Running TestMoveInlineAndSpilled..." << std::endl;
+
+	// 1. Inline stack (<= 4 entries) move construction & move assignment.
+	IORStack inlineSrc( 1.0 );
+	inlineSrc.SetCurrentObject( stub );
+	inlineSrc.SetCrossingEtaFrom( 1.25 );
+	inlineSrc.push( 1.5 );
+
+	IORStack inlineMoved( std::move( inlineSrc ) );
+	assert( inlineMoved.Depth() == 2 );
+	assert( inlineMoved.top() == 1.5 );
+	assert( inlineMoved.containsCurrent() );
+	assert( inlineMoved.CrossingEtaFrom() == 1.25 );
+	// Moved-from stack retains a valid 1-element environment invariant.
+	assert( inlineSrc.Depth() == 1 );
+	assert( inlineSrc.top() == 1.0 );
+	assert( inlineSrc.CrossingEtaFrom() == 0 );
+
+	// 2. Spilled stack (> 4 entries + ContextList) move construction & assignment.
+	StubObject* stubs[6];
+	for( int i = 0; i < 6; ++i ) {
+		stubs[i] = new StubObject();
+	}
+	{
+		IORStack spilledSrc( 1.001 );
+		IORStack::EntryContext ctx;
+		ctx.bHasContext = true;
+		ctx.bOpenSheet = true;
+		for( int i = 0; i < 6; ++i ) {
+			spilledSrc.SetCurrentObject( stubs[i] );
+			if( i == 2 ) {
+				spilledSrc.pushOpenSheet( Scalar( 1.3 + 0.05 * i ), ctx );
+			} else {
+				spilledSrc.push( Scalar( 1.3 + 0.05 * i ) );
+			}
+		}
+		assert( spilledSrc.Depth() == 7 );
+
+		IORStack spilledMoved( std::move( spilledSrc ) );
+		assert( spilledMoved.Depth() == 7 );
+		assert( spilledMoved.EnvironmentIOR() == Scalar( 1.001 ) );
+		assert( spilledMoved.isOpenSheetAt( 3 ) );
+		assert( spilledMoved.ContextAt( 3 ).bHasContext );
+		assert( spilledSrc.Depth() == 1 );
+		assert( spilledSrc.top() == Scalar( 1.001 ) );
+
+		IORStack target( 1.0 );
+		target = std::move( spilledMoved );
+		assert( target.Depth() == 7 );
+		assert( target.isOpenSheetAt( 3 ) );
+		assert( target.ContextAt( 3 ).bHasContext );
+		assert( spilledMoved.Depth() == 1 );
+		assert( spilledMoved.top() == Scalar( 1.001 ) );
+	}
+	for( int i = 0; i < 6; ++i ) {
+		stubs[i]->release();
+	}
+
+	std::cout << "TestMoveInlineAndSpilled passed!" << std::endl;
+}
+
 int main()
 {
 	StubObject* stub = new StubObject();
@@ -121,6 +194,7 @@ int main()
 	TestPushPop( stub );
 	TestCopyPreservesTop( stub );
 	TestCannotPopEnvironment( stub );
+	TestMoveInlineAndSpilled( stub );
 
 	stub->release();
 

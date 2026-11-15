@@ -49,9 +49,44 @@ namespace RISE
 			inline void BumpShapeRevision() const
 			{
 				m_shapeRevision.fetch_add( 1, std::memory_order_acq_rel );
+				BumpGlobalGeometryShapeEpoch();
 			}
 
 		public:
+			//! Monotonic process-wide geometry-shape mutation epoch (DL-626 / DL-631).
+			//! Incremented whenever any `Implementation::Geometry` bumps its shape
+			//! revision, an `Implementation::Object` swaps its geometry, or a
+			//! `CSGObject` mutates its operands / operation / lifetime, allowing
+			//! per-thread caches (`OpenSheetCatalog` 3D AABB BVHs and `CSGObject`
+			//! DAG `ShapeRevision` memos) to verify static-scene freshness in O(1)
+			//! without per-ray virtual calls or heap allocations.
+			static inline std::atomic<unsigned long long>& GlobalShapeEpochCounter()
+			{
+				static std::atomic<unsigned long long> epoch( 1 );
+				return epoch;
+			}
+			static inline unsigned long long GlobalGeometryShapeEpoch()
+			{
+				return GlobalShapeEpochCounter().load( std::memory_order_acquire );
+			}
+			static inline void BumpGlobalGeometryShapeEpoch()
+			{
+				GlobalShapeEpochCounter().fetch_add( 1, std::memory_order_acq_rel );
+			}
+			static inline std::atomic<unsigned long long>& CustomCsgOperandCounter()
+			{
+				static std::atomic<unsigned long long> count( 0 );
+				return count;
+			}
+			static inline unsigned long long CustomCsgOperandSeen()
+			{
+				return CustomCsgOperandCounter().load( std::memory_order_acquire );
+			}
+			static inline void NoteCustomCsgOperandSeen()
+			{
+				CustomCsgOperandCounter().fetch_add( 1, std::memory_order_acq_rel );
+			}
+
 			unsigned long long ShapeRevision() const override
 			{
 				return m_shapeRevision.load( std::memory_order_acquire );

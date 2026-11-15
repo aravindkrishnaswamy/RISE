@@ -45,6 +45,7 @@
 #include "FrameStore.h"  // L6e-1.1 — FrameStoreBulkBracket RAII guard
 #include "FilteredFilm.h"
 #include "../RISE_API.h"
+#include <cstring>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1199,7 +1200,9 @@ void BDPTRasterizerBase::RasterizeScene(
 			pRasterSequence->Begin( startx, endx, starty, endy );
 
 			const unsigned int numseq = pRasterSequence->NumRegions();
-			const unsigned int baseBdptMediumSeed = LockedLibcRand();
+			unsigned long long bdptProgressBits = 0;
+			std::memcpy( &bdptProgressBits, &mProgressBase, sizeof( bdptProgressBits ) );
+			const unsigned int baseBdptMediumSeed = DeriveSeed( LockedLibcRand(), bdptProgressBits );
 
 			for( unsigned int i=0; i<numseq; i++ ) {
 				const Rect rect = pRasterSequence->GetNextRegion();
@@ -1210,10 +1213,10 @@ void BDPTRasterizerBase::RasterizeScene(
 					}
 				}
 
-				const unsigned int spBdptMediumSeed = DeriveSeed(
-					DeriveSeed( baseBdptMediumSeed, static_cast<unsigned int>( mProgressBase ) ),
-					i );
-				ScopedMediumTileSeed mediumSeed( spBdptMediumSeed );
+				const unsigned long long tileKey =
+					( static_cast<unsigned long long>( rect.top ) << 32 ) |
+					static_cast<unsigned long long>( rect.left );
+				ScopedMediumTileSeed mediumSeed( DeriveSeed( baseBdptMediumSeed, tileKey ) );
 				SPRasterizeSingleBlock( rc, *pImage, pScene, rect, height );
 			}
 

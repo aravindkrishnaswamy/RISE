@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "Transformable.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Interfaces/ILog.h"
 #include "FiniteMath.h"
 
@@ -680,6 +681,10 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 	// ---- WORLD.
 	m_mxFinalTrans = m_mxParentWorld * m_mxLocalTrans;
 	m_mxInvFinalTrans = Matrix4Ops::Inverse( m_mxFinalTrans );
+	BumpThreadTransformPoseEpoch();
+	if( !TimeIndexed::tlsSlots ) {
+		BumpGlobalTransformPoseEpoch();
+	}
 }
 
 Matrix4 Transformable::CollapsedTransformStack_( ) const

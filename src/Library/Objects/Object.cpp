@@ -418,6 +418,7 @@ Object::Object( const IGeometry* pGeometry_ ) :
 
 Object::~Object( )
 {
+	Geometry::BumpGlobalGeometryShapeEpoch();
 	safe_release( pGeometry );
 	safe_release( pMaterial );
 	safe_release( pModifier );
@@ -667,6 +668,7 @@ bool Object::AssignGeometry( const IGeometry& pGeom )
 
 	pGeometry = &pGeom;
 	pGeometry->addref();
+	Geometry::BumpGlobalGeometryShapeEpoch();
 	ResetWorldAreaSampling();
 	// A swapped geometry can never match the old entries: retire them now
 	// (an editor operation, outside any render).

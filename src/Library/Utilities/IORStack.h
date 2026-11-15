@@ -74,7 +74,7 @@
 #include "../Interfaces/IObject.h"
 #include <atomic>
 #include <memory>
-#include <stack>
+#include <utility>
 #include <vector>
 
 namespace RISE
@@ -333,6 +333,27 @@ namespace RISE
 					Retain( ctxs );
 				}
 			}
+			MyIORStack( MyIORStack&& s ) noexcept :
+			  m_size( s.m_size ),
+			  m_heap( 0 ),
+			  ctxs( s.ctxs )
+			{
+				if( m_size <= kInlineCap ) {
+					for( std::size_t i = 0; i < m_size; ++i ) {
+						m_inline[i] = s.m_inline[i];
+					}
+					if( s.m_size > 0 ) {
+						s.m_size = 1;
+					}
+				} else {
+					const IORDATA env = ( *s.m_heap )[0];
+					m_heap = s.m_heap;
+					s.m_heap = 0;
+					s.m_inline[0] = env;
+					s.m_size = 1;
+				}
+				s.ctxs = 0;
+			}
 			MyIORStack& operator=( const MyIORStack& s )
 			{
 				if( this == &s ) {
@@ -352,6 +373,40 @@ namespace RISE
 				if( ctxs != s.ctxs ) {
 					AssignContexts( s.ctxs );
 				}
+				return *this;
+			}
+			MyIORStack& operator=( MyIORStack&& s ) noexcept
+			{
+				if( this == &s ) {
+					return *this;
+				}
+				if( s.m_size <= kInlineCap ) {
+					if( m_heap ) {
+						m_heap->clear();
+					}
+					for( std::size_t i = 0; i < s.m_size; ++i ) {
+						m_inline[i] = s.m_inline[i];
+					}
+					m_size = s.m_size;
+					if( s.m_size > 0 ) {
+						s.m_size = 1;
+					}
+				} else {
+					const IORDATA env = ( *s.m_heap )[0];
+					if( m_heap ) {
+						FreeHeap( m_heap );
+					}
+					m_heap = s.m_heap;
+					m_size = m_heap->size();
+					s.m_heap = 0;
+					s.m_inline[0] = env;
+					s.m_size = 1;
+				}
+				if( ctxs ) {
+					Release( ctxs );
+				}
+				ctxs = s.ctxs;
+				s.ctxs = 0;
 				return *this;
 			}
 			~MyIORStack()
@@ -639,6 +694,17 @@ namespace RISE
 		  pProbeScene( s.pProbeScene )
 		{}
 
+		IORStack( IORStack&& s ) noexcept :
+		  iorstack( std::move( s.iorstack ) ),
+		  pCurrentObject( s.pCurrentObject ),
+		  crossingEtaFrom( s.crossingEtaFrom ),
+		  pProbeScene( s.pProbeScene )
+		{
+			s.pCurrentObject = 0;
+			s.crossingEtaFrom = 0;
+			s.pProbeScene = 0;
+		}
+
 		IORStack& operator=( const IORStack& s )
 		{
 			if( this == &s ) {
@@ -648,6 +714,21 @@ namespace RISE
 			pCurrentObject = s.pCurrentObject;
 			crossingEtaFrom = 0;
 			pProbeScene = s.pProbeScene;
+			return *this;
+		}
+
+		IORStack& operator=( IORStack&& s ) noexcept
+		{
+			if( this == &s ) {
+				return *this;
+			}
+			iorstack = std::move( s.iorstack );
+			pCurrentObject = s.pCurrentObject;
+			crossingEtaFrom = s.crossingEtaFrom;
+			pProbeScene = s.pProbeScene;
+			s.pCurrentObject = 0;
+			s.crossingEtaFrom = 0;
+			s.pProbeScene = 0;
 			return *this;
 		}
 

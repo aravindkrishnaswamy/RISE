@@ -1,6 +1,6 @@
 # C++ utility modernization plan
 
-**Status:** Host follow-up work on `codex/cpp-utility-modernization` reached a major roadblock (parallel BDPT intermediate output needed a synchronized snapshot contract). That roadblock and the two further P1s recorded with it (MLT small budgets, thread-pool submission failure) are fixed in commit `2566595ae` and have had one fresh review round (see "Resolution of the snapshot, MLT budget and submission blockers"); the P2s that round recorded are addressed in the follow-up commit `53805a047` (part (e) of that subsection; two review rounds, the second with no P0 or P1). Three findings of a later independent review of `680f0c44b..53805a047` are fixed but uncommitted and unreviewed (part (f)). The branch is not ready for final sign-off: there is no whole-branch zero-P1 claim, Xcode Opto and Blender builds were not rerun for these fixes, and native Windows and Android verification remain outstanding. Completed increments have host verification. Audit baseline `5fc6acaef`.
+**Status:** Merged to `master` in `556bf4a3b` (audit baseline `5fc6acaef`). Host follow-up work on `codex/cpp-utility-modernization` reached a major roadblock (parallel BDPT intermediate output needed a synchronized snapshot contract). That roadblock and the two further P1s recorded with it (MLT small budgets, thread-pool submission failure) landed in commit `2566595ae` (see "Resolution of the snapshot, MLT budget and submission blockers"); the P2s that round recorded landed in `53805a047` (part (e) of that subsection; two review rounds, the second with no P0 or P1). Three findings of a later independent review of `680f0c44b..53805a047` plus their P2 follow-up landed in `9dba00e2a` (part (f)) and merged to `master` in `556bf4a3b`. Completed increments have macOS host verification (make all + 529 standalone tests + Blender bridge + Xcode Development `RISE-GUI`); native Windows and Android build/runtime verification and an Xcode Deployment (`Opto`) re-run remain host-gated.
 
 ## Implementation checkpoint
 
@@ -1387,13 +1387,13 @@ tree BEFORE this follow-up; for the follow-up only the make build was run
   that the sweep reaches an uninjected submission.
 - `VCMPelRasterizer.h` now marks all of its overrides `override`.
 
-**(f) Findings of a later independent review of `680f0c44b..53805a047`.**
-Implementer-reported and uncommitted at the time of writing. A review round
-on the three fixes below found no P0 or P1; its P2s are addressed in the
-follow-up at the end of this part, which is not yet reviewed. Both clean
-builds (make, Xcode Deployment RISE-GUI) were warning-free on the tree
-before that small follow-up; for the follow-up only the make build was run
-(zero warnings). Numbers below are from the implementing worker's runs.
+**(f) Findings of a later independent review of `680f0c44b..53805a047` (committed in `9dba00e2a`, merged in `556bf4a3b`).**
+A review round on the three fixes below found no P0 or P1; its P2s are addressed
+in the follow-up at the end of this part and committed together in `9dba00e2a`.
+Both clean builds (make, Xcode Deployment RISE-GUI) were warning-free on the
+tree before that small follow-up; for the follow-up the make build and Xcode
+Development RISE-GUI build were run (zero compiler warnings). Numbers below are
+from the implementing worker's runs.
 
 - P1, fixed: callback buffers survived a render that never reached a final
   delivery. The dispatcher freed its frame-sized buffers only after a final

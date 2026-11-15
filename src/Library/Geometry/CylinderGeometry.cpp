@@ -958,11 +958,13 @@ void CylinderGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 	case RADIUS_ID:
 		{
 			m_dRadius = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	case HEIGHT_ID:
 		{
 			m_dHeight = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	}

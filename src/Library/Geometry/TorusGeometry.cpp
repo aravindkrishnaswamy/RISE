@@ -412,11 +412,13 @@ void TorusGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 	case MAJORRADIUS_ID:
 		{
 			m_dMajorRadius = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	case MINORRADIUS_ID:
 		{
 			m_dMinorRadius = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 

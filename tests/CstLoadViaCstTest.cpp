@@ -79,12 +79,17 @@ namespace
 		return e;
 	}
 
-	bool WriteTmp( const char* path, const std::string& text )
+	bool WriteTmp( const std::filesystem::path& path, const std::string& text )
 	{
-		std::ofstream f( path );
+		std::ofstream f( RISE::LongAwareFsPath( path ) );
 		if( !f ) return false;
 		f << text;
 		return f.good();
+	}
+
+	bool WriteTmp( const char* path, const std::string& text )
+	{
+		return WriteTmp( std::filesystem::path( path ? path : "" ), text );
 	}
 
 	// Load `v7scene` (written to `path`) via the CST path; assert it derives a non-trivial Scene
@@ -271,13 +276,13 @@ static int RunTests()
 		namespace fs = std::filesystem;
 		const auto root = fs::path( RISE::TestSupport::ScratchPath( "long_raw_path" ) );
 		const auto directory = root / std::string(100, 'a') / std::string(100, 'b') / std::string(80, 'c');
-		fs::create_directories( directory );
+		fs::create_directories( RISE::LongAwareFsPath( directory ) );
 		const auto mesh = directory / "mesh.raw";
-		Check( WriteTmp( mesh.string().c_str(), "tri 0 0 0 1 0 0 0 1 0" ), "write RAW fixture under a long path" );
+		Check( WriteTmp( mesh, "tri 0 0 0 1 0 0 0 1 0" ), "write RAW fixture under a long path" );
 		Case( "RAW importer accepts a filename longer than 255 bytes",
 			RISE::TestSupport::ScratchPath( "long_raw.RISEscene" ).c_str(),
-			"RISE ASCII SCENE 7\nrawmesh_geometry\n{\nname mesh\nfile " + mesh.string() + "\n}\n" );
-		fs::remove_all( root );
+			"RISE ASCII SCENE 7\nrawmesh_geometry\n{\nname mesh\nfile " + mesh.generic_string() + "\n}\n" );
+		fs::remove_all( RISE::LongAwareFsPath( root ) );
 	}
 
 	{

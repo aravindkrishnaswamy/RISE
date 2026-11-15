@@ -105,7 +105,7 @@ Return status is nonzero for build, run, count, warning, or arithmetic failure.
 
 ## Test Map
 
-`tests/*.cpp` contains **525** standalone test suites. Do not
+`tests/*.cpp` contains **529** standalone test suites. Do not
 maintain a hand-counted filename inventory here: the CST, editor, GUI,
 FrameStore, agent, and eval work adds tests often enough that static file lists
 drift quickly. Use filesystem/glob discovery as the source of truth:

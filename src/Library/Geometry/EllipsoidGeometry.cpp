@@ -559,6 +559,7 @@ void EllipsoidGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 	case RADII_ID:
 		{
 			m_vRadius = *(Vector3*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	}

@@ -840,7 +840,8 @@ int main()
 
 	static const char* const kWin32PosixFuncs[] = {
 		"getpid", "setenv", "unsetenv", "popen", "pclose",
-		"mkfifo", "fork", "usleep", "mkstemp", "mkdtemp", "symlink"
+		"mkfifo", "fork", "usleep", "mkstemp", "mkdtemp", "symlink",
+		"waitpid", "pipe", "dup2", "ftruncate", "lstat", "readlink", "realpath"
 	};
 	static const char* const kWin32PosixMathMacros[] = {
 		"M_PI", "M_PI_2", "M_PI_4", "M_1_PI", "M_2_PI", "M_2_SQRTPI",
@@ -1142,9 +1143,13 @@ int main()
 					const std::size_t pfLen = std::strlen( pf );
 					std::size_t gp = 0;
 					while( ( gp = lineNoStr.find( pf, gp ) ) != std::string::npos ) {
-						const bool isWordStart = ( gp == 0 ) ||
+						const bool qualifiedScope = ( gp >= 3 ) &&
+							lineNoStr[gp - 1] == ':' && lineNoStr[gp - 2] == ':' &&
+							( std::isalnum( static_cast<unsigned char>( lineNoStr[gp - 3] ) ) ||
+							  lineNoStr[gp - 3] == '_' );
+						const bool isWordStart = !qualifiedScope && ( ( gp == 0 ) ||
 							( !std::isalnum( static_cast<unsigned char>( lineNoStr[gp - 1] ) ) &&
-							  lineNoStr[gp - 1] != '_' && lineNoStr[gp - 1] != '.' && lineNoStr[gp - 1] != '>' );
+							  lineNoStr[gp - 1] != '_' && lineNoStr[gp - 1] != '.' && lineNoStr[gp - 1] != '>' ) );
 						std::size_t afterPf = gp + pfLen;
 						const bool isWordEnd = ( afterPf >= lineNoStr.size() ) ||
 							( !std::isalnum( static_cast<unsigned char>( lineNoStr[afterPf] ) ) &&
@@ -5555,6 +5560,11 @@ int main()
 		       && chatCode.find( "CredentialStore::remove" ) != std::string::npos
 		       && chatCode.find( "m_apiKeyEdit->setText(" ) == std::string::npos,
 		       "win-gui-parity: ChatPanel resolves/saves/clears via CredentialStore and keeps m_apiKeyEdit write-only (never setText)" );
+
+		const std::string cmakeTests = SlurpFile( repoRoot / "build" / "cmake" / "rise-tests" / "CMakeLists.txt" );
+		Check( cmakeTests.find( "\"${VCPKG_INCLUDE}/OpenEXR\"" ) != std::string::npos
+		       && cmakeTests.find( "\"${VCPKG_INCLUDE}/Imath\"" ) != std::string::npos,
+		       "win-cmake-tests: build/cmake/rise-tests/CMakeLists.txt includes OpenEXR and Imath vcpkg subdirectories" );
 	}
 
 	std::cout << std::endl

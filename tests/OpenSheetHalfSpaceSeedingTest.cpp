@@ -2833,6 +2833,100 @@ static void PartA()
 		}
 	}
 
+	// A66: CatalogBoxBvh (`sheetBoxBvh` + `closedTrackableBvh`) across >16 tilted
+	// ungrouped open sheets and >16 closed dielectric spheres (`A66a`), and
+	// `CrossingMedia::Keeps` `!cs.keep` deduplication filter (`A66b`):
+	{
+		auto makeManyTiltedAndClosed = [&]( bool revNames ) -> std::string {
+			std::string sc = Header()
+				+ "sphere_geometry\n{\n\tname g_csph66\n\tradius 0.25\n}\n\n";
+			// 20 closed dielectric spheres (>16 inline threshold) away from the origin + one enclosing (0,0,0):
+			sc += "sphere_geometry\n{\n\tname g_enc66\n\tradius 0.8\n}\n\n"
+				+ Obj( revNames ? "z_enc66" : "a_enc66", "g_enc66", "glass133", "0 0 0" );
+			for( int m = 0; m < 20; ++m ) {
+				char oname[24], pos[48];
+				std::snprintf( oname, sizeof(oname), "%s_sph%02d", revNames ? "y" : "b", m );
+				std::snprintf( pos, sizeof(pos), "%.2f -3.0 %.2f", -9.5 + double( m ), ( m & 1 ) ? 2.0 : -2.0 );
+				sc += Obj( oname, "g_csph66", "glass133", pos );
+			}
+			// 24 distinct tilted open sheets (>16), spaced in tilt by 0.002 rad (> 1e-5 group threshold)
+			// so each forms its own normal group, plus a coplanar different-material twin on sheet 0!
+			for( int k = 0; k < 24; ++k ) {
+				const double ang = 0.002 * double( k + 1 );
+				const double yBase = 2.0 + 0.15 * double( k );
+				const double dy = 3.0 * std::tan( ang );
+				const double fA[3] = {  3, yBase + dy, -3 }, fB[3] = { -3, yBase - dy, -3 };
+				const double fC[3] = { -3, yBase - dy,  3 }, fD[3] = {  3, yBase + dy,  3 };
+				char gname[24], oname[24];
+				std::snprintf( gname, sizeof(gname), "g_ts66_%02d", k );
+				std::snprintf( oname, sizeof(oname), "%s_ts66_%02d", revNames ? "x" : "c", k );
+				sc += SheetQuad( gname, fA, fB, fC, fD ) + Obj( oname, gname, "glass15" );
+				if( k == 0 ) {
+					const double sA[3] = {  1.5, yBase + 0.5 * dy, -1.5 }, sB[3] = { -1.5, yBase - 0.5 * dy, -1.5 };
+					const double sC[3] = { -1.5, yBase - 0.5 * dy,  1.5 }, sD[3] = {  1.5, yBase + 0.5 * dy,  1.5 };
+					sc += SheetQuad( "g_ts66_co", sA, sB, sC, sD )
+						+ Obj( revNames ? "a_ts66_co" : "z_ts66_co", "g_ts66_co", "glass20" );
+				}
+			}
+			return sc;
+		};
+		Loaded mA( makeManyTiltedAndClosed( false ) );
+		Loaded mB( makeManyTiltedAndClosed( true ) );
+		Check( mA.ok && mB.ok, "A66a [DL-626/DL-631] 24 tilted sheets + 21 closed spheres load in both TLAS orders" );
+		if( mA.ok && mB.ok ) {
+			// At (0,0,0), sheet 0 and `g_ts66_co` are coplanar with different materials -> open sheets decline,
+			// leaving only the enclosing closed sphere `[env, enc66(1.33)]` in both TLAS orders; at (2.2, 0, 0),
+			// outside `g_ts66_co` (|x|<=1.5) and `enc66` (r=0.8), all 24 nested tilted `glass15` sheets confirm
+			// (`Depth == 25`, `top == 1.5`) in both TLAS orders.
+			const IORStack c0A = mA.Seed( Point3( 0, 0, 0 ) );
+			const IORStack c0B = mB.Seed( Point3( 0, 0, 0 ) );
+			const IORStack sideA = mA.Seed( Point3( 2.2, 0, 0 ) );
+			const IORStack sideB = mB.Seed( Point3( 2.2, 0, 0 ) );
+			Check( c0A.Depth() == 2 && c0B.Depth() == 2 &&
+				Close( c0A.top(), 1.33 ) && Close( c0B.top(), 1.33 ) &&
+				sideA.Depth() == 25 && sideB.Depth() == 25 &&
+				Close( sideA.top(), 1.5 ) && Close( sideB.top(), 1.5 ),
+				"A66a [DL-626/DL-631]: CatalogBoxBvh handles 24 tilted ungrouped sheets + 21 closed spheres identically in both TLAS orders" );
+		}
+
+		// A66b: `roof66` (+y at y=2.0, glass15, keep=true at y=0.7) and `wall66` (+x at x=3.0,
+		// glass15, keep=false at (0, 0.7, 0)), plus `pane66` (+y at y=0.5, glass15, NOT enclosing y=0.7)
+		// and `exit66` (+y at y=0.7, glass133).  If a walk arrives at `exit66`'s back face with
+		// `[env, roof66, pane66, exit66]`, `ResolveOpenSheetCrossing` must pop `pane66` rather than
+		// retaining a duplicate `glass15` entry via `wall66` (`keep=false`).
+		const double wA[3] = { 3, -4, -4 }, wB[3] = { 3, 4, -4 }, wC[3] = { 3, 4, 4 }, wD[3] = { 3, -4, 4 };
+		Loaded k66( Header()
+			+ HSheet( "g_roof66", 2.0, 5.0, true ) + Obj( "roof66", "g_roof66", "glass15" )
+			+ SheetQuad( "g_wall66", wA, wB, wC, wD ) + Obj( "wall66", "g_wall66", "glass15" )
+			+ HSheet( "g_pane66", 0.5, 4.0, true ) + Obj( "pane66", "g_pane66", "glass15" )
+			+ HSheet( "g_exit66", 0.7, 4.0, true ) + Obj( "exit66", "g_exit66", "glass133" ) );
+		Check( k66.ok, "A66b [DL-626] keep=false sibling deduplication scene loads" );
+		if( k66.ok ) {
+			const IObject* pRoof = k66.O( "roof66" );
+			const IObject* pPane = k66.O( "pane66" );
+			const IObject* pExit = k66.O( "exit66" );
+			Ray rUp( Point3( 0, 0.6, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitExit( rUp, nullRasterizerState );
+			pExit->IntersectRay( hitExit, 1.0, true, true, false );
+			Check( hitExit.geometric.bHit, "A66b [DL-626]: upward ray hits exit66 back face at y = 0.7" );
+			if( hitExit.geometric.bHit ) {
+				IORStack walk( 1.0 );
+				walk.SetMediumProbeScene( &k66.Scene() );
+				walk.SetCurrentObject( pRoof );
+				walk.pushOpenSheet( 1.5 );
+				walk.SetCurrentObject( pPane );
+				walk.pushOpenSheet( 1.5 );
+				walk.SetCurrentObject( pExit );
+				const auto cExit = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitExit.geometric, 1.33, walk, pExit->GetMaterial(), 0 );
+				const IORStack seededAfter = k66.Seed( Point3( 0, 0.75, 0 ) );
+				Check( walk.Depth() == 2 && seededAfter.Depth() == 2 &&
+					walk.ObjectAt( 1 ) == pRoof && Close( cExit.etaTo, 1.5 ),
+					"A66b [DL-626]: CrossingMedia::Keeps ignores keep=false sibling so unconfirmed pane66 pops cleanly to [env, roof66]" );
+			}
+		}
+	}
+
 	const int dl626NewFails = failCount - dl626FailBefore;
 	std::cout << "[DL-626-SUMMARY] " << ( dl626NewFails == 0 ? "PASS" : "FAIL" )
 		<< " (new_failures=" << dl626NewFails << ")" << std::endl;

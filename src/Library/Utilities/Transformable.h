@@ -17,6 +17,7 @@
 
 #include "../Interfaces/ITransformable.h"
 
+#include <atomic>
 #include <deque>
 
 namespace RISE
@@ -228,6 +229,41 @@ namespace RISE
 			virtual IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
 			virtual void SetIntermediateValue( const IKeyframeParameter& val ) override;
 			virtual void RegenerateData( ) override;
+
+			//! Monotonic transform-pose epochs (DL-626 / DL-631):
+			//! - `GlobalTransformPoseEpoch`: bumped when `FinalizeTransformations`
+			//!   updates any non-time-indexed transform (`TimeIndexed::tlsSlots == nullptr`).
+			//! - `ThreadTransformPoseEpoch`: per-thread counter bumped on every
+			//!   `FinalizeTransformations` call on this thread AND when
+			//!   `TimeIndexedThread` installs/restores per-thread time-view slots,
+			//!   avoiding cross-thread atomic contention during multi-threaded
+			//!   motion-blur posing while keeping per-thread caches exact.
+			static inline std::atomic<unsigned long long>& GlobalPoseEpochCounter()
+			{
+				static std::atomic<unsigned long long> epoch( 1 );
+				return epoch;
+			}
+			static inline unsigned long long GlobalTransformPoseEpoch()
+			{
+				return GlobalPoseEpochCounter().load( std::memory_order_acquire );
+			}
+			static inline void BumpGlobalTransformPoseEpoch()
+			{
+				GlobalPoseEpochCounter().fetch_add( 1, std::memory_order_acq_rel );
+			}
+			static inline unsigned long long& ThreadPoseEpochRef()
+			{
+				static thread_local unsigned long long epoch = 1;
+				return epoch;
+			}
+			static inline unsigned long long ThreadTransformPoseEpoch()
+			{
+				return ThreadPoseEpochRef();
+			}
+			static inline void BumpThreadTransformPoseEpoch()
+			{
+				++ThreadPoseEpochRef();
+			}
 		};
 	}
 }

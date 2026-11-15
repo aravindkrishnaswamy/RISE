@@ -189,6 +189,10 @@ do not execute old phase lists blindly.
 - physically based pipeline:
   [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md) and
   the three `PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_*.md` records
+- C++ utility modernization:
+  [CPP_UTILITY_MODERNIZATION_PLAN.md](CPP_UTILITY_MODERNIZATION_PLAN.md)
+  (spectral lookup, buffers/codecs, endianness, owned manager keys, steady-clock
+  timers, scoped locks, MLT 64-bit schedules, and callback output scoping)
 - auto-routing: [UNIFIED_INTEGRATOR_ANALYSIS.md](UNIFIED_INTEGRATOR_ANALYSIS.md),
   [UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md),
   [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md), and

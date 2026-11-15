@@ -186,11 +186,13 @@ void InfinitePlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val 
 	case XTILE_ID:
 		{
 			xTile = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	case YTILE_ID:
 		{
 			yTile = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	}

@@ -1007,7 +1007,11 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		seq.Begin( startx, endx, starty, endy );
 
 		const unsigned int numseq = seq.NumRegions();
-		const unsigned int baseMediumSeed = LockedLibcRand();
+		unsigned long long progressBits = 0;
+		std::memcpy( &progressBits, &mProgressBase, sizeof( progressBits ) );
+		const unsigned int baseMediumSeed = DeriveSeed(
+			LockedLibcRand(),
+			progressBits ^ ( static_cast<unsigned long long>( pass ) * 0x9E3779B97F4A7C15ULL ) );
 		bool completed = true;
 
 		for( unsigned int i=0; i<numseq; i++ ) {
@@ -1028,10 +1032,10 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 				}
 			}
 
-			const unsigned int spMediumSeed = DeriveSeed(
-				DeriveSeed( baseMediumSeed, static_cast<unsigned int>( mProgressBase ) ),
-				( static_cast<unsigned int>( pass ) * 2246822519u ) ^ i );
-			ScopedMediumTileSeed mediumSeed( spMediumSeed );
+			const unsigned long long tileKey =
+				( static_cast<unsigned long long>( rect.top ) << 32 ) |
+				static_cast<unsigned long long>( rect.left );
+			ScopedMediumTileSeed mediumSeed( DeriveSeed( baseMediumSeed, tileKey ) );
 			SPRasterizeSingleBlock( rc, image, scene, rect, height );
 			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
 				completed = false;
@@ -1658,7 +1662,11 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 		seq.Begin( startx, endx, starty, endy );
 		const unsigned int numseq = seq.NumRegions();
-		const unsigned int baseAnimMediumSeed = LockedLibcRand();
+		unsigned long long animProgressBits = 0;
+		std::memcpy( &animProgressBits, &mProgressBase, sizeof( animProgressBits ) );
+		const unsigned int baseAnimMediumSeed = DeriveSeed(
+			LockedLibcRand(),
+			animProgressBits ^ ( static_cast<unsigned long long>( pass ) * 0x9E3779B97F4A7C15ULL ) ^ 0x517CC1B727220A95ULL );
 		bool completed = true;
 
 		for( unsigned int i=0; i<numseq; i++ ) {
@@ -1685,10 +1693,10 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 				}
 			}
 
-			const unsigned int spAnimMediumSeed = DeriveSeed(
-				DeriveSeed( baseAnimMediumSeed, static_cast<unsigned int>( mProgressBase ) ),
-				( static_cast<unsigned int>( pass ) * 2246822519u ) ^ i ^ 0x9E3779B9u );
-			ScopedMediumTileSeed mediumSeed( spAnimMediumSeed );
+			const unsigned long long tileKey =
+				( static_cast<unsigned long long>( rect.top ) << 32 ) |
+				static_cast<unsigned long long>( rect.left );
+			ScopedMediumTileSeed mediumSeed( DeriveSeed( baseAnimMediumSeed, tileKey ) );
 			SPRasterizeSingleBlockOfAnimation( rc, image, pScene, rect, height, framedata );
 			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
 				completed = false;

@@ -651,18 +651,21 @@ void BoxGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 		{
 			dWidth = *(Scalar*)val.getValue();
 			dWidthOV2 = dWidth * 0.5;
+			BumpShapeRevision();
 		}
 		break;
 	case HEIGHT_ID:
 		{
 			dHeight = *(Scalar*)val.getValue();
 			dHeightOV2 = dHeight * 0.5;
+			BumpShapeRevision();
 		}
 		break;
 	case DEPTH_ID:
 		{
 			dDepth = *(Scalar*)val.getValue();
 			dDepthOV2 = dDepth * 0.5;
+			BumpShapeRevision();
 		}
 		break;
 	}

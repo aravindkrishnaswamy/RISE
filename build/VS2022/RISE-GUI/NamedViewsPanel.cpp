@@ -235,9 +235,9 @@ void NamedViewsPanel::setBridge(ViewportBridge* bridge)
     m_bridge = bridge;
     m_names.clear();
     m_rowsBuilt = false;
+    if (m_countLabel) m_countLabel->clear();
     if (!m_bridge) {
         if (m_captureEdit) m_captureEdit->clear();
-        if (m_countLabel) m_countLabel->clear();
         rebuildRows();
         setVisible(false);
         return;

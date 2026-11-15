@@ -288,6 +288,8 @@ foreach(test_src ${TEST_SOURCES})
         "${RISE_LIB_INCLUDE}"
         "${RISE_TESTS_DIR}"        # ProceduralTestHelpers.h, StandaloneTestReporting.h, etc.
         "${VCPKG_INCLUDE}"
+        "${VCPKG_INCLUDE}/OpenEXR" # EXRReader.h includes <ImfHeader.h> etc. (matches Library.vcxproj)
+        "${VCPKG_INCLUDE}/Imath"   # OpenEXR 3.x split Imath headers (matches Library.vcxproj)
         "${OIDN_DIR}/include"      # RISE_ENABLE_OIDN: library headers include OpenImageDenoise/*
         "${OPENPGL_DIR}/include"   # RISE_ENABLE_OPENPGL: PathGuidingField.h includes openpgl/*
     )

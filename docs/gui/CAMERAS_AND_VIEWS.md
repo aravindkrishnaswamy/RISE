@@ -5,7 +5,9 @@ Shared C++ Named Views (`NamedViewStore` + `.RISEviews` JSON sidecar),
 promote/stamp-to-camera, axis-ball navigation and snaps, transient viewport poses,
 render-camera overrides, macOS `NamedViewsPanel.swift`, and Windows Qt
 `NamedViewsPanel.{h,cpp}` + `ViewportBridge` Named-View methods + N-up pane
-vantage selector have shipped. Camera-cut/time-range authoring
+vantage selector have shipped (Windows Qt6 widget code is code-complete and
+review-verified on macOS; gated on a Windows MSVC/Qt6 compile/runtime pass per
+[OPEN_ITEMS.md](OPEN_ITEMS.md) §4). Camera-cut/time-range authoring
 (B4b) and auxiliary GPU wireframe panes (B5; desktop N-up currently uses CPU
 preview modes per [RENDER_MODES.md](RENDER_MODES.md) §7) remain roadmap items.
 **Owner:** Aravind Krishnaswamy
@@ -131,7 +133,7 @@ This is the single B1 action that writes to `.RISEscene`. It is intentionally **
 | `NamedView` model, store, `.RISEviews` sidecar JSON serialize/deserialize, thumbnail capture, restore-into-`ViewportPose` (no scene mutation, §3.2/§5.5) | **Shared C++** (shipped) |
 | `.RISEscene` write on Promote | **Scene language** (existing camera chunk + CST Document insert — shipped) |
 | Named-views `.RISEviews` sidecar | **UI-only** (`<scene>.RISEviews` JSON sidecar — shipped) |
-| The views strip/grid widget + thumbnails + promote/CRUD UI | **Platform:** macOS `NamedViewsPanel.swift` and Windows Qt `NamedViewsPanel.{h,cpp}` shipped (plus N-up pane vantage selector on both platforms) |
+| The views strip/grid widget + thumbnails + promote/CRUD UI | **Platform:** macOS `NamedViewsPanel.swift` and Windows Qt `NamedViewsPanel.{h,cpp}` shipped (plus N-up pane vantage selector on both platforms; Windows Qt6 widget code-complete/review-verified on macOS, gated on Windows MSVC/Qt6 compile/run) |
 
 ---
 

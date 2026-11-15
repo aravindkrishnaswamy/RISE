@@ -1,4 +1,5 @@
 # Film and channel storage share header-only Utilities/CheckedSize.h.
+# Header-only endian helpers live in Utilities/LittleEndian.h.
 # Ward SPFs share header-only Materials/WardSelectionQuadrature.h.
 # Schlick BRDF/SPF share header-only Materials/SchlickMasking.h (DL-225).
 # Donner-Jensen SSS profile/shader-op share header-only Utilities/ExteriorIndexCache.h (DL-291).

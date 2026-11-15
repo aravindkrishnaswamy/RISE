@@ -47,6 +47,7 @@
 #include "../src/Library/Utilities/GeometricUtilities.h"
 #include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Objects/Object.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
@@ -1506,6 +1507,75 @@ static void TestSubtractionMultiLobeResidualsDL627()
 	}
 }
 
+//! Depth-30 shared-operand CSG DAG (`2^30` paths over 31 nodes): verifies
+//! `CSGObject::ShapeRevision()` runs in O(|V|) / O(1) via epoch + per-call
+//! memoization and invalidates on both leaf transform edits and leaf
+//! `SetIntermediateValue` geometry edits (`BoxGeometry::SetIntermediateValue`).
+static void TestSharedCsgDagShapeRevisionComplexity()
+{
+	std::cout << "[M] Shared-operand depth-30 CSG DAG ShapeRevision complexity & invalidation" << std::endl;
+	BoxGeometry* gBox = new BoxGeometry( 2.0, 2.0, 2.0 );
+	Object* leaf = new Object( gBox );
+	gBox->release();
+	leaf->SetPosition( Point3( 0.0, 0.0, 0.0 ) );
+	leaf->FinalizeTransformations();
+
+	IObjectPriv* cur = leaf;
+	cur->addref();
+	for( int d = 0; d < 30; ++d ) {
+		CSGObject* node = new CSGObject( ( d & 1 ) ? CSG_INTERSECTION : CSG_UNION );
+		cur->addref();
+		cur->addref();
+		const bool ok = node->AssignObjects( cur, cur );
+		cur->release();
+		cur->release();
+		node->FinalizeTransformations();
+		cur->release();
+		cur = node;
+		if( !ok ) {
+			Check( false, "M0: depth-30 shared-operand CSG DAG construction" );
+			break;
+		}
+	}
+
+	const auto t0 = std::chrono::steady_clock::now();
+	const uint64_t rev0 = cur->ShapeRevision();
+	bool same1000 = ( rev0 != 0 );
+	for( int q = 0; q < 1000; ++q ) {
+		if( cur->ShapeRevision() != rev0 ) {
+			same1000 = false;
+			break;
+		}
+	}
+	const double elapsedMs = std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - t0 ).count();
+	Check( same1000 && elapsedMs < 200.0,
+		"M1: 1,001 ShapeRevision() queries on depth-30 shared-operand CSG DAG complete deterministically in < 200 ms (got " +
+		std::to_string( elapsedMs ) + " ms)" );
+
+	// Mutating the shared leaf's transform must invalidate and change root->ShapeRevision().
+	leaf->SetPosition( Point3( 0.25, -0.5, 0.75 ) );
+	leaf->FinalizeTransformations();
+	const uint64_t revAfterPose = cur->ShapeRevision();
+	Check( revAfterPose != rev0 && cur->ShapeRevision() == revAfterPose,
+		"M2: leaf transform mutation updates depth-30 CSG root ShapeRevision()" );
+
+	// Mutating the shared leaf's BoxGeometry via SetIntermediateValue must also bump ShapeRevision().
+	IKeyframeParameter* kpW = gBox->KeyframeFromParameters( "width", "3.5" );
+	Check( kpW != nullptr, "M3a: BoxGeometry width keyframe parameter created" );
+	if( kpW ) {
+		gBox->SetIntermediateValue( *kpW );
+		kpW->release();
+		gBox->RegenerateData();
+		const uint64_t revAfterGeom = cur->ShapeRevision();
+		Check( revAfterGeom != revAfterPose && revAfterGeom != rev0 && cur->ShapeRevision() == revAfterGeom,
+			"M3b: BoxGeometry::SetIntermediateValue bumps ShapeRevision() through depth-30 CSG root" );
+	}
+
+	safe_release( cur );
+	safe_release( leaf );
+}
+
 int main()
 {
 	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13 + DL-627) ===" << std::endl;
@@ -1521,6 +1591,7 @@ int main()
 	TestSubtractionInsideBoth();
 	TestTiesAndSmallBudgets();
 	TestSubtractionMultiLobeResidualsDL627();
+	TestSharedCsgDagShapeRevisionComplexity();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }
