@@ -34,6 +34,8 @@
 #include "../Utilities/SMSConfig.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/Transformable.h"
+#include "../Cameras/CameraCommon.h"
 #include "../Utilities/Color/Color_Template.h"
 #include <algorithm>
 #include <chrono>
@@ -625,15 +627,53 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 	// Shrink the film for the duration of the probe. The resolution owner is
 	// exclusive, and each candidate render joins its workers before the next
 	// resize or restoration (ResizeFilm's concurrency contract).
+	//
+	// The probe runs INSIDE a render request: Job::Rasterize holds the prepared
+	// mutation freeze (Transformable::BeginPreparedMutationFreeze) for the whole
+	// call, and under that freeze CameraCommon::SetDimensionsAndPixelAR refuses
+	// an external mutation and returns silently.  Without the internal-mutation
+	// capability below, ResizeFilm shrinks the Film but leaves every camera at
+	// the full dimensions, so each candidate renders the probeW x probeH CORNER
+	// of the full-resolution view (re-framed, not re-resolved) and the routing
+	// statistics describe 1/scale^2 of the frame.  The resize is the render's
+	// own derived, self-restoring update -- the same narrowly scoped capability
+	// the prepared animator evaluation takes -- so it is taken here for exactly
+	// the two ResizeFilm calls and on this thread only.
+	struct ProbeFilmResize
+	{
+		static void Apply( IScenePriv& scene, unsigned int w, unsigned int h, Scalar pixelAR )
+		{
+			struct Capability
+			{
+				Capability() { Transformable::BeginPreparedInternalMutation(); }
+				~Capability() { Transformable::EndPreparedInternalMutation(); }
+			} capability;
+			scene.ResizeFilm( w, h, pixelAR );
+		}
+	};
 	struct FilmRestoreGuard
 	{
 		IScenePriv& scene;
 		unsigned int width;
 		unsigned int height;
 		Scalar pixelAR;
-		~FilmRestoreGuard() { scene.ResizeFilm(width,height,pixelAR); }
+		~FilmRestoreGuard() { ProbeFilmResize::Apply(scene,width,height,pixelAR); }
 	} filmRestore{ *scenePriv, origW, origH, origAR };
-	scenePriv->ResizeFilm( probeW, probeH, origAR );
+	ProbeFilmResize::Apply( *scenePriv, probeW, probeH, origAR );
+
+	// Fail closed if the active camera did not follow the film: a probe of a
+	// re-framed corner is worse than no probe.  An invalid result sends RunProbe
+	// to its "insufficient probe signal" PT fallback without rendering anything.
+	if( const Implementation::CameraCommon* cam =
+		dynamic_cast<const Implementation::CameraCommon*>( scene->GetCamera() ) )
+	{
+		if( cam->GetWidth() != probeW || cam->GetHeight() != probeH ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"AutoRasterizer:: probe camera stayed at %ux%u after film resize to %ux%u; skipping candidate",
+				cam->GetWidth(), cam->GetHeight(), probeW, probeH );
+			return out;
+		}
+	}
 
 	const unsigned int nRenders = needVariance ? cfg.varianceRenders : 1u;
 	std::vector<std::vector<double>> frames;
