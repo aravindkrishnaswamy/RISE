@@ -623,10 +623,105 @@ index ddf51eb75..990c8911a 100644
  				if(!candidate.Matches(error))return false;
  				result=std::move(candidate);return true;
 diff --git a/src/Library/Utilities/FireProductionSourceKernel.h b/src/Library/Utilities/FireProductionSourceKernel.h
-index b7e7f03e7..bafafa539 100644
+index b7e7f03e7..2a4742c16 100644
 --- a/src/Library/Utilities/FireProductionSourceKernel.h
 +++ b/src/Library/Utilities/FireProductionSourceKernel.h
-@@ -2232,7 +2232,8 @@ namespace RISE
+@@ -1049,6 +1049,22 @@ namespace RISE
+ 			return true;
+ 		}
+ 
++		// Gross carbon (soot) formed per kg of methane reacted. The record value is
++		// zero; RISE_FIRE_METHANE_SOOT_YIELD=<y> (0..0.1) overrides it for the r272
++		// in-flame soot closure. Formation is the exact inverse of the record's
++		// carbon oxidation: formed carbon withholds its CO2, its oxygen and its
++		// oxidation heat from the primary step and returns them when it burns out.
++		inline double MethaneGrossSootYieldKGPerKGFuel(const FireSimulationMethaneRecord& fuel)
++		{
++			static const double overrideYield=[](){
++				const char* text=std::getenv("RISE_FIRE_METHANE_SOOT_YIELD");
++				if(!text)return -1.0;
++				char* end=0;const double value=std::strtod(text,&end);
++				return end!=text&&*end=='\0'&&std::isfinite(value)&&value>=0.0&&value<=0.1?
++					value:std::numeric_limits<double>::quiet_NaN();}();
++			return overrideYield<0.0?fuel.SootYieldKGPerKGFuel():overrideYield;
++		}
++
+ 		inline bool BuildMethaneReactionPacket(
+ 			const MethaneCellState& beginning,
+ 			const FireSimulationMethaneRecord& fuel,
+@@ -1107,27 +1123,32 @@ namespace RISE
+ 			if( primary.size() != MethaneSpeciesCount ) {
+ 				return Fail(error,"fire solver methane reaction vector has the wrong dimension");
+ 			}
++			const double sootYield=MethaneGrossSootYieldKGPerKGFuel(fuel);
++			if(!std::isfinite(sootYield))
++				return Fail(error,"RISE_FIRE_METHANE_SOOT_YIELD must be a number in 0..0.1");
+ 			auto packetAtExtent=[&](const double extent,MethaneSourcePacket& candidate){
+ 				candidate=MethaneSourcePacket();
+ 				const double reacted=extent==1.0?fullReacted:extent*fullReacted;
+ 				const double oxidized=extent==1.0?fullOxidized:extent*fullOxidized;
+ 				candidate.reactedFuelKGPerM3=reacted;
+ 				candidate.oxidizedCarbonKGPerM3=oxidized;
+-				candidate.grossCarbonFormedKGPerM3=reacted*fuel.SootYieldKGPerKGFuel();
++				candidate.grossCarbonFormedKGPerM3=reacted*sootYield;
++				// Net carbon burned; negative where formation exceeds oxidation.
++				const double netOxidized=oxidized-candidate.grossCarbonFormedKGPerM3;
+ 				for(std::size_t index=0;index<MethaneSpeciesCount;++index)
+ 					candidate.constituentDelta[index]=reacted*primary[index];
+-				candidate.constituentDelta[MethaneCarbon]+=
+-					candidate.grossCarbonFormedKGPerM3-oxidized;
++				candidate.constituentDelta[MethaneCarbon]-=netOxidized;
+ 				candidate.constituentDelta[MethaneO2]-=
+-					fuel.SootOxygenKGPerKGCarbon()*oxidized;
++					fuel.SootOxygenKGPerKGCarbon()*netOxidized;
+ 				candidate.constituentDelta[MethaneCO2]+=
+-					fuel.SootCO2KGPerKGCarbon()*oxidized;
++					fuel.SootCO2KGPerKGCarbon()*netOxidized;
+ 				candidate.sensibleEnergyDeltaJPerM3=
+ 					reacted*fuel.LowerHeatingValueJPerKG()+
+-					oxidized*fuel.SootHeatReleaseJPerKGCarbon()+
++					netOxidized*fuel.SootHeatReleaseJPerKGCarbon()+
+ 					pilotMap.sensibleEnergyDeltaJPerM3;
+-				candidate.gasHeatReleaseWPerM3=
+-					reacted*fuel.LowerHeatingValueJPerKG()/step.deltaTimeS;
++				candidate.gasHeatReleaseWPerM3=(reacted*fuel.LowerHeatingValueJPerKG()-
++					candidate.grossCarbonFormedKGPerM3*fuel.SootHeatReleaseJPerKGCarbon())/
++					step.deltaTimeS;
+ 				candidate.sootHeatReleaseWPerM3=
+ 					oxidized*fuel.SootHeatReleaseJPerKGCarbon()/step.deltaTimeS;
+ 				candidate.pilotEnergyDeltaJPerM3=pilotMap.sensibleEnergyDeltaJPerM3;
+@@ -2124,14 +2145,16 @@ namespace RISE
+ 				reactionStep.pilotExpansionVolumeRatioCap,expectedPilotMap,error))return false;
+ 			const double expectedPilotEnergyJPerM3=
+ 				expectedPilotMap.sensibleEnergyDeltaJPerM3;
++			const double netOxidizedCarbon=packet.oxidizedCarbonKGPerM3-
++				packet.grossCarbonFormedKGPerM3;
+ 			const double expectedEnergy=packet.reactedFuelKGPerM3*
+-				fuel.LowerHeatingValueJPerKG()+packet.oxidizedCarbonKGPerM3*
++				fuel.LowerHeatingValueJPerKG()+netOxidizedCarbon*
+ 				fuel.SootHeatReleaseJPerKGCarbon()+expectedPilotEnergyJPerM3-
+ 				reactionStep.deltaTimeS*
+ 				packet.radiativeCoolingWPerM3;
+ 			const double oxygenExpected=fuel.StoichiometricOxygenKGPerKGFuel()*
+ 				packet.reactedFuelKGPerM3+fuel.SootOxygenKGPerKGCarbon()*
+-				packet.oxidizedCarbonKGPerM3;
++				netOxidizedCarbon;
+ 			const double energyScale=std::max(1.0,
+ 				std::fabs(beginning.sensibleEnergyJPerM3)+
+ 				std::fabs(beginning.sensibleEnergyJPerM3+packet.sensibleEnergyDeltaJPerM3)+
+@@ -2147,8 +2170,9 @@ namespace RISE
+ 				std::fabs(oxygenExpected));
+ 			const double oxygenRatio=std::fabs(-packet.constituentDelta[MethaneO2]-
+ 				oxygenExpected)/oxygenScale;
+-			const double expectedGasRate=packet.reactedFuelKGPerM3*
+-				fuel.LowerHeatingValueJPerKG()/reactionStep.deltaTimeS;
++			const double expectedGasRate=(packet.reactedFuelKGPerM3*
++				fuel.LowerHeatingValueJPerKG()-packet.grossCarbonFormedKGPerM3*
++				fuel.SootHeatReleaseJPerKGCarbon())/reactionStep.deltaTimeS;
+ 			const double expectedSootRate=packet.oxidizedCarbonKGPerM3*
+ 				fuel.SootHeatReleaseJPerKGCarbon()/reactionStep.deltaTimeS;
+ 			const double gasRateRatio=std::fabs(packet.gasHeatReleaseWPerM3-expectedGasRate)/
+@@ -2232,7 +2256,8 @@ namespace RISE
  			std::vector<MethaneSourcePacket>& result,
  			RadiationEscapeFactor& factor,
  			std::string* error = 0,
@@ -636,7 +731,7 @@ index b7e7f03e7..bafafa539 100644
  			)
  		{
  			const std::size_t count = beginning.size();
-@@ -2257,6 +2258,8 @@ namespace RISE
+@@ -2257,6 +2282,8 @@ namespace RISE
  					reaction[cell],&cellError,&postReaction[cell]) ) {
  					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
  				}
@@ -645,7 +740,7 @@ index b7e7f03e7..bafafa539 100644
  				GasExchangeEvaluation exchange;
  				if( !EvaluateGasExchange(postReaction[cell],postReaction[cell].temperatureK,
  					ambientTemperatureK,thermochemistry,opacity,exchange,&cellError) ) {
-@@ -2264,6 +2267,7 @@ namespace RISE
+@@ -2264,6 +2291,7 @@ namespace RISE
  				}
  				unscaledExchange[cell] = exchange.exchangeWPerM3;
  				}
