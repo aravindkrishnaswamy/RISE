@@ -839,7 +839,8 @@ int main()
 	};
 
 	static const char* const kWin32PosixFuncs[] = {
-		"getpid", "setenv", "unsetenv", "popen", "pclose"
+		"getpid", "setenv", "unsetenv", "popen", "pclose",
+		"mkfifo", "fork", "usleep", "mkstemp", "mkdtemp", "symlink"
 	};
 	static const char* const kWin32PosixMathMacros[] = {
 		"M_PI", "M_PI_2", "M_PI_4", "M_1_PI", "M_2_PI", "M_2_SQRTPI",
@@ -1138,18 +1139,28 @@ int main()
 			if( curActive && emitDiagnostics && !isPreprocLine ) {
 				for( const char* pf : kWin32PosixFuncs ) {
 					if( isFuncShimmed( pf ) ) continue;
-					const std::string needle = std::string( pf ) + "(";
+					const std::size_t pfLen = std::strlen( pf );
 					std::size_t gp = 0;
-					while( ( gp = lineNoStr.find( needle, gp ) ) != std::string::npos ) {
+					while( ( gp = lineNoStr.find( pf, gp ) ) != std::string::npos ) {
 						const bool isWordStart = ( gp == 0 ) ||
 							( !std::isalnum( static_cast<unsigned char>( lineNoStr[gp - 1] ) ) &&
 							  lineNoStr[gp - 1] != '_' && lineNoStr[gp - 1] != '.' && lineNoStr[gp - 1] != '>' );
-						if( isWordStart ) {
-							diags.push_back(
-								fileLabel + ":" + std::to_string( lineNo ) + " unshimmed " + pf + "()" );
-							break;
+						std::size_t afterPf = gp + pfLen;
+						const bool isWordEnd = ( afterPf >= lineNoStr.size() ) ||
+							( !std::isalnum( static_cast<unsigned char>( lineNoStr[afterPf] ) ) &&
+							  lineNoStr[afterPf] != '_' );
+						if( isWordStart && isWordEnd ) {
+							while( afterPf < lineNoStr.size() &&
+								( lineNoStr[afterPf] == ' ' || lineNoStr[afterPf] == '\t' ) ) {
+								++afterPf;
+							}
+							if( afterPf < lineNoStr.size() && lineNoStr[afterPf] == '(' ) {
+								diags.push_back(
+									fileLabel + ":" + std::to_string( lineNo ) + " unshimmed " + pf + "()" );
+								break;
+							}
 						}
-						gp += needle.size();
+						gp += pfLen;
 					}
 				}
 				if( !env.definesUseMath ) {
@@ -1349,13 +1360,17 @@ int main()
 			       runSnippet( "#ifndef _WIN32\nconst char* p = \"" + slashTmp + "/foo\";\n#endif\n" ).empty(),
 			       "DL-632 scanner self-test: hardcoded `/tmp` scratch paths are caught when _WIN32-active and allowed under `#ifndef _WIN32`" );
 		}
+		Check( runSnippet( "int x = getpid ();\nint y = mkfifo\t( \"p\", 0600 );\n" ).size() == 2 &&
+		       runSnippet( "int getpid_helper () { return 0; }\n" ).empty(),
+		       "DL-632 scanner self-test: unshimmed POSIX calls with whitespace before `(` are caught without false positives" );
 	}
-	for( const auto& entry : fs::directory_iterator( testsDir ) ) {
+	for( const auto& entry : fs::recursive_directory_iterator( testsDir ) ) {
 		if( !entry.is_regular_file() ) { continue; }
 		const fs::path& f = entry.path();
 		const std::string ext = f.extension().string();
 		if( ext != ".cpp" && ext != ".h" && ext != ".hpp" && ext != ".inl" ) { continue; }
 		if( f.filename() == "SourceHygieneTest.cpp" ) { continue; }   // don't scan ourselves
+		const std::string relLabel = f.lexically_relative( testsDir ).generic_string();
 		++scanned;
 
 		const std::string src = SlurpFile( f );
@@ -1383,7 +1398,7 @@ int main()
 						const size_t retPos = line.find( "return" );
 						if( retPos == std::string::npos || retPos > tokPos ) { continue; }
 						offenders.push_back(
-							f.filename().string() + ":" + std::to_string( lineNo )
+							relLabel + ":" + std::to_string( lineNo )
 							+ "  ->  return " + tok );
 					}
 				}
@@ -1404,7 +1419,7 @@ int main()
 					[]( unsigned char c ){ return std::tolower( c ); } );
 				for( size_t p = 0; ( p = norm.find( "\\t", p ) ) != std::string::npos; ) { norm.replace( p, 2, " " ); }
 				if( norm.find( "oidn_denoise false" ) == std::string::npos ) {
-					undenoised.push_back( f.filename().string() );
+					undenoised.push_back( relLabel );
 				}
 			}
 		}
@@ -1421,9 +1436,13 @@ int main()
 				if( fs::exists( hdrPath ) && fs::is_regular_file( hdrPath ) ) {
 					return SlurpFile( hdrPath );
 				}
+				const fs::path rootHdrPath = testsDir / rel;
+				if( fs::exists( rootHdrPath ) && fs::is_regular_file( rootHdrPath ) ) {
+					return SlurpFile( rootHdrPath );
+				}
 				return std::string();
 			};
-			scanWin32Portability( f.filename().string(), src, resolveDiskHeader, 0, true, env, unguardedPosixIncludes );
+			scanWin32Portability( relLabel, src, resolveDiskHeader, 0, true, env, unguardedPosixIncludes );
 		}
 	}
 

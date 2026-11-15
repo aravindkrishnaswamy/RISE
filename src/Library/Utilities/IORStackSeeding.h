@@ -444,6 +444,22 @@ namespace RISE
 			{}
 		};
 
+		//! Strict weak ordering on Scalar that treats -0 == +0 and orders any NaN
+		//! deterministically after all finite / infinite values so `std::sort`
+		//! comparators cannot violate irreflexivity or transitivity.
+		inline bool ScalarTotalLess( const Scalar a, const Scalar b )
+		{
+			const bool aNaN = std::isnan( a );
+			const bool bNaN = std::isnan( b );
+			if( aNaN || bNaN ) return !aNaN && bNaN;
+			return a < b;
+		}
+
+		inline bool ScalarTotalDiff( const Scalar a, const Scalar b )
+		{
+			return ScalarTotalLess( a, b ) || ScalarTotalLess( b, a );
+		}
+
 		//! Pure geometric ordering tie-break between two sheet objects (DL-626:
 		//! avoids catalog / chunk-declaration order dependence, breaking
 		//! identical-AABB ties via world transform matrix elements before falling
@@ -457,7 +473,7 @@ namespace RISE
 			const Scalar ka[6] = { ba.ll.x, ba.ll.y, ba.ll.z, ba.ur.x, ba.ur.y, ba.ur.z };
 			const Scalar kb[6] = { bb.ll.x, bb.ll.y, bb.ll.z, bb.ur.x, bb.ur.y, bb.ur.z };
 			for( int i = 0; i < 6; ++i ) {
-				if( ka[i] != kb[i] ) return ka[i] < kb[i];
+				if( ScalarTotalDiff( ka[i], kb[i] ) ) return ScalarTotalLess( ka[i], kb[i] );
 			}
 			const Matrix4 ma = a->GetFinalTransformMatrix();
 			const Matrix4 mb = b->GetFinalTransformMatrix();
@@ -474,7 +490,7 @@ namespace RISE
 				mb._30, mb._31, mb._32, mb._33
 			};
 			for( int i = 0; i < 16; ++i ) {
-				if( maEl[i] != mbEl[i] ) return maEl[i] < mbEl[i];
+				if( ScalarTotalDiff( maEl[i], mbEl[i] ) ) return ScalarTotalLess( maEl[i], mbEl[i] );
 			}
 			return a < b;
 		}
@@ -1124,7 +1140,7 @@ namespace RISE
 			unsigned int itemCount;
 			std::vector<OpenSheetCatalogEntry> sheets;
 			//! World-visible closed / non-open trackable objects (`MaterialMayBeTrackable`
-			//! and not in `sheets`), for O(1) AABB-culled coplanar tie checks in `TallyProbe`.
+			//! and not in `sheets`), for union-AABB-culled O(M) coplanar tie checks in `TallyProbe`.
 			std::vector<ClosedTrackableEntry> closedTrackable;
 			//! Planar sheets grouped by shared unit normal (DL-622 Gap 5).
 			std::vector<OpenSheetNormalGroup> normalGroups;
@@ -1302,9 +1318,9 @@ namespace RISE
 				} );
 			std::sort( catalog.sheets.begin(), catalog.sheets.end(),
 				[]( const OpenSheetCatalogEntry& a, const OpenSheetCatalogEntry& b ) {
-					if( a.normal.x != b.normal.x ) return a.normal.x < b.normal.x;
-					if( a.normal.y != b.normal.y ) return a.normal.y < b.normal.y;
-					if( a.normal.z != b.normal.z ) return a.normal.z < b.normal.z;
+					if( ScalarTotalDiff( a.normal.x, b.normal.x ) ) return ScalarTotalLess( a.normal.x, b.normal.x );
+					if( ScalarTotalDiff( a.normal.y, b.normal.y ) ) return ScalarTotalLess( a.normal.y, b.normal.y );
+					if( ScalarTotalDiff( a.normal.z, b.normal.z ) ) return ScalarTotalLess( a.normal.z, b.normal.z );
 					return SheetGeomKeyLess( a.pObj, b.pObj );
 				} );
 			catalog.sceneDiagonal = collect.any ? std::max( Scalar( 1e-6 ), Vector3Ops::Magnitude( collect.bounds.GetExtents() ) ) : Scalar( 1 );
@@ -1384,8 +1400,8 @@ namespace RISE
 				std::vector<OpenSheetNormalGroup::PlaneBand>& bands = catalog.normalGroups[g].sortedBands;
 				std::sort( bands.begin(), bands.end(),
 					[]( const OpenSheetNormalGroup::PlaneBand& a, const OpenSheetNormalGroup::PlaneBand& b ) {
-						if( a.nLo != b.nLo ) return a.nLo < b.nLo;
-						if( a.nHi != b.nHi ) return a.nHi < b.nHi;
+						if( ScalarTotalDiff( a.nLo, b.nLo ) ) return ScalarTotalLess( a.nLo, b.nLo );
+						if( ScalarTotalDiff( a.nHi, b.nHi ) ) return ScalarTotalLess( a.nHi, b.nHi );
 						return a.sheetIdx < b.sheetIdx;
 					} );
 				Scalar runMax = -RISE_INFINITY;
@@ -1396,9 +1412,9 @@ namespace RISE
 			}
 			std::sort( catalog.normalGroups.begin(), catalog.normalGroups.end(),
 				[]( const OpenSheetNormalGroup& a, const OpenSheetNormalGroup& b ) {
-					if( a.normal.x != b.normal.x ) return a.normal.x < b.normal.x;
-					if( a.normal.y != b.normal.y ) return a.normal.y < b.normal.y;
-					return a.normal.z < b.normal.z;
+					if( ScalarTotalDiff( a.normal.x, b.normal.x ) ) return ScalarTotalLess( a.normal.x, b.normal.x );
+					if( ScalarTotalDiff( a.normal.y, b.normal.y ) ) return ScalarTotalLess( a.normal.y, b.normal.y );
+					return ScalarTotalLess( a.normal.z, b.normal.z );
 				} );
 			return catalog;
 		}
@@ -1580,6 +1596,12 @@ namespace RISE
 			const Scalar kSeedEps = Scalar( 1e-4 );
 			const std::vector<OpenSheetCatalog::ClosedTrackableEntry>& closedTrackable =
 				EnsureOpenSheetCatalog( pObjects ).closedTrackable;
+			static const std::size_t kInlineCtBoxes = 16;
+			BoundingBox inlineCtBoxes[kInlineCtBoxes];
+			std::vector<BoundingBox> heapCtBoxes;
+			BoundingBox ctUnionBox;
+			bool ctBoxesReady = false;
+			bool ctHasAny = false;
 			Ray probe( pos, dir );
 			// One step adds at most one entry: never walk more steps than
 			// the table holds, so no met object is ever silently dropped
@@ -1679,63 +1701,87 @@ namespace RISE
 					!( closedTrackable.size() == 1 && closedTrackable[0].pObj == ri.pObject ) )
 				{
 					const Scalar kCoTol = Scalar( 1e-5 );
-					const Scalar startOff = std::max( Scalar( 0 ), ri.geometric.range - kCoTol );
-					const Point3 coOrigin = Point3Ops::mkPoint3( probe.origin, probe.Dir() * startOff );
-					const Scalar maxCoRange = ( ri.geometric.range - startOff ) + kCoTol;
-					for( std::size_t ci = 0; ci < closedTrackable.size(); ++ci ) {
-						const OpenSheetCatalog::ClosedTrackableEntry& ct = closedTrackable[ci];
-						if( !ct.pObj || ct.pObj == ri.pObject ) {
-							continue;
+					const std::size_t ctCount = closedTrackable.size();
+					if( !ctBoxesReady ) {
+						ctBoxesReady = true;
+						if( ctCount > kInlineCtBoxes ) {
+							heapCtBoxes.resize( ctCount );
 						}
-						const BoundingBox ctBox =
-							( ct.pObj->ShapeRevision() == ct.shapeRev && SamePose( ct.pObj->GetFinalTransformMatrix(), ct.xform ) )
-							? ct.box : ct.pObj->getBoundingBox();
-						if( !PointNearBox( ri.geometric.ptIntersection, ctBox, Scalar( 2 ) * kCoTol ) ) {
-							continue;
-						}
-						RayIntersection ctRi( Ray( coOrigin, probe.Dir() ), nullRasterizerState );
-						ctRi.pObject = ct.pObj;
-						ctRi.pMaterial = ct.pObj->GetMaterial();
-						ct.pObj->IntersectRay( ctRi, maxCoRange, true, true, false );
-						if( !ctRi.geometric.bHit || ctRi.geometric.range > maxCoRange ||
-							( startOff > Scalar( 0 ) && ctRi.geometric.range <= NEARZERO ) ) {
-							continue;
-						}
-						if( !ctRi.pObject ) ctRi.pObject = ct.pObj;
-						if( !ctRi.pMaterial ) ctRi.pMaterial = ct.pObj->GetMaterial();
-						SpecularInfo ctInfo;
-						if( ClassifyMembershipHit( ctRi, probe.Dir(), nm, ctInfo ) != kMembershipTransparent ) {
-							continue;
-						}
-						if( pLanes ) {
-							pLanes->diverged = true;
-						}
-						ProbeEntry* ce = 0;
-						for( std::size_t d = 0; d < count; d++ ) {
-							if( out[d].pObj == ct.pObj ) {
-								ce = &out[d];
-								break;
+						BoundingBox* dstBoxes = ctCount > kInlineCtBoxes ? heapCtBoxes.data() : inlineCtBoxes;
+						for( std::size_t ci = 0; ci < ctCount; ++ci ) {
+							const OpenSheetCatalog::ClosedTrackableEntry& ct = closedTrackable[ci];
+							if( !ct.pObj ) {
+								continue;
+							}
+							const BoundingBox b =
+								( ct.pObj->ShapeRevision() == ct.shapeRev && SamePose( ct.pObj->GetFinalTransformMatrix(), ct.xform ) )
+								? ct.box : ct.pObj->getBoundingBox();
+							dstBoxes[ci] = b;
+							if( !ctHasAny ) {
+								ctUnionBox = b;
+								ctHasAny = true;
+							} else {
+								ctUnionBox.Include( b );
 							}
 						}
-						if( !ce && count < capacity ) {
-							ce = &out[count++];
-							ce->pObj = ct.pObj;
-							ce->ior = ctInfo.ior;
-							ce->parity = 0;
-							ce->firstExitStep = -1;
-							ce->firstEntryStep = -1;
-							ce->repushParentIor = !ctInfo.canRefract;
-						}
-						if( ce ) {
-							if( ctRi.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
-								ce->parity++;
-								if( ce->firstExitStep < 0 ) {
-									ce->firstExitStep = step;
+					}
+					if( ctHasAny && PointNearBox( ri.geometric.ptIntersection, ctUnionBox, Scalar( 2 ) * kCoTol ) ) {
+						const BoundingBox* ctBoxes = ctCount > kInlineCtBoxes ? heapCtBoxes.data() : inlineCtBoxes;
+						const Scalar startOff = std::max( Scalar( 0 ), ri.geometric.range - kCoTol );
+						const Point3 coOrigin = Point3Ops::mkPoint3( probe.origin, probe.Dir() * startOff );
+						const Scalar maxCoRange = ( ri.geometric.range - startOff ) + kCoTol;
+						for( std::size_t ci = 0; ci < ctCount; ++ci ) {
+							const OpenSheetCatalog::ClosedTrackableEntry& ct = closedTrackable[ci];
+							if( !ct.pObj || ct.pObj == ri.pObject ) {
+								continue;
+							}
+							if( !PointNearBox( ri.geometric.ptIntersection, ctBoxes[ci], Scalar( 2 ) * kCoTol ) ) {
+								continue;
+							}
+							RayIntersection ctRi( Ray( coOrigin, probe.Dir() ), nullRasterizerState );
+							ctRi.pObject = ct.pObj;
+							ctRi.pMaterial = ct.pObj->GetMaterial();
+							ct.pObj->IntersectRay( ctRi, maxCoRange, true, true, false );
+							if( !ctRi.geometric.bHit || ctRi.geometric.range > maxCoRange ||
+								( startOff > Scalar( 0 ) && ctRi.geometric.range <= NEARZERO ) ) {
+								continue;
+							}
+							if( !ctRi.pObject ) ctRi.pObject = ct.pObj;
+							if( !ctRi.pMaterial ) ctRi.pMaterial = ct.pObj->GetMaterial();
+							SpecularInfo ctInfo;
+							if( ClassifyMembershipHit( ctRi, probe.Dir(), nm, ctInfo ) != kMembershipTransparent ) {
+								continue;
+							}
+							if( pLanes ) {
+								pLanes->diverged = true;
+							}
+							ProbeEntry* ce = 0;
+							for( std::size_t d = 0; d < count; d++ ) {
+								if( out[d].pObj == ct.pObj ) {
+									ce = &out[d];
+									break;
 								}
-							} else {
-								ce->parity--;
-								if( ce->firstEntryStep < 0 ) {
-									ce->firstEntryStep = step;
+							}
+							if( !ce && count < capacity ) {
+								ce = &out[count++];
+								ce->pObj = ct.pObj;
+								ce->ior = ctInfo.ior;
+								ce->parity = 0;
+								ce->firstExitStep = -1;
+								ce->firstEntryStep = -1;
+								ce->repushParentIor = !ctInfo.canRefract;
+							}
+							if( ce ) {
+								if( ctRi.geometric.TrueGeomFacing( probe.Dir() ) > 0 ) {
+									ce->parity++;
+									if( ce->firstExitStep < 0 ) {
+										ce->firstExitStep = step;
+									}
+								} else {
+									ce->parity--;
+									if( ce->firstEntryStep < 0 ) {
+										ce->firstEntryStep = step;
+									}
 								}
 							}
 						}
@@ -3782,7 +3828,8 @@ namespace RISE
 							for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
 								const OpenSheetCatalogEntry& ce = cat.sheets[grp.sheetIndices[k]];
 								if( ce.pObj->ShapeRevision() != ce.shapeRev ||
-									!SamePose( ce.pObj->GetFinalTransformMatrix(), ce.xform ) ) {
+									!SamePose( ce.pObj->GetFinalTransformMatrix(), ce.xform ) ||
+									!SameBox( ce.pObj->getBoundingBox(), ce.box ) ) {
 									validGrp = false;
 									break;
 								}
@@ -3825,7 +3872,8 @@ namespace RISE
 						for( std::size_t k = 0; k < grp.sheetIndices.size(); ++k ) {
 							const OpenSheetCatalogEntry& ce = ( *pSheets )[grp.sheetIndices[k]];
 							if( ce.pObj->ShapeRevision() != ce.shapeRev ||
-								!SamePose( ce.pObj->GetFinalTransformMatrix(), ce.xform ) ) {
+								!SamePose( ce.pObj->GetFinalTransformMatrix(), ce.xform ) ||
+								!SameBox( ce.pObj->getBoundingBox(), ce.box ) ) {
 								poseValid = false;
 								break;
 							}
@@ -3909,18 +3957,18 @@ namespace RISE
 					[&]( const ConfirmedSheet& a, const ConfirmedSheet& b ) {
 						const Scalar ha = hitHeight( a );
 						const Scalar hb = hitHeight( b );
-						if( ha != hb ) {
-							return ha < hb;
+						if( ScalarTotalDiff( ha, hb ) ) {
+							return ScalarTotalLess( ha, hb );
 						}
-						if( a.entryCtx.rayDir.x != b.entryCtx.rayDir.x ) return a.entryCtx.rayDir.x < b.entryCtx.rayDir.x;
-						if( a.entryCtx.rayDir.y != b.entryCtx.rayDir.y ) return a.entryCtx.rayDir.y < b.entryCtx.rayDir.y;
-						if( a.entryCtx.rayDir.z != b.entryCtx.rayDir.z ) return a.entryCtx.rayDir.z < b.entryCtx.rayDir.z;
-						if( a.entryCtx.vNormal.x != b.entryCtx.vNormal.x ) return a.entryCtx.vNormal.x < b.entryCtx.vNormal.x;
-						if( a.entryCtx.vNormal.y != b.entryCtx.vNormal.y ) return a.entryCtx.vNormal.y < b.entryCtx.vNormal.y;
-						if( a.entryCtx.vNormal.z != b.entryCtx.vNormal.z ) return a.entryCtx.vNormal.z < b.entryCtx.vNormal.z;
-						if( a.entryCtx.ptIntersection.x != b.entryCtx.ptIntersection.x ) return a.entryCtx.ptIntersection.x < b.entryCtx.ptIntersection.x;
-						if( a.entryCtx.ptIntersection.y != b.entryCtx.ptIntersection.y ) return a.entryCtx.ptIntersection.y < b.entryCtx.ptIntersection.y;
-						if( a.entryCtx.ptIntersection.z != b.entryCtx.ptIntersection.z ) return a.entryCtx.ptIntersection.z < b.entryCtx.ptIntersection.z;
+						if( ScalarTotalDiff( a.entryCtx.rayDir.x, b.entryCtx.rayDir.x ) ) return ScalarTotalLess( a.entryCtx.rayDir.x, b.entryCtx.rayDir.x );
+						if( ScalarTotalDiff( a.entryCtx.rayDir.y, b.entryCtx.rayDir.y ) ) return ScalarTotalLess( a.entryCtx.rayDir.y, b.entryCtx.rayDir.y );
+						if( ScalarTotalDiff( a.entryCtx.rayDir.z, b.entryCtx.rayDir.z ) ) return ScalarTotalLess( a.entryCtx.rayDir.z, b.entryCtx.rayDir.z );
+						if( ScalarTotalDiff( a.entryCtx.vNormal.x, b.entryCtx.vNormal.x ) ) return ScalarTotalLess( a.entryCtx.vNormal.x, b.entryCtx.vNormal.x );
+						if( ScalarTotalDiff( a.entryCtx.vNormal.y, b.entryCtx.vNormal.y ) ) return ScalarTotalLess( a.entryCtx.vNormal.y, b.entryCtx.vNormal.y );
+						if( ScalarTotalDiff( a.entryCtx.vNormal.z, b.entryCtx.vNormal.z ) ) return ScalarTotalLess( a.entryCtx.vNormal.z, b.entryCtx.vNormal.z );
+						if( ScalarTotalDiff( a.entryCtx.ptIntersection.x, b.entryCtx.ptIntersection.x ) ) return ScalarTotalLess( a.entryCtx.ptIntersection.x, b.entryCtx.ptIntersection.x );
+						if( ScalarTotalDiff( a.entryCtx.ptIntersection.y, b.entryCtx.ptIntersection.y ) ) return ScalarTotalLess( a.entryCtx.ptIntersection.y, b.entryCtx.ptIntersection.y );
+						if( ScalarTotalDiff( a.entryCtx.ptIntersection.z, b.entryCtx.ptIntersection.z ) ) return ScalarTotalLess( a.entryCtx.ptIntersection.z, b.entryCtx.ptIntersection.z );
 						return SheetGeomKeyLess( a.pObj, b.pObj );
 					} );
 			}
@@ -4310,21 +4358,21 @@ namespace RISE
 			const IScene* pScene = 0
 			)
 		{
-			dest = source;
-			const IScene* pProbeScene = pScene ? pScene : dest.MediumProbeScene();
+			IORStack staged = source;
+			const IScene* pProbeScene = pScene ? pScene : ( source.MediumProbeScene() ? source.MediumProbeScene() : dest.MediumProbeScene() );
 			if( pProbeScene ) {
-				dest.SetMediumProbeScene( pProbeScene );
+				staged.SetMediumProbeScene( pProbeScene );
 			}
 			const IObjectManager* pObjects = pProbeScene ? pProbeScene->GetObjects() : 0;
-			const std::size_t depth = dest.Depth();
-			IORStack queryStack( dest.EnvironmentIOR() );
+			const std::size_t depth = staged.Depth();
+			IORStack queryStack( staged.EnvironmentIOR() );
 			queryStack.SetMediumProbeScene( pProbeScene );
 			for( std::size_t i = 1; i < depth; ++i ) {
-				const IObject* pObj = dest.ObjectAt( i );
+				const IObject* pObj = staged.ObjectAt( i );
 				if( !pObj || !pObjects || !IsObjectInManager( pObjects, pObj ) ) {
 					return false;
 				}
-				const IORStack::EntryContext& ctx = dest.ContextAt( i );
+				const IORStack::EntryContext& ctx = staged.ContextAt( i );
 				Scalar newIdx = source.IORAt( i );
 				if( !GradedIndexMedium::FieldOf( pObj ) ) {
 					RayIntersection hitRi( Ray( anchor, Vector3( 0, 0, 1 ) ), nullRasterizerState );
@@ -4359,15 +4407,16 @@ namespace RISE
 						return false;
 					}
 				}
-				dest.SetIORAt( i, newIdx );
+				staged.SetIORAt( i, newIdx );
 				queryStack.SetCurrentObject( pObj );
-				if( dest.isOpenSheetAt( i ) ) {
+				if( staged.isOpenSheetAt( i ) ) {
 					queryStack.pushOpenSheet( newIdx );
 				} else {
 					queryStack.push( newIdx );
 				}
 			}
-			GradedIndexMedium::AdoptTrackedTop( dest, source );
+			GradedIndexMedium::AdoptTrackedTop( staged, source );
+			dest = staged;
 			return true;
 		}
 
@@ -4927,8 +4976,6 @@ namespace RISE
 			} else {
 				const IObject* pSelf = dest.currentObject();
 				const IScene* pScene = dest.MediumProbeScene();
-				const bool hadInnerClosedTop = ( dest.Depth() > 1 && !dest.topIsOpenSheet() );
-				const Scalar prevTop = dest.top();
 				CrossingMedia media;
 				bool checkSelfEnclosure = false;
 				if( pSelf && pScene && pScene->GetObjects() ) {
@@ -4938,37 +4985,75 @@ namespace RISE
 						media.ConfirmAt( pScene->GetObjects(), PointPastBackFaceCrossing( ri, d ), nm, 0 );
 					}
 				}
-				if( dest.containsCurrent() ) {
-					if( checkSelfEnclosure && media.FindRetainedSelf( pSelf, &dest ) != 0 ) {
-						for( std::size_t idx = dest.Depth(); idx-- > 1; ) {
-							if( dest.ObjectAt( idx ) == pSelf ) {
-								dest.SetIORAt( idx, sheetIOR );
-								dest.SetContextAt( idx, IORStack::EntryContext::FromGeometric( ri, pMat, false ) );
-								break;
+				// Pop any top entries above `pSelf` that no longer enclose the
+				// crossing (short-circuits immediately when `pSelf` is already on top).
+				ResolveUnpushedExitWithMedia( ri, pSelf, dest, nm, media, checkSelfEnclosure );
+				const bool wasPushed = dest.containsCurrent();
+				const bool wasTopSelf = ( dest.topObject() == pSelf );
+				const bool hadInnerClosedTop = ( dest.Depth() > 1 && !dest.topIsOpenSheet() );
+				const Scalar prevTop = dest.top();
+				if( wasPushed ) {
+					dest.pop();
+				}
+				if( const ConfirmedSheet* cs = checkSelfEnclosure ? media.FindRetainedSelf( pSelf, &dest ) : 0 ) {
+					auto passedObj = [&]( const IObject* target ) -> bool {
+						return std::find( cs->passed.begin(), cs->passed.end(), target ) != cs->passed.end();
+					};
+					auto entryIsInnerToSelf = [&]( const std::size_t idx ) -> bool {
+						const IObject* pEntryObj = dest.ObjectAt( idx );
+						if( !pEntryObj ) {
+							return false;
+						}
+						if( !dest.isOpenSheetAt( idx ) ) {
+							return std::find( cs->crossed.begin(), cs->crossed.end(), pEntryObj ) != cs->crossed.end();
+						}
+						if( passedObj( pEntryObj ) ) {
+							return true;
+						}
+						// If `pEntryObj` was retained via a same-material stand-in
+						// confirmed sheet (not itself on `dest`), mirror that stand-in's
+						// nesting relation against `cs`.
+						for( std::size_t k = 0; k < media.confirmed.size(); ++k ) {
+							if( media.confirmed[k].pObj == pEntryObj ) {
+								return false;
 							}
 						}
-					} else {
-						dest.pop();
-					}
-				} else {
-					ResolveUnpushedExitWithMedia( ri, pSelf, dest, nm, media, checkSelfEnclosure );
-					if( const ConfirmedSheet* cs = checkSelfEnclosure ? media.FindRetainedSelf( pSelf, &dest ) : 0 ) {
-						std::size_t insIdx = dest.Depth();
-						for( std::size_t i = 1; i < dest.Depth(); ++i ) {
-							if( dest.isOpenSheetAt( i ) ) {
+						const IMaterial* pEntryMat = pEntryObj->GetMaterial();
+						if( !pEntryMat ) {
+							return false;
+						}
+						for( std::size_t k = 0; k < media.confirmed.size(); ++k ) {
+							const ConfirmedSheet& csSub = media.confirmed[k];
+							if( csSub.pObj == pSelf || csSub.pObj->GetMaterial() != pEntryMat ) {
 								continue;
 							}
-							const IObject* pEntryObj = dest.ObjectAt( i );
-							if( std::find( cs->crossed.begin(), cs->crossed.end(), pEntryObj ) != cs->crossed.end() ) {
-								insIdx = i;
-								break;
+							bool onStack = false;
+							for( std::size_t s = 1; s < dest.Depth(); ++s ) {
+								if( dest.ObjectAt( s ) == csSub.pObj ) {
+									onStack = true;
+									break;
+								}
+							}
+							if( !onStack && passedObj( csSub.pObj ) ) {
+								return true;
 							}
 						}
-						dest.InsertOpenSheetAt( insIdx, pSelf, sheetIOR, IORStack::EntryContext::FromGeometric( ri, pMat, false ) );
+						return false;
+					};
+					std::size_t insIdx = dest.Depth();
+					for( std::size_t i = 1; i < dest.Depth(); ++i ) {
+						if( entryIsInnerToSelf( i ) ) {
+							insIdx = i;
+							break;
+						}
 					}
+					dest.InsertOpenSheetAt( insIdx, pSelf, sheetIOR, IORStack::EntryContext::FromGeometric( ri, pMat, false ) );
 				}
 				c.bEntering = false;
-				c.etaFrom = ( hadInnerClosedTop && !dest.topIsOpenSheet() && dest.Depth() > 1 ) ? prevTop : sheetIOR;
+				const bool hadInnerAboveSelf = wasPushed
+					? !wasTopSelf
+					: ( hadInnerClosedTop && !dest.topIsOpenSheet() && dest.Depth() > 1 );
+				c.etaFrom = hadInnerAboveSelf ? prevTop : sheetIOR;
 				c.etaTo = dest.top();
 			}
 			return c;

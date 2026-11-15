@@ -148,8 +148,7 @@ namespace {
 
 std::string WriteTempScene( const std::string& tag, const std::string& body )
 {
-	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+	std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	char pid[32];
 	std::snprintf( pid, sizeof(pid), "%d", static_cast<int>( ::getpid() ) );
@@ -174,8 +173,7 @@ bool ParseBodyInto( const std::string& tag, const std::string& body, IJobPriv& j
 bool ParseBodyCapturing( const std::string& tag, const std::string& body, IJobPriv& job,
                           std::string& capturedOutput )
 {
-	const char* tmpEnv = getenv( "TMPDIR" );
-	std::string dir = tmpEnv ? std::string( tmpEnv ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+	std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	char pidbuf[32];
 	std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( ::getpid() ) );

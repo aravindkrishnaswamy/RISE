@@ -122,9 +122,7 @@ static void SetEnvVar( const char* name, const char* value )
 // The platform temp directory, WITH a trailing slash.
 static std::string TempDirBase()
 {
-	const char* base = std::getenv( "TMPDIR" );
-	if( !base ) base = std::getenv( "TMP" );   // Windows spelling
-	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 	return dir;
 }
@@ -238,11 +236,7 @@ static std::vector<std::string> ExtractRiseBlocks( const std::string& md )
 // A writable temp directory (the same resolution the S0 fixture uses).
 static std::string TempDir()
 {
-	const char* base = std::getenv( "TMPDIR" );
-	if( !base ) base = std::getenv( "TMP" );   // Windows spelling
-	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
-	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
-	return dir;
+	return TempDirBase();
 }
 
 //----------------------------------------------------------------------
@@ -278,13 +272,11 @@ static void TestRootResolution()
 	// kSeedSkillCount) -- otherwise "tier 2 resolved" and "tier 2 was
 	// skipped" look identical from the repo root.
 	{
-		const std::string mediaRoot = TempDirBase() + "rise_agent_media_root";
+		std::error_code ec;
+		const std::string mediaRoot = RISE::TestSupport::ScratchTestRoot( "rise_agent_media_root_" );
 		const std::string mediaSkills = mediaRoot + "/skills/agent";
-#ifdef _WIN32
-		system( ( "mkdir \"" + mediaSkills + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "mkdir -p '" + mediaSkills + "'" ).c_str() );
-#endif
+		std::filesystem::remove_all( mediaRoot, ec );
+		std::filesystem::create_directories( mediaSkills, ec );
 		{
 			std::ofstream f( ( mediaSkills + "/media-tier-skill.md" ).c_str(), std::ios::binary );
 			f << "# Media Tier Skill\n> hook: Reached only through RISE_MEDIA_PATH.\n";
@@ -315,22 +307,15 @@ static void TestRootResolution()
 
 		SetEnvVar( "RISE_SKILLS_PATH", nullptr );
 		SetEnvVar( "RISE_MEDIA_PATH", nullptr );
-		std::remove( ( mediaSkills + "/media-tier-skill.md" ).c_str() );
-#ifdef _WIN32
-		system( ( "rmdir /s /q \"" + mediaRoot + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "rm -rf '" + mediaRoot + "'" ).c_str() );
-#endif
+		std::filesystem::remove_all( mediaRoot, ec );
 	}
 
 	// RISE_SKILLS_PATH override wins: a temp root with ONE fake skill.
 	{
-		std::string dir = TempDirBase() + "rise_agent_skills_test";
-#ifdef _WIN32
-		system( ( "mkdir \"" + dir + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "mkdir -p '" + dir + "'" ).c_str() );
-#endif
+		std::error_code ec;
+		std::string dir = RISE::TestSupport::ScratchTestRoot( "rise_agent_skills_test_" );
+		std::filesystem::remove_all( dir, ec );
+		std::filesystem::create_directories( dir, ec );
 		const std::string fake = dir + "/fake-skill.md";
 		{
 			std::ofstream f( fake.c_str(), std::ios::binary );
@@ -346,10 +331,8 @@ static void TestRootResolution()
 			f << "# Hidden\n> hook: Should never index.\n";
 		}
 		const std::string dirmd = dir + "/dirskill.md";
-#ifdef _WIN32
-		system( ( "mkdir \"" + dirmd + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "mkdir -p '" + dirmd + "'" ).c_str() );
+		std::filesystem::create_directories( dirmd, ec );
+#ifndef _WIN32
 		const std::string fifomd = dir + "/pipeskill.md";
 		std::remove( fifomd.c_str() );
 		Check( mkfifo( fifomd.c_str(), 0600 ) == 0, "test fixture: created the FIFO" );
@@ -397,11 +380,7 @@ static void TestRootResolution()
 		// different diagnosis.  (Before this, an existing-but-empty root
 		// returned a bare empty list -- indistinguishable from healthy.)
 		const std::string emptyRoot = dir + "/empty_root";
-#ifdef _WIN32
-		system( ( "mkdir \"" + emptyRoot + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "mkdir -p '" + emptyRoot + "'" ).c_str() );
-#endif
+		std::filesystem::create_directories( emptyRoot, ec );
 		SetEnvVar( "RISE_SKILLS_PATH", emptyRoot.c_str() );
 		{
 			const AgentSkillResult e = AgentSession::ReadSkill();
@@ -413,19 +392,7 @@ static void TestRootResolution()
 		}
 
 		SetEnvVar( "RISE_SKILLS_PATH", nullptr );
-#ifdef _WIN32
-		system( ( "rmdir \"" + emptyRoot + "\" 2>NUL" ).c_str() );
-#else
-		system( ( "rmdir '" + emptyRoot + "'" ).c_str() );
-#endif
-		std::remove( fake.c_str() );
-		std::remove( dotfile.c_str() );
-#ifdef _WIN32
-		system( ( "rmdir \"" + dirmd + "\" 2>NUL" ).c_str() );
-#else
-		std::remove( fifomd.c_str() );
-		system( ( "rmdir '" + dirmd + "'" ).c_str() );
-#endif
+		std::filesystem::remove_all( dir, ec );
 	}
 }
 

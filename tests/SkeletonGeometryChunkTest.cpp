@@ -136,8 +136,7 @@ namespace {
 
 std::string WriteTempScene( const std::string& tag, const std::string& body )
 {
-	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+	std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	char pid[32];
 	std::snprintf( pid, sizeof(pid), "%d", static_cast<int>( ::getpid() ) );
@@ -414,8 +413,7 @@ void TestDegenerateBoneAABB()
 	// inlined here since this is the only site in this file that needs it.
 	std::string capturedOutput;
 	{
-		const char* tmpEnv = getenv( "TMPDIR" );
-		std::string dir = tmpEnv ? std::string( tmpEnv ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+		std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 		char pidbuf[32];
 		std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( ::getpid() ) );
@@ -1121,8 +1119,7 @@ void TestAspectInertOnRootWarns()
 	std::string captured;
 	bool ok = false;
 	{
-		const char* tmpEnv = getenv( "TMPDIR" );
-		std::string dir = tmpEnv ? std::string( tmpEnv ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+		std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 		char pidbuf[32];
 		std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( ::getpid() ) );
@@ -1161,8 +1158,7 @@ void TestAspectInertOnRootWarns()
 		IJobPriv* job2 = nullptr;
 		if( RISE_CreateJobPriv( &job2 ) && job2 ) {
 			std::string cap2;
-			const char* tmpEnv = getenv( "TMPDIR" );
-			std::string dir = tmpEnv ? std::string( tmpEnv ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+			std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 			if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 			char pidbuf[32];
 			std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( ::getpid() ) );

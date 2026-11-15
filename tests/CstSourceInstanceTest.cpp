@@ -254,8 +254,7 @@ static std::string Got( double x )
 // clobber each other's fixture mid-load.
 static std::string WriteTempScene( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? std::string( base ) : RISE::TestSupport::ScratchBaseDir();
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	const std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
 	std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );

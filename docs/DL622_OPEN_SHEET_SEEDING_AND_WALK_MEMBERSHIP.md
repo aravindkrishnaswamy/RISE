@@ -651,11 +651,10 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    `OpenSheetNormalGroup` members, `SeedFromPointImpl`'s equal-`firstExitStep`
    `ordered` ties, `HasFreeSpaceDetourToSheets` column reach (`Snapshot::columnDist`,
    `SameBox`, and `opaqueObjs` parity tracking), and same-material sibling
-   deduplication by pure geometric keys (world AABB, normal, and
-   `GetFinalTransformMatrix()` tie-breaking when two tilted panes share identical
-   AABB and normal; exact shared-geometry identity uses
-   `!SheetGeomKeyLess(a,b) && !SheetGeomKeyLess(b,a)` rather than hash equality),
-   while `ConfirmOpenSheetsAt` caches per-confirmation group pose validity once in
+   deduplication by NaN-safe strict-weak-ordering geometric keys (`ScalarTotalLess`
+   over world AABB, normal, and `GetFinalTransformMatrix()`, falling back to pointer
+   tie-break only for identical coincident clones),
+   while `ConfirmOpenSheetsAt` caches per-confirmation group pose + `SameBox` validity once in
    $O(N)$, breaks equal-distance confirmation ties via its inline `hitHeight` /
    `entryCtx` / `SheetGeomKeyLess` comparator (`A56`), passes exact scalar ray-hit
    distances (`aloneDist` / `activeDists` / `sheetColDists`) from
@@ -663,25 +662,29 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    `OpenSheetNormalRayReaches`, and `HasFreeSpaceDetourToSheet` (`A61c`, `A64b` —
    0 coplanar object ray casts on 40 parallel $45^\circ$-tilted panes), confirms
    coplanar siblings, flush closed-dielectric / open-sheet ties (`TallyProbe`
-   `closedTrackable` window + `RecordCoplanarOrderedExitsAt`, `A63a`), and zero-gap
+   union-AABB-culled `closedTrackable` window + `RecordCoplanarOrderedExitsAt`, `A63a`), and zero-gap
    opposing/blocking open sheets (`ProbeCoplanarBlockingOpenSheetAt` using sorted
    `OpenSheetNormalGroup::PlaneBand` interval binary search + cached `ce.box`,
    `A63b`) across direct and detour walks (`A61a`–`A61b`), and enforces a shared
    per-step `GroupDetourRayBudget()` counter plus `columnWalkUsed` (charging every
    `vertProbe` column walk after the first normal) across `sheet.normal` +
    `auxNormals` in `OpenSheetHoldsPoint` (`A62`, `A64a`).
-3. **Multi-fold curved/pleated sheet crossings (`A53`, `A57a`–`A57c`):** When a ray
+3. **Multi-fold curved/pleated sheet crossings (`A53`, `A57a`–`A57c`, `A65`):** When a ray
    crosses an inner fold's back face on a non-planar certified open sheet while
    an overhanging outer fold of that same sheet still encloses
-   `PointPastBackFaceCrossing(ri, d)`, `ResolveOpenSheetCrossing` runs
-   `CrossingMedia::ConfirmAt(..., pExclude = 0)` and retains/pushes `pSelf`
+   `PointPastBackFaceCrossing(ri, d)`, `ResolveOpenSheetCrossing` pops unenclosed
+   top entries above `pSelf`, runs `CrossingMedia::ConfirmAt(..., pExclude = 0)`,
+   and repositions/inserts `pSelf` in outer-to-inner order against both closed
+   (`cs->crossed`) and open (`cs->passed` / stand-in) stack entries
    (`FindRetainedSelf` requiring matching `GetMaterial()` before substituting a
-   deduplicated sibling sheet `A57c`) so pushed and unpushed walks agree with
-   `SeedFromPoint`.
+   deduplicated sibling sheet `A57c`, and `A65` verifying outer-to-inner
+   repositioning below an intermediate open sheet on both pushed and unpushed walks)
+   so pushed and unpushed walks agree with `SeedFromPoint`.
 4. **Luminaire seed self-exit vs enclosing room ceiling (`A55`):**
-   `DetourOriginForSeedExit` steps backward along `-normal` past `pSeedObject`'s
-   entry face to advance detour Segment 1 just past `pSeedObject`'s own exit
-   face when that exit precedes any external obstacle, while
+   `DetourOriginForSeedExit` steps `detourOrigin` slightly into the `-normal`
+   free-space side of `pSeedObject`'s entry face (up to `2 * selfSkin`, or halfway
+   to any nearer non-self obstacle) so detour Segment 1 starts in free space
+   without tunneling past an enclosing room ceiling, while
    `OpenSheetNormalRayReaches` exempts only near-origin self-hits on
    `pSeedObject` (preventing a ceiling-slab luminaire sealing a dry room from
    tunneling into an overlying pond while preserving open-pavilion detours).
@@ -692,7 +695,7 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    normal prisms of a planar sheet, point-based `SeedFromPoint` ==
    `ResolveUnpushedExit` parity (§5.2, `B5`: PT/BDPT `0.9969 +/- 0.0103` vs
    walk-history `0.7905`) remains the deliberate reciprocal convention.
-   `OpenSheetHalfSpaceSeedingTest`: **239 passed, 0 failed** (`224/0` Part A +
+   `OpenSheetHalfSpaceSeedingTest`: **244 passed, 0 failed** (`229/0` Part A +
    `15/0` Part B; `red_prove.sh` RED -> GREEN on `DL-626-SUMMARY`).
 
 **`DL-631` (hot-path overhead on scenes without open sheets):**

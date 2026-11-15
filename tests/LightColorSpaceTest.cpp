@@ -111,9 +111,8 @@ static std::string PelStr( const RISEPel& p )
 static IJobPriv* LoadScene( const std::string& body, const char* tag )
 {
 	char path[1024];
-	const char* tmp = std::getenv( "TMPDIR" );
 	std::snprintf( path, sizeof(path), "%s/light_colorspace_%s_%d.RISEscene",
-		( ( tmp && *tmp ) ? tmp : RISE::TestSupport::ScratchBaseDir().c_str() ), tag, (int)::getpid() );
+		RISE::TestSupport::ScratchBaseDir().c_str(), tag, (int)::getpid() );
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return nullptr;

@@ -2760,6 +2760,79 @@ static void PartA()
 		}
 	}
 
+	// A65: Multi-fold open sheet `pleat` (`glass15`, lower turn at y = 1.25, upper
+	// overhanging turn at y = 3.25) enclosing a narrower inner open sheet `inner_pane`
+	// (`glass133` at y = 2.0): crossing `pleat`'s lower turn at y = 1.25 upward into
+	// y = 1.30 repositions `pleat` BELOW `inner_pane` (`[env, pleat(1.5), inner_pane(1.33)]`,
+	// `etaFrom = 1.5 -> etaTo = 1.33`) on BOTH pushed and unpushed walks, matching `SeedFromPoint`.
+	{
+		std::ostringstream hs;
+		hs << "indexedmesh_geometry\n{\n\tname g_pleat65\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+		const int K = 10;
+		const double r0 = 0.3, r1 = 2.5;
+		for( int k = 0; k <= K; ++k ) {
+			const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / 8.0;
+			const double y = 1.0 + 2.0 * ( double( k ) / 8.0 );
+			const double c = std::cos( th ), s = std::sin( th );
+			hs << "\tvertex " << ( r0 * c ) << " " << y << " " << ( r0 * s ) << "\n";
+			hs << "\tvertex " << ( r1 * c ) << " " << y << " " << ( r1 * s ) << "\n";
+		}
+		for( int k = 0; k <= K; ++k ) {
+			hs << "\tuv 0 0\n\tuv 1 0\n";
+		}
+		for( int k = 0; k < K; ++k ) {
+			const int i0 = 2 * k, o0 = 2 * k + 1;
+			const int i1 = 2 * ( k + 1 ), o1 = 2 * ( k + 1 ) + 1;
+			hs << "\ttriangle " << i0 << " " << i1 << " " << o1 << "\n";
+			hs << "\ttriangle " << i0 << " " << o1 << " " << o0 << "\n";
+		}
+		hs << "}\n\n";
+		Loaded s65( Header()
+			+ hs.str() + Obj( "pleat65", "g_pleat65", "glass15" )
+			+ HSheet( "g_inpane65", 2.0, 0.35, true ) + Obj( "inpane65", "g_inpane65", "glass133", "1.0 0 1.0" ) );
+		Check( s65.ok, "A65 [DL-626] multi-fold pleat + intermediate inner open sheet scene loads" );
+		if( s65.ok ) {
+			const IObject* pPleat = s65.O( "pleat65" );
+			const IObject* pInPane = s65.O( "inpane65" );
+			const IORStack seedBefore = s65.Seed( Point3( 1.0, 1.05, 1.0 ) );
+			const IORStack seedAfter = s65.Seed( Point3( 1.0, 1.30, 1.0 ) );
+			Check( seedBefore.Depth() == 3 && seedBefore.ObjectAt( 1 ) == pInPane && seedBefore.ObjectAt( 2 ) == pPleat &&
+				seedAfter.Depth() == 3 && seedAfter.ObjectAt( 1 ) == pPleat && seedAfter.ObjectAt( 2 ) == pInPane,
+				"A65 [DL-626]: SeedFromPoint swaps [env, inpane, pleat] -> [env, pleat, inpane] across inner fold y = 1.25" );
+
+			Ray rUp( Point3( 1.0, 1.05, 1.0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitInner( rUp, nullRasterizerState );
+			pPleat->IntersectRay( hitInner, 1.0, true, true, false );
+			Check( hitInner.geometric.bHit && hitInner.geometric.bProvablyNoInterior,
+				"A65 [DL-626]: upward ray hits lower fold back face at y = 1.25" );
+			if( hitInner.geometric.bHit ) {
+				IORStack pushed = seedBefore;
+				pushed.SetMediumProbeScene( &s65.Scene() );
+				pushed.SetCurrentObject( pPleat );
+				const auto cPushed = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitInner.geometric, 1.5, pushed, pPleat->GetMaterial(), 0 );
+				Check( pushed.Depth() == 3 &&
+					pushed.ObjectAt( 1 ) == pPleat && pushed.isOpenSheetAt( 1 ) &&
+					pushed.ObjectAt( 2 ) == pInPane && pushed.isOpenSheetAt( 2 ) &&
+					Close( cPushed.etaFrom, 1.5 ) && Close( cPushed.etaTo, 1.33 ),
+					"A65a [DL-626]: pushed ResolveOpenSheetCrossing repositions multi-fold pleat below inner open sheet (1.5 -> 1.33)" );
+
+				IORStack unpushed( 1.0 );
+				unpushed.SetMediumProbeScene( &s65.Scene() );
+				unpushed.SetCurrentObject( pInPane );
+				unpushed.pushOpenSheet( 1.33 );
+				unpushed.SetCurrentObject( pPleat );
+				const auto cUnpushed = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitInner.geometric, 1.5, unpushed, pPleat->GetMaterial(), 0 );
+				Check( unpushed.Depth() == 3 &&
+					unpushed.ObjectAt( 1 ) == pPleat && unpushed.isOpenSheetAt( 1 ) &&
+					unpushed.ObjectAt( 2 ) == pInPane && unpushed.isOpenSheetAt( 2 ) &&
+					Close( cUnpushed.etaFrom, 1.5 ) && Close( cUnpushed.etaTo, 1.33 ),
+					"A65b [DL-626]: unpushed ResolveOpenSheetCrossing inserts multi-fold pleat below inner open sheet (1.5 -> 1.33)" );
+			}
+		}
+	}
+
 	const int dl626NewFails = failCount - dl626FailBefore;
 	std::cout << "[DL-626-SUMMARY] " << ( dl626NewFails == 0 ? "PASS" : "FAIL" )
 		<< " (new_failures=" << dl626NewFails << ")" << std::endl;

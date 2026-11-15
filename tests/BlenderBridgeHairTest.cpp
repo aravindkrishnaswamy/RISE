@@ -168,8 +168,7 @@ namespace {
 
 std::string TempPath( const std::string& tag )
 {
-	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+	std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) {
 		dir += "/";
 	}

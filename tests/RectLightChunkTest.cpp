@@ -107,8 +107,7 @@ namespace {
 
 std::string WriteTempScene( const std::string& tag, const std::string& body )
 {
-	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+	std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	char pid[32];
 	std::snprintf( pid, sizeof(pid), "%d", static_cast<int>( ::getpid() ) );

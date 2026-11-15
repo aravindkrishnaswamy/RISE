@@ -197,13 +197,8 @@ namespace
 	// concatenation for the lifetime of this test instead.
 	std::string MakeTempPathWithoutExt()
 	{
-		const std::string scratchFallback = RISE::TestSupport::ScratchBaseDir() + "/";
-		const char* tmpdir = std::getenv( "TMPDIR" );
-		if ( !tmpdir || !*tmpdir ) tmpdir = scratchFallback.c_str();
 		std::ostringstream os;
-		os << tmpdir;
-		if ( os.str().back() != '/' ) os << '/';
-		os << "rise_l3_shim_" << ::getpid();
+		os << RISE::TestSupport::ScratchBaseDir() << "/rise_l3_shim_" << ::getpid();
 		return os.str();
 	}
 

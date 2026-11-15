@@ -89,15 +89,8 @@ namespace
 	// asset files).
 	std::string WriteTempScene( const char* tag, const std::string& body )
 	{
-		std::string dir;
-		const char* t = getenv( "TMPDIR" );
-		if( t && t[0] ) {
-			dir = t;
-			if( dir.back() != '/' ) dir += '/';
-		} else {
-			dir = RISE::TestSupport::ScratchBaseDir() + "/";
-		}
-		std::string path = dir + "rise_thinfilm_parse_" + tag + ".RISEscene";
+		std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
+		std::string path = dir + "rise_thinfilm_parse_" + tag + "_" + std::to_string( RISE::TestSupport::CurrentProcessId() ) + ".RISEscene";
 		std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );
 		f << body;
 		f.close();

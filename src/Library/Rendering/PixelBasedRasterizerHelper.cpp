@@ -1007,6 +1007,7 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		seq.Begin( startx, endx, starty, endy );
 
 		const unsigned int numseq = seq.NumRegions();
+		const unsigned int baseMediumSeed = LockedLibcRand();
 		bool completed = true;
 
 		for( unsigned int i=0; i<numseq; i++ ) {
@@ -1027,10 +1028,9 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 				}
 			}
 
-			const unsigned int spMediumSeed =
-				( static_cast<unsigned int>( mProgressBase ) * 2654435761u ) ^
-				( static_cast<unsigned int>( pass ) * 2246822519u ) ^
-				( i * 3266489917u ) ^ 0x6D2B79F5u;
+			const unsigned int spMediumSeed = DeriveSeed(
+				DeriveSeed( baseMediumSeed, static_cast<unsigned int>( mProgressBase ) ),
+				( static_cast<unsigned int>( pass ) * 2246822519u ) ^ i );
 			ScopedMediumTileSeed mediumSeed( spMediumSeed );
 			SPRasterizeSingleBlock( rc, image, scene, rect, height );
 			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
@@ -1658,6 +1658,7 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 		seq.Begin( startx, endx, starty, endy );
 		const unsigned int numseq = seq.NumRegions();
+		const unsigned int baseAnimMediumSeed = LockedLibcRand();
 		bool completed = true;
 
 		for( unsigned int i=0; i<numseq; i++ ) {
@@ -1684,10 +1685,9 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 				}
 			}
 
-			const unsigned int spAnimMediumSeed =
-				( static_cast<unsigned int>( mProgressBase ) * 2654435761u ) ^
-				( static_cast<unsigned int>( pass ) * 2246822519u ) ^
-				( i * 3266489917u ) ^ 0x9E3779B9u;
+			const unsigned int spAnimMediumSeed = DeriveSeed(
+				DeriveSeed( baseAnimMediumSeed, static_cast<unsigned int>( mProgressBase ) ),
+				( static_cast<unsigned int>( pass ) * 2246822519u ) ^ i ^ 0x9E3779B9u );
 			ScopedMediumTileSeed mediumSeed( spAnimMediumSeed );
 			SPRasterizeSingleBlockOfAnimation( rc, image, pScene, rect, height, framedata );
 			if( pProgressFunc && pProgressFunc->IsCancelled() ) {

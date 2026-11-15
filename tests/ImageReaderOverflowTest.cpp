@@ -903,8 +903,7 @@ static void AppendByte( std::vector<char>& v, unsigned char b )
 
 static std::string TmpDir()
 {
-	const char* tmp = getenv( "TMPDIR" );
-	std::string dir = tmp ? std::string( tmp ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+	std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
 	return dir;
 }

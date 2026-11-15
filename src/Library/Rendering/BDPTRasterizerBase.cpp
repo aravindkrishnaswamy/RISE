@@ -1199,6 +1199,7 @@ void BDPTRasterizerBase::RasterizeScene(
 			pRasterSequence->Begin( startx, endx, starty, endy );
 
 			const unsigned int numseq = pRasterSequence->NumRegions();
+			const unsigned int baseBdptMediumSeed = LockedLibcRand();
 
 			for( unsigned int i=0; i<numseq; i++ ) {
 				const Rect rect = pRasterSequence->GetNextRegion();
@@ -1209,9 +1210,9 @@ void BDPTRasterizerBase::RasterizeScene(
 					}
 				}
 
-				const unsigned int spBdptMediumSeed =
-					( static_cast<unsigned int>( mProgressBase ) * 2654435761u ) ^
-					( i * 3266489917u ) ^ 0x6D2B79F5u;
+				const unsigned int spBdptMediumSeed = DeriveSeed(
+					DeriveSeed( baseBdptMediumSeed, static_cast<unsigned int>( mProgressBase ) ),
+					i );
 				ScopedMediumTileSeed mediumSeed( spBdptMediumSeed );
 				SPRasterizeSingleBlock( rc, *pImage, pScene, rect, height );
 			}

@@ -105,13 +105,8 @@ namespace
 
 	std::string MakeTempPath()
 	{
-		const std::string scratchFallback = RISE::TestSupport::ScratchBaseDir() + "/";
-		const char* tmpdir = std::getenv( "TMPDIR" );
-		if ( !tmpdir || !*tmpdir ) tmpdir = scratchFallback.c_str();
 		std::ostringstream os;
-		os << tmpdir;
-		if ( os.str().back() != '/' ) os << '/';
-		os << "rise_l4_vfs_" << ::getpid();
+		os << RISE::TestSupport::ScratchBaseDir() << "/rise_l4_vfs_" << ::getpid();
 		return os.str();
 	}
 

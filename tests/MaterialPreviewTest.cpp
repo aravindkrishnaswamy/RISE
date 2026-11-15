@@ -47,6 +47,7 @@
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Utilities/FiniteMath.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "TestTempDir.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -68,15 +69,9 @@ namespace
 
 	std::string TempPath( const char* stem )
 	{
-		std::error_code ec;
-		std::filesystem::path dir = std::filesystem::temp_directory_path( ec );
-		if( ec || dir.empty() ) {
-			const char* envTmp = std::getenv( "TMPDIR" );
-			dir = ( envTmp && *envTmp ) ? std::filesystem::path( envTmp ) : std::filesystem::path( "." );
-		}
 		char buf[256];
 		std::snprintf( buf, sizeof( buf ), "rise_matprev_%d_%s", (int)rise_test_getpid(), stem );
-		return ( dir / buf ).string();
+		return RISE::TestSupport::ScratchPath( buf );
 	}
 
 	Job* LoadSceneFromText( const char* text, const std::string& path )

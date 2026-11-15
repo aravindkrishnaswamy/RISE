@@ -80,8 +80,7 @@ namespace
 
 	std::string TempDir()
 	{
-		const char* t = getenv( "TMPDIR" );
-		std::string dir = ( t && t[0] ) ? std::string( t ) : ( RISE::TestSupport::ScratchBaseDir() + "/" );
+		std::string dir = RISE::TestSupport::ScratchBaseDir() + "/";
 		if( dir.back() != '/' ) dir += '/';
 		return dir;
 	}
