@@ -654,10 +654,10 @@ index b7e7f03e7..bafafa539 100644
  			std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
  			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
 diff --git a/tests/FireSequenceTest.cpp b/tests/FireSequenceTest.cpp
-index 8b19926b5..0c88fd8bd 100644
+index f61f554a6..2b31b04d1 100644
 --- a/tests/FireSequenceTest.cpp
 +++ b/tests/FireSequenceTest.cpp
-@@ -6385,6 +6385,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
+@@ -6391,6 +6391,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
  				}else if(caseRecord.derived.floorEmissivity>0.0){
  					// Only the canonical source authority implements the r270 floor.
  					packetOK=false;error="r270 floor radiation requires the canonical source authority";
@@ -666,7 +666,7 @@ index 8b19926b5..0c88fd8bd 100644
  				}else if(persistence.forceZeroSourceForTest){
  					packets.assign(shape.CellCount(),MethaneSourcePacket());escape=RadiationEscapeFactor();
  				}else packetOK=BuildFrozenMethaneSourcePackets(packetBeginning,reactions,
-@@ -7675,7 +7677,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
+@@ -7681,7 +7683,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
  						centerlineHeatReleaseW+=packets[center].gasHeatReleaseWPerM3*cellVolume/
  							centerSampleCount;}
  				const double stepEndS=simulationTimeS+reaction.deltaTimeS;
@@ -676,7 +676,7 @@ index 8b19926b5..0c88fd8bd 100644
  					advancedOK=false;
  					error="pilot_window_expired_without_ignition";
  					break;
-@@ -11734,6 +11737,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
+@@ -11740,6 +11743,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
  		if(FireProductionForceMetalCompactViscousStencil())receipt<<"viscous_stencil r271-compact-mac-v2\n";
  		// r271 A/B: the opt-in FDS mixing time likewise leaves the case unchanged.
  		if(FireFDSMixingTimeSelected())receipt<<"mixing_time r271-fds-v1\n";
@@ -685,7 +685,7 @@ index 8b19926b5..0c88fd8bd 100644
  		receipt<<std::setprecision(17)<<"schema rise.fire.full-window-launch.v1\n"
  			<<"producer_build_id "<<buildId<<"\nproducer_executable_sha256 "<<executableDigest<<'\n'
  			<<"case_record_id "<<launchCase.caseRecordId<<"\nresolution_tier "<<resolutionTier<<'\n'
-@@ -11886,17 +11891,20 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
+@@ -11892,17 +11897,20 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
  		std::string receiptCaseId;
  		{
  			std::ifstream receipt(runDirectory/"window_launch.v1");std::string key,value;
