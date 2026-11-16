@@ -13,6 +13,18 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+try:
+    from .blender_compat import uses_nodes
+except ImportError:
+    # Loaded as a standalone file (unit tests, the disposable bake child):
+    # no parent package, so load the sibling shim by path.
+    import importlib.util as _importlib_util
+    _compat_spec = _importlib_util.spec_from_file_location(
+        "rise_renderer_blender_compat", Path(__file__).with_name("blender_compat.py"))
+    _compat = _importlib_util.module_from_spec(_compat_spec)
+    _compat_spec.loader.exec_module(_compat)
+    uses_nodes = _compat.uses_nodes
+
 
 def find_material_output(material, target="CYCLES"):
     """Mirror ntreeShaderOutputNode: exact renderer > ALL, then active tie.
@@ -21,7 +33,7 @@ def find_material_output(material, target="CYCLES"):
     confuse the UI active flag on an unrelated renderer output with this one.
     This bpy-free helper also runs in the disposable child process.
     """
-    if material is None or not material.use_nodes or material.node_tree is None:
+    if not uses_nodes(material):
         return None
     output = None
     for node in material.node_tree.nodes:
@@ -39,7 +51,7 @@ def find_material_output(material, target="CYCLES"):
 
 
 def find_tangent_socket(material):
-    if material is None or not material.use_nodes or material.node_tree is None:
+    if not uses_nodes(material):
         return None
     # Match the exporter's single-Principled material contract.
     from .material_bake import _find_principled_through_surface

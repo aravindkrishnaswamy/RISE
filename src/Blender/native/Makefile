@@ -39,7 +39,12 @@ TBB_ROOT := $(HOME)/Development/blender-git/blender/lib/macos_arm64/tbb
 endif
 endif
 
-CPPFLAGS += -DRISE_BLENDER_ENABLE_OPENVDB -I$(OPENVDB_ROOT)/include
+# -isystem: OpenVDB is a vendored third-party header tree (Blender's
+# bundled copy uses [[assume]], a C++23 extension under -std=c++17).
+# Marking it as a system include silences ITS diagnostics only; the
+# bridge's own translation unit still compiles with the -Wall -pedantic
+# CXXFLAGS inherited from Config.specific.
+CPPFLAGS += -DRISE_BLENDER_ENABLE_OPENVDB -isystem $(OPENVDB_ROOT)/include
 LDLIBS += -L$(OPENVDB_ROOT)/lib -Wl,-rpath,$(OPENVDB_ROOT)/lib -lopenvdb
 ifneq ($(TBB_ROOT),)
 LDLIBS += -L$(TBB_ROOT)/lib -Wl,-rpath,$(TBB_ROOT)/lib -ltbb

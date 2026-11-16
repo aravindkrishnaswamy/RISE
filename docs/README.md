@@ -47,7 +47,8 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
 - [RELIEF_MODIFIER_DESIGN.md](RELIEF_MODIFIER_DESIGN.md): height/bump/normal
   `relief_modifier` and glint modifier contracts
 - [BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md): Principled
-  BSDF, Hair, Sheen, Coat, SSS, Alpha, and Tangent translation (ABI v17)
+  BSDF, Hair, Sheen, Coat, SSS, Alpha, Tangent, thin film and dispersion
+  translation, and light power (ABI v18)
 - [LIGHTS.md](LIGHTS.md): emitter and light-sampling architecture
 - [MIS_HEURISTICS.md](MIS_HEURISTICS.md): PT/BDPT/VCM/MLT MIS choices and
   subsurface-jump partitions

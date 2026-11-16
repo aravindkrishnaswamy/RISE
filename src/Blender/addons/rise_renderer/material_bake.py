@@ -70,6 +70,7 @@ import tempfile
 from typing import Optional
 
 import bpy
+from .blender_compat import uses_nodes
 from .tangent_bake import find_material_output
 
 # ---------------------------------------------------------------------------
@@ -87,13 +88,19 @@ _SIMPLE_TRAVERSABLE_NODES = frozenset({
     "ShaderNodeTexImage",
     "ShaderNodeTexCoord",
     "ShaderNodeMapping",
+    # Noise / Voronoi / Checker stay "simple" although the exporter does
+    # not translate them (it resolves image textures only): the manual
+    # bake replaces the whole material with a metallic-0 PBR built from
+    # the baked channels, which would turn a noise-bumped metal or a
+    # noise-roughened glass into an opaque diffuse surface.  The exporter
+    # warns, per input, that such an input renders its socket default.
     "ShaderNodeTexNoise",
     "ShaderNodeTexVoronoi",
     "ShaderNodeTexChecker",
     "ShaderNodeValToRGB",       # Color Ramp
     "ShaderNodeMix",            # 4.x mix node
     "ShaderNodeMixRGB",         # legacy mix node
-    "ShaderNodeMath",           # Classifier admits Math; direct translation only folds some ops
+    "ShaderNodeMath",           # Classifier admits Math; the exporter folds no operation
     "ShaderNodeRGBCurve",       # currently lossy pass-through
     "ShaderNodeHueSaturation",  # currently lossy pass-through
     "ShaderNodeBrightContrast", # currently lossy pass-through
@@ -196,7 +203,7 @@ def classify_material(material) -> str:
     via Color Ramp + Math feeding Base Color stays simple.
     """
 
-    if material is None or not material.use_nodes or material.node_tree is None:
+    if not uses_nodes(material):
         # No node tree (just diffuse_color on legacy materials): trivially
         # simple — exporter uses the constant colour.
         return "simple"
@@ -287,7 +294,7 @@ def _material_graph_hash(material) -> str:
 
     import hashlib
     h = hashlib.md5()
-    if material is None or not material.use_nodes or material.node_tree is None:
+    if not uses_nodes(material):
         return ""
     for node in material.node_tree.nodes:
         h.update(node.bl_idname.encode("utf-8"))

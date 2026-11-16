@@ -27,6 +27,7 @@
 #include <Interfaces/IMaterialManager.h>
 #include <Interfaces/IMedium.h>
 #include <Interfaces/IObjectPriv.h>
+#include <Interfaces/IPainter.h>
 #include <Interfaces/IPainterManager.h>
 #include <Interfaces/IPhaseFunction.h>
 #include <Interfaces/IScalarPainter.h>
@@ -1100,6 +1101,93 @@ namespace
 		return false;
 	}
 
+	//! ABI v18.  Registers a wavelength-varying IOR for Blender 5.3 /
+	//! OpenPBR transmission dispersion: Cauchy's n(lambda) = A + B /
+	//! lambda^2 with n(587.6 nm) = n_d and Abbe number
+	//! (n_d - 1) / (n(486.1) - n(656.3)) = abbe.  Sampled every 1 nm over
+	//! 300-900 nm into a piecewise-linear scalar painter, so spectral
+	//! rasterizers see true dispersion and RGB rasterizers the per-channel
+	//! IOR at ScalarPainterRGB::kChannelNM (DL-82).  Linear interpolation
+	//! error is h^2/8 * max|n''| = 0.75 B / lambda^4 at h = 1 nm: 2.4e-6 in
+	//! n at 300 nm for n_d = 1.5, abbe = 10 (BlenderBridgeThinFilm-
+	//! DispersionTest pins the bound at abbe 8).  Refuses a curve that
+	//! drops to or below zero inside the sampled band (an extreme abbe /
+	//! n_d < 1).  Returns the painter name, or an empty string on failure.
+	std::string register_cauchy_ior_painter(
+		RISE::IJobPriv& job,
+		const std::string& materialName,
+		const double n_d,
+		const double abbe,
+		std::string& why
+	)
+	{
+		RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+		if( !smgr || !( n_d > 0.0 ) || !( abbe > 0.0 ) ) {
+			why = "needs a positive IOR and Abbe number";
+			return std::string();
+		}
+
+		const double lambdaF = 486.1, lambdaD = 587.6, lambdaC = 656.3;
+		const double invF = 1.0 / ( lambdaF * lambdaF );
+		const double invC = 1.0 / ( lambdaC * lambdaC );
+		const double invD = 1.0 / ( lambdaD * lambdaD );
+		const double B = ( n_d - 1.0 ) / ( abbe * ( invF - invC ) );
+		const double A = n_d - B * invD;
+
+		std::vector<std::pair<RISE::Scalar, RISE::Scalar>> samples;
+		samples.reserve( 601 );
+		for( int nm = 300; nm <= 900; ++nm ) {
+			const double lambda = double( nm );
+			const double n = A + B / ( lambda * lambda );
+			if( !( n > 0.0 ) || !std::isfinite( n ) ) {
+				why = "the Cauchy curve must stay positive over 300-900 nm";
+				return std::string();
+			}
+			samples.emplace_back( RISE::Scalar( lambda ), RISE::Scalar( n ) );
+		}
+
+		const std::string name = materialName + "::ior_cauchy";
+		if( smgr->GetItem( name.c_str() ) ) {
+			why = "a scalar painter named '" + name + "' already exists";
+			return std::string();
+		}
+		RISE::IScalarPainter* painter = 0;
+		RISE::RISE_API_CreatePiecewiseLinearScalarPainter( &painter, samples );
+		if( !painter ) {
+			why = "the piecewise-linear painter could not be created";
+			return std::string();
+		}
+		const bool added = smgr->AddItem( painter, name.c_str() );
+		painter->release();
+		if( !added ) {
+			why = "the painter could not be registered";
+			return std::string();
+		}
+		return name;
+	}
+
+	//! Parses a whole-string numeric literal (the exporter's inline
+	//! scalar format); false on trailing garbage or non-finite values.
+	bool parse_scalar_literal( const char* text, double& out )
+	{
+		if( !text || !text[0] ) {
+			return false;
+		}
+		char* end = 0;
+		const double value = std::strtod( text, &end );
+		if( end == text ) {
+			return false;
+		}
+		while( *end && std::isspace( static_cast<unsigned char>( *end ) ) ) {
+			++end;
+		}
+		if( *end || !std::isfinite( value ) ) {
+			return false;
+		}
+		out = value;
+		return true;
+	}
+
 	bool create_surface_material(
 		RISE::IJobPriv& job,
 		const rise_blender_material& material,
@@ -1135,18 +1223,52 @@ namespace
 			return false;
 
 		case RISE_BLENDER_MATERIAL_DIELECTRIC:
-			if( material.tau_painter_name && material.ior_painter_name && material.scatter_painter_name &&
-				job.AddDielectricMaterial(
-					material_name,
-					material.tau_painter_name,
-					material.ior_painter_name,
-					material.scatter_painter_name,
-					false ) )
-			{
+		{
+			if( !material.tau_painter_name || !material.ior_painter_name || !material.scatter_painter_name ) {
+				write_error( error_message, error_message_size, "Failed to create a dielectric material" );
+				return false;
+			}
+
+			// ABI v18: transmission dispersion turns the numeric IOR into
+			// a Cauchy curve pinned at the d line.
+			std::string iorName = material.ior_painter_name;
+			if( material.dispersion_abbe > 0.0 ) {
+				double n_d = 0.0;
+				if( !parse_scalar_literal( material.ior_painter_name, n_d ) || !( n_d > 0.0 ) ) {
+					write_error( error_message, error_message_size,
+						"Dielectric dispersion needs a single numeric IOR literal" );
+					return false;
+				}
+				std::string why;
+				iorName = register_cauchy_ior_painter( job, material_name, n_d, material.dispersion_abbe, why );
+				if( iorName.empty() ) {
+					const std::string message = "Failed to create the dispersive (Cauchy) IOR painter: " + why;
+					write_error( error_message, error_message_size, message.c_str() );
+					return false;
+				}
+			}
+
+			// ABI v18: a Principled thin film on glass is a single
+			// transparent AR-coating layer on the dielectric interface.
+			bool ok = false;
+			if( material.thin_film_thickness > 0.0 ) {
+				const RISE::Scalar arN[1] = { RISE::Scalar( material.thin_film_ior > 0.0 ? material.thin_film_ior : 1.33 ) };
+				const RISE::Scalar arK[1] = { RISE::Scalar( 0.0 ) };
+				const RISE::Scalar arT[1] = { RISE::Scalar( material.thin_film_thickness ) };
+				ok = job.AddDielectricMaterial(
+					material_name, material.tau_painter_name, iorName.c_str(),
+					material.scatter_painter_name, false, arN, arK, arT, 1u );
+			} else {
+				ok = job.AddDielectricMaterial(
+					material_name, material.tau_painter_name, iorName.c_str(),
+					material.scatter_painter_name, false );
+			}
+			if( ok ) {
 				return true;
 			}
 			write_error( error_message, error_message_size, "Failed to create a dielectric material" );
 			return false;
+		}
 		}
 
 		write_error( error_message, error_message_size, "Encountered an unsupported material model" );
@@ -1164,6 +1286,227 @@ namespace
 		const std::string& fallbackLiteral,
 		const bool square = false
 	);
+
+	//! Name of a shared uniform colour painter, registered on first use.
+	std::string ensure_uniform_color_painter( RISE::IJobPriv& job, const char* name, const double value )
+	{
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		if( pmgr && pmgr->GetItem( name ) ) {
+			return name;
+		}
+		double rgb[3] = { value, value, value };
+		return job.AddUniformColorPainter( name, rgb, "Rec709RGB_Linear" ) ? std::string( name ) : std::string();
+	}
+
+	//! Cycles' estimate of a metal's complex index once a thin film is
+	//! present (intern/cycles/kernel/closure/bsdf_microfacet.h, F82_TINT;
+	//! inputs as set up in kernel/svm/closure.h): Gulbrandsen's "Artist
+	//! Friendly Metallic Fresnel" with r = min(F0, 0.999) and g = the
+	//! F82-tint reflectance at cos 1/7 = saturate(min(tint, 1) *
+	//! Schlick(F0, 1/7)) -- Cycles clamps the tint to 1 and saturates g, so
+	//! g <= 1 and F(0) = r always.  One deliberate difference remains: when
+	//! a film is present Cycles takes the film/substrate reflectance
+	//! MAGNITUDE from the F82 model and only the phase from (n, k); RISE's
+	//! thin-film Fresnel uses the exact conductor Fresnel of (n, k) for both,
+	//! so the two agree at normal incidence and drift apart off-normal.
+	void cycles_thin_film_metal_nk( const double f0, const double tint, double& n, double& k )
+	{
+		const double f0Clamped = std::min( 1.0, std::max( 0.0, f0 ) );
+		const double r = std::min( 0.999, f0Clamped );
+		const double schlick = f0Clamped + ( 1.0 - f0Clamped ) * std::pow( 1.0 - 1.0 / 7.0, 5.0 );
+		const double g = std::min( 1.0, std::max( 0.0, std::min( 1.0, tint ) * schlick ) );
+		const double sqrtR = std::sqrt( r );
+		const double nMax = ( 1.0 + sqrtR ) / ( 1.0 - sqrtR );
+		const double nMin = ( 1.0 - r ) / ( 1.0 + r );
+		n = nMax * ( 1.0 - g ) + nMin * g;
+		const double k2 = ( r * ( n + 1.0 ) * ( n + 1.0 ) - ( n - 1.0 ) * ( n - 1.0 ) ) / ( 1.0 - r );
+		k = std::sqrt( std::max( 0.0, k2 ) );
+	}
+
+	//! ABI v18.  A metal substrate under a thin film, as wavelength-varying
+	//! n(lambda), k(lambda) painters.  RISE's thin-film Fresnel is evaluated
+	//! per WAVELENGTH (exactly on the spectral path, by a spectral integral
+	//! per shading call on the RGB path -- ThinFilm::ReflectanceConductor-
+	//! RGBSpectral), so the substrate must be a spectrum, not an RGB triple:
+	//! handing it the per-channel Cycles n, k as an "r g b" literal spreads
+	//! them over 450/550/650 nm, which badly desaturated a saturated metal
+	//! under a vanishing film (an earlier revision).  Instead the
+	//! Base Color (F0) and Specular Tint are uplifted to reflectance spectra
+	//! by the same Jakob-Hanika path every material uses (ReflectanceColorNM)
+	//! and Cycles' estimate is applied at each wavelength, so F(0) = F0 at
+	//! every wavelength.  Sampled every 5 nm over 300-900 nm.  (On the RGB
+	//! path the per-call spectral integration still leaves a residual for
+	//! saturated metals: BlenderBridgeThinFilmDispersionTest pins it.)
+	bool register_thin_film_metal_substrate(
+		RISE::IJobPriv& job,
+		const std::string& registerName,
+		const double f0[3],
+		const double tint[3],
+		std::string& nName,
+		std::string& kName
+	)
+	{
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+		if( !pmgr || !smgr ) {
+			return false;
+		}
+		const std::string f0Name = registerName + "::tf_f0";
+		const std::string tintName = registerName + "::tf_tint";
+		double f0Rgb[3] = { f0[0], f0[1], f0[2] };
+		double tintRgb[3] = { tint[0], tint[1], tint[2] };
+		if( !job.AddUniformColorPainter( f0Name.c_str(), f0Rgb, "Rec709RGB_Linear" ) ||
+		    !job.AddUniformColorPainter( tintName.c_str(), tintRgb, "Rec709RGB_Linear" ) ) {
+			return false;
+		}
+		const RISE::IPainter* f0Painter = pmgr->GetItem( f0Name.c_str() );
+		const RISE::IPainter* tintPainter = pmgr->GetItem( tintName.c_str() );
+		if( !f0Painter || !tintPainter ) {
+			return false;
+		}
+
+		// Uniform painters ignore the hit record; any valid one will do.
+		RISE::RasterizerState rs = { 0, 0 };
+		const RISE::RayIntersectionGeometric ri(
+			RISE::Ray( RISE::Point3( 0, 0, 0 ), RISE::Vector3( 0, 0, 1 ) ), rs );
+
+		std::vector<std::pair<RISE::Scalar, RISE::Scalar>> nSamples, kSamples;
+		for( int nm = 300; nm <= 900; nm += 5 ) {
+			const RISE::Scalar lambda = RISE::Scalar( nm );
+			double n = 1.0, k = 0.0;
+			cycles_thin_film_metal_nk(
+				RISE::ReflectanceColorNM( *f0Painter, ri, lambda ),
+				RISE::ReflectanceColorNM( *tintPainter, ri, lambda ), n, k );
+			nSamples.emplace_back( lambda, RISE::Scalar( n ) );
+			kSamples.emplace_back( lambda, RISE::Scalar( k ) );
+		}
+
+		nName = registerName + "::tf_n";
+		kName = registerName + "::tf_k";
+		RISE::IScalarPainter* nPainter = 0;
+		RISE::IScalarPainter* kPainter = 0;
+		RISE::RISE_API_CreatePiecewiseLinearScalarPainter( &nPainter, nSamples );
+		RISE::RISE_API_CreatePiecewiseLinearScalarPainter( &kPainter, kSamples );
+		bool ok = nPainter && kPainter;
+		if( ok ) ok = smgr->AddItem( nPainter, nName.c_str() );
+		if( ok ) ok = smgr->AddItem( kPainter, kName.c_str() );
+		if( nPainter ) nPainter->release();
+		if( kPainter ) kPainter->release();
+		return ok;
+	}
+
+	//! ABI v18.  The base of a Principled material carrying a Thin Film:
+	//! a `ggx_material` in `thinfilm` Fresnel mode (an Airy thin film over
+	//! the substrate n + i k), registered under `registerName` in place of
+	//! the PBR painter graph.  Sheen/coat wraps and deferred emission layer
+	//! over it exactly as over the PBR base.  Isotropic: alpha = roughness^2
+	//! (the exporter warns when Anisotropic is set).
+	bool add_thin_film_ggx_base(
+		RISE::IJobPriv& job,
+		const rise_blender_material& material,
+		const std::string& registerName,
+		const char* emissive,
+		char* error_message,
+		const size_t error_message_size
+	)
+	{
+		// Accept what AddPBRMetallicRoughnessMaterial accepts: a registered
+		// painter, or a numeric literal (a direct API caller may pass ".3").
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		std::string alpha;
+		double roughnessLiteral = 0.0;
+		if( pmgr && pmgr->GetItem( material.roughness_painter_name ) ) {
+			alpha = resolve_material_scalar_slot( job, material.roughness_painter_name, std::string(), /*square*/ true );
+		} else if( parse_scalar_literal( material.roughness_painter_name, roughnessLiteral ) ) {
+			char literal[64];
+			std::snprintf( literal, sizeof( literal ), "%.9g", roughnessLiteral * roughnessLiteral );
+			alpha = literal;
+		}
+		if( alpha.empty() ) {
+			write_error( error_message, error_message_size, "Failed to derive the thin-film GGX roughness (roughness must be a registered painter or a number)" );
+			return false;
+		}
+
+		// A metal's diffuse is black, so only a dielectric needs Base Color.
+		const bool conductor = material.thin_film_conductor != 0;
+		std::string baseColor = material.base_color_painter_name ? material.base_color_painter_name : "";
+		if( !conductor && ( !pmgr || !pmgr->GetItem( baseColor.c_str() ) ) ) {
+			// "v" or "r g b" literal (whole string) -> a uniform painter.
+			double rgb[3] = { 0, 0, 0 };
+			int consumed = 0;
+			int got = std::sscanf( baseColor.c_str(), "%lf %lf %lf %n", &rgb[0], &rgb[1], &rgb[2], &consumed );
+			if( got != 3 || baseColor.c_str()[consumed] != 0 ) {
+				consumed = 0;
+				got = std::sscanf( baseColor.c_str(), "%lf %n", &rgb[0], &consumed ) == 1 && baseColor.c_str()[consumed] == 0 ? 1 : 0;
+				rgb[1] = rgb[2] = rgb[0];
+			}
+			baseColor = registerName + "::tf_base";
+			if( got == 0 || !job.AddUniformColorPainter( baseColor.c_str(), rgb, "Rec709RGB_Linear" ) ) {
+				write_error( error_message, error_message_size, "Thin-film material's base_color is neither a registered painter nor a colour literal" );
+				return false;
+			}
+		}
+
+		const std::string white = ensure_uniform_color_painter( job, "__rise_blender_thinfilm_white", 1.0 );
+		const std::string black = ensure_uniform_color_painter( job, "__rise_blender_thinfilm_black", 0.0 );
+		if( white.empty() || black.empty() ) {
+			write_error( error_message, error_message_size, "Failed to create thin-film helper painters" );
+			return false;
+		}
+
+		// A metal's colour is carried entirely by its n, k: no diffuse,
+		// untinted specular.  A dielectric keeps Base Color as its
+		// diffuse and Specular Tint as the tint on the film's reflectance.
+		const std::string diffuse = conductor ? black : baseColor;
+		const std::string specular = ( !conductor && material.specular_color_painter_name && material.specular_color_painter_name[0] )
+			? std::string( material.specular_color_painter_name ) : white;
+
+		// Substrate: a real dielectric index (k = 0), or the per-wavelength
+		// metal built above.
+		std::string substrateN, substrateK;
+		if( conductor ) {
+			if( !register_thin_film_metal_substrate( job, registerName,
+			        material.thin_film_metal_f0, material.thin_film_metal_tint, substrateN, substrateK ) ) {
+				write_error( error_message, error_message_size, "Failed to build the thin-film metal substrate" );
+				return false;
+			}
+		} else {
+			if( !( material.thin_film_dielectric_ior > 0.0 ) ) {
+				write_error( error_message, error_message_size, "Thin-film dielectric substrate needs a positive thin_film_dielectric_ior" );
+				return false;
+			}
+			char iorLiteral[64];
+			std::snprintf( iorLiteral, sizeof( iorLiteral ), "%.9g", material.thin_film_dielectric_ior );
+			substrateN = iorLiteral;
+			substrateK = "0";
+		}
+
+		char filmIor[64];
+		std::snprintf( filmIor, sizeof( filmIor ), "%.9g", material.thin_film_ior > 0.0 ? material.thin_film_ior : 1.33 );
+		char filmThickness[64];
+		std::snprintf( filmThickness, sizeof( filmThickness ), "%.9g", material.thin_film_thickness );
+
+		if( !job.AddGGXEmissiveMaterial(
+			registerName.c_str(),
+			diffuse.c_str(),
+			specular.c_str(),
+			alpha.c_str(),
+			alpha.c_str(),
+			substrateN.c_str(),
+			substrateK.c_str(),
+			emissive,
+			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0,
+			"thinfilm",
+			"none",
+			filmIor,
+			"none",
+			filmThickness ) )
+		{
+			write_error( error_message, error_message_size, "Failed to create a thin-film GGX material" );
+			return false;
+		}
+		return true;
+	}
 
 	bool add_pbr_metallic_roughness_material(
 		RISE::IJobPriv& job,
@@ -1273,7 +1616,12 @@ namespace
 		// way for every emissive non-PBR material shipped to date.
 		const char* pbrEmissive = ( hasSheen || hasCoat ) ? "none" : emissive;
 
-		if( !job.AddPBRMetallicRoughnessMaterial(
+		if( material.thin_film_thickness > 0.0 ) {
+			if( !add_thin_film_ggx_base( job, material, pbrRegisterName, pbrEmissive, error_message, error_message_size ) ) {
+				return false;
+			}
+		}
+		else if( !job.AddPBRMetallicRoughnessMaterial(
 			pbrRegisterName.c_str(),
 			base_color,
 			metallic,
