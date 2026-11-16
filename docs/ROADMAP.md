@@ -63,7 +63,8 @@ single-zero-axis distributions are rejected. `RoughDielectricKernelTest`
 checks analytic limits, independent Walter equations and refractive Jacobians,
 adjoint reciprocity, and sampled distributions/energy against quadrature.
 Draws retain their sampled micronormal for evaluating their value and PDF;
-direction-only reconstruction loses that information at machine-adjacent IORs.
+direction-only reconstruction loses that information when the half-vector is
+unresolved, including machine-adjacent IORs.
 NDF products keep binary exponents separate until conversion, and sampling/
 throughput formulas avoid squared-norm and grazing-product underflow. True
 densities beyond `Scalar` range can still overflow; sample throughput is
@@ -72,6 +73,13 @@ Dimensionless masking fractions are formed before rounding subnormal lengths;
 refraction uses a contrast correction near unity and a tangent/normal Snell
 decomposition outside that interval. Radiance scaling divides by IOR twice
 instead of forming a potentially overflowing IOR square.
+Incident sine is retained from the vectors independently of a cosine rounded
+to one, preserving low-index near-normal TIR and unit Snell directions.
+Small Fresnel reflection/transmission tails are evaluated directly and selected
+first. `Evaluation::positiveDensity` retains scaled-density positivity when its
+`Scalar` conversion underflows, avoiding artificial rejection of that draw.
+Physical radiance weights can themselves exceed `Scalar` range; representable
+BSDF values and throughput are evaluated without those overflowing intermediates.
 This scalar kernel is shared groundwork for Pel/NM/HWSS, not a new material.
 It implements single scattering with null events; multiscatter compensation,
 material/IOR-stack integration, public API/parser/editor support, showcase

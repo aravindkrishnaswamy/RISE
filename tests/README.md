@@ -83,6 +83,11 @@ can overflow; its throughput is computed separately.
 Subnormal-width masking is compared with dimensionless reference ratios for
 the returned direction; extreme-index smooth/rough refraction separately pins
 direction, representable radiance throughput, and a scaled analytic BSDF value.
+Low-index near-normal smooth/rough cases separately require TIR and analytic
+unit Snell transmission when the incident cosine has rounded to one.
+Extreme-index normal-incidence cases also pin tiny Fresnel transmission tails,
+sampling them as the first CDF interval and retaining events whose positive
+scaled density underflows on conversion to `Scalar`.
 It does not exercise a material, importer, IOR stack, or renderer integration.
 
 ```sh

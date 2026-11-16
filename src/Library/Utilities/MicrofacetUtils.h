@@ -382,6 +382,7 @@ namespace RISE
 			{
 				Scalar f = 0;       ///< BSDF in sr^-1, including radiance scaling if requested.
 				Scalar pdf = 0;     ///< Aggregate reflection/transmission solid-angle PDF.
+				bool positiveDensity = false; ///< Retains positivity if conversion to Scalar underflows.
 			};
 
 			struct Sample
@@ -390,9 +391,9 @@ namespace RISE
 				Scalar f = 0;
 				Scalar pdf = 0;     ///< Probability mass for a delta event, density otherwise.
 				Scalar weight = 0;  ///< f * abs(wo.z) / pdf, without a second Fresnel coin.
-				// Extremely narrow peaks can have f/pdf outside Scalar's
-				// representable range. weight is evaluated independently,
-				// so their finite throughput does not become inf/inf.
+				// Values/densities or true eta^-2 weights can exceed Scalar's
+				// range. Representable throughput is evaluated independently;
+				// positiveDensity keeps underflowing densities from becoming nulls.
 				bool transmission = false;
 				bool delta = false;
 				bool valid = false;
@@ -488,20 +489,57 @@ namespace RISE
 				return DistributionProduct( m, ax, ay ).Value();
 			}
 
-			inline Scalar Fresnel( Scalar cosI, Scalar eta, Scalar& cosT )
+			inline Scalar DifferenceOfProducts( Scalar a, Scalar b, Scalar c, Scalar d )
 			{
-				// Divide sin(theta), not sin^2(theta), so eta^2 cannot
-				// underflow at normal incidence for a finite positive eta.
-				const Scalar sinT = std::sqrt( r_max( Scalar(0), ( 1 - cosI ) * ( 1 + cosI ) ) ) / eta;
-				if( sinT >= 1 ) { cosT = 0; return 1; }
+				const Scalar cd = c*d;
+				return std::fma(a,b,-cd) + std::fma(-c,d,cd);
+			}
+
+			inline Vector3 Cross( const Vector3& a, const Vector3& b )
+			{
+				return Vector3( DifferenceOfProducts(a.y,b.z,a.z,b.y),
+					DifferenceOfProducts(a.z,b.x,a.x,b.z), DifferenceOfProducts(a.x,b.y,a.y,b.x) );
+			}
+
+			inline void PolarizedFresnel( Scalar a, Scalar b, Scalar& reflection, Scalar& transmission )
+			{
+				if( a == 0 || b == 0 ) { reflection = 1; transmission = 0; return; }
+				int ea = 0, eb = 0;
+				std::frexp(a,&ea); std::frexp(b,&eb);
+				const int shift = 1-r_max(ea,eb);
+				const Scalar sa = std::scalbn(a,shift), sb = std::scalbn(b,shift);
+				const Scalar ratio = (sa-sb)/(sa+sb);
+				reflection = ratio*ratio;
+				// Keep tiny amplitudes out of squared denominators even when
+				// fast-math reassociates ratios and products.
+				PositiveProduct tail;
+				tail.Multiply(4); tail.Multiply(a); tail.Multiply(b);
+				tail.Divide(a+b); tail.Divide(a+b);
+				transmission = tail.Value();
+			}
+
+			inline Scalar Fresnel( Scalar cosI, Scalar sinI, Scalar eta, Scalar& cosT, Scalar& transmission )
+			{
+				// Preserve sin(theta) independently of a cosine rounded to 1.
+				// Dividing sine also avoids squaring an extreme eta.
+				const Scalar sinT = sinI / eta;
+				if( sinT >= 1 ) { cosT = 0; transmission = 0; return 1; }
 				cosT = std::sqrt( ( 1 - sinT ) * ( 1 + sinT ) );
 				// Scale each ratio by the larger index, avoiding eta*cos
 				// overflow without changing the Fresnel equations.
-				const Scalar rs = eta >= 1 ? ( cosI/eta - cosT ) / ( cosI/eta + cosT ) :
-					( cosI - eta*cosT ) / ( cosI + eta*cosT );
-				const Scalar rp = eta >= 1 ? ( cosI - cosT/eta ) / ( cosI + cosT/eta ) :
-					( eta*cosI - cosT ) / ( eta*cosI + cosT );
-				return ( rs * rs + rp * rp ) * Scalar(0.5);
+				const Scalar a = eta >= 1 ? cosI/eta : cosI;
+				const Scalar b = eta >= 1 ? cosT : eta*cosT;
+				const Scalar c = eta >= 1 ? cosI : eta*cosI;
+				const Scalar d = eta >= 1 ? cosT/eta : cosT;
+				Scalar rs = 0, rp = 0, ts = 0, tp = 0;
+				PolarizedFresnel(a,b,rs,ts); PolarizedFresnel(c,d,rp,tp);
+				Scalar reflection = (rs+rp)*Scalar(0.5);
+				// Compute small transmission directly; 1-R loses it when R
+				// rounds to 1. Form only the larger coefficient by complement.
+				transmission = (ts+tp)*Scalar(0.5);
+				if( reflection <= transmission ) transmission = 1-reflection;
+				else reflection = 1-transmission;
+				return reflection;
 			}
 
 			// The sampler retains its micronormal: an outgoing direction
@@ -514,9 +552,11 @@ namespace RISE
 				const bool reflection = wo.z > 0;
 				const Scalar ci = Vector3Ops::Dot( wi, m ), co = Vector3Ops::Dot( wo, m );
 				if( ci <= 0 || ( reflection ? co <= 0 : co >= 0 ) ) return result;
-				Scalar cosT = 0;
-				const Scalar F = Fresnel( ci, eta, cosT );
-				if( !reflection && F == 1 ) return result;
+				Scalar cosT = 0, transmission = 0;
+				const Vector3 plane = Cross(wi,m);
+				const Scalar sinI = std::hypot(plane.x,std::hypot(plane.y,plane.z));
+				const Scalar F = Fresnel( ci, sinI, eta, cosT, transmission );
+				if( !reflection && transmission == 0 ) return result;
 				PositiveProduct f = DistributionProduct( m, ax, ay ), pdf = f;
 				const Scalar zi = wi.z, zo = std::abs( wo.z );
 				const Scalar ai = VisibleFraction(wi,ax,ay), ao = VisibleFraction(wo,ax,ay);
@@ -527,24 +567,29 @@ namespace RISE
 					f.Multiply(F); f.Divide(2); f.Multiply(ai); f.Divide(zi); f.Multiply(ao); f.Divide(zo); f.Divide(mask);
 					pdf.Multiply(F); pdf.Divide(2); pdf.Multiply(ai); pdf.Divide(zi);
 				} else {
-					// co + ci/eta cancels at eta ~= 1. Snell's identity gives
-					// the same denominator as a factored difference of squares.
-					const Scalar invEta = 1 / eta;
-					const Scalar denom = ( ( 1 - eta ) * invEta ) * ( invEta + 1 ) /
-						( std::abs( co ) + ci * invEta );
-					if( denom == 0 ) return result;
-					f.Multiply(2); f.Multiply(1-F); f.Multiply(ci); f.Multiply(std::abs(co));
-					f.Divide(std::abs(denom)); f.Divide(std::abs(denom)); f.Multiply(ai); f.Divide(zi);
+					// Factor the absolute inverse of co+ci/eta using Snell's
+					// identity, scaling by the larger index before multiplication.
+					Scalar inverseDenom;
+					if( eta >= 1 ) {
+						const Scalar invEta = 1/eta;
+						inverseDenom = (std::abs(co)+ci*invEta)/(std::abs((1-eta)/eta)*(1+invEta));
+					} else {
+						inverseDenom = (eta*((eta*std::abs(co)+ci)/(1+eta)))/(1-eta);
+					}
+					f.Multiply(2); f.Multiply(transmission); f.Multiply(ci); f.Multiply(std::abs(co));
+					f.Multiply(inverseDenom); f.Multiply(inverseDenom); f.Multiply(ai); f.Divide(zi);
 					pdf = f;
 					f.Multiply(ao); f.Divide(zo); f.Divide(mask);
 					if( radiance ) { f.Divide(eta); f.Divide(eta); }
 				}
 				result.f = f.Value(); result.pdf = pdf.Value();
+				result.positiveDensity = pdf.mantissa > 0;
 				return result;
 			}
 
 			/// Direction-only evaluation. For an actual draw, use Sample's
-			/// f/pdf: at machine-adjacent indices the rounded direction cannot
+			/// f/pdf: when refraction's half-vector is unresolved (for example,
+			/// at machine-adjacent indices), the rounded direction cannot
 			/// uniquely recover the sampled micronormal or its density.
 			inline Evaluation Evaluate( const Vector3& wi, const Vector3& wo,
 				Scalar ax, Scalar ay, Scalar eta, bool radiance )
@@ -577,41 +622,50 @@ namespace RISE
 						vh.y + r * std::sin( phi ), ( 1 + vh.z ) * ( 1 - uNormal2 ) ), Vector3(ax,ay,1) );
 				}
 				const Scalar ci = Vector3Ops::Dot( wi, m );
-				Scalar cosT = 0;
-				const Scalar F = eta == 1 ? Scalar(0) : Fresnel( ci, eta, cosT );
-				result.transmission = uLobe >= F;
+				const Vector3 plane = Cross(wi,m);
+				const Scalar sinI = std::hypot(plane.x,std::hypot(plane.y,plane.z));
+				Scalar cosT = 0, transmission = 1;
+				const Scalar F = eta == 1 ? Scalar(0) : Fresnel( ci, sinI, eta, cosT, transmission );
+				// Put the smaller interval first so a tiny transmission tail
+				// survives even when the reflection coefficient rounds to 1.
+				result.transmission = transmission < F ? uLobe < transmission : uLobe >= F;
 				if( eta == 1 ) {
 					result.wo = -wi;
 				} else if( result.transmission ) {
-					const Scalar invEta = 1 / eta;
 					// Preserve 1-eta BEFORE rounding its reciprocal. Express
 					// refraction as a correction to -wi, so even normal-incidence
 					// adjacent-index transmission stays exactly straight through.
 					if( eta >= Scalar(0.5) && eta <= Scalar(2) ) {
 						// Sterbenz's interval: subtraction from 1 is exact.
+						const Scalar invEta = 1/eta;
 						const Scalar contrast = ( 1 - eta ) / eta;
 						const Scalar normalRatio = ( invEta + 1 ) / ( ci * invEta + cosT );
 						result.wo = -wi + ( m * normalRatio - wi ) * contrast;
 					} else {
 						// Far from unity, use Snell's tangent/normal decomposition
 						// to avoid cancelling the entire incident vector.
-						const Vector3 tangent( std::fma(-ci,m.x,wi.x), std::fma(-ci,m.y,wi.y), std::fma(-ci,m.z,wi.z) );
-						result.wo = tangent * (-invEta) - m * cosT;
+						const Vector3 tangent = NormalizeScaled(Cross(m,plane),Vector3(1,1,1));
+						result.wo = tangent * (-sinI/eta) - m * cosT;
 					}
 				} else {
 					result.wo = m * ( 2 * ci ) - wi;
 				}
 				if( result.transmission ? result.wo.z >= 0 : result.wo.z <= 0 ) return result;
 				if( result.delta ) {
-					result.pdf = result.transmission ? 1 - F : F;
+					result.pdf = result.transmission ? transmission : F;
 					PositiveProduct weight;
 					if( result.transmission && radiance ) { weight.Divide(eta); weight.Divide(eta); }
 					result.weight = weight.Value();
-					result.f = result.pdf * result.weight / std::abs( result.wo.z );
+					PositiveProduct value;
+					value.Multiply(result.pdf); value.Divide(std::abs(result.wo.z));
+					if( result.transmission && radiance ) { value.Divide(eta); value.Divide(eta); }
+					result.f = value.Value();
+					result.valid = result.pdf > 0;
 				} else {
 					const Evaluation evaluated = EvaluateWithNormal( wi, result.wo, m, ax, ay, eta, radiance );
 					result.f = evaluated.f;
 					result.pdf = evaluated.pdf;
+					result.valid = evaluated.positiveDensity;
 					// G2/G1(wi), after cancelling Fresnel and the refractive Jacobian.
 					const Scalar ai = VisibleFraction(wi,ax,ay), ao = VisibleFraction(result.wo,ax,ay);
 					result.weight = ao / ( ai + ao - 2*ai*ao );
@@ -623,7 +677,6 @@ namespace RISE
 						result.weight = weight.Value();
 					}
 				}
-				result.valid = result.pdf > 0;
 				return result;
 			}
 		}

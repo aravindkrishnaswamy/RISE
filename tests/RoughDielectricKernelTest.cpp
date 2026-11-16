@@ -102,8 +102,24 @@ static void ExactLimits()
 		const auto extreme = RD::Draw( wi, 0, 0, eta, 0.2, 0.3, 0.5, false );
 		Check( extreme.valid && !extreme.transmission && extreme.pdf == 1 && extreme.weight == 1,
 			"extreme finite index: normal-incidence Fresnel limit is unit reflection, without squaring eta" );
-		Check( RD::Evaluate(wi,-wi,0.2,0.4,eta,false).pdf == 0,
-			"unit-Fresnel transmission evaluates to zero before computing its Jacobian" );
+		const auto importance=RD::Evaluate(wi,-wi,0.2,0.4,eta,false);
+		const auto radiance=RD::Evaluate(wi,-wi,0.2,0.4,eta,true);
+		const double tail=4*std::min(eta,1/eta)*D;
+		Check(importance.positiveDensity && radiance.positiveDensity &&
+			(eta<1 ? radiance.f>0 && Close(radiance.f/tail,1,1e-12) && importance.pdf==0 :
+			importance.pdf>0 && Close(importance.pdf/tail,1,1e-12) && radiance.f==0),
+			"extreme-index Fresnel transmission tail survives rounded reflection and density conversion" );
+		const auto rare=RD::Draw(wi,0,0,eta,0.2,0.3,0,false);
+		Check(rare.valid && rare.transmission && rare.pdf>0 && Close(rare.pdf/(4*std::min(eta,1/eta)),1,1e-12),
+			"smaller-lobe-first selection retains a representable tiny Fresnel transmission mass" );
+		const auto rareRough=RD::Draw(wi,0.2,0.4,eta,0.2,0,0,false);
+		Check(rareRough.valid && rareRough.transmission && rareRough.weight==1,
+			"a positive sampled density converting to zero does not discard its finite throughput" );
+		if(eta<1) {
+			const auto rareRadiance=RD::Draw(wi,0,0,eta,0.2,0.3,0,true);
+			Check(rareRadiance.valid && std::isfinite(rareRadiance.f) && Close(rareRadiance.f/(4/eta),1,1e-12),
+				"delta value remains finite when its separate radiance weight exceeds Scalar range" );
+		}
 	}
 	Check( !RD::ValidParameters(1e155,1e155,1.5) &&
 		!RD::Draw(Unit(0.3,0.2,1),1e155,1e155,1.5,0.2,0.4,0.5,false).valid,
@@ -282,7 +298,7 @@ static void ExtremeScaleArithmetic()
 	Check(smooth.valid && smooth.transmission && smooth.weight>0 && smooth.weight==expectedRadiance &&
 		smooth.f==0.5*expectedRadiance && smooth.wo.x/width==-1 && smooth.wo.z==-1,
 		"extreme-index smooth Snell direction and representable radiance throughput survive eta-squared overflow");
-	const auto rough=RD::Draw(Vector3(1,0,width),width,width,eta,0.2,0.4,0.9,true);
+	const auto rough=RD::Draw(Vector3(1,0,width),width,width,eta,0.2,0.4,0,true);
 	const double cy=capR*std::sin(TWO_PI*0.2), a=1+cx/cz;
 	const double q=1+(cx/cz)*(cx/cz)+(cy/cz)*(cy/cz);
 	const double rp=(a-1)/(a+1), F=0.5*(1+rp*rp);
@@ -293,6 +309,23 @@ static void ExtremeScaleArithmetic()
 	const auto directional=RD::Evaluate(Vector3(1,0,width),rough.wo,width,width,eta,true);
 	Check(Close(directional.f,referenceRadiance,1e-12),
 		"extreme-index direction-only BSDF agrees with the independent scaled radiance reference");
+}
+
+static void LowIndexNearNormal()
+{
+	const Vector3 wi=Unit(1e-9,0,1);
+	for(double width : {0.0,1e-12}) {
+		const auto tir=RD::Draw(wi,width,width,1e-10,0.2,0,0,false);
+		Check(tir.valid && !tir.transmission && Close(Vector3Ops::SquaredModulus(tir.wo),1,1e-12),
+			"near-normal low-index TIR survives an incident cosine rounded to one");
+		const auto transmitted=RD::Draw(wi,width,width,1e-8,0.2,0,0,false);
+		Check(transmitted.valid && transmitted.transmission && Close(transmitted.wo.x,-0.1,1e-12) &&
+			Close(transmitted.wo.z,-std::sqrt(0.99),1e-12) && Close(Vector3Ops::SquaredModulus(transmitted.wo),1,1e-12),
+			"near-normal low-index Snell transmission retains its tangent and has unit length");
+	}
+	const auto rough=RD::Draw(wi,1e-12,1e-12,1e-10,0.2,0.4,0,false);
+	Check(rough.valid && !rough.transmission && Close(Vector3Ops::SquaredModulus(rough.wo),1,1e-12),
+		"non-normal sampled micronormal also uses vector sine for low-index TIR");
 }
 
 static void ProbabilityAndFurnace()
@@ -350,6 +383,7 @@ int main()
 	RefractionJacobian();
 	BoundaryCases();
 	ExtremeScaleArithmetic();
+	LowIndexNearNormal();
 	ProbabilityAndFurnace();
 	std::cout << passed << " passed, " << failed << " failed\n";
 	return failed ? 1 : 0;
