@@ -91,6 +91,9 @@ scaled density underflows on conversion to `Scalar`.
 Grazing adjacent-index critical-angle crossings use an independent cosine/
 contrast reference; anti-aligned projected-disk endpoints require analytic
 directions, positive horizon height, and positive sampled density.
+Ordinary roughness with subnormal grazing cosines checks finite BSDF/PDF limits
+and paired masking ratios. Near-normal disk samples separately require tiny
+signed directional components to survive the warp.
 It does not exercise a material, importer, IOR stack, or renderer integration.
 
 ```sh

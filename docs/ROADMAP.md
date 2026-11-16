@@ -71,12 +71,16 @@ throughput formulas avoid squared-norm and grazing-product underflow. True
 densities beyond `Scalar` range can still overflow; sample throughput is
 evaluated independently rather than dividing such values.
 Dimensionless masking fractions are formed before rounding subnormal lengths;
+their binary scale is retained through cancellation with incident cosines and
+through the paired masking sum, rather than converting each fraction early.
 refraction uses a contrast correction near unity and a tangent/normal Snell
 decomposition outside that interval. Radiance scaling divides by IOR twice
 instead of forming a potentially overflowing IOR square.
 Incident sine is retained near normal, while a factored cosine/IOR-contrast
 form preserves grazing critical-angle information. The projected-disk warp
 uses positive-factor horizon heights rather than a cancelling cap-vector sum.
+The disk warp selects equivalent sums by their rounding bounds to retain tiny
+components near normal incidence as well as grazing boundary heights.
 Small Fresnel reflection/transmission tails are evaluated directly and selected
 first. `Evaluation::positiveDensity` retains scaled-density positivity when its
 `Scalar` conversion underflows, avoiding artificial rejection of that draw.

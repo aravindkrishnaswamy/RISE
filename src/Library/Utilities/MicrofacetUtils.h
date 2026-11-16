@@ -384,6 +384,7 @@ namespace RISE
 			{
 				Scalar f = 0;       ///< BSDF in sr^-1, including radiance scaling if requested.
 				Scalar pdf = 0;     ///< Aggregate reflection/transmission solid-angle PDF.
+				Scalar weight = 0;  ///< Independently scaled f*abs(wo.z)/pdf where density is positive.
 				bool positiveDensity = false; ///< Retains positivity if conversion to Scalar underflows.
 			};
 
@@ -428,6 +429,11 @@ namespace RISE
 					mantissa = std::frexp( mantissa, &adjust );
 					exponent += adjust - e;
 				}
+				void Divide( const PositiveProduct& value )
+				{
+					const Scalar m = value.mantissa; const int e = value.exponent;
+					Divide(m); exponent -= e;
+				}
 				Scalar Value() const { return std::scalbn( mantissa, exponent ); }
 			};
 
@@ -456,12 +462,45 @@ namespace RISE
 					std::scalbn(parts[1]/length,powers[1]-maxPower), std::scalbn(parts[2]/length,powers[2]-maxPower) );
 			}
 
-			inline Scalar VisibleFraction( const Vector3& w, Scalar ax, Scalar ay )
+			inline PositiveProduct ProjectedSum( const Vector3& w, Scalar ax, Scalar ay )
 			{
-				// zi/(zi+li), without rounding a subnormal li first.
-				const Scalar cosine = std::abs( NormalizeScaled(w,Vector3(ax,ay,1)).z );
-				return cosine/(1+cosine);
+				// |w.z| + length(ax*w.x,ay*w.y,w.z), in a common binary
+				// scale. Do not round a dimensionless fraction before a later
+				// cancellation with subnormal |w.z|.
+				const Scalar values[3] = { w.x, w.y, w.z }, factors[3] = { ax, ay, 1 };
+				Scalar parts[3] = { 0, 0, 0 };
+				int powers[3] = { 0, 0, 0 }, maxPower = 0;
+				bool any = false;
+				for( int i = 0; i < 3; ++i ) {
+					if( values[i] == 0 ) continue;
+					int ev = 0, ef = 0;
+					parts[i] = std::frexp(values[i],&ev)*std::frexp(factors[i],&ef);
+					powers[i] = ev+ef;
+					maxPower = any ? r_max(maxPower,powers[i]) : powers[i]; any = true;
+				}
+				for( int i = 0; i < 3; ++i ) parts[i] = std::scalbn(parts[i],powers[i]-maxPower);
+				PositiveProduct result;
+				result.mantissa = std::hypot(parts[0],std::hypot(parts[1],parts[2]))+std::abs(parts[2]);
+				result.exponent = maxPower;
+				return result;
 			}
+
+			struct Masking
+			{
+				PositiveProduct sumI, sumO, mask, outFraction;
+				Masking( const Vector3& wi, const Vector3& wo, Scalar ax, Scalar ay )
+					: sumI(ProjectedSum(wi,ax,ay)), sumO(ProjectedSum(wo,ax,ay))
+				{
+					PositiveProduct inFraction;
+					inFraction.Multiply(wi.z); inFraction.Divide(sumI);
+					outFraction.Multiply(std::abs(wo.z)); outFraction.Divide(sumO);
+					const int e = r_max(inFraction.exponent,outFraction.exponent);
+					const Scalar a = std::scalbn(inFraction.mantissa,inFraction.exponent-e);
+					const Scalar b = std::scalbn(outFraction.mantissa,outFraction.exponent-e);
+					mask.mantissa = a+b-(2*a*b)*std::scalbn(Scalar(1),e);
+					mask.exponent = e;
+				}
+			};
 
 			inline PositiveProduct DistributionProduct( const Vector3& m, Scalar ax, Scalar ay )
 			{
@@ -572,14 +611,12 @@ namespace RISE
 				const Scalar F = Fresnel( ci, sinI, eta, cosT, transmission );
 				if( !reflection && transmission == 0 ) return result;
 				PositiveProduct f = DistributionProduct( m, ax, ay ), pdf = f;
-				const Scalar zi = wi.z, zo = std::abs( wo.z );
-				const Scalar ai = VisibleFraction(wi,ax,ay), ao = VisibleFraction(wo,ax,ay);
+				const Masking masking(wi,wo,ax,ay);
 				// common = (zi+li)*(zo+lo)*(ai+ao-2*ai*ao). Keep
 				// these factors separate so grazing products cannot underflow.
-				const Scalar mask = ai + ao - 2*ai*ao;
 				if( reflection ) {
-					f.Multiply(F); f.Divide(2); f.Multiply(ai); f.Divide(zi); f.Multiply(ao); f.Divide(zo); f.Divide(mask);
-					pdf.Multiply(F); pdf.Divide(2); pdf.Multiply(ai); pdf.Divide(zi);
+					f.Multiply(F); f.Divide(2); f.Divide(masking.sumI); f.Divide(masking.sumO); f.Divide(masking.mask);
+					pdf.Multiply(F); pdf.Divide(2); pdf.Divide(masking.sumI);
 				} else {
 					// Factor the absolute inverse of co+ci/eta using Snell's
 					// identity, scaling by the larger index before multiplication.
@@ -591,13 +628,19 @@ namespace RISE
 						inverseDenom = (eta*((eta*std::abs(co)+ci)/(1+eta)))/(1-eta);
 					}
 					f.Multiply(2); f.Multiply(transmission); f.Multiply(ci); f.Multiply(std::abs(co));
-					f.Multiply(inverseDenom); f.Multiply(inverseDenom); f.Multiply(ai); f.Divide(zi);
+					f.Multiply(inverseDenom); f.Multiply(inverseDenom); f.Divide(masking.sumI);
 					pdf = f;
-					f.Multiply(ao); f.Divide(zo); f.Divide(mask);
+					f.Divide(masking.sumO); f.Divide(masking.mask);
 					if( radiance ) { f.Divide(eta); f.Divide(eta); }
 				}
 				result.f = f.Value(); result.pdf = pdf.Value();
 				result.positiveDensity = pdf.mantissa > 0;
+				if( result.positiveDensity ) {
+					PositiveProduct weight = masking.outFraction;
+					weight.Divide(masking.mask);
+					if( !reflection && radiance ) { weight.Divide(eta); weight.Divide(eta); }
+					result.weight = weight.Value();
+				}
 				return result;
 			}
 
@@ -645,7 +688,13 @@ namespace RISE
 					const Scalar oneMinusVz = (vt/(1+vh.z))*vt;
 					const Scalar a = s*minus, b = oneMinusVz*q+s*plus;
 					const Scalar alignedZ = std::sqrt(a*b);
-					const Scalar warpedY = s*plus-vh.z*q;
+					const Scalar directA = (oneMinusVz*Scalar(0.5))*q, directB = s*diskY;
+					const Scalar horizonA = s*plus, horizonB = vh.z*q;
+					// Use the equivalent sum with the smaller rounding bound.
+					// The horizon form preserves boundary cancellation; the
+					// direct form preserves tiny disk components near normal.
+					const Scalar warpedY = diskY >= 0 || directA-directB <= horizonA+horizonB ?
+						directA+directB : horizonA-horizonB;
 					Vector3 nh = t1*diskX+t2*warpedY+vh*alignedZ;
 					// Positive-factor form of warpedY*vt + alignedZ*vh.z.
 					// It preserves a tiny height at the grazing disk boundary.
@@ -697,16 +746,7 @@ namespace RISE
 					result.f = evaluated.f;
 					result.pdf = evaluated.pdf;
 					result.valid = evaluated.positiveDensity;
-					// G2/G1(wi), after cancelling Fresnel and the refractive Jacobian.
-					const Scalar ai = VisibleFraction(wi,ax,ay), ao = VisibleFraction(result.wo,ax,ay);
-					result.weight = ao / ( ai + ao - 2*ai*ao );
-					if( result.transmission && radiance ) {
-						// Exponent scaling also prevents fast-math reassociation
-						// from recreating an overflowing eta*eta intermediate.
-						PositiveProduct weight;
-						weight.Multiply(result.weight); weight.Divide(eta); weight.Divide(eta);
-						result.weight = weight.Value();
-					}
+					result.weight = evaluated.weight;
 				}
 				return result;
 			}

@@ -364,6 +364,32 @@ static void GrazingAdjacentIndicesAndDiskEndpoints()
 	}
 }
 
+static void ScaledMaskingAndTinyDiskComponents()
+{
+	const double c=std::sqrt(0.5),ct=std::sqrt(1-0.5/2.25);
+	const double rs=(c-1.5*ct)/(c+1.5*ct),rp=(1.5*c-ct)/(1.5*c+ct);
+	const double F=(rs*rs+rp*rp)/2;
+	for(double alpha : {0.25,0.3,0.75,1.0}) {
+		const double denom=0.5*(alpha*alpha-1)+1;
+		const double D=alpha*alpha/(PI*denom*denom), expected=F*D/(2*alpha);
+		for(double z : {std::numeric_limits<double>::denorm_min(),1e-320,1e-310,1e-300}) {
+			const auto e=RD::Evaluate(Vector3(1,0,z),Vector3(0,0,1),alpha,alpha,1.5,false);
+			Check(e.positiveDensity && Close(e.f/expected,1,1e-12) && Close(e.pdf/expected,1,1e-12) && e.weight==1,
+				"ordinary-width subnormal grazing BSDF and PDF match the analytic finite limit");
+			const auto paired=RD::Evaluate(Vector3(1,0,z),Vector3(1,0,3*z),alpha,alpha,1.5,false);
+			Check(paired.positiveDensity && Close(paired.weight,0.75,1e-12),
+				"two subnormal masking fractions retain their analytic throughput ratio");
+		}
+	}
+	for(double radial : {std::numeric_limits<double>::denorm_min(),1e-300,1e-30,0.25})
+	for(double azimuth : {0.25,0.75}) {
+		const auto s=RD::Draw(Vector3(0,0,1),1,1,1.5,azimuth,radial,0,false);
+		const double expected=(azimuth==0.25?2:-2)*std::sqrt(radial)*std::sqrt(1-radial);
+		Check(s.valid && !s.transmission && s.wo.y!=0 && Close(s.wo.y/expected,1,1e-12),
+			"normal-view disk warp preserves representable tiny signed components");
+	}
+}
+
 static void LowIndexNearNormal()
 {
 	const Vector3 wi=Unit(1e-9,0,1);
@@ -438,6 +464,7 @@ int main()
 	ExtremeScaleArithmetic();
 	LowIndexNearNormal();
 	GrazingAdjacentIndicesAndDiskEndpoints();
+	ScaledMaskingAndTinyDiskComponents();
 	ProbabilityAndFurnace();
 	std::cout << passed << " passed, " << failed << " failed\n";
 	return failed ? 1 : 0;
