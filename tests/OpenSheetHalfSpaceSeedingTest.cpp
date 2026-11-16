@@ -3388,6 +3388,95 @@ static void PartA()
 		}
 	}
 
+	// A70: Round 11 adversarial review pins:
+	//   (1) Opaque `PolishedMaterial` (bare and `LambertianLuminaireMaterial`-wrapped)
+	//       and non-`clearTransmission` SSS planar sheets are NEVER classified as
+	//       transmissive open sheets or transparent media in `IORStackSeeding` —
+	//       they act as `kMembershipBlock` obstacles against overlying glass sheets.
+	//   (2) `ManifoldSolver` unwraps `LambertianLuminaireMaterial` / `PhongLuminaireMaterial`
+	//       when checking `PolishedMaterial` coats (`SMSIsPolishedCoat`), so Legacy SMS
+	//       reflects off polished luminaires (`isReflection == true`) and evaluates
+	//       `LegacyPolishedKray` instead of refracting into an opaque body.
+	//   (3) `EnsureOpenSheetCatalog` refreshes automatically on direct `AssignMaterial`
+	//       calls without requiring `PrepareForRendering()`.
+	{
+		const std::string polHeader = Header()
+			+ "uniformcolor_painter\n{\n\tname p_emit70\n\tcolor 0.2 0.2 0.2\n}\n\n"
+			+ "uniformcolor_painter\n{\n\tname p_sub70\n\tcolor 0.4 0.4 0.4\n}\n\n"
+			+ "scalar_painter\n{\n\tname p_tau70\n\tvalue 0.8\n}\n\n"
+			+ "scalar_painter\n{\n\tname p_ior70\n\tvalue 1.5\n}\n\n"
+			+ "scalar_painter\n{\n\tname p_scat70\n\tvalue 1000000.0\n}\n\n"
+			+ "polished_material\n{\n\tname mat_pol70\n\treflectance p_sub70\n\ttau p_tau70\n\tior p_ior70\n\tscattering p_scat70\n}\n\n"
+			+ "lambertian_luminaire_material\n{\n\tname mat_lum_pol70\n\texitance p_emit70\n\tmaterial mat_pol70\n\tscale 1.0\n}\n\n"
+			+ "subsurfacescattering_material\n{\n\tname mat_sss70\n\tior 1.4\n\tabsorption 0.1 0.1 0.1\n\tscattering 2.0 2.0 2.0\n\tg 0.0\n\troughness 0.0\n}\n\n";
+
+		Loaded s70OnlyPol( polHeader
+			+ HSheet( "g_pol_ceil", 1.5, 4.0, true ) + Obj( "pol_ceil", "g_pol_ceil", "mat_pol70" )
+			+ HSheet( "g_lumpol_ceil", 2.5, 4.0, true ) + Obj( "lumpol_ceil", "g_lumpol_ceil", "mat_lum_pol70" ) );
+		Loaded s70Blocked( polHeader
+			+ HSheet( "g_pol_block", 1.5, 4.0, true ) + Obj( "pol_block", "g_pol_block", "mat_lum_pol70" )
+			+ HSheet( "g_sss_sheet", 2.0, 4.0, true ) + Obj( "sss_sheet", "g_sss_sheet", "mat_sss70" )
+			+ HSheet( "g_glass_roof", 3.0, 4.0, true ) + Obj( "glass_roof", "g_glass_roof", "glass18" ) );
+		Check( s70OnlyPol.ok && s70Blocked.ok, "A70 [DL-626] polished / polished-luminaire / SSS open-sheet fixtures load" );
+		if( s70OnlyPol.ok && s70Blocked.ok ) {
+			IORStack stOnlyPol( 1.0 );
+			IORStackSeeding::SeedFromPoint( stOnlyPol, Point3( 0, 0, 0 ), s70OnlyPol.Scene() );
+			IORStack stBlocked( 1.0 );
+			IORStackSeeding::SeedFromPoint( stBlocked, Point3( 0, 0, 0 ), s70Blocked.Scene() );
+			Check( !IORStackSeeding::SceneHasTrackableMedia( s70OnlyPol.Scene() ) &&
+				stOnlyPol.Depth() == 1 && Close( stOnlyPol.top(), 1.0 ) &&
+				stBlocked.Depth() == 1 && Close( stBlocked.top(), 1.0 ),
+				"A70-1 [DL-626]: PolishedMaterial, LambertianLuminaire(PolishedMaterial), and SSS open sheets block rather than seeding glass half-spaces" );
+
+			// Legacy SMS SnellContinueChain + EvaluateChainThroughput{,NM} on `lumpol_ceil`:
+			std::vector<IShaderOp*> ops70;
+			IShader* shader70 = nullptr;
+			RISE_API_CreateStandardShader( &shader70, ops70 );
+			RayCaster* rc70 = new RayCaster( false, 16, *shader70, true );
+			rc70->AttachScene( &s70OnlyPol.Scene() );
+			ManifoldSolverConfig smsCfg;
+			smsCfg.enabled = true;
+			ManifoldSolver* solver = new ManifoldSolver( smsCfg );
+			Point3 origin70( 0.0, 1.8, 0.0 );
+			Vector3 dir70 = Vector3Ops::Normalize( Vector3( 0.3, 1.0, 0.0 ) );
+			Scalar curIor70 = 1.0;
+			IORStack seedSt70( 1.0 );
+			std::vector<ManifoldVertex> chain70;
+			const unsigned int added70 = solver->SnellContinueChain(
+				origin70, dir70, 10.0, curIor70, seedSt70, s70OnlyPol.Scene(), *rc70, chain70, false );
+			const Point3 endPt70 = Point3Ops::mkPoint3(
+				chain70.empty() ? Point3( 0, 2.5, 0 ) : chain70[0].position, dir70 * 2.0 );
+			const RISEPel tpPel70 = chain70.empty()
+				? RISEPel( 0, 0, 0 )
+				: solver->EvaluateChainThroughput( Point3( 0.0, 1.8, 0.0 ), endPt70, chain70 );
+			const Scalar tpNM70 = chain70.empty()
+				? Scalar( 0 )
+				: solver->EvaluateChainThroughputNM( Point3( 0.0, 1.8, 0.0 ), endPt70, chain70, 550.0 );
+			Check( added70 >= 1 &&
+				chain70[0].pObject == s70OnlyPol.O( "lumpol_ceil" ) &&
+				chain70[0].isReflection &&
+				dir70.y < 0.0 &&
+				seedSt70.Depth() == 1 &&
+				tpPel70[0] > 0.0 && std::fabs( tpPel70[0] - tpNM70 ) < 1e-6,
+				"A70-2 [DL-626]: ManifoldSolver treats LambertianLuminaire(PolishedMaterial) as a reflective coat (never refracting into opaque substrate)" );
+			solver->release();
+			rc70->release();
+			shader70->release();
+
+			// Direct `AssignMaterial` on `lumpol_ceil` from opaque polished to `glass15` without `PrepareForRendering()`:
+			IObjectPriv* pMutCeil = s70OnlyPol.job->GetObjects()->GetItem( "lumpol_ceil" );
+			IMaterial* pGlass15 = s70OnlyPol.job->GetMaterials()->GetItem( "glass15" );
+			if( pMutCeil && pGlass15 ) {
+				pMutCeil->AssignMaterial( *pGlass15 );
+				IORStack stRebound( 1.0 );
+				IORStackSeeding::SeedFromPoint( stRebound, Point3( 0.0, 1.8, 0.0 ), s70OnlyPol.Scene() );
+				Check( IORStackSeeding::SceneHasTrackableMedia( s70OnlyPol.Scene() ) &&
+					stRebound.Depth() == 2 && Close( stRebound.top(), 1.5 ),
+					"A70-3 [DL-626]: EnsureOpenSheetCatalog refreshes automatically after direct Object::AssignMaterial without PrepareForRendering" );
+			}
+		}
+	}
+
 	const int dl626NewFails = failCount - dl626FailBefore;
 	std::cout << "[DL-626-SUMMARY] " << ( dl626NewFails == 0 ? "PASS" : "FAIL" )
 		<< " (new_failures=" << dl626NewFails << ")" << std::endl;

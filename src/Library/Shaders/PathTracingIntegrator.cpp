@@ -6277,11 +6277,21 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					const bool bSoloSuppressEnv = PTSoloSuppressEnvironment( caster );
 					const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
 
+					std::optional<HWSSLaneSeeds> volLaneSeeds;
+					if( !( depth == startDepth && preseededOriginLanes_ ) ) {
+						volLaneSeeds.emplace( iorStack, swl, currentRay.origin,
+							Point3Ops::mkPoint3( currentRay.origin, currentRay.Dir() * ( t_m * 0.5 ) ),
+							scene, depth == startDepth );
+					}
+
 					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 					{
 						if( swl.terminated[w] ) continue;
 
 						const Scalar lambda = swl.lambda[w];
+						IORStack laneStack = ( depth == startDepth && preseededOriginLanes_ )
+							? IORStack( preseededOriginLanes_[w] ) : std::move( volLaneSeeds->s[w] );
+						GradedIndexMedium::AdoptTrackedTop( laneStack, iorStack );
 
 						Scalar throughput = throughputComp[w];
 						Ray walkRay = currentRay;
@@ -6325,10 +6335,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							// NEE at scatter point
 							if( pLS )
 							{
-								// DL-09: `&iorStack` -- see the Pel/NM twin.
+								// DL-09: `&laneStack` -- per-wavelength IOR stack matching the Pel/NM twin.
 								Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 									scatterPt, wo, pCurrentMedium, lambda, caster, pLS,
-									sampler, rast, pMediumObject, 1, &iorStack );
+									sampler, rast, pMediumObject, 1, &laneStack );
 								if( Ld > 0 )
 								{
 									Scalar directContrib = throughput * Ld;
@@ -6436,7 +6446,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							{
 								hwssResult[w] += throughput * segWeight * IntegrateFromHitNM(
 									rc, rast, ri2, lambda, scene, caster,
-									sampler, pRadianceMap, walkDepth, iorStack,
+									sampler, pRadianceMap, walkDepth, laneStack,
 									walkPdf, 0, true, importance, rayType,
 									diffuseBounces, glossyBounces, transmissionBounces,
 									translucentBounces, walkVolumeBounces, glossyFilterWidth,
@@ -6704,12 +6714,21 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// not have.
 		if( !pBRDFCur && !capEmissionOnly )
 		{
+			std::optional<HWSSLaneSeeds> spfLaneSeeds;
+			if( !( depth == startDepth && preseededOriginLanes_ ) ) {
+				spfLaneSeeds.emplace( iorStack, swl, ri.geometric.ray.origin,
+					Point3Ops::mkPoint3( ri.geometric.ray.origin, ri.geometric.ray.Dir() * ( ri.geometric.range * 0.5 ) ),
+					scene, depth == startDepth );
+			}
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
 				if( swl.terminated[w] )
 				{
 					continue;
 				}
+				IORStack laneStack = ( depth == startDepth && preseededOriginLanes_ )
+					? IORStack( preseededOriginLanes_[w] ) : std::move( spfLaneSeeds->s[w] );
+				GradedIndexMedium::AdoptTrackedTop( laneStack, iorStack );
 				// DL-170: forward THIS LANE's own partner
 				// (`misBsdfPdfComp[w]`), not the hero's -- the delegated
 				// `IntegrateFromHitNM` call is dedicated to wavelength
@@ -6726,7 +6745,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				const bool laneAnchor = bSMSExtendedLoopHW ? smsLaneAnchor[w] : bSMSAnchor;
 				hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 					rc, rast, ri, swl.lambda[w], scene, caster, sampler,
-					pRadianceMap, depth, iorStack, bsdfPdf, 0,
+					pRadianceMap, depth, laneStack, bsdfPdf, 0,
 					( bSMSExtendedLoopHW || smsChainHWSS ) ? ( considerEmission || smsGuardedEmissionHW ) : considerEmission,
 					importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
@@ -7822,10 +7841,10 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 					// scattering, i.e. indirect, and is kept in every mode.
 					if( pLS )
 					{
-						// DL-09: `&iorStack` -- see the Pel/NM twin.
+						// DL-09: `&laneStacks[w]` -- per-wavelength IOR stack matching the Pel/NM twin.
 						Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 							scatterPt, wo, pCurrentMedium, lambda, caster,
-							pLS, sampler, rast, pMediumObject, 1, &iorStack );
+							pLS, sampler, rast, pMediumObject, 1, &laneStacks[w] );
 						if( Ld > 0 )
 						{
 							Scalar directContrib = throughput * Ld;
@@ -7932,7 +7951,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 					{
 						result[w] += throughput * segWeight * IntegrateFromHitNM(
 							rc, rast, ri2, lambda, scene, caster,
-							sampler, pRadianceMap, 1, iorStack, walkPdf, 0,
+							sampler, pRadianceMap, 1, laneStacks[w], walkPdf, 0,
 							true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
 							0, 0, 0, 0, volumeBounces, 0, false, false,
 							// HWSS geometry is hero-driven. Let only the hero

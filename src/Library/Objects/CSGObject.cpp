@@ -1225,13 +1225,8 @@ namespace
 	{
 		unsigned int rastX = 0;
 		unsigned int rastY = 0;
-		RayIntersection ri;
-
-		explicit CsgRayMemoVal( const RayIntersection& r ) :
-			rastX( r.geometric.rast.x ),
-			rastY( r.geometric.rast.y ),
-			ri( r )
-		{}
+		std::int32_t hitPayloadIdx = -1;
+		RayDifferentials diffs{};
 	};
 
 	struct CsgVecMemoKey
@@ -1276,25 +1271,124 @@ namespace
 		int outArm = 0;
 	};
 
+	//! Open-addressed generation-tagged flat hash table for per-query shared-DAG
+	//! memoization: O(1) `ClearGen()` via 32-bit generation bump with zero per-ray
+	//! heap node allocations or deallocations after initial warmup.
+	template< typename Key, typename Val, typename Hash >
+	class CsgFlatGenMap
+	{
+		struct Slot
+		{
+			std::uint32_t gen = 0;
+			Key key{};
+			Val val{};
+		};
+
+		std::vector<Slot> m_slots;
+		std::size_t m_used = 0;
+		std::uint32_t m_gen = 1;
+
+		void Rehash( const std::size_t newCap )
+		{
+			std::vector<Slot> next( newCap );
+			const std::size_t mask = newCap - 1;
+			for( const Slot& s : m_slots ) {
+				if( s.gen != m_gen ) {
+					continue;
+				}
+				std::size_t idx = Hash{}( s.key ) & mask;
+				while( next[idx].gen == m_gen ) {
+					idx = ( idx + 1 ) & mask;
+				}
+				next[idx].gen = m_gen;
+				next[idx].key = s.key;
+				next[idx].val = s.val;
+			}
+			m_slots.swap( next );
+		}
+
+	public:
+		const Val* Find( const Key& k ) const
+		{
+			if( m_slots.empty() ) {
+				return 0;
+			}
+			const std::size_t mask = m_slots.size() - 1;
+			std::size_t idx = Hash{}( k ) & mask;
+			for( ;; ) {
+				const Slot& s = m_slots[idx];
+				if( s.gen != m_gen ) {
+					return 0;
+				}
+				if( s.key == k ) {
+					return &s.val;
+				}
+				idx = ( idx + 1 ) & mask;
+			}
+		}
+
+		void Put( const Key& k, const Val& v )
+		{
+			if( m_slots.empty() ) {
+				m_slots.resize( 64 );
+			} else if( ( m_used + 1 ) * 2 >= m_slots.size() ) {
+				Rehash( m_slots.size() * 2 );
+			}
+			const std::size_t mask = m_slots.size() - 1;
+			std::size_t idx = Hash{}( k ) & mask;
+			for( ;; ) {
+				Slot& s = m_slots[idx];
+				if( s.gen != m_gen ) {
+					s.gen = m_gen;
+					s.key = k;
+					s.val = v;
+					++m_used;
+					return;
+				}
+				if( s.key == k ) {
+					s.val = v;
+					return;
+				}
+				idx = ( idx + 1 ) & mask;
+			}
+		}
+
+		void ClearGen()
+		{
+			if( m_used == 0 ) {
+				return;
+			}
+			m_used = 0;
+			if( ++m_gen == 0 ) {
+				m_gen = 1;
+				for( Slot& s : m_slots ) {
+					s.gen = 0;
+				}
+			}
+		}
+	};
+
 	struct CsgQueryDagTables
 	{
 		bool used = false;
-		std::unordered_map<CsgRayMemoKey, CsgRayMemoVal, CsgRayMemoKeyHash> rayMemo;
-		std::unordered_map<CsgVecMemoKey, int, CsgVecMemoKeyHash> containsMemo;
-		std::unordered_map<CsgVecMemoKey, Scalar, CsgVecMemoKeyHash> floorMemo;
-		std::unordered_map<CsgVecMemoKey, CsgSignedDistMemoVal, CsgVecMemoKeyHash> signedDistMemo;
-		std::unordered_map<CsgVecMemoKey, CsgUnsignedDistMemoVal, CsgVecMemoKeyHash> unsignedDistMemo;
+		CsgFlatGenMap<CsgRayMemoKey, CsgRayMemoVal, CsgRayMemoKeyHash> rayMemo;
+		std::vector<RayIntersection> rayHitPayloads;
+		CsgFlatGenMap<CsgVecMemoKey, int, CsgVecMemoKeyHash> containsMemo;
+		CsgFlatGenMap<CsgVecMemoKey, Scalar, CsgVecMemoKeyHash> floorMemo;
+		CsgFlatGenMap<CsgVecMemoKey, CsgSignedDistMemoVal, CsgVecMemoKeyHash> signedDistMemo;
+		CsgFlatGenMap<CsgVecMemoKey, CsgUnsignedDistMemoVal, CsgVecMemoKeyHash> unsignedDistMemo;
 
 		void ClearIfUsed()
 		{
 			if( !used ) {
 				return;
 			}
-			rayMemo.clear();
-			containsMemo.clear();
-			floorMemo.clear();
-			signedDistMemo.clear();
-			unsignedDistMemo.clear();
+			rayMemo.ClearGen();
+			rayHitPayloads.clear();
+			containsMemo.ClearGen();
+			floorMemo.ClearGen();
+			signedDistMemo.ClearGen();
+			unsignedDistMemo.ClearGen();
 			used = false;
 		}
 	};
@@ -2541,16 +2635,15 @@ int CSGObject::OperandContainsPoint( const IObjectPriv* operand, const Point3& p
 	}
 
 	ScopedCsgQueryBudget queryBudget;
-	const bool memoize = csg->IsConsumed();
+	const bool memoize = csg->IsSharedConsumerTarget();
 	CsgVecMemoKey memoKey{};
 	if( memoize ) {
 		memoKey.csg = csg;
 		memoKey.a0 = ExactScalarBits( pt.x ); memoKey.a1 = ExactScalarBits( pt.y ); memoKey.a2 = ExactScalarBits( pt.z );
 		memoKey.b0 = ExactScalarBits( dir.x ); memoKey.b1 = ExactScalarBits( dir.y ); memoKey.b2 = ExactScalarBits( dir.z );
 		memoKey.c0 = ExactScalarBits( scale ); memoKey.c1 = 0; memoKey.c2 = 0;
-		const auto it = queryBudget.pDagTables->containsMemo.find( memoKey );
-		if( it != queryBudget.pDagTables->containsMemo.end() ) {
-			return it->second;
+		if( const int* pCached = queryBudget.pDagTables->containsMemo.Find( memoKey ) ) {
+			return *pCached;
 		}
 	}
 	if( *queryBudget.pNodeVisitBudget == 0 ) {
@@ -2599,7 +2692,7 @@ int CSGObject::OperandContainsPoint( const IObjectPriv* operand, const Point3& p
 	}
 	if( memoize ) {
 		queryBudget.pDagTables->used = true;
-		queryBudget.pDagTables->containsMemo[memoKey] = res;
+		queryBudget.pDagTables->containsMemo.Put( memoKey, res );
 	}
 	return res;
 }
@@ -2626,12 +2719,15 @@ namespace
 		std::uint64_t epochSum;
 		unsigned long long threadPoseEpoch;
 		const TimeIndexed::ThreadSlots* tlsSlots;
+		unsigned int activeDepth;
 		std::unordered_map<const CSGObject*, int> memo;
+		std::unordered_map<const CSGObject*, int> callMemo;
 
 		CsgCertBitsTlsMemo() :
 		  epochSum( 0 ),
 		  threadPoseEpoch( 0 ),
-		  tlsSlots( 0 )
+		  tlsSlots( 0 ),
+		  activeDepth( 0 )
 		{}
 	};
 
@@ -2651,7 +2747,25 @@ int CSGObject::CertificateBits() const
 		IsBoundsOperandEpochTracked( pObjectA, childCsgA ) &&
 		IsBoundsOperandEpochTracked( pObjectB, childCsgB );
 	if( !allTracked ) {
-		return ComputeCertificateBits();
+		CsgCertBitsTlsMemo& tls = ThreadCsgCertBitsMemo();
+		struct CallDepthGuard
+		{
+			CsgCertBitsTlsMemo& m;
+			explicit CallDepthGuard( CsgCertBitsTlsMemo& m_ ) : m( m_ ) { ++m.activeDepth; }
+			~CallDepthGuard()
+			{
+				if( --m.activeDepth == 0 && !m.callMemo.empty() ) {
+					m.callMemo.clear();
+				}
+			}
+		} guard( tls );
+		const std::unordered_map<const CSGObject*, int>::const_iterator it = tls.callMemo.find( this );
+		if( it != tls.callMemo.end() ) {
+			return it->second;
+		}
+		const int bits = ComputeCertificateBits();
+		tls.callMemo[this] = bits;
+		return bits;
 	}
 
 	// Combine all three strictly non-decreasing global epochs (`PatchCertificateEpoch`,
@@ -2832,7 +2946,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	}
 
 	ScopedCsgQueryBudget queryBudget;
-	const bool memoizeRay = IsConsumed();
+	const bool memoizeRay = IsSharedConsumerTarget();
 	CsgRayMemoKey rayKey{};
 	if( memoizeRay ) {
 		rayKey.csg = this;
@@ -2847,13 +2961,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		rayKey.flags = static_cast<std::uint8_t>(
 			( ri.geometric.ray.hasDifferentials ? 1u : 0u ) |
 			( ri.geometric.bWantsWireEdgeInfo ? 2u : 0u ) );
-		const auto it = queryBudget.pDagTables->rayMemo.find( rayKey );
-		if( it != queryBudget.pDagTables->rayMemo.end() ) {
-			const CsgRayMemoVal& val = it->second;
+		if( const CsgRayMemoVal* pVal = queryBudget.pDagTables->rayMemo.Find( rayKey ) ) {
+			const CsgRayMemoVal& val = *pVal;
 			bool diffsMatch = ( val.rastX == ri.geometric.rast.x && val.rastY == ri.geometric.rast.y );
 			if( diffsMatch && ri.geometric.ray.hasDifferentials ) {
-				const auto& a = val.ri.geometric.ray.diffs;
-				const auto& b = ri.geometric.ray.diffs;
+				const RayDifferentials& a = val.diffs;
+				const RayDifferentials& b = ri.geometric.ray.diffs;
 				diffsMatch =
 					ExactScalarBits( a.rxOrigin.x ) == ExactScalarBits( b.rxOrigin.x ) &&
 					ExactScalarBits( a.rxOrigin.y ) == ExactScalarBits( b.rxOrigin.y ) &&
@@ -2870,8 +2983,8 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			}
 			if( diffsMatch ) {
 				const Ray savedRay = ri.geometric.ray;
-				if( val.ri.geometric.bHit ) {
-					ri = val.ri;
+				if( val.hitPayloadIdx >= 0 ) {
+					ri = queryBudget.pDagTables->rayHitPayloads[static_cast<std::size_t>( val.hitPayloadIdx )];
 				} else {
 					ri.geometric.bHit = false;
 					ri.geometric.bProvablyNoInterior = false;
@@ -4343,7 +4456,17 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	ri.geometric.ray = orig;
 	if( memoizeRay ) {
 		queryBudget.pDagTables->used = true;
-		queryBudget.pDagTables->rayMemo.emplace( rayKey, CsgRayMemoVal( ri ) );
+		CsgRayMemoVal val;
+		val.rastX = ri.geometric.rast.x;
+		val.rastY = ri.geometric.rast.y;
+		if( ri.geometric.ray.hasDifferentials ) {
+			val.diffs = ri.geometric.ray.diffs;
+		}
+		if( ri.geometric.bHit ) {
+			val.hitPayloadIdx = static_cast<std::int32_t>( queryBudget.pDagTables->rayHitPayloads.size() );
+			queryBudget.pDagTables->rayHitPayloads.push_back( ri );
+		}
+		queryBudget.pDagTables->rayMemo.Put( rayKey, val );
 	}
 }
 
@@ -5164,16 +5287,15 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 	}
 
 	ScopedCsgQueryBudget queryBudget;
-	const bool memoize = IsConsumed();
+	const bool memoize = IsSharedConsumerTarget();
 	CsgVecMemoKey memoKey{};
 	if( memoize ) {
 		memoKey.csg = this;
 		memoKey.a0 = ExactScalarBits( localOrigin.x ); memoKey.a1 = ExactScalarBits( localOrigin.y ); memoKey.a2 = ExactScalarBits( localOrigin.z );
 		memoKey.b0 = ExactScalarBits( localDir.x ); memoKey.b1 = ExactScalarBits( localDir.y ); memoKey.b2 = ExactScalarBits( localDir.z );
 		memoKey.c0 = ExactScalarBits( localNormal.x ); memoKey.c1 = ExactScalarBits( localNormal.y ); memoKey.c2 = ExactScalarBits( localNormal.z );
-		const auto it = queryBudget.pDagTables->floorMemo.find( memoKey );
-		if( it != queryBudget.pDagTables->floorMemo.end() ) {
-			return it->second;
+		if( const Scalar* pCached = queryBudget.pDagTables->floorMemo.Find( memoKey ) ) {
+			return *pCached;
 		}
 	}
 	if( *queryBudget.pNodeVisitBudget == 0 ) {
@@ -5319,7 +5441,7 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 	const Scalar result = anyOwner ? worst : worstAny;
 	if( memoize ) {
 		queryBudget.pDagTables->used = true;
-		queryBudget.pDagTables->floorMemo[memoKey] = result;
+		queryBudget.pDagTables->floorMemo.Put( memoKey, result );
 	}
 	return result;
 }
@@ -5881,20 +6003,19 @@ bool CSGObject::DistanceToSurfaceWithArm( const Point3& ptWorld, const Scalar ma
 	}
 
 	ScopedCsgQueryBudget queryBudget;
-	const bool memoize = IsConsumed();
+	const bool memoize = IsSharedConsumerTarget();
 	CsgVecMemoKey memoKey{};
 	if( memoize ) {
 		memoKey.csg = this;
 		memoKey.a0 = ExactScalarBits( ptWorld.x ); memoKey.a1 = ExactScalarBits( ptWorld.y ); memoKey.a2 = ExactScalarBits( ptWorld.z );
 		memoKey.b0 = ExactScalarBits( maxDistWorld ); memoKey.b1 = 0; memoKey.b2 = 0;
 		memoKey.c0 = 0; memoKey.c1 = 0; memoKey.c2 = 0;
-		const auto it = queryBudget.pDagTables->unsignedDistMemo.find( memoKey );
-		if( it != queryBudget.pDagTables->unsignedDistMemo.end() ) {
-			outArm = static_cast<CsgLandingArm>( it->second.outArm );
-			if( it->second.ok ) {
-				outDist = it->second.outDist;
+		if( const CsgUnsignedDistMemoVal* pCached = queryBudget.pDagTables->unsignedDistMemo.Find( memoKey ) ) {
+			outArm = static_cast<CsgLandingArm>( pCached->outArm );
+			if( pCached->ok ) {
+				outDist = pCached->outDist;
 			}
-			return it->second.ok;
+			return pCached->ok;
 		}
 	}
 	if( *queryBudget.pNodeVisitBudget == 0 ) {
@@ -5937,7 +6058,7 @@ bool CSGObject::DistanceToSurfaceWithArm( const Point3& ptWorld, const Scalar ma
 		if( !any ) {
 			if( memoize ) {
 				queryBudget.pDagTables->used = true;
-				queryBudget.pDagTables->unsignedDistMemo[memoKey] = { false, Scalar( 0 ), static_cast<int>( outArm ) };
+				queryBudget.pDagTables->unsignedDistMemo.Put( memoKey, CsgUnsignedDistMemoVal{ false, Scalar( 0 ), static_cast<int>( outArm ) } );
 			}
 			return false;
 		}
@@ -5946,7 +6067,7 @@ bool CSGObject::DistanceToSurfaceWithArm( const Point3& ptWorld, const Scalar ma
 		if( !BracketDistanceLocal( ptLocal, maxDistLocal, dLocal, outArm ) ) {
 			if( memoize ) {
 				queryBudget.pDagTables->used = true;
-				queryBudget.pDagTables->unsignedDistMemo[memoKey] = { false, Scalar( 0 ), static_cast<int>( outArm ) };
+				queryBudget.pDagTables->unsignedDistMemo.Put( memoKey, CsgUnsignedDistMemoVal{ false, Scalar( 0 ), static_cast<int>( outArm ) } );
 			}
 			return false;
 		}
@@ -5974,14 +6095,14 @@ bool CSGObject::DistanceToSurfaceWithArm( const Point3& ptWorld, const Scalar ma
 	if( !RISE::IsFiniteDouble( (double)dWorld ) ) {
 		if( memoize ) {
 			queryBudget.pDagTables->used = true;
-			queryBudget.pDagTables->unsignedDistMemo[memoKey] = { false, Scalar( 0 ), static_cast<int>( outArm ) };
+			queryBudget.pDagTables->unsignedDistMemo.Put( memoKey, CsgUnsignedDistMemoVal{ false, Scalar( 0 ), static_cast<int>( outArm ) } );
 		}
 		return false;
 	}
 	outDist = dWorld;
 	if( memoize ) {
 		queryBudget.pDagTables->used = true;
-		queryBudget.pDagTables->unsignedDistMemo[memoKey] = { true, dWorld, static_cast<int>( outArm ) };
+		queryBudget.pDagTables->unsignedDistMemo.Put( memoKey, CsgUnsignedDistMemoVal{ true, dWorld, static_cast<int>( outArm ) } );
 	}
 	return true;
 }
@@ -6010,20 +6131,19 @@ bool CSGObject::SignedDistanceLowerImpl( const Point3& ptWorld, const Scalar max
 	}
 
 	ScopedCsgQueryBudget queryBudget;
-	const bool memoize = IsConsumed();
+	const bool memoize = IsSharedConsumerTarget();
 	CsgVecMemoKey memoKey{};
 	if( memoize ) {
 		memoKey.csg = this;
 		memoKey.a0 = ExactScalarBits( ptWorld.x ); memoKey.a1 = ExactScalarBits( ptWorld.y ); memoKey.a2 = ExactScalarBits( ptWorld.z );
 		memoKey.b0 = ExactScalarBits( maxDistWorld ); memoKey.b1 = includeBallCertificates ? 1ULL : 0ULL; memoKey.b2 = 0;
 		memoKey.c0 = 0; memoKey.c1 = 0; memoKey.c2 = 0;
-		const auto it = queryBudget.pDagTables->signedDistMemo.find( memoKey );
-		if( it != queryBudget.pDagTables->signedDistMemo.end() ) {
-			if( it->second.ok ) {
-				outSigned = it->second.outSigned;
-				outExact = it->second.outExact;
+		if( const CsgSignedDistMemoVal* pCached = queryBudget.pDagTables->signedDistMemo.Find( memoKey ) ) {
+			if( pCached->ok ) {
+				outSigned = pCached->outSigned;
+				outExact = pCached->outExact;
 			}
-			return it->second.ok;
+			return pCached->ok;
 		}
 	}
 
@@ -6038,7 +6158,7 @@ bool CSGObject::SignedDistanceLowerImpl( const Point3& ptWorld, const Scalar max
 	if( !ComposedSignedLocal( ptLocal, maxDistLocal, f, ex, fA, exA, fB, exB, includeBallCertificates ) ) {
 		if( memoize ) {
 			queryBudget.pDagTables->used = true;
-			queryBudget.pDagTables->signedDistMemo[memoKey] = { false, Scalar( 0 ), false };
+			queryBudget.pDagTables->signedDistMemo.Put( memoKey, CsgSignedDistMemoVal{ false, Scalar( 0 ), false } );
 		}
 		return false;
 	}
@@ -6055,7 +6175,7 @@ bool CSGObject::SignedDistanceLowerImpl( const Point3& ptWorld, const Scalar max
 	if( !RISE::IsFiniteDouble( (double)fWorld ) ) {
 		if( memoize ) {
 			queryBudget.pDagTables->used = true;
-			queryBudget.pDagTables->signedDistMemo[memoKey] = { false, Scalar( 0 ), false };
+			queryBudget.pDagTables->signedDistMemo.Put( memoKey, CsgSignedDistMemoVal{ false, Scalar( 0 ), false } );
 		}
 		return false;
 	}
@@ -6063,7 +6183,7 @@ bool CSGObject::SignedDistanceLowerImpl( const Point3& ptWorld, const Scalar max
 	outExact  = ex && m_sigmaExact;
 	if( memoize ) {
 		queryBudget.pDagTables->used = true;
-		queryBudget.pDagTables->signedDistMemo[memoKey] = { true, outSigned, outExact };
+		queryBudget.pDagTables->signedDistMemo.Put( memoKey, CsgSignedDistMemoVal{ true, outSigned, outExact } );
 	}
 	return true;
 }

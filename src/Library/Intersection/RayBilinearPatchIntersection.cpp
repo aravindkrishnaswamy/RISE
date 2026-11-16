@@ -448,14 +448,22 @@ namespace RISE
 		};
 
 		Scalar bestT = RISE_INFINITY;
+		Scalar secondT = RISE_INFINITY;
 		for( int r = 0; r < numSol; ++r ) {
 			Scalar uCand = 0, tCand = 0;
-			if( acceptSidedRoot( sol[r], uCand, tCand ) && tCand < bestT ) {
-				bestT = tCand;
-				hit.u = uCand;
-				hit.v = sol[r];
-				hit.dRange = tCand;
-				hit.bHit = true;
+			if( acceptSidedRoot( sol[r], uCand, tCand ) ) {
+				if( tCand < bestT ) {
+					secondT = bestT;
+					bestT = tCand;
+					hit.u = uCand;
+					hit.v = sol[r];
+					hit.dRange = tCand;
+					hit.dRange2 = secondT;
+					hit.bHit = true;
+				} else if( tCand < secondT ) {
+					secondT = tCand;
+					hit.dRange2 = secondT;
+				}
 			}
 		}
 	}

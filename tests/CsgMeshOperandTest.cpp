@@ -2027,7 +2027,17 @@ static void TestCsgCertificateBitsEpochInvalidation()
 		const bool sOk = rootDiamond->SignedDistanceLower( Point3( 0.0, 3.0, 0.0 ), 10.0, sDist, sExact );
 		const bool uOk = rootDiamond->DistanceToSurface( Point3( 0.0, 3.0, 0.0 ), 10.0, uDist );
 
-		// Also verifydegenerate self-subtraction `X \ X` is empty:
+		// Also verify non-shared internal CSG node (`nConsumedBy == 1` -> `!IsSharedConsumerTarget()`)
+		// vs shared diamond node (`nConsumedBy == 2` -> `IsSharedConsumerTarget()`), and `X \ X == empty`:
+		CSGObject* nonSharedInner = new CSGObject( CSG_UNION );
+		nonSharedInner->AssignObjects( oCenter, oSideA );
+		nonSharedInner->FinalizeTransformations();
+		CSGObject* nonSharedOuter = new CSGObject( CSG_UNION );
+		nonSharedOuter->AssignObjects( nonSharedInner, oSideB );
+		nonSharedOuter->FinalizeTransformations();
+		const bool nonSharedGateOk = nonSharedInner->IsConsumed() && !nonSharedInner->IsSharedConsumerTarget() &&
+			!dagNodes[0]->IsSharedConsumerTarget() && dagNodes[2]->IsSharedConsumerTarget();
+
 		CSGObject* selfSub = new CSGObject( CSG_SUBTRACTION );
 		selfSub->AssignObjects( rootDiamond, rootDiamond );
 		selfSub->FinalizeTransformations();
@@ -2039,7 +2049,8 @@ static void TestCsgCertificateBitsEpochInvalidation()
 		const double ms6 = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - t0 ).count();
 
-		Check( seedInside.Depth() == 2 && std::fabs( seedInside.top() - 1.5 ) < 1e-6 &&
+		Check( nonSharedGateOk &&
+			seedInside.Depth() == 2 && std::fabs( seedInside.top() - 1.5 ) < 1e-6 &&
 			riNoDiff.geometric.bHit && std::fabs( riNoDiff.geometric.range - 4.0 ) < 1e-5 &&
 			riWithDiff.geometric.bHit && std::fabs( riWithDiff.geometric.range - 4.0 ) < 1e-5 &&
 			occHit && !occMiss &&
@@ -2049,9 +2060,11 @@ static void TestCsgCertificateBitsEpochInvalidation()
 			uOk && std::fabs( uDist - 2.0 ) < 1e-4 &&
 			!riSelfSub.geometric.bHit && !selfSubOcc && selfSubContains < 0 &&
 			ms6 < 350.0,
-			"N6: depth-26 refractive diamond CSG DAG (pObjectA != pObjectB) + 64 TimeIndexed pose samples + ray/shadow/contains/floor/SDF queries complete in < 350 ms (got " +
+			"N6: depth-26 refractive diamond CSG DAG (IsSharedConsumerTarget + CsgFlatGenMap) + 64 TimeIndexed pose samples + ray/shadow/contains/floor/SDF queries complete in < 350 ms (got " +
 			std::to_string( ms6 ) + " ms, range=" + std::to_string( riNoDiff.geometric.range ) + ")" );
 
+		safe_release( nonSharedOuter );
+		safe_release( nonSharedInner );
 		safe_release( selfSub );
 		for( CSGObject* n : dagNodes ) safe_release( n );
 		safe_release( pScene6 );

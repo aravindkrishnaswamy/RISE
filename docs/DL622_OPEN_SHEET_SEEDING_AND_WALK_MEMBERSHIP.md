@@ -714,8 +714,8 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    normal prisms of a planar sheet, point-based `SeedFromPoint` ==
    `ResolveUnpushedExit` parity (§5.2, `B5`: PT/BDPT `0.9969 +/- 0.0103` vs
    walk-history `0.7905`) remains the deliberate reciprocal convention.
-   `OpenSheetHalfSpaceSeedingTest`: **275 passed, 0 failed** (`260/0` Part A +
-   `15/0` Part B, including luminaire material forwarding `A69`; `red_prove.sh`
+   `OpenSheetHalfSpaceSeedingTest`: **279 passed, 0 failed** (`264/0` Part A +
+   `15/0` Part B, including luminaire material forwarding & polished/SMS guards `A69`–`A70`; `red_prove.sh`
    RED -> GREEN on `DL-626-SUMMARY`).
 
 **`DL-631` (hot-path overhead on scenes without open sheets):**

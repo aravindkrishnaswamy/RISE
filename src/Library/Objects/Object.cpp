@@ -21,6 +21,7 @@
 #include "../Geometry/BoxGeometry.h"
 #include "../Materials/DielectricMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
+#include "../Materials/PolishedSPF.h"
 #include "../Materials/LambertianLuminaireMaterial.h"
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Geometry/DisplacedGeometry.h"
@@ -667,6 +668,10 @@ void Object::RefreshIorCatalogFlag()
 		m_mayAffectIorCatalog = true;
 		return;
 	}
+	if( dynamic_cast<const PolishedSPF*>( pMaterial->GetSPF() ) != 0 ) {
+		m_mayAffectIorCatalog = false;
+		return;
+	}
 	static const RasterizerState kNullRast = { 0, 0 };
 	RayIntersectionGeometric rig( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), kNullRast );
 	rig.bHit = true;
@@ -685,13 +690,14 @@ void Object::RefreshIorCatalogFlag()
 bool Object::AssignMaterial( const IMaterial& pMat )
 {
 	const bool hadMaterial = ( pMaterial != 0 );
+	const bool prevMayAffect = m_mayAffectIorCatalog;
 	safe_release( pMaterial );
 
 	pMaterial = &pMat;
 	pMaterial->addref();
 	m_patchCertState.store( -1, std::memory_order_release );
 	RefreshIorCatalogFlag();
-	if( hadMaterial || IsConsumed() || m_isCsgObject ) {
+	if( hadMaterial || prevMayAffect != m_mayAffectIorCatalog || IsConsumed() || m_isCsgObject ) {
 		BumpMaterialBindingEpoch();
 	}
 
@@ -715,6 +721,9 @@ bool Object::AssignGeometry( const IGeometry& pGeom )
 	}
 	m_patchCertState.store( -1, std::memory_order_release );
 	Geometry::BumpGlobalGeometryShapeEpoch();
+	if( m_mayAffectIorCatalog || IsConsumed() || m_isCsgObject ) {
+		BumpMaterialBindingEpoch();
+	}
 	ResetWorldAreaSampling();
 	// A swapped geometry can never match the old entries: retire them now
 	// (an editor operation, outside any render).
@@ -773,12 +782,13 @@ void Object::SetShadowParams( const bool bCasts, const bool bReceives )
 bool Object::AssignInteriorMedium( const IMedium& medium )
 {
 	const bool hadMedium = ( pInteriorMedium != 0 );
+	const bool prevMayAffect = m_mayAffectIorCatalog;
 	safe_release( pInteriorMedium );
 
 	pInteriorMedium = &medium;
 	pInteriorMedium->addref();
 	RefreshIorCatalogFlag();
-	if( hadMedium || IsConsumed() || m_isCsgObject ) {
+	if( hadMedium || prevMayAffect != m_mayAffectIorCatalog || IsConsumed() || m_isCsgObject ) {
 		BumpMaterialBindingEpoch();
 	}
 

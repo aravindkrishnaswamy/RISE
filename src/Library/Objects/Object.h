@@ -517,6 +517,7 @@ namespace RISE
 			//! this header pulling it in.
 			virtual void RemoveConsumer() override;
 			virtual bool IsConsumed() const override { return nConsumedBy != 0; }
+			inline bool IsSharedConsumerTarget() const { return nConsumedBy > 1; }
 
 			virtual bool DoesCastShadows() const override { return bCastsShadows; }
 			virtual bool DoesReceiveShadows() const override { return bReceivesShadows; }

@@ -728,12 +728,113 @@ int main()
 
 	std::vector<std::string> offenders;
 	int scanned = 0;
-    // /Yu ignores declarations before the through-header on Windows.
-    for(const char* name : {"Object.cpp","CSGObject.cpp"}) {
-        std::ifstream in(testsDir.parent_path()/"src/Library/Objects"/name);
-        std::string line,firstInclude;
-        while(std::getline(in,line)) if(line.find("#include") == 0) {firstInclude=line;break;}
-        Check(firstInclude=="#include \"pch.h\"",std::string(name)+" preserves Windows PCH through-header declarations");
+    // /Yu ignores every #include and declaration before the through-header ("pch.h") on Windows.
+    // Validate EVERY /Yu-compiled <ClCompile> entry in build/VS2022/Library/Library.vcxproj.
+    {
+        const fs::path vcxDir = testsDir.parent_path() / "build/VS2022/Library";
+        std::ifstream vcxIn( vcxDir / "Library.vcxproj" );
+        const std::string vcxAll( ( std::istreambuf_iterator<char>( vcxIn ) ), std::istreambuf_iterator<char>() );
+        Check( !vcxAll.empty(), "Library.vcxproj readable for /Yu PCH audit" );
+        std::vector<std::string> pchViolations;
+        std::size_t pos = 0;
+        while( ( pos = vcxAll.find( "<ClCompile Include=\"", pos ) ) != std::string::npos ) {
+            const std::size_t q1 = pos + 20;
+            const std::size_t q2 = vcxAll.find( '"', q1 );
+            if( q2 == std::string::npos ) break;
+            std::string incRel = vcxAll.substr( q1, q2 - q1 );
+            const std::size_t tagClose = vcxAll.find( '>', q2 );
+            if( tagClose == std::string::npos ) break;
+            std::string blockMeta;
+            if( tagClose > 0 && vcxAll[tagClose - 1] != '/' ) {
+                const std::size_t endTag = vcxAll.find( "</ClCompile>", tagClose );
+                if( endTag != std::string::npos ) {
+                    blockMeta = vcxAll.substr( tagClose + 1, endTag - ( tagClose + 1 ) );
+                    pos = endTag + 12;
+                } else {
+                    pos = tagClose + 1;
+                }
+            } else {
+                pos = tagClose + 1;
+            }
+            // Skip unconditionally excluded TUs and TUs that disable or create PCH.
+            if( blockMeta.find( "<ExcludedFromBuild>true</ExcludedFromBuild>" ) != std::string::npos ) continue;
+            if( blockMeta.find( "<PrecompiledHeader>NotUsing</PrecompiledHeader>" ) != std::string::npos ) continue;
+            if( blockMeta.find( "<PrecompiledHeader>Create</PrecompiledHeader>" ) != std::string::npos ) continue;
+            if( blockMeta.find( "<PrecompiledHeader Condition=" ) != std::string::npos &&
+                blockMeta.find( ">Use<" ) == std::string::npos ) continue;
+            for( char& ch : incRel ) { if( ch == '\\' ) ch = '/'; }
+            const fs::path tuPath = ( vcxDir / incRel ).lexically_normal();
+            std::ifstream tuIn( tuPath );
+            if( !tuIn ) {
+                pchViolations.push_back( incRel + " (missing on disk)" );
+                continue;
+            }
+            const std::string src( ( std::istreambuf_iterator<char>( tuIn ) ), std::istreambuf_iterator<char>() );
+            // Strip comments while preserving newlines.
+            std::string clean;
+            clean.reserve( src.size() );
+            for( std::size_t i = 0; i < src.size(); ) {
+                if( i + 1 < src.size() && src[i] == '/' && src[i + 1] == '/' ) {
+                    while( i < src.size() && src[i] != '\n' ) ++i;
+                } else if( i + 1 < src.size() && src[i] == '/' && src[i + 1] == '*' ) {
+                    i += 2;
+                    while( i + 1 < src.size() && !( src[i] == '*' && src[i + 1] == '/' ) ) {
+                        if( src[i] == '\n' ) clean.push_back( '\n' );
+                        ++i;
+                    }
+                    if( i + 1 < src.size() ) i += 2;
+                } else {
+                    clean.push_back( src[i++] );
+                }
+            }
+            std::istringstream ls( clean );
+            std::string ln;
+            bool sawPch = false;
+            int ifDepth = 0;
+            while( std::getline( ls, ln ) ) {
+                std::size_t a = 0;
+                while( a < ln.size() && std::isspace( static_cast<unsigned char>( ln[a] ) ) ) ++a;
+                if( a == ln.size() ) continue;
+                const std::string trimmed = ln.substr( a );
+                if( trimmed[0] == '#' ) {
+                    std::size_t d = 1;
+                    while( d < trimmed.size() && std::isspace( static_cast<unsigned char>( trimmed[d] ) ) ) ++d;
+                    const std::string dir = trimmed.substr( d );
+                    if( dir.rfind( "include", 0 ) == 0 ) {
+                        if( dir.find( "\"pch.h\"" ) != std::string::npos ||
+                            dir.find( "/pch.h\"" ) != std::string::npos ) {
+                            sawPch = true;
+                            break;
+                        }
+                        pchViolations.push_back( incRel + " (#include before pch.h: " + trimmed + ")" );
+                        sawPch = true;
+                        break;
+                    }
+                    // Allow Win32-only file guard (#ifndef _WIN32 / #error / #endif) before pch.h.
+                    if( dir.rfind( "ifndef", 0 ) == 0 || dir.rfind( "ifdef", 0 ) == 0 || dir.rfind( "if ", 0 ) == 0 ) {
+                        ++ifDepth;
+                    } else if( dir.rfind( "endif", 0 ) == 0 && ifDepth > 0 ) {
+                        --ifDepth;
+                    } else if( ifDepth == 0 ) {
+                        pchViolations.push_back( incRel + " (directive before pch.h: " + trimmed + ")" );
+                        sawPch = true;
+                        break;
+                    }
+                } else {
+                    pchViolations.push_back( incRel + " (tokens before pch.h: " + trimmed + ")" );
+                    sawPch = true;
+                    break;
+                }
+            }
+            if( !sawPch ) {
+                pchViolations.push_back( incRel + " (missing #include \"pch.h\")" );
+            }
+        }
+        for( const std::string& v : pchViolations ) {
+            std::cout << "  pch-violation: " << v << std::endl;
+        }
+        Check( pchViolations.empty(),
+               "Library.vcxproj /Yu PCH hygiene: every /Yu ClCompile TU includes \"pch.h\" before any other #include or declaration" );
     }
 
 	// ---- Capturing IRasterizerOutput sinks must disable OIDN denoise ----
@@ -5208,6 +5309,7 @@ int main()
 				if( window.find( "return true" ) != std::string::npos
 				 || window.find( "eWeaveTransmissionThin" ) != std::string::npos
 				 || window.find( "return pBase->ScattersFullSphere" ) != std::string::npos
+				 || window.find( "return pMaterial.ScattersFullSphere" ) != std::string::npos
 				 || window.find( "return bScattersFullSphere" ) != std::string::npos ) {
 					claims = true; break;
 				}
@@ -5221,25 +5323,21 @@ int main()
 		for( const std::string& c : claimers ) {
 			std::cout << "  full-sphere material: " << c << std::endl;
 		}
-		Check( claimers.size() == 6
+		Check( claimers.size() == 8
 		    && claimers[0] == "CoatedMaterial.h"
 		    && claimers[1] == "CompositeMaterial.h"
 		    && claimers[2] == "FabricMaterial.h"
 		    && claimers[3] == "HairMaterial.h"
-		    && claimers[4] == "TranslucentMaterial.h"
-		    && claimers[5] == "WeaveMaterial.h",
+		    && claimers[4] == "LambertianLuminaireMaterial.h"
+		    && claimers[5] == "PhongLuminaireMaterial.h"
+		    && claimers[6] == "TranslucentMaterial.h"
+		    && claimers[7] == "WeaveMaterial.h",
 		       "full-sphere NEE: HairMaterial (unconditional), WeaveMaterial (conditional on "
-		       "`transmission thin`, P2-B), TranslucentMaterial (unconditional, DL-157 -- its "
-		       "entry TRANSMISSION and interior BACKSCATTER lobes both live below the shading "
-		       "horizon, and DL-157/DL-41 made `value` and `Pdf` describe them, which is the "
-		       "capability's own safety condition), CompositeMaterial (DL-157 P2-1, CACHED at "
-		       "construction from whichever layer's BSDF `GetBSDF()` returned -- it does not "
-		       "retain its layers), FabricMaterial and CoatedMaterial (both "
-		       "DELEGATING -- each is full-sphere exactly when its substrate is; DL-23 added "
-		       "CoatedMaterial alongside FabricMaterial's pre-existing R8 P1.1 / debt 22 "
-		       "forwarding) are the ONLY materials claiming ScattersFullSphere() -- adding another "
-		       "is a deliberate act that must update this expectation in the same commit (see "
-		       "IMaterial::ScattersFullSphere's doc for what claiming it wrongly costs)" );
+		       "`transmission thin`, P2-B), TranslucentMaterial (unconditional, DL-157), "
+		       "CompositeMaterial (DL-157 P2-1, CACHED at construction), FabricMaterial and "
+		       "CoatedMaterial (DELEGATING via `pBase->ScattersFullSphere()`), and "
+		       "LambertianLuminaireMaterial / PhongLuminaireMaterial (DELEGATING via "
+		       "`pMaterial.ScattersFullSphere()`) are the ONLY materials claiming ScattersFullSphere()" );
 	}
 
 	// ---- `signals` is written in a CLOSED set of files, and nowhere else ----
@@ -5779,6 +5877,22 @@ int main()
 
 			std::set<std::string> pbxBasenames;
 			std::map<std::string, std::string> pbxFileRefToBase;
+			struct PbxRefInfo { std::string path; std::string sourceTree; };
+			std::map<std::string, PbxRefInfo> pbxFileRefs;
+			auto extractPbxProp = []( const std::string& body, const char* key ) -> std::string {
+				const std::size_t kp = body.find( key );
+				if( kp == std::string::npos ) return std::string();
+				std::size_t s = kp + std::strlen( key );
+				while( s < body.size() && std::isspace( static_cast<unsigned char>( body[s] ) ) ) ++s;
+				const std::size_t semi = body.find( ';', s );
+				if( semi == std::string::npos ) return std::string();
+				std::string val = body.substr( s, semi - s );
+				while( !val.empty() && std::isspace( static_cast<unsigned char>( val.back() ) ) ) val.pop_back();
+				if( val.size() >= 2 && val.front() == '"' && val.back() == '"' ) {
+					val = val.substr( 1, val.size() - 2 );
+				}
+				return val;
+			};
 			{
 				const std::string frSec = pbxSection( "PBXFileReference" );
 				std::size_t cur = 0;
@@ -5796,24 +5910,18 @@ int main()
 						uuid = frSec.substr( lineStart, 24 );
 					}
 					const std::string body = frSec.substr( blkOpen, blkClose - blkOpen );
-					const std::size_t pp = body.find( "path =" );
-					if( pp != std::string::npos ) {
-						std::size_t s = pp + 6;
-						while( s < body.size() && std::isspace( static_cast<unsigned char>( body[s] ) ) ) ++s;
-						const std::size_t semi = body.find( ';', s );
-						if( semi != std::string::npos ) {
-							std::string val = body.substr( s, semi - s );
-							while( !val.empty() && std::isspace( static_cast<unsigned char>( val.back() ) ) ) val.pop_back();
-							if( val.size() >= 2 && val.front() == '"' && val.back() == '"' ) {
-								val = val.substr( 1, val.size() - 2 );
-							}
-							const std::size_t slash = val.rfind( '/' );
-							const std::string base = ( slash == std::string::npos ) ? val : val.substr( slash + 1 );
-							pbxBasenames.insert( base );
-							if( !uuid.empty() ) {
-								pbxFileRefToBase[uuid] = base;
-							}
+					const std::string val = extractPbxProp( body, "path =" );
+					const std::string st = extractPbxProp( body, "sourceTree =" );
+					if( !val.empty() ) {
+						const std::size_t slash = val.rfind( '/' );
+						const std::string base = ( slash == std::string::npos ) ? val : val.substr( slash + 1 );
+						pbxBasenames.insert( base );
+						if( !uuid.empty() ) {
+							pbxFileRefToBase[uuid] = base;
+							pbxFileRefs[uuid] = PbxRefInfo{ val, st.empty() ? "<group>" : st };
 						}
+					} else if( !uuid.empty() ) {
+						pbxFileRefs[uuid] = PbxRefInfo{ std::string(), st.empty() ? "<group>" : st };
 					}
 					cur = blkClose + 2;
 				}
@@ -6008,6 +6116,137 @@ int main()
 			}
 			if( pbxSourcesPhases.size() < 2 ) {
 				missingBuildRefs.push_back( "project.pbxproj expected >= 2 PBXSourcesBuildPhase blocks" );
+			}
+			// Reverse project.pbxproj -> disk check: verify every PBXBuildFile resolves to a
+			// PBXFileReference and walk mainGroup -> PBXGroup -> PBXFileReference on disk.
+			for( const auto& kv : pbxBuildFileToRef ) {
+				if( pbxFileRefs.find( kv.second ) == pbxFileRefs.end() ) {
+					missingBuildRefs.push_back( "project.pbxproj PBXBuildFile dangling fileRef: " + kv.first + " -> " + kv.second );
+				}
+			}
+			{
+				struct PbxGroupNode { std::string path; std::string sourceTree; std::vector<std::string> children; };
+				std::map<std::string, PbxGroupNode> pbxGroups;
+				const std::string grpSec = pbxSection( "PBXGroup" );
+				std::size_t cur = 0;
+				while( cur < grpSec.size() ) {
+					const std::size_t isaPos = grpSec.find( "isa = PBXGroup;", cur );
+					if( isaPos == std::string::npos ) break;
+					const std::size_t blkOpen = grpSec.rfind( '{', isaPos );
+					const std::size_t blkClose = grpSec.find( "};", isaPos );
+					if( blkOpen == std::string::npos || blkClose == std::string::npos ) break;
+					std::size_t lineStart = grpSec.rfind( '\n', blkOpen );
+					lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
+					while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( grpSec[lineStart] ) ) ) ++lineStart;
+					if( isHex24( grpSec, lineStart ) ) {
+						const std::string gid = grpSec.substr( lineStart, 24 );
+						const std::string body = grpSec.substr( blkOpen, blkClose - blkOpen );
+						PbxGroupNode node;
+						node.path = extractPbxProp( body, "path =" );
+						node.sourceTree = extractPbxProp( body, "sourceTree =" );
+						if( node.sourceTree.empty() ) node.sourceTree = "<group>";
+						const std::size_t cp = body.find( "children = (" );
+						if( cp != std::string::npos ) {
+							const std::size_t ce = body.find( ");", cp );
+							if( ce != std::string::npos ) {
+								const std::string cTxt = body.substr( cp + 12, ce - ( cp + 12 ) );
+								for( std::size_t i = 0; i + 24 <= cTxt.size(); ) {
+									if( isHex24( cTxt, i ) &&
+									    ( i == 0 || !std::isxdigit( static_cast<unsigned char>( cTxt[i - 1] ) ) ) &&
+									    ( i + 24 == cTxt.size() || !std::isxdigit( static_cast<unsigned char>( cTxt[i + 24] ) ) ) ) {
+										node.children.push_back( cTxt.substr( i, 24 ) );
+										i += 24;
+									} else {
+										++i;
+									}
+								}
+							}
+						}
+						pbxGroups[gid] = std::move( node );
+					}
+					cur = blkClose + 2;
+				}
+				std::map<std::string, PbxRefInfo> pbxSyncRootGroups;
+				{
+					const std::string syncSec = pbxSection( "PBXFileSystemSynchronizedRootGroup" );
+					std::size_t scur = 0;
+					while( scur < syncSec.size() ) {
+						const std::size_t isaPos = syncSec.find( "isa = PBXFileSystemSynchronizedRootGroup;", scur );
+						if( isaPos == std::string::npos ) break;
+						const std::size_t blkOpen = syncSec.rfind( '{', isaPos );
+						const std::size_t blkClose = syncSec.find( "};", isaPos );
+						if( blkOpen == std::string::npos || blkClose == std::string::npos ) break;
+						std::size_t lineStart = syncSec.rfind( '\n', blkOpen );
+						lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
+						while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( syncSec[lineStart] ) ) ) ++lineStart;
+						if( isHex24( syncSec, lineStart ) ) {
+							const std::string sid = syncSec.substr( lineStart, 24 );
+							const std::string body = syncSec.substr( blkOpen, blkClose - blkOpen );
+							const std::string p = extractPbxProp( body, "path =" );
+							const std::string st = extractPbxProp( body, "sourceTree =" );
+							pbxSyncRootGroups[sid] = PbxRefInfo{ p, st.empty() ? "<group>" : st };
+						}
+						scur = blkClose + 2;
+					}
+				}
+				const std::string projSec = pbxSection( "PBXProject" );
+				const std::string mainGroupProp = extractPbxProp( projSec, "mainGroup =" );
+				const std::string mainGroupId = ( mainGroupProp.size() >= 24 && isHex24( mainGroupProp, 0 ) )
+					? mainGroupProp.substr( 0, 24 ) : std::string();
+				const fs::path xcodeProjDir = repoRoot / "build/XCode/rise";
+				std::set<std::string> visitedGroups;
+				std::function<void( const std::string&, const fs::path& )> walkPbx = [&]( const std::string& id, const fs::path& curDir ) {
+					auto gIt = pbxGroups.find( id );
+					if( gIt != pbxGroups.end() ) {
+						if( !visitedGroups.insert( id ).second ) return;
+						const PbxGroupNode& g = gIt->second;
+						fs::path nextDir = curDir;
+						if( g.sourceTree == "SOURCE_ROOT" ) {
+							nextDir = g.path.empty() ? xcodeProjDir : ( xcodeProjDir / g.path ).lexically_normal();
+						} else if( g.sourceTree == "<group>" ) {
+							if( !g.path.empty() ) nextDir = ( curDir / g.path ).lexically_normal();
+						} else {
+							return;
+						}
+						for( const std::string& ch : g.children ) {
+							walkPbx( ch, nextDir );
+						}
+						return;
+					}
+					auto fIt = pbxFileRefs.find( id );
+					if( fIt != pbxFileRefs.end() ) {
+						const PbxRefInfo& fr = fIt->second;
+						fs::path fPath;
+						if( fr.sourceTree == "SOURCE_ROOT" ) {
+							fPath = ( xcodeProjDir / fr.path ).lexically_normal();
+						} else if( fr.sourceTree == "<group>" ) {
+							fPath = ( curDir / fr.path ).lexically_normal();
+						} else {
+							return; // SDKROOT / BUILT_PRODUCTS_DIR
+						}
+						if( !fs::exists( fPath ) ) {
+							missingBuildRefs.push_back( "project.pbxproj PBXFileReference missing on disk: " + fPath.generic_string() );
+						}
+						return;
+					}
+					auto sIt = pbxSyncRootGroups.find( id );
+					if( sIt != pbxSyncRootGroups.end() ) {
+						const PbxRefInfo& sr = sIt->second;
+						const fs::path sPath = ( sr.sourceTree == "SOURCE_ROOT" )
+							? ( xcodeProjDir / sr.path ).lexically_normal()
+							: ( curDir / sr.path ).lexically_normal();
+						if( !fs::is_directory( sPath ) ) {
+							missingBuildRefs.push_back( "project.pbxproj PBXFileSystemSynchronizedRootGroup missing dir: " + sPath.generic_string() );
+						}
+						return;
+					}
+					missingBuildRefs.push_back( "project.pbxproj PBXGroup dangling child ID: " + id );
+				};
+				if( mainGroupId.empty() ) {
+					missingBuildRefs.push_back( "project.pbxproj missing mainGroup ID" );
+				} else {
+					walkPbx( mainGroupId, xcodeProjDir );
+				}
 			}
 			for( const std::string& m : missingBuildRefs ) {
 				std::cout << "  build-parity: " << m << std::endl;

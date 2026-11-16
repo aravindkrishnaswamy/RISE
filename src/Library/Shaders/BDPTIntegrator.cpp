@@ -55,8 +55,8 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#include <atomic>
 #include "pch.h"
+#include <atomic>
 #include "BDPTIntegrator.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Interfaces/IMaterial.h"

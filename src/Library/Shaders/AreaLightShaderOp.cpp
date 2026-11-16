@@ -1,4 +1,3 @@
-#include "../Utilities/IndependentSampler.h"
 //////////////////////////////////////////////////////////////////////
 //
 //  AreaLightShaderOp.cpp - Implementation of the AreaLightShaderOp class
@@ -15,6 +14,7 @@
 #include "pch.h"
 #include "../RISE_API.h"
 #include "AreaLightShaderOp.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Utilities/GeometricUtilities.h"
 
 using namespace RISE;

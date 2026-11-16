@@ -126,6 +126,8 @@
 #include "Transformable.h"
 #include "../Animation/TimeIndexedView.h"
 #include "../Geometry/Geometry.h"
+#include "../Objects/Object.h"
+#include "../Materials/PolishedSPF.h"
 #include <algorithm>
 #include <functional>
 #include <limits>
@@ -145,6 +147,11 @@
 
 namespace RISE
 {
+	namespace GeometricUtilities
+	{
+		extern unsigned int PatchCertificateEpoch();
+	}
+
 	namespace IORStackSeeding
 	{
 		// Per-object containment is determined by per-object PARITY of
@@ -379,6 +386,17 @@ namespace RISE
 			kMembershipSheetFront	//!< certified open refractive sheet, front face
 		};
 
+		//! True when @a pMaterial's scattering provider is `PolishedSPF`
+		//! (including `LambertianLuminaireMaterial` / `PhongLuminaireMaterial`
+		//! wrapping `PolishedMaterial`): an opaque coat-over-substrate that
+		//! reports `canRefract = true` for Fresnel evaluation in SMS, but never
+		//! transmits through its substrate or pushes onto `IORStack`.
+		inline bool IsPolishedCoatMaterial( const IMaterial* pMaterial )
+		{
+			return pMaterial &&
+				dynamic_cast<const Implementation::PolishedSPF*>( pMaterial->GetSPF() ) != 0;
+		}
+
 		//! DL-618: classifies @a ri for open-sheet membership.  @a info
 		//! receives the material's SpecularInfo when the hit has a
 		//! material (unchanged otherwise).
@@ -395,6 +413,11 @@ namespace RISE
 			if( !ri.pObject || !ri.pMaterial ) {
 				return kMembershipBlock;
 			}
+			if( IsPolishedCoatMaterial( ri.pMaterial ) &&
+				!ri.pMaterial->IsVolumetric() &&
+				!ri.pMaterial->GetGradedIORField() ) {
+				return kMembershipBlock;
+			}
 			static const IORStack kQueryStack( Scalar( 1.0 ) );
 			info = nm > 0 ? ri.pMaterial->GetSpecularInfoNM( ri.geometric, kQueryStack, nm )
 				: ri.pMaterial->GetSpecularInfo( ri.geometric, kQueryStack );
@@ -403,8 +426,11 @@ namespace RISE
 			if( !bTrackable ) {
 				return kMembershipBlock;
 			}
-			if( ri.geometric.bProvablyNoInterior && info.canRefract ) {
-				return ri.geometric.TrueGeomFacing( dir ) > 0 ? kMembershipSheetBack : kMembershipSheetFront;
+			if( ri.geometric.bProvablyNoInterior ) {
+				if( info.clearTransmission && info.ior > 0 ) {
+					return ri.geometric.TrueGeomFacing( dir ) > 0 ? kMembershipSheetBack : kMembershipSheetFront;
+				}
+				return kMembershipBlock;
 			}
 			return kMembershipTransparent;
 		}
@@ -1347,6 +1373,8 @@ namespace RISE
 			std::vector<const IObject*> objects;
 			//! Epoch-guarded pose-validity mask for `normalGroups`.
 			std::vector<bool> confirmGroupPoseValid;
+			unsigned long long cachedMaterialEpoch;
+			unsigned int cachedPatchCertEpoch;
 			unsigned long long cachedShapeEpoch;
 			unsigned long long cachedGlobalPoseEpoch;
 			unsigned long long cachedThreadPoseEpoch;
@@ -1365,6 +1393,8 @@ namespace RISE
 			  generation( 0 ),
 			  epoch( 0 ),
 			  itemCount( 0 ),
+			  cachedMaterialEpoch( 0 ),
+			  cachedPatchCertEpoch( 0 ),
 			  cachedShapeEpoch( 0 ),
 			  cachedGlobalPoseEpoch( 0 ),
 			  cachedThreadPoseEpoch( 0 ),
@@ -1405,6 +1435,9 @@ namespace RISE
 			if( !pMaterial || pMaterial->CouldLightPassThrough() ) {
 				return true;
 			}
+			if( IsPolishedCoatMaterial( pMaterial ) ) {
+				return false;
+			}
 			RayIntersectionGeometric rig( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), nullRasterizerState );
 			rig.bHit = true;
 			rig.vNormal = Vector3( 0, 0, 1 );
@@ -1412,10 +1445,10 @@ namespace RISE
 			static const IORStack kQueryStack( Scalar( 1.0 ) );
 			const SpecularInfo info = pMaterial->GetSpecularInfo( rig, kQueryStack );
 			if( info.valid ) {
-				return info.canRefract;
+				return info.clearTransmission && info.ior > 0;
 			}
 			const SpecularInfo infoNM = pMaterial->GetSpecularInfoNM( rig, kQueryStack, Scalar( 550 ) );
-			return infoNM.valid && infoNM.canRefract;
+			return infoNM.valid && infoNM.clearTransmission && infoNM.ior > 0;
 		}
 
 		inline bool MaterialMayBeTrackable( const IMaterial* pMaterial )
@@ -1424,17 +1457,20 @@ namespace RISE
 				pMaterial->IsVolumetric() || pMaterial->GetGradedIORField() ) {
 				return true;
 			}
+			if( IsPolishedCoatMaterial( pMaterial ) ) {
+				return false;
+			}
 			RayIntersectionGeometric rig( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), nullRasterizerState );
 			rig.bHit = true;
 			rig.vNormal = Vector3( 0, 0, 1 );
 			rig.vGeomNormal = Vector3( 0, 0, 1 );
 			static const IORStack kQueryStack( Scalar( 1.0 ) );
 			const SpecularInfo info = pMaterial->GetSpecularInfo( rig, kQueryStack );
-			if( info.valid && ( info.canRefract || info.hasInterior ) ) {
+			if( info.valid && ( ( info.canRefract && info.ior > 0 ) || info.hasInterior ) ) {
 				return true;
 			}
 			const SpecularInfo infoNM = pMaterial->GetSpecularInfoNM( rig, kQueryStack, Scalar( 550 ) );
-			return infoNM.valid && ( infoNM.canRefract || infoNM.hasInterior );
+			return infoNM.valid && ( ( infoNM.canRefract && infoNM.ior > 0 ) || infoNM.hasInterior );
 		}
 
 		inline bool ObjectMayRefract( const IObject& object )
@@ -1557,8 +1593,12 @@ namespace RISE
 			const unsigned long long generation = pObjects->GetSpatialStructureGeneration();
 			const unsigned int itemCount = pObjects->getItemCount();
 			const unsigned long long epoch = OpenSheetCatalogEpoch().load( std::memory_order_acquire );
+			const unsigned long long matEpoch = Implementation::Object::MaterialBindingEpoch();
+			const unsigned int patchEpoch = GeometricUtilities::PatchCertificateEpoch();
 			if( catalog.pObjects == pObjects && catalog.generation == generation &&
-				catalog.epoch == epoch && catalog.itemCount == itemCount ) {
+				catalog.epoch == epoch && catalog.itemCount == itemCount &&
+				catalog.cachedMaterialEpoch == matEpoch &&
+				catalog.cachedPatchCertEpoch == patchEpoch ) {
 				return catalog;
 			}
 			const unsigned long long buildShapeEpoch = Implementation::Geometry::GlobalGeometryShapeEpoch();
@@ -1570,6 +1610,8 @@ namespace RISE
 			catalog.generation = generation;
 			catalog.epoch = epoch;
 			catalog.itemCount = itemCount;
+			catalog.cachedMaterialEpoch = matEpoch;
+			catalog.cachedPatchCertEpoch = patchEpoch;
 			catalog.sheets.clear();
 			catalog.closedTrackable.clear();
 			catalog.closedTrackableBoxes.clear();
@@ -1876,7 +1918,7 @@ namespace RISE
 				const bool ok = PosedOpenSheet( cat.sheets[i], posed );
 				posed.valid = ok;
 				cat.posedSheets[i] = posed;
-				const BoundingBox b = ok ? posed.box : BoundingBox();
+				const BoundingBox b = ok ? posed.box : BoundingBox( Point3( 1, 1, 1 ), Point3( -1, -1, -1 ) );
 				if( !SameBox( b, cat.posedSheetBoxes[i] ) ) {
 					cat.posedSheetBoxes[i] = b;
 					sheetBoxesChanged = true;

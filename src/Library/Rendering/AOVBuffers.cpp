@@ -1,4 +1,3 @@
-#include "../Utilities/IndependentSampler.h"
 //////////////////////////////////////////////////////////////////////
 //
 //  AOVBuffers.cpp - Implementation of AOV float buffers for denoiser
@@ -15,6 +14,7 @@
 
 #include "pch.h"
 #include "AOVBuffers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/ICamera.h"

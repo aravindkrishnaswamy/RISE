@@ -41,8 +41,8 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#include <type_traits>   // static_assert guarding the RISEPel == Rec709RGBPel decode assumption
 #include "pch.h"
+#include <type_traits>   // static_assert guarding the RISEPel == Rec709RGBPel decode assumption
 #include "AgentSession.h"
 #include "SchemaGen.h"
 #include "InMemoryRasterizerOutput.h"

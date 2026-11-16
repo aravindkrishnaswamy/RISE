@@ -65,6 +65,18 @@ namespace RISE
 			for( wchar_t& ch : norm ) {
 				if( ch == L'/' ) ch = L'\\';
 			}
+			if( norm.size() >= 8 &&
+				( norm.rfind( L"\\\\?\\UNC\\", 0 ) == 0 || norm.rfind( L"\\\\.\\UNC\\", 0 ) == 0 ) ) {
+				const std::wstring pfx = norm.substr( 0, 8 );
+				std::wstring body = std::filesystem::path( L"\\\\" + norm.substr( 8 ) ).lexically_normal().make_preferred().native();
+				if( body.rfind( L"\\\\", 0 ) == 0 ) {
+					body.erase( 0, 2 );
+				}
+				norm = pfx + body;
+			} else if( norm.size() >= 4 ) {
+				const std::wstring pfx = norm.substr( 0, 4 );
+				norm = pfx + std::filesystem::path( norm.substr( 4 ) ).lexically_normal().make_preferred().native();
+			}
 			stripPrefixedTrailingSlash( norm );
 			return std::filesystem::path( norm );
 		}
