@@ -71,6 +71,8 @@ GGX reflection/refraction kernel in `MicrofacetUtils.h`. Exact smooth/TIR/
 equal-index limits and analytic normal-incidence values come first; independent
 Walter evaluation, adjoint reciprocity, a finite-difference refractive Jacobian,
 and sampled PDF/energy comparisons against quadrature cover the rough case.
+Machine-adjacent IORs check the analytic single-scatter energy limit without
+artificial null events; known valid VNDF endpoints assert acceptance explicitly.
 It does not exercise a material, importer, IOR stack, or renderer integration.
 
 ```sh

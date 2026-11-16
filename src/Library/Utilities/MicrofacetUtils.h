@@ -415,25 +415,28 @@ namespace RISE
 
 			inline Scalar Fresnel( Scalar cosI, Scalar eta, Scalar& cosT )
 			{
-				const Scalar sin2T = r_max( Scalar(0), ( 1 - cosI ) * ( 1 + cosI ) ) / ( eta * eta );
-				if( sin2T >= 1 ) { cosT = 0; return 1; }
-				cosT = std::sqrt( 1 - sin2T );
-				const Scalar rs = ( cosI - eta * cosT ) / ( cosI + eta * cosT );
-				const Scalar rp = ( eta * cosI - cosT ) / ( eta * cosI + cosT );
+				// Divide sin(theta), not sin^2(theta), so eta^2 cannot
+				// underflow at normal incidence for a finite positive eta.
+				const Scalar sinT = std::sqrt( r_max( Scalar(0), ( 1 - cosI ) * ( 1 + cosI ) ) ) / eta;
+				if( sinT >= 1 ) { cosT = 0; return 1; }
+				cosT = std::sqrt( ( 1 - sinT ) * ( 1 + sinT ) );
+				// Scale each ratio by the larger index, avoiding eta*cos
+				// overflow without changing the Fresnel equations.
+				const Scalar rs = eta >= 1 ? ( cosI/eta - cosT ) / ( cosI/eta + cosT ) :
+					( cosI - eta*cosT ) / ( cosI + eta*cosT );
+				const Scalar rp = eta >= 1 ? ( cosI - cosT/eta ) / ( cosI + cosT/eta ) :
+					( eta*cosI - cosT ) / ( eta*cosI + cosT );
 				return ( rs * rs + rp * rp ) * Scalar(0.5);
 			}
 
-			inline Evaluation Evaluate( const Vector3& wi, const Vector3& wo,
+			// The sampler retains its micronormal: an outgoing direction
+			// rounded to double can lose that information when eta is one
+			// ULP from 1. Reconstructing it would create artificial nulls.
+			inline Evaluation EvaluateWithNormal( const Vector3& wi, const Vector3& wo, const Vector3& m,
 				Scalar ax, Scalar ay, Scalar eta, bool radiance )
 			{
 				Evaluation result;
-				if( !ValidParameters( ax, ay, eta ) || wi.z <= 0 || wo.z == 0 || ax == 0 || eta == 1 ) return result;
 				const bool reflection = wo.z > 0;
-				Vector3 m = reflection ? wi + wo : wi + wo * eta;
-				const Scalar length = std::hypot( m.z, std::hypot( m.x, m.y ) );
-				if( !( length > 0 ) ) return result;
-				m = m * ( 1 / length );
-				if( m.z < 0 ) m = -m;
 				const Scalar ci = Vector3Ops::Dot( wi, m ), co = Vector3Ops::Dot( wo, m );
 				if( ci <= 0 || ( reflection ? co <= 0 : co >= 0 ) ) return result;
 				Scalar cosT = 0;
@@ -459,6 +462,22 @@ namespace RISE
 					if( radiance ) result.f *= invEta * invEta;
 				}
 				return result;
+			}
+
+			/// Direction-only evaluation. For an actual draw, use Sample's
+			/// f/pdf: at machine-adjacent indices the rounded direction cannot
+			/// uniquely recover the sampled micronormal or its density.
+			inline Evaluation Evaluate( const Vector3& wi, const Vector3& wo,
+				Scalar ax, Scalar ay, Scalar eta, bool radiance )
+			{
+				if( !ValidParameters( ax, ay, eta ) || wi.z <= 0 || wo.z == 0 || ax == 0 || eta == 1 ) return {};
+				Vector3 m = wo.z > 0 ? wi + wo : Vector3(
+					std::fma( eta, wo.x, wi.x ), std::fma( eta, wo.y, wi.y ), std::fma( eta, wo.z, wi.z ) );
+				const Scalar length = std::hypot( m.z, std::hypot( m.x, m.y ) );
+				if( !( length > 0 ) ) return {};
+				m = m * ( 1 / length );
+				if( m.z < 0 ) m = -m;
+				return EvaluateWithNormal( wi, wo, m, ax, ay, eta, radiance );
 			}
 
 			inline Sample Draw( const Vector3& wi, Scalar ax, Scalar ay, Scalar eta,
@@ -499,7 +518,7 @@ namespace RISE
 					result.weight = result.transmission && radiance ? 1 / ( eta * eta ) : 1;
 					result.f = result.pdf * result.weight / std::abs( result.wo.z );
 				} else {
-					const Evaluation evaluated = Evaluate( wi, result.wo, ax, ay, eta, radiance );
+					const Evaluation evaluated = EvaluateWithNormal( wi, result.wo, m, ax, ay, eta, radiance );
 					result.f = evaluated.f;
 					result.pdf = evaluated.pdf;
 					const Scalar zi = wi.z, zo = std::abs( result.wo.z );

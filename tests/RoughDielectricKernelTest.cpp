@@ -97,6 +97,47 @@ static void ExactLimits()
 	Check( !RD::Draw( wi, 0, 0.2, 1.5, 0.1, 0.2, 0.3, false ).valid, "one zero roughness axis is explicitly unsupported" );
 	Check( !RD::Draw( wi, 0.2, 0.2, 0, 0.1, 0.2, 0.3, false ).valid &&
 		!RD::Draw( wi, 0.2, 0.2, 1.5, 0.1, 1, 0.3, false ).valid, "invalid index and closed-right random input are rejected" );
+	for( double eta : { 1e-200, 1e200 } ) {
+		const auto extreme = RD::Draw( wi, 0, 0, eta, 0.2, 0.3, 0.5, false );
+		Check( extreme.valid && !extreme.transmission && extreme.pdf == 1 && extreme.weight == 1,
+			"extreme finite index: normal-incidence Fresnel limit is unit reflection, without squaring eta" );
+	}
+}
+
+static void AdjacentIndicesAndEndpoints()
+{
+	const Vector3 wi = Unit(0.3,0.2,1);
+	const double ax=0.3, ay=0.6;
+	const double lambda=(std::sqrt(1+(ax*ax*wi.x*wi.x+ay*ay*wi.y*wi.y)/(wi.z*wi.z))-1)/2;
+	const double expectedWeight=(1+lambda)/(1+2*lambda);
+	for( double eta : { std::nextafter(1.0,0.0), std::nextafter(1.0,2.0) } ) {
+		// This exact draw formerly lost m.z when m was reconstructed from wo.
+		const auto regression=RD::Draw(wi,ax,ay,eta,0.5066881612090306,0.99892030650086816,0.5,false);
+		Check(regression.valid && regression.transmission && std::isfinite(regression.pdf),
+			"adjacent-index regression retains the sampled normal instead of creating a null event");
+		std::mt19937_64 rng(217507);
+		const auto uniform=[&rng](){return std::generate_canonical<double,53>(rng);};
+		double totalWeight=0;
+		for(int n=0;n<10000;++n) {
+			const double u=uniform(),v=uniform();
+			const auto s=RD::Draw(wi,ax,ay,eta,u,v,0.5,false);
+			Check(s.valid && s.transmission && !s.delta && std::isfinite(s.pdf) &&
+				std::isfinite(s.f) && Close(s.weight,expectedWeight,1e-12),
+				"adjacent-index VNDF transmission has no artificial rejection or energy loss");
+			totalWeight+=s.valid?s.weight:0;
+		}
+		Check(Close(totalWeight/10000,expectedWeight,1e-12),
+			"adjacent-index mean equals the analytic single-scatter G2/G1 limit");
+	}
+	const double upper=std::nextafter(1.0,0.0);
+	for(double u : {0.0,upper}) {
+		const auto lowerRadial=RD::Draw(Vector3(0,0,1),0.1,0.1,1.5,u,0,0.5,false);
+		Check(lowerRadial.valid && lowerRadial.transmission,
+			"normal incidence accepts lower radial endpoint at both azimuth endpoints");
+		const auto upperRadial=RD::Draw(Unit(1,0,1e-10),0.1,0.1,1.5,u,upper,0.5,false);
+		Check(upperRadial.valid && upperRadial.transmission,
+			"grazing incidence accepts known valid upper radial and azimuth endpoint transmissions");
+	}
 }
 
 static void EvaluationAndAdjoint()
@@ -225,6 +266,7 @@ static void ProbabilityAndFurnace()
 int main()
 {
 	ExactLimits();
+	AdjacentIndicesAndEndpoints();
 	EvaluationAndAdjoint();
 	RefractionJacobian();
 	BoundaryCases();

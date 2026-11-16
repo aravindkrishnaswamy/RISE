@@ -60,6 +60,8 @@ PDF, height-correlated Smith masking, exact smooth/equal-index delta limits,
 and explicit radiance versus importance scaling. `RoughDielectricKernelTest`
 checks analytic limits, independent Walter equations and refractive Jacobians,
 adjoint reciprocity, and sampled distributions/energy against quadrature.
+Draws retain their sampled micronormal for evaluating their value and PDF;
+direction-only reconstruction loses that information at machine-adjacent IORs.
 This scalar kernel is shared groundwork for Pel/NM/HWSS, not a new material.
 It implements single scattering with null events; multiscatter compensation,
 material/IOR-stack integration, public API/parser/editor support, showcase
