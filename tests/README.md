@@ -64,6 +64,20 @@ MSVC build yet, so the first Windows run of each should expect to fix them:
   command string handed to `std::system`), added 2026-09-07. The POSIX
   branch is exercised on every macOS/Linux run.
 
+## Rough dielectric transport kernel (Tier 1.1 groundwork)
+
+`RoughDielectricKernelTest` checks the scalar, local-frame single-scatter
+GGX reflection/refraction kernel in `MicrofacetUtils.h`. Exact smooth/TIR/
+equal-index limits and analytic normal-incidence values come first; independent
+Walter evaluation, adjoint reciprocity, a finite-difference refractive Jacobian,
+and sampled PDF/energy comparisons against quadrature cover the rough case.
+It does not exercise a material, importer, IOR stack, or renderer integration.
+
+```sh
+make -C build/make/rise build-test/RoughDielectricKernelTest
+./bin/tests/RoughDielectricKernelTest
+```
+
 ## Shared quartic factorization (DL226)
 
 Build the library and exact target, then run `./bin/tests/PolynomialTest`:

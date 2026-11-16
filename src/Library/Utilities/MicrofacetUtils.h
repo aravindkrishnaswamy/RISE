@@ -28,6 +28,7 @@
 #ifndef MICROFACET_UTILS_
 #define MICROFACET_UTILS_
 
+#include <cmath>
 #include "Math3D/Math3D.h"
 #include "OrthonormalBasis3D.h"
 #include "math_utils.h"
@@ -364,6 +365,152 @@ namespace RISE
 			const Scalar Dv = G1wi * wiH * D / cosWi;
 
 			return Dv / (4.0 * woH);
+		}
+
+		/// Tier 1.1 transport kernel, in a local frame whose +z faces the
+		/// incident medium. Both directions must be unit length and point
+		/// away from the interface; wi.z > 0. eta = n_transmitted/n_incident.
+		/// Alpha values are GGX widths, not perceptual roughness. Both zero
+		/// means smooth; a single zero width (a singular 1D distribution) is
+		/// unsupported. This is SINGLE scattering: rejected micronormals are
+		/// null events, not resampled. Multiple scattering and material/IOR
+		/// stack integration are separate work; existing materials do not use
+		/// this kernel yet. Shared scalar math is suitable for Pel/NM/HWSS.
+		namespace RoughDielectric
+		{
+			struct Evaluation
+			{
+				Scalar f = 0;       ///< BSDF in sr^-1, including radiance scaling if requested.
+				Scalar pdf = 0;     ///< Aggregate reflection/transmission solid-angle PDF.
+			};
+
+			struct Sample
+			{
+				Vector3 wo = Vector3( 0, 0, 0 );
+				Scalar f = 0;
+				Scalar pdf = 0;     ///< Probability mass for a delta event, density otherwise.
+				Scalar weight = 0;  ///< f * abs(wo.z) / pdf, without a second Fresnel coin.
+				bool transmission = false;
+				bool delta = false;
+				bool valid = false;
+			};
+
+			inline bool ValidParameters( Scalar ax, Scalar ay, Scalar eta )
+			{
+				return std::isfinite( ax ) && std::isfinite( ay ) && std::isfinite( eta ) &&
+					eta > 0 && ( ( ax > 0 && ay > 0 ) || ( ax == 0 && ay == 0 ) );
+			}
+
+			inline Scalar ProjectedLength( const Vector3& w, Scalar ax, Scalar ay )
+			{
+				return std::hypot( w.z, std::hypot( ax * w.x, ay * w.y ) );
+			}
+
+			inline Scalar Distribution( const Vector3& m, Scalar ax, Scalar ay )
+			{
+				if( m.z <= 0 ) return 0;
+				const Scalar inv = 1 / std::hypot( m.z, std::hypot( m.x / ax, m.y / ay ) );
+				return ( inv / ax ) * ( inv / ay ) * inv * inv * INV_PI;
+			}
+
+			inline Scalar Fresnel( Scalar cosI, Scalar eta, Scalar& cosT )
+			{
+				const Scalar sin2T = r_max( Scalar(0), ( 1 - cosI ) * ( 1 + cosI ) ) / ( eta * eta );
+				if( sin2T >= 1 ) { cosT = 0; return 1; }
+				cosT = std::sqrt( 1 - sin2T );
+				const Scalar rs = ( cosI - eta * cosT ) / ( cosI + eta * cosT );
+				const Scalar rp = ( eta * cosI - cosT ) / ( eta * cosI + cosT );
+				return ( rs * rs + rp * rp ) * Scalar(0.5);
+			}
+
+			inline Evaluation Evaluate( const Vector3& wi, const Vector3& wo,
+				Scalar ax, Scalar ay, Scalar eta, bool radiance )
+			{
+				Evaluation result;
+				if( !ValidParameters( ax, ay, eta ) || wi.z <= 0 || wo.z == 0 || ax == 0 || eta == 1 ) return result;
+				const bool reflection = wo.z > 0;
+				Vector3 m = reflection ? wi + wo : wi + wo * eta;
+				const Scalar length = std::hypot( m.z, std::hypot( m.x, m.y ) );
+				if( !( length > 0 ) ) return result;
+				m = m * ( 1 / length );
+				if( m.z < 0 ) m = -m;
+				const Scalar ci = Vector3Ops::Dot( wi, m ), co = Vector3Ops::Dot( wo, m );
+				if( ci <= 0 || ( reflection ? co <= 0 : co >= 0 ) ) return result;
+				Scalar cosT = 0;
+				const Scalar F = Fresnel( ci, eta, cosT );
+				const Scalar D = Distribution( m, ax, ay );
+				const Scalar zi = wi.z, zo = std::abs( wo.z );
+				const Scalar li = ProjectedLength( wi, ax, ay ), lo = ProjectedLength( wo, ax, ay );
+				// Algebraically G2/(4*zi*zo), avoiding grazing-angle divisions.
+				const Scalar common = zo * li + zi * lo;
+				if( reflection ) {
+					result.f = F * D / ( 2 * common );
+					result.pdf = F * D / ( 2 * ( zi + li ) );
+				} else {
+					// co + ci/eta cancels at eta ~= 1. Snell's identity gives
+					// the same denominator as a factored difference of squares.
+					const Scalar invEta = 1 / eta;
+					const Scalar denom = ( invEta - 1 ) * ( invEta + 1 ) /
+						( std::abs( co ) + ci * invEta );
+					if( denom == 0 ) return result;
+					const Scalar factor = ( 1 - F ) * D * std::abs( ci * co ) / ( denom * denom );
+					result.f = 2 * factor / common;
+					result.pdf = 2 * factor / ( zi + li );
+					if( radiance ) result.f *= invEta * invEta;
+				}
+				return result;
+			}
+
+			inline Sample Draw( const Vector3& wi, Scalar ax, Scalar ay, Scalar eta,
+				Scalar uNormal1, Scalar uNormal2, Scalar uLobe, bool radiance )
+			{
+				Sample result;
+				if( !ValidParameters( ax, ay, eta ) || wi.z <= 0 ||
+					!( uNormal1 >= 0 && uNormal1 < 1 ) || !( uNormal2 >= 0 && uNormal2 < 1 ) ||
+					!( uLobe >= 0 && uLobe < 1 ) ) return result;
+				result.delta = ax == 0 || eta == 1;
+				Vector3 m( 0, 0, 1 );
+				if( !result.delta ) {
+					// Dupuy-Benyoub spherical-cap VNDF, in the local frame.
+					const Vector3 vh = Vector3Ops::Normalize( Vector3( ax * wi.x, ay * wi.y, wi.z ) );
+					const Scalar z = 1 - uNormal2 * ( 1 + vh.z );
+					const Scalar r = std::sqrt( r_max( Scalar(0), ( 1 - z ) * ( 1 + z ) ) );
+					const Scalar phi = TWO_PI * uNormal1;
+					m = Vector3Ops::Normalize( Vector3( ax * ( vh.x + r * std::cos( phi ) ),
+						ay * ( vh.y + r * std::sin( phi ) ), ( 1 + vh.z ) * ( 1 - uNormal2 ) ) );
+				}
+				const Scalar ci = Vector3Ops::Dot( wi, m );
+				Scalar cosT = 0;
+				const Scalar F = eta == 1 ? Scalar(0) : Fresnel( ci, eta, cosT );
+				result.transmission = uLobe >= F;
+				if( eta == 1 ) {
+					result.wo = -wi;
+				} else if( result.transmission ) {
+					const Scalar invEta = 1 / eta;
+					// Rationalized ci/eta - cosT; preserves tiny index contrasts.
+					const Scalar normalTerm = ( invEta - 1 ) * ( invEta + 1 ) / ( ci * invEta + cosT );
+					result.wo = -wi * invEta + m * normalTerm;
+				} else {
+					result.wo = m * ( 2 * ci ) - wi;
+				}
+				if( result.transmission ? result.wo.z >= 0 : result.wo.z <= 0 ) return result;
+				if( result.delta ) {
+					result.pdf = result.transmission ? 1 - F : F;
+					result.weight = result.transmission && radiance ? 1 / ( eta * eta ) : 1;
+					result.f = result.pdf * result.weight / std::abs( result.wo.z );
+				} else {
+					const Evaluation evaluated = Evaluate( wi, result.wo, ax, ay, eta, radiance );
+					result.f = evaluated.f;
+					result.pdf = evaluated.pdf;
+					const Scalar zi = wi.z, zo = std::abs( result.wo.z );
+					const Scalar li = ProjectedLength( wi, ax, ay ), lo = ProjectedLength( result.wo, ax, ay );
+					// G2/G1(wi), after cancelling Fresnel and the refractive Jacobian.
+					result.weight = zo * ( zi + li ) / ( zo * li + zi * lo );
+					if( result.transmission && radiance ) result.weight /= eta * eta;
+				}
+				result.valid = result.pdf > 0;
+				return result;
+			}
 		}
 	}
 }
