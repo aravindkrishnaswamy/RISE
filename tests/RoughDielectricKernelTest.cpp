@@ -101,11 +101,27 @@ static void ExactLimits()
 		const auto extreme = RD::Draw( wi, 0, 0, eta, 0.2, 0.3, 0.5, false );
 		Check( extreme.valid && !extreme.transmission && extreme.pdf == 1 && extreme.weight == 1,
 			"extreme finite index: normal-incidence Fresnel limit is unit reflection, without squaring eta" );
+		Check( RD::Evaluate(wi,-wi,0.2,0.4,eta,false).pdf == 0,
+			"unit-Fresnel transmission evaluates to zero before computing its Jacobian" );
 	}
+	Check( !RD::ValidParameters(1e155,1e155,1.5) &&
+		!RD::Draw(Unit(0.3,0.2,1),1e155,1e155,1.5,0.2,0.4,0.5,false).valid,
+		"widths above one are explicitly outside this kernel's supported roughness domain" );
 }
 
 static void AdjacentIndicesAndEndpoints()
 {
+	for( double eta : { std::nextafter(1.0,0.0), std::nextafter(1.0,2.0), 1-1e-12, 1+1e-12 } ) {
+		const double delta=eta-1;
+		const double F=(delta/(eta+1))*(delta/(eta+1));
+		const double expected=(1-F)/(PI*0.2*0.4)*(eta/delta)*(eta/delta);
+		const auto directional=RD::Evaluate(Vector3(0,0,1),Vector3(0,0,-1),0.2,0.4,eta,false);
+		const auto sampled=RD::Draw(Vector3(0,0,1),0.2,0.4,eta,0.2,0,0.5,false);
+		Check( Close(directional.pdf,expected,1e-12) && Close(directional.f,expected,1e-12),
+			"adjacent-index normal-incidence directional value and PDF match analytic Jacobian, separately" );
+		Check( sampled.valid && Close(sampled.pdf,expected,1e-12) && Close(sampled.f,expected,1e-12) &&
+			sampled.wo.z == -1, "adjacent-index normal-incidence draw preserves exact contrast and direction" );
+	}
 	const Vector3 wi = Unit(0.3,0.2,1);
 	const double ax=0.3, ay=0.6;
 	const double lambda=(std::sqrt(1+(ax*ax*wi.x*wi.x+ay*ay*wi.y*wi.y)/(wi.z*wi.z))-1)/2;
@@ -153,7 +169,10 @@ static void EvaluationAndAdjoint()
 			if( !s.valid ) continue;
 			++accepted;
 			const auto ref = Reference( wi, s.wo, 0.25, 0.7, eta, false );
+			const auto directional = RD::Evaluate( wi, s.wo, 0.25, 0.7, eta, false );
 			Check( Close( s.f, ref.f, 2e-8 ) && Close( s.pdf, ref.pdf, 2e-8 ), "evaluation agrees with independent unreduced Walter equations" );
+			Check( Close( directional.f, ref.f, 2e-8 ) && Close( directional.pdf, ref.pdf, 2e-8 ),
+				"direction-only evaluation agrees with independent Walter value and PDF" );
 			Check( Close( s.f * std::abs(s.wo.z) / s.pdf, s.weight, 2e-8 ), "sample throughput agrees with f*cos/pdf" );
 			Check( s.weight >= 0 && s.weight <= 1 + 1e-12, "single-scatter importance weight cannot create energy" );
 			if( s.transmission ) {

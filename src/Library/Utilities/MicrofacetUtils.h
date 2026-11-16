@@ -370,7 +370,7 @@ namespace RISE
 		/// Tier 1.1 transport kernel, in a local frame whose +z faces the
 		/// incident medium. Both directions must be unit length and point
 		/// away from the interface; wi.z > 0. eta = n_transmitted/n_incident.
-		/// Alpha values are GGX widths, not perceptual roughness. Both zero
+		/// Alpha values are GGX widths in (0,1], not perceptual roughness. Both zero
 		/// means smooth; a single zero width (a singular 1D distribution) is
 		/// unsupported. This is SINGLE scattering: rejected micronormals are
 		/// null events, not resampled. Multiple scattering and material/IOR
@@ -398,7 +398,7 @@ namespace RISE
 			inline bool ValidParameters( Scalar ax, Scalar ay, Scalar eta )
 			{
 				return std::isfinite( ax ) && std::isfinite( ay ) && std::isfinite( eta ) &&
-					eta > 0 && ( ( ax > 0 && ay > 0 ) || ( ax == 0 && ay == 0 ) );
+					eta > 0 && ( ( ax > 0 && ax <= 1 && ay > 0 && ay <= 1 ) || ( ax == 0 && ay == 0 ) );
 			}
 
 			inline Scalar ProjectedLength( const Vector3& w, Scalar ax, Scalar ay )
@@ -441,6 +441,7 @@ namespace RISE
 				if( ci <= 0 || ( reflection ? co <= 0 : co >= 0 ) ) return result;
 				Scalar cosT = 0;
 				const Scalar F = Fresnel( ci, eta, cosT );
+				if( !reflection && F == 1 ) return result;
 				const Scalar D = Distribution( m, ax, ay );
 				const Scalar zi = wi.z, zo = std::abs( wo.z );
 				const Scalar li = ProjectedLength( wi, ax, ay ), lo = ProjectedLength( wo, ax, ay );
@@ -453,7 +454,7 @@ namespace RISE
 					// co + ci/eta cancels at eta ~= 1. Snell's identity gives
 					// the same denominator as a factored difference of squares.
 					const Scalar invEta = 1 / eta;
-					const Scalar denom = ( invEta - 1 ) * ( invEta + 1 ) /
+					const Scalar denom = ( ( 1 - eta ) * invEta ) * ( invEta + 1 ) /
 						( std::abs( co ) + ci * invEta );
 					if( denom == 0 ) return result;
 					const Scalar factor = ( 1 - F ) * D * std::abs( ci * co ) / ( denom * denom );
@@ -506,9 +507,12 @@ namespace RISE
 					result.wo = -wi;
 				} else if( result.transmission ) {
 					const Scalar invEta = 1 / eta;
-					// Rationalized ci/eta - cosT; preserves tiny index contrasts.
-					const Scalar normalTerm = ( invEta - 1 ) * ( invEta + 1 ) / ( ci * invEta + cosT );
-					result.wo = -wi * invEta + m * normalTerm;
+					// Preserve 1-eta BEFORE rounding its reciprocal. Express
+					// refraction as a correction to -wi, so even normal-incidence
+					// adjacent-index transmission stays exactly straight through.
+					const Scalar contrast = ( 1 - eta ) / eta;
+					const Scalar normalRatio = ( invEta + 1 ) / ( ci * invEta + cosT );
+					result.wo = -wi + ( m * normalRatio - wi ) * contrast;
 				} else {
 					result.wo = m * ( 2 * ci ) - wi;
 				}

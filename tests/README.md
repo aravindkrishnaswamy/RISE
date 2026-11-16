@@ -73,6 +73,9 @@ Walter evaluation, adjoint reciprocity, a finite-difference refractive Jacobian,
 and sampled PDF/energy comparisons against quadrature cover the rough case.
 Machine-adjacent IORs check the analytic single-scatter energy limit without
 artificial null events; known valid VNDF endpoints assert acceptance explicitly.
+The supported width domain is `(0,1]` on both axes (or both zero); out-of-domain
+widths are rejected explicitly. Direction-only and sampled values/PDFs are
+separately compared with the independent equations.
 It does not exercise a material, importer, IOR stack, or renderer integration.
 
 ```sh

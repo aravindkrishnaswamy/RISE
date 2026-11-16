@@ -57,7 +57,9 @@ High-impact rendering capabilities that close the remaining physical-transport a
 **Started 2026-11-16 — transport kernel only.** `MicrofacetUtils::RoughDielectric`
 provides anisotropic GGX VNDF reflection/refraction, an aggregate solid-angle
 PDF, height-correlated Smith masking, exact smooth/equal-index delta limits,
-and explicit radiance versus importance scaling. `RoughDielectricKernelTest`
+and explicit radiance versus importance scaling. Its supported GGX widths are
+`(0,1]` on both axes, or both zero for smooth scattering; larger widths and
+single-zero-axis distributions are rejected. `RoughDielectricKernelTest`
 checks analytic limits, independent Walter equations and refractive Jacobians,
 adjoint reciprocity, and sampled distributions/energy against quadrature.
 Draws retain their sampled micronormal for evaluating their value and PDF;
