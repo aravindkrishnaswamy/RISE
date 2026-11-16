@@ -885,6 +885,7 @@ void RayBezierPatchIntersection(
 	)
 {
 	if( !bHitFrontFaces && !bHitBackFaces ) {
+		hit.bHit = false;
 		return;
 	}
 	if( g_bezierAlgo == kAlgoClipping ) {

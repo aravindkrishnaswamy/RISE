@@ -3111,6 +3111,10 @@ static void TestRound7StandalonePatchAndBilinearFixes()
 			std::to_string( rawPoleHit.dRange ) + ") and hits valid root (t=5, got " +
 			std::to_string( rigPoleBody.range ) + ")" );
 		safe_release( gPoleFold );
+
+		Check( rawPoleHit.bHit, "L3c: reused Bezier hit record starts with a successful query" );
+		RayBezierPatchIntersection( rAxis, rawPoleHit, poleFold, false, false );
+		Check( !rawPoleHit.bHit, "L3c: disabling both faces clears a reused Bezier hit record" );
 	}
 }
 
