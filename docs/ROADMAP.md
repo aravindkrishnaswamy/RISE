@@ -64,6 +64,10 @@ checks analytic limits, independent Walter equations and refractive Jacobians,
 adjoint reciprocity, and sampled distributions/energy against quadrature.
 Draws retain their sampled micronormal for evaluating their value and PDF;
 direction-only reconstruction loses that information at machine-adjacent IORs.
+NDF products keep binary exponents separate until conversion, and sampling/
+throughput formulas avoid squared-norm and grazing-product underflow. True
+densities beyond `Scalar` range can still overflow; sample throughput is
+evaluated independently rather than dividing such values.
 This scalar kernel is shared groundwork for Pel/NM/HWSS, not a new material.
 It implements single scattering with null events; multiscatter compensation,
 material/IOR-stack integration, public API/parser/editor support, showcase

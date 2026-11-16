@@ -390,6 +390,9 @@ namespace RISE
 				Scalar f = 0;
 				Scalar pdf = 0;     ///< Probability mass for a delta event, density otherwise.
 				Scalar weight = 0;  ///< f * abs(wo.z) / pdf, without a second Fresnel coin.
+				// Extremely narrow peaks can have f/pdf outside Scalar's
+				// representable range. weight is evaluated independently,
+				// so their finite throughput does not become inf/inf.
 				bool transmission = false;
 				bool delta = false;
 				bool valid = false;
@@ -406,11 +409,77 @@ namespace RISE
 				return std::hypot( w.z, std::hypot( ax * w.x, ay * w.y ) );
 			}
 
+			// Keep positive products as mantissa/exponent pairs until their
+			// final conversion. Individual NDF factors can overflow even when
+			// the final BSDF/PDF is representable. No wider arithmetic or clamps.
+			struct PositiveProduct
+			{
+				Scalar mantissa = 1;
+				int exponent = 0;
+				void Multiply( Scalar value )
+				{
+					int e = 0, adjust = 0;
+					mantissa *= std::frexp( value, &e );
+					mantissa = std::frexp( mantissa, &adjust );
+					exponent += e + adjust;
+				}
+				void Divide( Scalar value )
+				{
+					int e = 0, adjust = 0;
+					mantissa /= std::frexp( value, &e );
+					mantissa = std::frexp( mantissa, &adjust );
+					exponent += adjust - e;
+				}
+				Scalar Value() const { return std::scalbn( mantissa, exponent ); }
+			};
+
+			inline Vector3 NormalizeScaled( const Vector3& v, const Vector3& scales )
+			{
+				const Scalar values[3] = { v.x, v.y, v.z };
+				const Scalar factors[3] = { scales.x, scales.y, scales.z };
+				Scalar parts[3] = { 0, 0, 0 };
+				int powers[3] = { 0, 0, 0 }, maxPower = 0;
+				bool any = false;
+				for( int i = 0; i < 3; ++i ) {
+					if( values[i] == 0 ) continue;
+					int ev = 0, ef = 0;
+					parts[i] = std::frexp( values[i], &ev ) * std::frexp( factors[i], &ef );
+					powers[i] = ev + ef;
+					maxPower = any ? r_max( maxPower, powers[i] ) : powers[i];
+					any = true;
+				}
+				if( !any ) return Vector3( 0, 0, 0 );
+				for( int i = 0; i < 3; ++i ) parts[i] = std::scalbn( parts[i], powers[i] - maxPower );
+				const Scalar length = std::sqrt( parts[0]*parts[0] + parts[1]*parts[1] + parts[2]*parts[2] );
+				return Vector3( parts[0]/length, parts[1]/length, parts[2]/length );
+			}
+
+			inline PositiveProduct DistributionProduct( const Vector3& m, Scalar ax, Scalar ay )
+			{
+				PositiveProduct result;
+				if( m.z <= 0 ) { result.mantissa = 0; return result; }
+				const Scalar values[3] = { std::abs(m.x), std::abs(m.y), m.z };
+				const Scalar widths[3] = { ax, ay, 1 };
+				Scalar parts[3] = { 0, 0, 0 };
+				int powers[3] = { 0, 0, 0 }, maxPower = 0;
+				for( int i = 0; i < 3; ++i ) {
+					if( values[i] == 0 ) continue;
+					int ev = 0, ew = 0;
+					parts[i] = std::frexp( values[i], &ev ) / std::frexp( widths[i], &ew );
+					powers[i] = ev - ew;
+					maxPower = r_max( maxPower, powers[i] );
+				}
+				for( int i = 0; i < 3; ++i ) parts[i] = std::scalbn( parts[i], powers[i] - maxPower );
+				const Scalar norm = std::sqrt( parts[0]*parts[0] + parts[1]*parts[1] + parts[2]*parts[2] );
+				result.Multiply( INV_PI ); result.Divide( ax ); result.Divide( ay );
+				for( int i = 0; i < 4; ++i ) result.Divide( norm );
+				result.exponent -= 4 * maxPower;
+				return result;
+			}
+
 			inline Scalar Distribution( const Vector3& m, Scalar ax, Scalar ay )
 			{
-				if( m.z <= 0 ) return 0;
-				const Scalar inv = 1 / std::hypot( m.z, std::hypot( m.x / ax, m.y / ay ) );
-				return ( inv / ax ) * ( inv / ay ) * inv * inv * INV_PI;
+				return DistributionProduct( m, ax, ay ).Value();
 			}
 
 			inline Scalar Fresnel( Scalar cosI, Scalar eta, Scalar& cosT )
@@ -442,14 +511,16 @@ namespace RISE
 				Scalar cosT = 0;
 				const Scalar F = Fresnel( ci, eta, cosT );
 				if( !reflection && F == 1 ) return result;
-				const Scalar D = Distribution( m, ax, ay );
+				PositiveProduct f = DistributionProduct( m, ax, ay ), pdf = f;
 				const Scalar zi = wi.z, zo = std::abs( wo.z );
 				const Scalar li = ProjectedLength( wi, ax, ay ), lo = ProjectedLength( wo, ax, ay );
-				// Algebraically G2/(4*zi*zo), avoiding grazing-angle divisions.
-				const Scalar common = zo * li + zi * lo;
+				const Scalar ai = zi/(zi+li), ao = zo/(zo+lo);
+				// common = (zi+li)*(zo+lo)*(ai+ao-2*ai*ao). Keep
+				// these factors separate so grazing products cannot underflow.
+				const Scalar mask = ai + ao - 2*ai*ao;
 				if( reflection ) {
-					result.f = F * D / ( 2 * common );
-					result.pdf = F * D / ( 2 * ( zi + li ) );
+					f.Multiply(F); f.Divide(2); f.Divide(zi+li); f.Divide(zo+lo); f.Divide(mask);
+					pdf.Multiply(F); pdf.Divide(2); pdf.Divide(zi+li);
 				} else {
 					// co + ci/eta cancels at eta ~= 1. Snell's identity gives
 					// the same denominator as a factored difference of squares.
@@ -457,11 +528,13 @@ namespace RISE
 					const Scalar denom = ( ( 1 - eta ) * invEta ) * ( invEta + 1 ) /
 						( std::abs( co ) + ci * invEta );
 					if( denom == 0 ) return result;
-					const Scalar factor = ( 1 - F ) * D * std::abs( ci * co ) / ( denom * denom );
-					result.f = 2 * factor / common;
-					result.pdf = 2 * factor / ( zi + li );
-					if( radiance ) result.f *= invEta * invEta;
+					f.Multiply(2); f.Multiply(1-F); f.Multiply(ci); f.Multiply(std::abs(co));
+					f.Divide(std::abs(denom)); f.Divide(std::abs(denom)); f.Divide(zi+li);
+					pdf = f;
+					f.Divide(zo+lo); f.Divide(mask);
+					if( radiance ) { f.Divide(eta); f.Divide(eta); }
 				}
+				result.f = f.Value(); result.pdf = pdf.Value();
 				return result;
 			}
 
@@ -474,9 +547,8 @@ namespace RISE
 				if( !ValidParameters( ax, ay, eta ) || wi.z <= 0 || wo.z == 0 || ax == 0 || eta == 1 ) return {};
 				Vector3 m = wo.z > 0 ? wi + wo : Vector3(
 					std::fma( eta, wo.x, wi.x ), std::fma( eta, wo.y, wi.y ), std::fma( eta, wo.z, wi.z ) );
-				const Scalar length = std::hypot( m.z, std::hypot( m.x, m.y ) );
-				if( !( length > 0 ) ) return {};
-				m = m * ( 1 / length );
+				if( m.x == 0 && m.y == 0 && m.z == 0 ) return {};
+				m = NormalizeScaled( m, Vector3(1,1,1) );
 				if( m.z < 0 ) m = -m;
 				return EvaluateWithNormal( wi, wo, m, ax, ay, eta, radiance );
 			}
@@ -492,12 +564,12 @@ namespace RISE
 				Vector3 m( 0, 0, 1 );
 				if( !result.delta ) {
 					// Dupuy-Benyoub spherical-cap VNDF, in the local frame.
-					const Vector3 vh = Vector3Ops::Normalize( Vector3( ax * wi.x, ay * wi.y, wi.z ) );
+					const Vector3 vh = NormalizeScaled( wi, Vector3(ax,ay,1) );
 					const Scalar z = 1 - uNormal2 * ( 1 + vh.z );
 					const Scalar r = std::sqrt( r_max( Scalar(0), ( 1 - z ) * ( 1 + z ) ) );
 					const Scalar phi = TWO_PI * uNormal1;
-					m = Vector3Ops::Normalize( Vector3( ax * ( vh.x + r * std::cos( phi ) ),
-						ay * ( vh.y + r * std::sin( phi ) ), ( 1 + vh.z ) * ( 1 - uNormal2 ) ) );
+					m = NormalizeScaled( Vector3( vh.x + r * std::cos( phi ),
+						vh.y + r * std::sin( phi ), ( 1 + vh.z ) * ( 1 - uNormal2 ) ), Vector3(ax,ay,1) );
 				}
 				const Scalar ci = Vector3Ops::Dot( wi, m );
 				Scalar cosT = 0;
@@ -528,7 +600,8 @@ namespace RISE
 					const Scalar zi = wi.z, zo = std::abs( result.wo.z );
 					const Scalar li = ProjectedLength( wi, ax, ay ), lo = ProjectedLength( result.wo, ax, ay );
 					// G2/G1(wi), after cancelling Fresnel and the refractive Jacobian.
-					result.weight = zo * ( zi + li ) / ( zo * li + zi * lo );
+					const Scalar ai = zi/(zi+li), ao = zo/(zo+lo);
+					result.weight = ao / ( ai + ao - 2*ai*ao );
 					if( result.transmission && radiance ) result.weight /= eta * eta;
 				}
 				result.valid = result.pdf > 0;

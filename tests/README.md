@@ -76,6 +76,10 @@ artificial null events; known valid VNDF endpoints assert acceptance explicitly.
 The supported width domain is `(0,1]` on both axes (or both zero); out-of-domain
 widths are rejected explicitly. Direction-only and sampled values/PDFs are
 separately compared with the independent equations.
+Tiny-width regressions check representable NDF/value/PDF results despite
+overflowing intermediate factors and compare grazing samples against a scaled
+analytic direction/throughput reference. A true density beyond `Scalar` range
+can overflow; its throughput is computed separately.
 It does not exercise a material, importer, IOR stack, or renderer integration.
 
 ```sh

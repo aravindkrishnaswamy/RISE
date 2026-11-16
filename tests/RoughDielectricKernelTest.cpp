@@ -235,6 +235,37 @@ static void BoundaryCases()
 	Check( accepted > 0, "boundary sweep actually exercises accepted samples" );
 }
 
+static void ExtremeScaleArithmetic()
+{
+	// Here the NDF itself and the final f/PDF are representable, while
+	// the unreduced product of two inverse widths overflows.
+	const auto offPeak=RD::Evaluate(Vector3(0,0,1),Vector3(2e-200,0,1),1e-300,1e-300,1.5,false);
+	const double expectedOffPeak=1e198*INV_PI;
+	Check(Close(offPeak.f,expectedOffPeak,1e-12) && Close(offPeak.pdf,expectedOffPeak,1e-12),
+		"tiny-width off-peak evaluation keeps cancelling NDF factors scaled until the final value");
+	const double alpha=1e-160, radial=1-1e-8;
+	const double slopeScale=(1-radial)/alpha;
+	const double expectedDraw=0.01*INV_PI*slopeScale*slopeScale;
+	const auto narrow=RD::Draw(Vector3(0,0,1),alpha,alpha,1.5,0.5,radial,0,false);
+	Check(narrow.valid && Close(narrow.f,expectedDraw,1e-12) && Close(narrow.pdf,expectedDraw,1e-12),
+		"tiny-width draw has independently predicted finite value and density");
+
+	// Normalize the stretched incident vector analytically before applying
+	// the normal-incidence GGX stretch. All reference algebra is order one;
+	// only the final direction's z component is multiplied by the tiny width.
+	const double vh=1/std::sqrt(2.0), capZ=1-0.4*(1+vh);
+	const double capR=std::sqrt((1-capZ)*(1+capZ));
+	const double cx=vh+capR*std::cos(TWO_PI*0.2), cz=(1+vh)*0.6;
+	const double ratio=1+2*cx/cz;
+	const double expectedWeight=ratio*(1+std::sqrt(2.0))/(ratio*std::sqrt(2.0)+std::sqrt(1+ratio*ratio));
+	for(double width : {1e-160,1e-170,1e-200,1e-300}) {
+		const auto grazing=RD::Draw(Vector3(1,0,width),width,width,1.5,0.2,0.4,0.5,false);
+		Check(grazing.valid && !grazing.transmission && std::isfinite(grazing.weight) &&
+			Close(grazing.wo.z/width,ratio,1e-12) && Close(grazing.weight,expectedWeight,1e-12),
+			"subnormal-squared stretches preserve the sampled direction and finite analytic G2/G1 throughput");
+	}
+}
+
 static void ProbabilityAndFurnace()
 {
 	constexpr int nMu = 8, nPhi = 12, subdivisions = 24, samples = 240000;
@@ -289,6 +320,7 @@ int main()
 	EvaluationAndAdjoint();
 	RefractionJacobian();
 	BoundaryCases();
+	ExtremeScaleArithmetic();
 	ProbabilityAndFurnace();
 	std::cout << passed << " passed, " << failed << " failed\n";
 	return failed ? 1 : 0;
