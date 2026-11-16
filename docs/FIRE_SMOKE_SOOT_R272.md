@@ -1,6 +1,6 @@
 # r272: methane soot formation switched on, one-parameter fit, full window launched
 
-Last updated 2026-11-15. Design and evidence: [formation–oxidation draft](FIRE_SMOKE_SOOT_FORMATION_OXIDATION_R252.md),
+Last updated 2026-11-16. Design and evidence: [formation–oxidation draft](FIRE_SMOKE_SOOT_FORMATION_OXIDATION_R252.md),
 [measurements](FIRE_SMOKE_METHANE_SOOT_DATA_R252.md). Data: `docs/data/fire_r272/`. Tools: `tools/fire/r272/`.
 
 ## Result
@@ -12,7 +12,7 @@ Last updated 2026-11-15. Design and evidence: [formation–oxidation draft](FIRE
 - **Burnout is about half.** Of the soot formed, about 45% leaves the flame unburned (net smoke yield about 0.0135);
   NIST reports escaping methane soot below detection.
 - The flow is unchanged by soot: centreline temperature with and without soot agrees within 2% at every height.
-- The full 25 s tier-8 window with the accepted r271 candidate plus this yield finished 2026-11-16 and confirms these numbers; the preview movie is rendered (§5). It does not yet look like a sooty fire.
+- The full 25 s tier-8 window with the accepted r271 candidate plus this yield finished 2026-11-16 and confirms these numbers; the movie look pass is in §5.
 
 ## 1. Closure (uncommitted opt-in)
 
@@ -90,19 +90,31 @@ Soot budget at y = 0.01 (`soot_y010_budget_15.98_16.98s.txt`):
 
 ## 5. Movie
 
-`r272_soot/movie/r272_soot_128x192.mov` (235 frames, 16 fps, 14.69 s; decode check passed), rendered by
-`tools/fire/r272/render_movie.py` with the r242 spectral preview scene pointed at the new manifest.
+First render: `r272_soot/movie/r272_soot_128x192.mov` (`tools/fire/r272/render_movie.py`, the r242 preview scene
+pointed at the new manifest). It showed a white-pink overexposed core, a blue column above it and no visible smoke.
 
-- Soot now gives a bright white-pink flame core at the base, about 0.5 m tall. It is overexposed at the scene's
-  fixed exposure.
-- The column above it is blue, as it was in the soot-free r251 preview. The blue is therefore not soot; its source
-  in the renderer (gas emission channels or exposure) was not investigated.
-- The escaping smoke does not read as dark smoke: the scene has no light for it to absorb or scatter.
+Look pass (2026-11-16), `tools/fire/r272/r272_soot_look.RISEscene` and `render_look_movie.py`, 256×384, 235 frames:
+
+- **The blue column was a placeholder, not physics.** The capstone exporter (`tests/FireSequenceTest.cpp`) writes the
+  flame-chemistry emission channels (CH, C2, CO2) as a fixed scale times the larger of normalised reaction rate and
+  normalised temperature, and labels them `SYNTHETIC_NON_PREDICTIVE`. The temperature term lights the whole warm plume.
+- **Fix is on the render side.** `tools/fire/r272/chem_from_reaction.cpp` rewrites each frame with the three channels
+  proportional to the local reaction rate only (CH fraction 3.0e-6; C2 and CO2 in the exporter's 50/120 and 8/120
+  ratios). The derived frames are in `r272_soot/render_seq` with their own frame list and a manifest rebuilt by
+  `FireSequenceTest --fire-production-manifest-rebuild`. The run's own frames and manifest are untouched. The exporter
+  is not changed; the fraction is a look choice, not a measured value.
+- **Scene.** Floor (reflectance 0.18), back wall 3 m behind the burner (0.45), one weak point light, camera 1.7 m from
+  the burner axis at 0.6 m height, display exposure 7, ACES.
+- **Result.** Orange flame with a yellow base and a faint violet rim, in a dim room. Owner reviewed the test frames
+  and accepted the look.
+- **Still limited by the data.** The visible flame is about 0.5 m tall and thin, because soot emission follows the
+  cell-mean temperature. The escaping smoke (0.039 ppm in the flame, less above) is too thin to see against the wall.
 
 ## Open
 
 - The production change is uncommitted (owner review); `docs/data/fire_r271/s29_optins.patch` carries it.
 - Calibration used the 0.30 m / 33 kW scene, not a reproduction of the NIST 0.37 m / 34.5 kW burner, and a 1 s mean.
 - A second resolution was not run, so whether the fitted yield moves with cell size is unknown.
+- The exporter still writes the temperature-weighted placeholder channels; fixing it at source is a test-code change.
 - Next modelling step, if the look or the smoke level is not acceptable: a sub-grid oxidation temperature (flame-sheet
   rather than cell-mean) or a formation term tied to rich mixture. Either needs its own evidence and review.
