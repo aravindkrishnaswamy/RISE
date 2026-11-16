@@ -756,11 +756,12 @@ int main()
             } else {
                 pos = tagClose + 1;
             }
-            // Skip unconditionally excluded TUs and TUs that disable or create PCH.
+            // Skip unconditionally excluded TUs and TUs that disable or create PCH across all x64 configs.
             if( blockMeta.find( "<ExcludedFromBuild>true</ExcludedFromBuild>" ) != std::string::npos ) continue;
             if( blockMeta.find( "<PrecompiledHeader>NotUsing</PrecompiledHeader>" ) != std::string::npos ) continue;
             if( blockMeta.find( "<PrecompiledHeader>Create</PrecompiledHeader>" ) != std::string::npos ) continue;
-            if( blockMeta.find( "<PrecompiledHeader Condition=" ) != std::string::npos &&
+            if( blockMeta.find( "<PrecompiledHeader Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\">" ) != std::string::npos &&
+                blockMeta.find( "<PrecompiledHeader Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\">" ) != std::string::npos &&
                 blockMeta.find( ">Use<" ) == std::string::npos ) continue;
             for( char& ch : incRel ) { if( ch == '\\' ) ch = '/'; }
             const fs::path tuPath = ( vcxDir / incRel ).lexically_normal();
@@ -801,8 +802,7 @@ int main()
                     while( d < trimmed.size() && std::isspace( static_cast<unsigned char>( trimmed[d] ) ) ) ++d;
                     const std::string dir = trimmed.substr( d );
                     if( dir.rfind( "include", 0 ) == 0 ) {
-                        if( dir.find( "\"pch.h\"" ) != std::string::npos ||
-                            dir.find( "/pch.h\"" ) != std::string::npos ) {
+                        if( dir.find( "\"pch.h\"" ) != std::string::npos ) {
                             sawPch = true;
                             break;
                         }
@@ -5867,12 +5867,35 @@ int main()
 				const std::size_t e = pbxTxt.find( end, b );
 				return ( e == std::string::npos ) ? pbxTxt.substr( b ) : pbxTxt.substr( b, e - b );
 			};
-			auto isHex24 = []( const std::string& s, std::size_t pos ) -> bool {
+			auto isPbxIdChar = []( char ch ) -> bool {
+				return ( ch >= '0' && ch <= '9' ) || ( ch >= 'A' && ch <= 'Z' );
+			};
+			auto isIdentCont = []( char ch ) -> bool {
+				return std::isalnum( static_cast<unsigned char>( ch ) ) != 0 || ch == '_';
+			};
+			auto isPbxId24 = [&]( const std::string& s, std::size_t pos ) -> bool {
 				if( pos + 24 > s.size() ) return false;
+				if( pos > 0 && isIdentCont( s[pos - 1] ) ) return false;
+				if( pos + 24 < s.size() && isIdentCont( s[pos + 24] ) ) return false;
 				for( std::size_t k = 0; k < 24; ++k ) {
-					if( !std::isxdigit( static_cast<unsigned char>( s[pos + k] ) ) ) return false;
+					if( !isPbxIdChar( s[pos + k] ) ) return false;
 				}
 				return true;
+			};
+			auto stripPbxComments = []( const std::string& s ) -> std::string {
+				std::string out;
+				out.reserve( s.size() );
+				for( std::size_t i = 0; i < s.size(); ) {
+					if( i + 1 < s.size() && s[i] == '/' && s[i + 1] == '*' ) {
+						i += 2;
+						while( i + 1 < s.size() && !( s[i] == '*' && s[i + 1] == '/' ) ) ++i;
+						if( i + 1 < s.size() ) i += 2;
+						out.push_back( ' ' );
+					} else {
+						out.push_back( s[i++] );
+					}
+				}
+				return out;
 			};
 
 			std::set<std::string> pbxBasenames;
@@ -5906,7 +5929,7 @@ int main()
 					std::size_t lineStart = frSec.rfind( '\n', blkOpen );
 					lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
 					while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( frSec[lineStart] ) ) ) ++lineStart;
-					if( isHex24( frSec, lineStart ) ) {
+					if( isPbxId24( frSec, lineStart ) ) {
 						uuid = frSec.substr( lineStart, 24 );
 					}
 					const std::string body = frSec.substr( blkOpen, blkClose - blkOpen );
@@ -5940,14 +5963,14 @@ int main()
 					std::size_t lineStart = bfSec.rfind( '\n', blkOpen );
 					lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
 					while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( bfSec[lineStart] ) ) ) ++lineStart;
-					if( isHex24( bfSec, lineStart ) ) {
+					if( isPbxId24( bfSec, lineStart ) ) {
 						const std::string bfUuid = bfSec.substr( lineStart, 24 );
 						const std::string body = bfSec.substr( blkOpen, blkClose - blkOpen );
 						const std::size_t fp = body.find( "fileRef =" );
 						if( fp != std::string::npos ) {
 							std::size_t s = fp + 9;
 							while( s < body.size() && std::isspace( static_cast<unsigned char>( body[s] ) ) ) ++s;
-							if( isHex24( body, s ) ) {
+							if( isPbxId24( body, s ) ) {
 								pbxBuildFileToRef[bfUuid] = body.substr( s, 24 );
 							}
 						}
@@ -5956,6 +5979,7 @@ int main()
 				}
 			}
 
+			std::vector<std::string> danglingPhaseIds;
 			std::vector<std::set<std::string>> pbxSourcesPhases;
 			{
 				const std::string spSec = pbxSection( "PBXSourcesBuildPhase" );
@@ -5971,17 +5995,19 @@ int main()
 						const std::size_t fe = body.find( ");", fp );
 						if( fe != std::string::npos ) {
 							std::set<std::string> phaseBases;
-							const std::string listTxt = body.substr( fp + 9, fe - ( fp + 9 ) );
+							const std::string listTxt = stripPbxComments( body.substr( fp + 9, fe - ( fp + 9 ) ) );
 							for( std::size_t i = 0; i + 24 <= listTxt.size(); ) {
-								if( isHex24( listTxt, i ) &&
-								    ( i == 0 || !std::isxdigit( static_cast<unsigned char>( listTxt[i - 1] ) ) ) &&
-								    ( i + 24 == listTxt.size() || !std::isxdigit( static_cast<unsigned char>( listTxt[i + 24] ) ) ) ) {
+								if( isPbxId24( listTxt, i ) ) {
 									const std::string bfId = listTxt.substr( i, 24 );
 									auto bfIt = pbxBuildFileToRef.find( bfId );
-									if( bfIt != pbxBuildFileToRef.end() ) {
+									if( bfIt == pbxBuildFileToRef.end() ) {
+										danglingPhaseIds.push_back( "project.pbxproj PBXSourcesBuildPhase dangling buildFile ID: " + bfId );
+									} else {
 										auto frIt = pbxFileRefToBase.find( bfIt->second );
 										if( frIt != pbxFileRefToBase.end() ) {
 											phaseBases.insert( frIt->second );
+										} else {
+											danglingPhaseIds.push_back( "project.pbxproj PBXSourcesBuildPhase buildFile missing fileRef: " + bfId );
 										}
 									}
 									i += 24;
@@ -5990,6 +6016,37 @@ int main()
 								}
 							}
 							pbxSourcesPhases.push_back( std::move( phaseBases ) );
+						}
+					}
+					cur = blkClose + 2;
+				}
+			}
+			for( const char* otherPhase : { "PBXHeadersBuildPhase", "PBXFrameworksBuildPhase", "PBXResourcesBuildPhase" } ) {
+				const std::string phSec = pbxSection( otherPhase );
+				std::size_t cur = 0;
+				const std::string needle = std::string( "isa = " ) + otherPhase + ";";
+				while( cur < phSec.size() ) {
+					const std::size_t isaPos = phSec.find( needle, cur );
+					if( isaPos == std::string::npos ) break;
+					const std::size_t blkClose = phSec.find( "};", isaPos );
+					if( blkClose == std::string::npos ) break;
+					const std::string body = phSec.substr( isaPos, blkClose - isaPos );
+					const std::size_t fp = body.find( "files = (" );
+					if( fp != std::string::npos ) {
+						const std::size_t fe = body.find( ");", fp );
+						if( fe != std::string::npos ) {
+							const std::string listTxt = stripPbxComments( body.substr( fp + 9, fe - ( fp + 9 ) ) );
+							for( std::size_t i = 0; i + 24 <= listTxt.size(); ) {
+								if( isPbxId24( listTxt, i ) ) {
+									const std::string bfId = listTxt.substr( i, 24 );
+									if( pbxBuildFileToRef.find( bfId ) == pbxBuildFileToRef.end() ) {
+										danglingPhaseIds.push_back( std::string( "project.pbxproj " ) + otherPhase + " dangling buildFile ID: " + bfId );
+									}
+									i += 24;
+								} else {
+									++i;
+								}
+							}
 						}
 					}
 					cur = blkClose + 2;
@@ -6117,6 +6174,9 @@ int main()
 			if( pbxSourcesPhases.size() < 2 ) {
 				missingBuildRefs.push_back( "project.pbxproj expected >= 2 PBXSourcesBuildPhase blocks" );
 			}
+			for( const std::string& dp : danglingPhaseIds ) {
+				missingBuildRefs.push_back( dp );
+			}
 			// Reverse project.pbxproj -> disk check: verify every PBXBuildFile resolves to a
 			// PBXFileReference and walk mainGroup -> PBXGroup -> PBXFileReference on disk.
 			for( const auto& kv : pbxBuildFileToRef ) {
@@ -6138,7 +6198,7 @@ int main()
 					std::size_t lineStart = grpSec.rfind( '\n', blkOpen );
 					lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
 					while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( grpSec[lineStart] ) ) ) ++lineStart;
-					if( isHex24( grpSec, lineStart ) ) {
+					if( isPbxId24( grpSec, lineStart ) ) {
 						const std::string gid = grpSec.substr( lineStart, 24 );
 						const std::string body = grpSec.substr( blkOpen, blkClose - blkOpen );
 						PbxGroupNode node;
@@ -6149,11 +6209,9 @@ int main()
 						if( cp != std::string::npos ) {
 							const std::size_t ce = body.find( ");", cp );
 							if( ce != std::string::npos ) {
-								const std::string cTxt = body.substr( cp + 12, ce - ( cp + 12 ) );
+								const std::string cTxt = stripPbxComments( body.substr( cp + 12, ce - ( cp + 12 ) ) );
 								for( std::size_t i = 0; i + 24 <= cTxt.size(); ) {
-									if( isHex24( cTxt, i ) &&
-									    ( i == 0 || !std::isxdigit( static_cast<unsigned char>( cTxt[i - 1] ) ) ) &&
-									    ( i + 24 == cTxt.size() || !std::isxdigit( static_cast<unsigned char>( cTxt[i + 24] ) ) ) ) {
+									if( isPbxId24( cTxt, i ) ) {
 										node.children.push_back( cTxt.substr( i, 24 ) );
 										i += 24;
 									} else {
@@ -6179,7 +6237,7 @@ int main()
 						std::size_t lineStart = syncSec.rfind( '\n', blkOpen );
 						lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
 						while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( syncSec[lineStart] ) ) ) ++lineStart;
-						if( isHex24( syncSec, lineStart ) ) {
+						if( isPbxId24( syncSec, lineStart ) ) {
 							const std::string sid = syncSec.substr( lineStart, 24 );
 							const std::string body = syncSec.substr( blkOpen, blkClose - blkOpen );
 							const std::string p = extractPbxProp( body, "path =" );
@@ -6190,11 +6248,14 @@ int main()
 					}
 				}
 				const std::string projSec = pbxSection( "PBXProject" );
-				const std::string mainGroupProp = extractPbxProp( projSec, "mainGroup =" );
-				const std::string mainGroupId = ( mainGroupProp.size() >= 24 && isHex24( mainGroupProp, 0 ) )
-					? mainGroupProp.substr( 0, 24 ) : std::string();
+				const std::string mainGroupProp = stripPbxComments( extractPbxProp( projSec, "mainGroup =" ) );
+				std::size_t mgPos = 0;
+				while( mgPos < mainGroupProp.size() && std::isspace( static_cast<unsigned char>( mainGroupProp[mgPos] ) ) ) ++mgPos;
+				const std::string mainGroupId = isPbxId24( mainGroupProp, mgPos )
+					? mainGroupProp.substr( mgPos, 24 ) : std::string();
 				const fs::path xcodeProjDir = repoRoot / "build/XCode/rise";
 				std::set<std::string> visitedGroups;
+				std::set<std::string> visitedFileRefs;
 				std::function<void( const std::string&, const fs::path& )> walkPbx = [&]( const std::string& id, const fs::path& curDir ) {
 					auto gIt = pbxGroups.find( id );
 					if( gIt != pbxGroups.end() ) {
@@ -6215,6 +6276,7 @@ int main()
 					}
 					auto fIt = pbxFileRefs.find( id );
 					if( fIt != pbxFileRefs.end() ) {
+						visitedFileRefs.insert( id );
 						const PbxRefInfo& fr = fIt->second;
 						fs::path fPath;
 						if( fr.sourceTree == "SOURCE_ROOT" ) {
@@ -6246,6 +6308,11 @@ int main()
 					missingBuildRefs.push_back( "project.pbxproj missing mainGroup ID" );
 				} else {
 					walkPbx( mainGroupId, xcodeProjDir );
+					for( const auto& kv : pbxFileRefs ) {
+						if( visitedFileRefs.find( kv.first ) == visitedFileRefs.end() ) {
+							missingBuildRefs.push_back( "project.pbxproj ungrouped orphan PBXFileReference: " + kv.first + " (" + kv.second.path + ")" );
+						}
+					}
 				}
 			}
 			for( const std::string& m : missingBuildRefs ) {

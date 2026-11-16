@@ -503,7 +503,15 @@ namespace RISE
 			//! exactly what it took, and takes nothing away from a second composite
 			//! that is still consuming the same operand.
 			virtual bool IsWorldVisible() const override { return bIsWorldVisible && nConsumedBy == 0; }
-			virtual void SetWorldVisible( bool b ) override { bIsWorldVisible = b; }
+			virtual void SetWorldVisible( bool b ) override
+			{
+				if( bIsWorldVisible != b ) {
+					bIsWorldVisible = b;
+					if( m_mayAffectIorCatalog || m_isCsgObject ) {
+						BumpMaterialBindingEpoch();
+					}
+				}
+			}
 
 			virtual void AddConsumer() override { ++nConsumedBy; }
 			//! The clamp keeps an unbalanced release from wrapping an `unsigned int`

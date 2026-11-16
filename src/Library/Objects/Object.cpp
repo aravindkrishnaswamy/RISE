@@ -845,6 +845,7 @@ void Object::ClearGeometry()
 	pGeometry = 0;
 	m_patchCertState.store( -1, std::memory_order_release );
 	Geometry::BumpGlobalGeometryShapeEpoch();
+	BumpMaterialBindingEpoch();
 	ResetWorldAreaSampling();
 	PruneWorldAreaSampling();
 	m_warnedAreaFallback.store( false );

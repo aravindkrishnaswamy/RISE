@@ -288,6 +288,8 @@ static int RunTests()
 #ifdef _WIN32
 		Check( RISE::LongAwareFsPath( fs::path( L"\\\\?\\C:\\alpha/beta\\.\\..\\gamma\\\\delta\\" ) ).native() ==
 			std::wstring( L"\\\\?\\C:\\alpha\\gamma\\delta" ) &&
+			RISE::LongAwareFsPath( fs::path( L"//?/C:/alpha/beta/./../gamma//delta/" ) ).native() ==
+			std::wstring( L"\\\\?\\C:\\alpha\\gamma\\delta" ) &&
 			RISE::LongAwareFsPath( fs::path( L"\\\\?\\UNC\\srv/share\\dir\\.\\..\\leaf/" ) ).native() ==
 			std::wstring( L"\\\\?\\UNC\\srv\\share\\leaf" ),
 			"LongAwareFsPath canonicalizes pre-prefixed Win32 extended-length and UNC paths" );

@@ -60,7 +60,8 @@ namespace RISE
 				}
 			}
 		};
-		if( w.rfind( L"\\\\?\\", 0 ) == 0 || w.rfind( L"\\\\.\\", 0 ) == 0 ) {
+		if( w.rfind( L"\\\\?\\", 0 ) == 0 || w.rfind( L"\\\\.\\", 0 ) == 0 ||
+			w.rfind( L"//?/", 0 ) == 0 || w.rfind( L"//./", 0 ) == 0 ) {
 			std::wstring norm = w;
 			for( wchar_t& ch : norm ) {
 				if( ch == L'/' ) ch = L'\\';

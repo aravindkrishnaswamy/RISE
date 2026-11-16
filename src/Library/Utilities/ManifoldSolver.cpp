@@ -924,7 +924,7 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
     if(!Query(material, hit, next, domain, query)
         || (reflection ? !query.reflection : !query.transmission)) return false;
     if(!std::isfinite(next.top()) || next.top() <= 0) return false;
-    if(SMSDynamicCast<PolishedMaterial>(&material)) {
+    if(SMSIsPolishedCoat(&material)) {
         // The coat is a reflection on the incident ambient side, not a
         // transmissive open-sheet crossing. Native polished never pops
         // membership or reverses ambient/coat indices on a back face.

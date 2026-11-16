@@ -3439,7 +3439,7 @@ namespace RISE
 					{ Scalar( 0 ), vMax + delta, ( vMax + delta ) * ( vMax + delta ) }
 				};
 				std::sort( cardinals, cardinals + 4, []( const WaypointOffset& a, const WaypointOffset& b ) {
-					return a.distSq < b.distSq;
+					return ScalarTotalLess( a.distSq, b.distSq );
 				} );
 				const Scalar uLo = uMin - delta, uHi = uMax + delta;
 				const Scalar vLo = vMin - delta, vHi = vMax + delta;

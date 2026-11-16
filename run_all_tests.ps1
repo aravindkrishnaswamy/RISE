@@ -227,13 +227,13 @@ $built = 0
 $buildFailed = 0
 $buildFailures = @()
 $buildRc = 0
+$failedTargets = @{}
 
 if (-not $NoBuild) {
     $buildLog = Join-Path $LogDir 'build.log'
     Write-Host ('Building {0} test(s) [{1}, tier={2}]...' -f $total, $Config, $Tier)
     $bs = Get-Date
 
-    $failedTargets = @{}
     if ($Filter -or $Tier -eq 'extended') {
         # Filtered or extended subset: build each matching target individually so
         # we don't over-build. msbuild startup overhead is acceptable for small subsets.
@@ -251,6 +251,24 @@ if (-not $NoBuild) {
         & $cmake --build $CmakeBuildDir --config $Config --target rise_all_tests --parallel *>&1 |
             Out-File -FilePath $buildLog -Encoding utf8
         $buildRc = $LASTEXITCODE
+        if ($buildRc -ne 0) {
+            # Isolate exact failing targets (matching run_all_tests.sh Phase 1.5 -> Phase 2)
+            # so header-broken rebuilds whose stale .exe is newer than tests/<Name>.cpp
+            # are still recorded in $failedTargets and skipped in Phase 2.
+            foreach ($src in $testSources) {
+                & $cmake --build $CmakeBuildDir --config $Config --target $src.BaseName *>&1 |
+                    Out-File -FilePath $buildLog -Encoding utf8 -Append
+                if ($LASTEXITCODE -ne 0) {
+                    $failedTargets[$src.BaseName] = $true
+                }
+            }
+            if ($failedTargets.Count -eq 0) {
+                # Solution-level build error before per-target invocations succeeded.
+                foreach ($src in $testSources) {
+                    $failedTargets[$src.BaseName] = $true
+                }
+            }
+        }
     }
     $bd = [int]((Get-Date) - $bs).TotalSeconds
 
@@ -269,7 +287,7 @@ if (-not $NoBuild) {
         }
     }
 
-    if ($buildRc -eq 0) {
+    if ($buildRc -eq 0 -and $buildFailed -eq 0) {
         Write-Host ('Build: {0} built ({1}s)' -f $built, $bd)
     } else {
         Write-Host ('Build: {0} built, {1} failed (of {2}, {3}s) - see {4}' `
@@ -292,7 +310,7 @@ if (-not $NoBuild) {
 }
 
 if ($BuildOnly) {
-    if ($buildFailed -gt 0) { exit 1 } else { exit 0 }
+    if ($buildFailed -gt 0 -or $buildRc -ne 0) { exit 1 } else { exit 0 }
 }
 
 # -----------------------------------------------------------------------------
@@ -312,6 +330,11 @@ foreach ($src in $testSources) {
     $exe = Join-Path $BinDir "$name.exe"
     $prefix = '[ {0,3}/{1,3} ] {2,-46}' -f $i, $total, $name
 
+    if (-not $NoBuild -and $failedTargets.ContainsKey($name)) {
+        Write-Host "$prefix SKIP (build failed)"
+        $skipped++
+        continue
+    }
     if (-not (Test-Path -LiteralPath $exe)) {
         Write-Host "$prefix SKIP (build failed or missing)"
         $skipped++
