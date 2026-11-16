@@ -84,6 +84,7 @@
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
 #include "../src/Library/Utilities/ManifoldSolver.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/RISE_API.h"
@@ -2234,7 +2235,10 @@ static void PartA()
 			Check( hitInner.geometric.bHit && hitInner.geometric.bProvablyNoInterior,
 				"A57 [DL-626]: upward ray from inside drop hits inner fold back face at y = 1.25" );
 			if( hitInner.geometric.bHit ) {
-				// (a) Pushed case: `[env, pleat(1.5), drop(1.33)]` -> retains `[env, pleat(1.5), drop(1.33)]`.
+				// (a) Pushed case: whether the incoming stack is seeded below the fold
+				// (`[env, drop(1.33), pleat(1.5)]`) or holds `[env, pleat(1.5), drop(1.33)]`,
+				// exiting `pleat`'s lower fold upward at y = 1.25 retains `[env, pleat(1.5), drop(1.33)]`
+				// and refracts reciprocally `1.5 -> 1.33` (matching front-face downward `1.33 -> 1.5`).
 				IORStack pushed( 1.0 );
 				pushed.SetMediumProbeScene( &s.Scene() );
 				pushed.SetCurrentObject( pPleat );
@@ -2247,10 +2251,11 @@ static void PartA()
 				Check( pushed.Depth() == 3 &&
 					pushed.ObjectAt( 1 ) == pPleat && pushed.isOpenSheetAt( 1 ) &&
 					pushed.ObjectAt( 2 ) == pDrop && !pushed.isOpenSheetAt( 2 ) &&
-					Close( cPushed.etaFrom, 1.33 ) && Close( cPushed.etaTo, 1.33 ),
-					"A57a [DL-626]: pushed multi-fold crossing inside closed drop preserves [env, pleat, drop] order and eta 1.33->1.33" );
+					Close( cPushed.etaFrom, 1.5 ) && Close( cPushed.etaTo, 1.33 ),
+					"A57a [DL-626]: pushed multi-fold crossing inside closed drop preserves [env, pleat, drop] order and reciprocal eta 1.5->1.33" );
 
-				// (b) Unpushed case: `[env, drop(1.33)]` -> inserts `pleat` BELOW `drop`: `[env, pleat(1.5), drop(1.33)]`.
+				// (b) Unpushed case: `[env, drop(1.33)]` -> inserts `pleat` BELOW `drop`: `[env, pleat(1.5), drop(1.33)]`
+				// and prices the back-face interface reciprocally (`1.5 -> 1.33`).
 				IORStack unpushed( 1.0 );
 				unpushed.SetMediumProbeScene( &s.Scene() );
 				unpushed.SetCurrentObject( pDrop );
@@ -2261,8 +2266,8 @@ static void PartA()
 				Check( unpushed.Depth() == 3 &&
 					unpushed.ObjectAt( 1 ) == pPleat && unpushed.isOpenSheetAt( 1 ) &&
 					unpushed.ObjectAt( 2 ) == pDrop && !unpushed.isOpenSheetAt( 2 ) &&
-					Close( cUnpushed.etaFrom, 1.33 ) && Close( cUnpushed.etaTo, 1.33 ),
-					"A57b [DL-626]: unpushed multi-fold crossing inside closed drop inserts pleat beneath drop" );
+					Close( cUnpushed.etaFrom, 1.5 ) && Close( cUnpushed.etaTo, 1.33 ),
+					"A57b [DL-626]: unpushed multi-fold crossing inside closed drop inserts pleat beneath drop with reciprocal eta 1.5->1.33" );
 
 				// (c) Nested outer `sib` (at y = 5 > 3.25) keeps both `[env, sib, pleat]`,
 				// whereas in `sSib` a non-nested sibling `cowall` (x = 4, disjoint normal prism) deduplicates.
@@ -2296,7 +2301,7 @@ static void PartA()
 				Check( nestedStack.Depth() == 3 && seededNested.Depth() == 4 &&
 					sibStack.Depth() == 3 && seededSib.Depth() == 3 &&
 					sibStack.ObjectAt( 1 ) == pCoWall2 && sibStack.ObjectAt( 2 ) == pDrop2 &&
-					Close( cSib.etaFrom, 1.33 ) && Close( cSib.etaTo, 1.33 ),
+					Close( cSib.etaFrom, 1.5 ) && Close( cSib.etaTo, 1.33 ),
 					"A57c [DL-626]: nested outer sheet keeps both layers while non-nested sibling deduplicates" );
 			}
 		}
@@ -2347,6 +2352,31 @@ static void PartA()
 			const std::size_t rays = IORStackSeeding::Diagnostics::SceneRayCounter();
 			Check( st.Depth() == 1 && l0.Depth() == 1 && rays == 0,
 				"A59 [DL-631]: SeedFromPoint and SeedLanesFromPoint cast 0 BVH rays on opaque-only scenes" );
+		}
+
+		// A59b: Per-operand-material `csg_object` (`material` omitted -> `GetMaterial() == nullptr`)
+		// over opaque operands must also set `cat.hasTrackableMedia == false` via
+		// `IObject::EnumerateEffectiveMaterials`, casting 0 BVH rays on both `SeedFromPoint`
+		// and `SeedLanesFromPoint`.
+		const std::string scCsg = Header()
+			+ "box_geometry\n{\n\tname g_w1c\n\twidth 6\n\theight 6\n\tdepth 0.5\n}\n\n"
+			+ Obj( "w1c", "g_w1c", "matte", "0 0 3" )
+			+ Obj( "w2c", "g_w1c", "soot", "0 0 -3" )
+			+ "csg_object\n{\n\tname w_union\n\tobja w1c\n\tobjb w2c\n\toperation union\n}\n\n";
+		Loaded sCsg( scCsg );
+		Check( sCsg.ok && sCsg.O( "w_union" ) && sCsg.O( "w_union" )->GetMaterial() == nullptr,
+			"A59b [DL-631] opaque per-operand-material csg_object scene loads with GetMaterial() == nullptr" );
+		if( sCsg.ok ) {
+			sCsg.Seed( Point3( 0, 0, 0 ) );
+			IORStackSeeding::Diagnostics::SceneRayCounter() = 0;
+			const IORStack stCsg = sCsg.Seed( Point3( 0.2, 0.1, -0.3 ) );
+			IORStack l0( 1.0 ), l1( 1.0 ), l2( 1.0 ), l3( 1.0 );
+			IORStack* lanes[4] = { &l0, &l1, &l2, &l3 };
+			const Scalar nms[4] = { 450, 520, 590, 660 };
+			IORStackSeeding::SeedLanesFromPoint( lanes, 4, nms, Point3( 0.2, 0.1, -0.3 ), sCsg.Scene() );
+			const std::size_t raysCsg = IORStackSeeding::Diagnostics::SceneRayCounter();
+			Check( stCsg.Depth() == 1 && l0.Depth() == 1 && raysCsg == 0,
+				"A59b [DL-631]: opaque per-operand-material csg_object casts 0 BVH rays on SeedFromPoint and SeedLanesFromPoint" );
 		}
 	}
 
@@ -2952,6 +2982,7 @@ static void PartA()
 				Loaded p66( Header()
 					+ hs66.str() + Obj( "pleat66", "g_pleat66", "glass15" )
 					+ HSheet( "g_pane66c", 0.5, 4.0, true ) + Obj( "pane66c", "g_pane66c", "glass15" ) );
+				Check( p66.ok, "A66c [DL-626] multi-fold + stale underlying pane scene loads" );
 				if( p66.ok ) {
 					const IObject* pPleat66 = p66.O( "pleat66" );
 					const IObject* pPane66c = p66.O( "pane66c" );
@@ -2961,6 +2992,8 @@ static void PartA()
 					Ray rInnerDown( Point3( 1.0, 1.45, 1.0 ), Vector3( 0, -1, 0 ) );
 					RayIntersection hitInnerDown( rInnerDown, nullRasterizerState );
 					pPleat66->IntersectRay( hitInnerDown, 1.0, true, true, false );
+					Check( hitInnerUp.geometric.bHit && hitInnerDown.geometric.bHit,
+						"A66c [DL-626]: inner upward and downward rays hit pleat66 fold at y = 1.25" );
 					if( hitInnerUp.geometric.bHit && hitInnerDown.geometric.bHit ) {
 						IORStack staleWalk( 1.0 );
 						staleWalk.SetMediumProbeScene( &p66.Scene() );
@@ -2985,6 +3018,201 @@ static void PartA()
 					}
 				}
 			}
+		}
+	}
+
+	// A67: Round 8 adversarial review pins:
+	//   A67a: Per-operand-material `csg_object` open sheet (`GetMaterial() == nullptr`)
+	//         across `ConfirmOpenSheetsAt`, `CrossingMedia::Keeps`, and dispersive
+	//         `ReindexStackForWavelength`.
+	//   A67b: Helmholtz reciprocity & `RadianceEtaScale` on back-face open-sheet exit
+	//         when another open sheet sits below on `IORStack` (`[1.0, S_bot(1.33), S_tilt(1.5)]`).
+	//   A67c: `DielectricSPF` and `PerfectRefractorSPF` back-face Snell refraction when
+	//         a closed dielectric sphere (`1.8`) straddles an open sheet (`1.33`).
+	{
+		// A67a: Two-sheet glass slab (`y = -1` down-facing bottom quad + `y = +1` up-facing
+		// CSG_SUBTRACTION(glassTop, matteNotch) with NO outer `material` on `csg_object`),
+		// plus a co-oriented inner `mid_sheet67` at `y = 0` to exercise `CrossingMedia::Keeps`
+		// in BOTH directions (`keep == false` above `y = 1` and `keep == true` at `y = 0.05`).
+		const std::string sc67a = Header()
+			+ "scalar_painter\n{\n\tname disp_spec\n\tvalues 1.45 1.55 1.75\n}\n\n"
+			+ "dielectric_material\n{\n\tname disp_glass\n\ttau 1.0\n\tior disp_spec\n\tscattering 1000000\n}\n\n"
+			+ HSheet( "g_top67", 1.0, 4.0, true ) + Obj( "top_op67", "g_top67", "disp_glass" )
+			+ "box_geometry\n{\n\tname g_notch67\n\twidth 0.6\n\theight 4.0\n\tdepth 0.6\n}\n\n"
+			+ Obj( "notch_op67", "g_notch67", "matte", "3.2 1.0 3.2" )
+			+ "csg_object\n{\n\tname top_csg67\n\tobja top_op67\n\tobjb notch_op67\n\toperation subtraction\n}\n\n"
+			+ HSheet( "g_mid67", 0.0, 4.0, true ) + Obj( "mid_sheet67", "g_mid67", "disp_glass" )
+			+ HSheet( "g_bot67", -1.0, 4.0, false ) + Obj( "bot_sheet67", "g_bot67", "disp_glass" );
+		Loaded s67a( sc67a );
+		Check( s67a.ok && s67a.O( "top_csg67" ) && s67a.O( "top_csg67" )->GetMaterial() == nullptr,
+			"A67a [DL-626] per-operand-material csg_object open-sheet slab loads with GetMaterial() == nullptr" );
+		if( s67a.ok ) {
+			const IObject* pTopCsg = s67a.O( "top_csg67" );
+			const IObject* pMid = s67a.O( "mid_sheet67" );
+			const IObject* pBot = s67a.O( "bot_sheet67" );
+			const IMaterial* pDispMat = s67a.O( "top_op67" )->GetMaterial();
+			const RayIntersectionGeometric dummyGeom( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			const Scalar ior550 = pDispMat->GetSpecularInfoNM( dummyGeom, IORStack( 1.0 ), 550.0 ).ior;
+			const Scalar ior420 = pDispMat->GetSpecularInfoNM( dummyGeom, IORStack( 1.0 ), 420.0 ).ior;
+
+			// 1. SeedFromPoint at (0, -0.5, 0) confirms `top_csg67` (null outer material)
+			//    + `mid_sheet67` (nested co-oriented) while deduplicating `bot_sheet67` (opposed sibling).
+			IORStack hero( 1.0 );
+			IORStackSeeding::SeedFromPoint( hero, Point3( 0, 0.5, 0 ), s67a.Scene(), 550.0 );
+			Check( hero.Depth() == 2 && Close( hero.top(), ior550 ),
+				"A67a-1 [DL-626]: SeedFromPoint confirms per-operand-material csg_object open-sheet slab at hero wavelength" );
+
+			// 2a. Unpushed back-face exit through `top_csg67` at y = 1.0 peels sibling `bot_sheet67` to air;
+			// 2b. Unpushed back-face exit through `mid_sheet67` at y = 0.0 while `top_csg67` sits on `IORStack`
+			//     retains `top_csg67` (`etaTo == ior550`) via `CrossingMedia::Keeps`.
+			Ray rExitTop( Point3( 0, 0.9, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitTop( rExitTop, nullRasterizerState );
+			pTopCsg->IntersectRay( hitTop, 1.0, true, true, false );
+			Ray rExitMid( Point3( 0, -0.1, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitMid( rExitMid, nullRasterizerState );
+			pMid->IntersectRay( hitMid, 1.0, true, true, false );
+			Check( hitTop.geometric.bHit && hitMid.geometric.bHit,
+				"A67a-2 [DL-626]: upward rays hit top_csg67 (y=1.0) and mid_sheet67 (y=0.0) back faces" );
+			if( hitTop.geometric.bHit && hitMid.geometric.bHit ) {
+				IORStack walkSlab( 1.0 );
+				walkSlab.SetMediumProbeScene( &s67a.Scene() );
+				walkSlab.SetCurrentObject( pBot );
+				walkSlab.pushOpenSheet( ior550 );
+				walkSlab.SetCurrentObject( pTopCsg );
+				const auto cSlabExit = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitTop.geometric, ior550, walkSlab, pDispMat, 550.0 );
+
+				IORStack walkKeep( 1.0 );
+				walkKeep.SetMediumProbeScene( &s67a.Scene() );
+				walkKeep.SetCurrentObject( pTopCsg );
+				walkKeep.pushOpenSheet( ior550 );
+				walkKeep.SetCurrentObject( pMid );
+				const auto cMidExit = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitMid.geometric, ior550, walkKeep, pDispMat, 550.0 );
+				Check( walkSlab.Depth() == 1 && Close( cSlabExit.etaFrom, ior550 ) && Close( cSlabExit.etaTo, 1.0 ) &&
+					walkKeep.Depth() == 2 && walkKeep.ObjectAt( 1 ) == pTopCsg &&
+					Close( cMidExit.etaFrom, ior550 ) && Close( cMidExit.etaTo, ior550 ),
+					"A67a-2 [DL-626]: CrossingMedia::Keeps peels unconfirmed bot_sheet67 above top_csg67 and retains enclosing top_csg67 above mid_sheet67" );
+			}
+
+			// 3. ReindexStackForWavelength on a stack holding `top_csg67` re-evaluates `disp_glass` at 420 nm.
+			IORStack stackHeroCsg( 1.0 );
+			stackHeroCsg.SetMediumProbeScene( &s67a.Scene() );
+			stackHeroCsg.SetCurrentObject( pTopCsg );
+			stackHeroCsg.pushOpenSheet( ior550 );
+			IORStack stackComp420( 1.0 );
+			const bool reidxOk = IORStackSeeding::ReindexStackForWavelength(
+				stackHeroCsg, stackComp420, 420.0, Point3( 0, 0.5, 0 ), &s67a.Scene() );
+			Check( reidxOk && std::fabs( ior420 - ior550 ) > 0.02 && Close( stackComp420.top(), ior420 ),
+				"A67a-3 [DL-626]: ReindexStackForWavelength re-evaluates dispersive operand material on csg_object open sheet" );
+		}
+
+		// A67b: Disjoint open sheets `s_bot` (+y at y = 2.0, glass133) and tilted `s_tilt`
+		// (rotated 25 deg at y = 1.0, glass15): at (0, 0, 0) `SeedFromPoint` builds
+		// `[env(1.0), s_bot(1.33), s_tilt(1.5)]` (outermost `s_bot` at larger normal distance).
+		// Exiting `s_tilt` across its back face leaves `[env(1.0), s_bot(1.33)]` and MUST
+		// price the crossing reciprocally as `1.5 -> 1.33` (matching front-face entry `1.33 -> 1.5`),
+		// with `RadianceEtaScale( before, &after ) == (1.5 / 1.33)^2`.
+		Loaded s67b( Header()
+			+ HSheet( "g_sbot67", 2.5, 5.0, true ) + Obj( "s_bot67", "g_sbot67", "glass133" )
+			+ RotatedSheet( "g_stilt67", 1.0, 4.0, 20.0 ) + Obj( "s_tilt67", "g_stilt67", "glass15" ) );
+		Check( s67b.ok, "A67b [DL-626] nested disjoint planar + tilted open sheets load" );
+		if( s67b.ok ) {
+			const IObject* pBot67 = s67b.O( "s_bot67" );
+			const IObject* pTilt67 = s67b.O( "s_tilt67" );
+			const IORStack seedBelow = s67b.Seed( Point3( 0, 0, 0 ) );
+			Check( seedBelow.Depth() == 3 &&
+				seedBelow.ObjectAt( 1 ) == pBot67 && Close( IorAt( seedBelow, 1 ), 1.33 ) &&
+				seedBelow.ObjectAt( 2 ) == pTilt67 && Close( IorAt( seedBelow, 2 ), 1.5 ),
+				"A67b-1 [DL-626]: SeedFromPoint(0,0,0) builds [env(1.0), s_bot67(1.33), s_tilt67(1.5)]" );
+
+			// Cast upward along +y from (0, 0, 0) to hit `s_tilt67`'s back face, and downward from
+			// (0, 1.5, 0) to hit `s_tilt67`'s front face.
+			Ray rUp67( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitBack67( rUp67, nullRasterizerState );
+			pTilt67->IntersectRay( hitBack67, 5.0, true, true, false );
+			Ray rDown67( Point3( 0, 1.5, 0 ), Vector3( 0, -1, 0 ) );
+			RayIntersection hitFront67( rDown67, nullRasterizerState );
+			pTilt67->IntersectRay( hitFront67, 5.0, true, true, false );
+			Check( hitBack67.geometric.bHit && hitFront67.geometric.bHit,
+				"A67b-2 [DL-626]: rays hit both back and front faces of s_tilt67 inside s_bot67" );
+			if( hitBack67.geometric.bHit && hitFront67.geometric.bHit ) {
+				IORStack beforeExit = seedBelow;
+				beforeExit.SetMediumProbeScene( &s67b.Scene() );
+				IORStack afterExit = beforeExit;
+				afterExit.SetCurrentObject( pTilt67 );
+				const auto cBack = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitBack67.geometric, 1.5, afterExit, pTilt67->GetMaterial(), 0 );
+				afterExit.SetCrossingEtaFrom( cBack.etaFrom );
+				const Scalar scaleExit = RadianceEtaScale( beforeExit, &afterExit );
+
+				IORStack beforeEnter = afterExit;
+				beforeEnter.SetCrossingEtaFrom( 0 );
+				IORStack afterEnter = beforeEnter;
+				afterEnter.SetCurrentObject( pTilt67 );
+				const auto cFront = IORStackSeeding::ResolveOpenSheetCrossing(
+					hitFront67.geometric, 1.5, afterEnter, pTilt67->GetMaterial(), 0 );
+				afterEnter.SetCrossingEtaFrom( cFront.etaFrom );
+				const Scalar scaleEnter = RadianceEtaScale( beforeEnter, &afterEnter );
+
+				Check( Close( cBack.etaFrom, 1.5 ) && Close( cBack.etaTo, 1.33 ) &&
+					Close( cFront.etaFrom, 1.33 ) && Close( cFront.etaTo, 1.5 ) &&
+					Close( scaleExit * scaleEnter, 1.0 ) &&
+					Close( scaleExit, ( 1.5 / 1.33 ) * ( 1.5 / 1.33 ) ),
+					"A67b-3 [DL-626]: back-face exit (1.5->1.33) and front-face entry (1.33->1.5) are exact Helmholtz/L/n^2 reciprocals" );
+			}
+		}
+
+		// A67c: Closed dielectric `ball67` (ior 1.8, radius 1.0 at origin) straddling open
+		// `water67` (+y at y = 0, ior 1.33) for BOTH `dielectric_material` and `perfectrefractor_material`:
+		// inside `ball67`, front-face downward scatter refracts `1.8 -> 1.33` and back-face upward
+		// scatter refracts `1.33 -> 1.8` (Snell sin(theta_t) = (1.33/1.8) * sin(theta_i), NOT straight-through).
+		Loaded s67c( Header()
+			+ "dielectric_material\n{\n\tname diel133\n\ttau 1.0\n\tior 1.33\n\tscattering 1000000\n}\n\n"
+			+ "sphere_geometry\n{\n\tname g_ball67\n\tradius 1.0\n}\n\n"
+			+ Obj( "ball67", "g_ball67", "glass18", "0 0 0" )
+			+ HSheet( "g_wat_diel", 0.0, 3.0, true ) + Obj( "wat_diel", "g_wat_diel", "diel133" )
+			+ HSheet( "g_wat_perf", -0.2, 3.0, true ) + Obj( "wat_perf", "g_wat_perf", "glass133" ) );
+		Check( s67c.ok, "A67c [DL-626] closed ball(1.8) straddling dielectric & perfectrefractor open sheets loads" );
+		if( s67c.ok ) {
+			const IObject* pBall = s67c.O( "ball67" );
+			RandomNumberGenerator rng( 424242u );
+			IndependentSampler samp( rng );
+			const double sinIn = 0.5;
+			const double cosIn = std::sqrt( 1.0 - sinIn * sinIn );
+			const Vector3 dirUpOblique = Vector3Ops::Normalize( Vector3( sinIn, cosIn, 0.0 ) );
+			const double expectedSinOut = ( 1.33 / 1.8 ) * sinIn;
+
+			auto checkBackRefract = [&]( const char* sheetName, double yStart ) -> bool {
+				const IObject* pSh = s67c.O( sheetName );
+				if( !pSh || !pSh->GetMaterial() || !pSh->GetMaterial()->GetSPF() ) return false;
+				Ray r( Point3( -0.1, yStart, 0.0 ), dirUpOblique );
+				RayIntersection hit( r, nullRasterizerState );
+				pSh->IntersectRay( hit, 2.0, true, true, false );
+				if( !hit.geometric.bHit ) return false;
+				IORStack st( 1.0 );
+				st.SetMediumProbeScene( &s67c.Scene() );
+				st.SetCurrentObject( pBall );
+				st.push( 1.8 );
+				st.SetCurrentObject( pSh );
+				st.pushOpenSheet( 1.33 );
+				st.SetCurrentObject( pSh );
+				ScatteredRayContainer scat;
+				pSh->GetMaterial()->GetSPF()->Scatter( hit.geometric, samp, scat, st );
+				for( unsigned int i = 0; i < scat.Count(); ++i ) {
+					if( scat[i].type == ScatteredRay::eRayRefraction && scat[i].ior_stack ) {
+						const Vector3 d = Vector3Ops::Normalize( scat[i].ray.Dir() );
+						const Scalar scale = RadianceEtaScale( st, scat[i].ior_stack );
+						return std::fabs( d.x - expectedSinOut ) < 1e-6 &&
+							Close( scat[i].ior_stack->top(), 1.8 ) &&
+							Close( scale, ( 1.33 / 1.8 ) * ( 1.33 / 1.8 ) );
+					}
+				}
+				return false;
+			};
+
+			Check( checkBackRefract( "wat_diel", -0.1 ) && checkBackRefract( "wat_perf", -0.3 ),
+				"A67c [DL-626]: DielectricSPF and PerfectRefractorSPF refract 1.33->1.8 (not straight-through) on open-sheet back face inside closed ball(1.8)" );
 		}
 	}
 

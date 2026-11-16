@@ -484,14 +484,14 @@ walk-history exception.
   across all subsequent `vertProbe` column steps and waypoint walks (`A62`, `A64a`).
 - Stack depth (review round 3, P3-2; narrowed further in `DL-631`, §5.8, to a
   0-ray return when `!cat.hasTrackableMedia` and a single 32-entry stack table
-  when `!cat.hasSheets`): `SeedFromPointImpl`'s ~12.8 KB general-path frame
-  (six 64-entry probe tables) exists only while a seed runs on a scene with
-  open sheets and is a LEAF:
+  when `!cat.hasSheets`): `SeedFromPointImpl`'s ~6 KB general-path inline frame
+  (six 32-entry probe tables, spilling to heap only when `cat.walkSteps > 32`)
+  exists only while a seed runs on a scene with open sheets and is a LEAF:
   every caller (camera and light roots, photon emission, HWSS lane
   delegation, `SMSCaptureUncached`'s membership probe) gets control back
   before tracing further, so the frame can sit on top of a deep recursion
   (an SMS capture at a vertex reached through PT's SSS re-entry into
-  `CastRay`) but never underneath one, and it is ~10 % of the 128 KB
+  `CastRay`) but never underneath one, and it is < 5 % of the 128 KB
   DL-315 keeps free at every `CastRay` entry.  The function that does run
   inside a walk, `ConfirmOpenSheetsAt` (via `ResolveUnpushedExit` in a
   transmissive SPF), uses no probe tables (its storage is heap vectors).
@@ -680,21 +680,24 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    and enforces a shared per-step `GroupDetourRayBudget()` counter plus
    `columnWalkUsed` (charging every `vertProbe` column walk after the first normal)
    across `sheet.normal` + `auxNormals` in `OpenSheetHoldsPoint` (`A62`, `A64a`).
-3. **Multi-fold curved/pleated sheet crossings (`A53`, `A57a`–`A57c`, `A65`, `A66b`, `A66c`):** When a ray
+3. **Multi-fold curved/pleated & nested sheet crossings (`A53`, `A57a`–`A57c`, `A65`, `A66b`, `A66c`, `A67a`–`A67c`):** When a ray
    crosses an inner fold's back face on a non-planar certified open sheet while
    an overhanging outer fold of that same sheet still encloses
    `PointPastBackFaceCrossing(ri, d)`, `ResolveOpenSheetCrossing` pops unenclosed
    top entries above `pSelf` (filtering `!cs.keep` / `!csSub.keep` sibling entries
-   in `CrossingMedia::Keeps` and stand-in nesting `A66b`, and peeling any stale
-   unconfirmed open sheets exposed underneath when `pSelf` was on top `A66c`), runs
-   `CrossingMedia::ConfirmAt(..., pExclude = 0)`,
-   and repositions/inserts `pSelf` in outer-to-inner order against both closed
+   in `CrossingMedia::Keeps` and stand-in nesting `A66b`, resolving per-operand-material
+   `csg_object` open sheets via `IObject::EnumerateEffectiveMaterials` `A67a`, and
+   peeling any stale unconfirmed open sheets exposed underneath when `pSelf` was on
+   top `A66c`), runs `CrossingMedia::ConfirmAt(..., pExclude = 0)`,
+   repositions/inserts `pSelf` in outer-to-inner order against both closed
    (`cs->crossed`) and open (`cs->passed` / stand-in) stack entries
-   (`FindRetainedSelf` requiring matching `GetMaterial()` and a confirmed stack
+   (`FindRetainedSelf` requiring matching effective material and a confirmed stack
    sibling before substituting a deduplicated sibling sheet `A57c`/`A66c`, and `A65`
    verifying outer-to-inner repositioning below an intermediate open sheet on
-   both pushed and unpushed walks) so pushed and unpushed walks agree with
-   `SeedFromPoint`.
+   both pushed and unpushed walks), and prices back-face crossings reciprocally
+   (`c.etaFrom = sheetIOR`, `c.etaTo = dest.top()`, with `DielectricSPF` and
+   `PerfectRefractorSPF` reading `openSheet.etaFrom` across Pel/NM/HWSS `A67b`–`A67c`)
+   so pushed and unpushed walks agree with `SeedFromPoint`.
 4. **Luminaire seed self-exit vs enclosing room ceiling (`A55`):**
    `DetourOriginForSeedExit` steps `detourOrigin` slightly into the `-normal`
    free-space side of `pSeedObject`'s entry face (up to `2 * selfSkin`, or halfway
@@ -710,7 +713,7 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    normal prisms of a planar sheet, point-based `SeedFromPoint` ==
    `ResolveUnpushedExit` parity (§5.2, `B5`: PT/BDPT `0.9969 +/- 0.0103` vs
    walk-history `0.7905`) remains the deliberate reciprocal convention.
-   `OpenSheetHalfSpaceSeedingTest`: **250 passed, 0 failed** (`235/0` Part A +
+   `OpenSheetHalfSpaceSeedingTest`: **265 passed, 0 failed** (`250/0` Part A +
    `15/0` Part B; `red_prove.sh` RED -> GREEN on `DL-626-SUMMARY`).
 
 **`DL-631` (hot-path overhead on scenes without open sheets):**
@@ -726,7 +729,8 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
   `MaterialMayRefract` (`sample` `malloc` frames **584 -> 205 (-65 %)**, `free`
   **198 -> 71 (-64 %)**).
 - Added `!cat.hasTrackableMedia` 0-ray immediate return on all-opaque scenes
-  (`A59`), a `!cat.hasSheets` fast path in `SeedFromPointImpl` using a single
+  including per-operand-material `csg_object`s via `IObject::EnumerateEffectiveMaterials`
+  (`A59`, `A59b`), a `!cat.hasSheets` fast path in `SeedFromPointImpl` using a single
   32-entry stack buffer (`ProbeEntry[32]`, `kMaxProbeEntries = kMaxProbeSteps = 32`,
   while the general path honors `cat.walkSteps` for $>32$-step sheet scenes `A58`)
   with immediate return when the forward `TallyProbe` finds `!anyCandidate`,
@@ -740,9 +744,9 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
   `IntegrateFromHitHWSS` `startDepth == 0` Fallbacks 1 & 2 (`sample`
   `HWSSLaneSeeds` frames **74 -> 0**), plus `#ifdef RISE_ENABLE_OPENPGL` gating
   on `guidedIorStack` in `src/Library/Shaders/PathTracingIntegrator.cpp`.
-- Fresh post-hardening interleaved `ABBAABBA` ($n = 4$ per binary,
-  `RISE_OPTIONS_FILE` `render_thread_reserve_count 0`, `6946c4c82` vs `HEAD`
-  including `556bf4a3b`):
+- Interleaved `ABBAABBA` ($n = 4$ per binary, `RISE_OPTIONS_FILE`
+  `render_thread_reserve_count 0`, `6946c4c82` vs `a1d619190` including
+  `556bf4a3b`):
   - `scenes/Tests/Spectral/hwss_prism_dispersion_pt.RISEscene` ($256 \times 256$,
     256 spp, `hwss true`, `num_wavelengths 8`): wall **15.707 +/- 0.961 s ->
     15.480 +/- 0.758 s (-1.45 %)**, user CPU **218.43 +/- 5.88 s ->

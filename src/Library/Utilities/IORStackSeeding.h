@@ -471,7 +471,7 @@ namespace RISE
 		inline bool SheetGeomKeyLess( const IObject* a, const IObject* b )
 		{
 			if( a == b ) return false;
-			if( !a || !b ) return a < b;
+			if( !a || !b ) return !a && b;
 			const BoundingBox ba = a->getBoundingBox();
 			const BoundingBox bb = b->getBoundingBox();
 			const Scalar ka[6] = { ba.ll.x, ba.ll.y, ba.ll.z, ba.ur.x, ba.ur.y, ba.ur.z };
@@ -1437,6 +1437,120 @@ namespace RISE
 			return infoNM.valid && ( infoNM.canRefract || infoNM.hasInterior );
 		}
 
+		inline bool ObjectMayRefract( const IObject& object )
+		{
+			if( const IMaterial* pDirect = object.GetMaterial() ) {
+				return MaterialMayRefract( pDirect );
+			}
+			struct RefractScan : public IEnumCallback<IMaterial>
+			{
+				unsigned int seen = 0;
+				bool anyRefract = false;
+				bool operator()( const IMaterial& mat ) override
+				{
+					++seen;
+					if( MaterialMayRefract( &mat ) ) {
+						anyRefract = true;
+						return false;
+					}
+					return true;
+				}
+			} scan;
+			object.EnumerateEffectiveMaterials( scan );
+			if( scan.anyRefract ) {
+				return true;
+			}
+			if( scan.seen > 0 ) {
+				return false;
+			}
+			// A concrete `Implementation::Object` / `CSGObject` (inheriting
+			// `Implementation::Transformable`) with zero effective materials (`"none"`)
+			// never refracts; custom non-`Transformable` test stubs retain the
+			// conservative fallback.
+			const IObject* pObj = &object;
+			return dynamic_cast<const Implementation::Transformable*>( pObj ) == 0;
+		}
+
+		inline bool ObjectMayBeTrackable( const IObject& object )
+		{
+			if( object.GetInteriorMedium() ) {
+				return true;
+			}
+			if( const IMaterial* pDirect = object.GetMaterial() ) {
+				return MaterialMayBeTrackable( pDirect );
+			}
+			struct TrackScan : public IEnumCallback<IMaterial>
+			{
+				unsigned int seen = 0;
+				bool anyTrackable = false;
+				bool operator()( const IMaterial& mat ) override
+				{
+					++seen;
+					if( MaterialMayBeTrackable( &mat ) ) {
+						anyTrackable = true;
+						return false;
+					}
+					return true;
+				}
+			} scan;
+			object.EnumerateEffectiveMaterials( scan );
+			if( scan.anyTrackable ) {
+				return true;
+			}
+			if( scan.seen > 0 ) {
+				return false;
+			}
+			const IObject* pObj = &object;
+			return dynamic_cast<const Implementation::Transformable*>( pObj ) == 0;
+		}
+
+		//! Returns the unique refractive leaf `IMaterial*` of @a pObj (or its
+		//! unique leaf `IMaterial*` when only one exists), or null when @a pObj
+		//! has zero materials or >= 2 distinct refractive operand materials.
+		inline const IMaterial* SingleRefractiveObjectMaterial( const IObject* pObj )
+		{
+			if( !pObj ) {
+				return 0;
+			}
+			if( const IMaterial* pDirect = pObj->GetMaterial() ) {
+				return pDirect;
+			}
+			struct UniqueScan : public IEnumCallback<IMaterial>
+			{
+				const IMaterial* refractMat = 0;
+				unsigned int refractCount = 0;
+				const IMaterial* anyMat = 0;
+				unsigned int anyCount = 0;
+				bool operator()( const IMaterial& mat ) override
+				{
+					if( anyCount == 0 ) {
+						anyMat = &mat;
+						anyCount = 1;
+					} else if( &mat != anyMat ) {
+						++anyCount;
+					}
+					if( MaterialMayRefract( &mat ) ) {
+						if( refractCount == 0 ) {
+							refractMat = &mat;
+							refractCount = 1;
+						} else if( &mat != refractMat ) {
+							++refractCount;
+							return false;
+						}
+					}
+					return true;
+				}
+			} scan;
+			pObj->EnumerateEffectiveMaterials( scan );
+			if( scan.refractCount == 1 ) {
+				return scan.refractMat;
+			}
+			if( scan.refractCount == 0 && scan.anyCount == 1 ) {
+				return scan.anyMat;
+			}
+			return 0;
+		}
+
 		inline OpenSheetCatalog& EnsureOpenSheetCatalog( const IObjectManager* pObjects )
 		{
 			OpenSheetCatalog& catalog = ThreadOpenSheetCatalog();
@@ -1500,13 +1614,13 @@ namespace RISE
 							bounds.Include( b );
 						}
 					}
-					const IMaterial* pMat = object.GetMaterial();
-					const bool trackable = MaterialMayBeTrackable( pMat );
-					const bool mayRefract = MaterialMayRefract( pMat );
+					const bool trackable = ObjectMayBeTrackable( object );
+					const bool mayRefract = ObjectMayRefract( object );
 					if( trackable || mayRefract ) {
 						const IGeometry* pGeom = object.GetGeometry();
+						const IObject* pObjPtr = &object;
 						const bool objTracked =
-							( dynamic_cast<const Implementation::Transformable*>( &object ) != 0 ) &&
+							( dynamic_cast<const Implementation::Transformable*>( pObjPtr ) != 0 ) &&
 							( pGeom
 								? ( dynamic_cast<const Implementation::Geometry*>( pGeom ) != 0 )
 								: ( Implementation::Geometry::CustomCsgOperandSeen() == 0 ) );
@@ -2746,7 +2860,7 @@ namespace RISE
 				{ Scalar( 0 ), vMax + delta, ( vMax + delta ) * ( vMax + delta ) }
 			};
 			std::sort( cardinals, cardinals + 4, []( const WaypointOffset& a, const WaypointOffset& b ) {
-				return a.distSq < b.distSq;
+				return ScalarTotalLess( a.distSq, b.distSq );
 			} );
 			const Scalar uLo = uMin - delta, uHi = uMax + delta;
 			const Scalar vLo = vMin - delta, vHi = vMax + delta;
@@ -3158,8 +3272,8 @@ namespace RISE
 				}
 			}
 			std::sort( visitOrder.begin(), visitOrder.end(), [&]( const std::size_t a, const std::size_t b ) {
-				if( snap[a].columnDist != snap[b].columnDist ) {
-					return snap[a].columnDist < snap[b].columnDist;
+				if( ScalarTotalDiff( snap[a].columnDist, snap[b].columnDist ) ) {
+					return ScalarTotalLess( snap[a].columnDist, snap[b].columnDist );
 				}
 				return SheetGeomKeyLess( sheets[a], sheets[b] );
 			} );
@@ -3772,7 +3886,7 @@ namespace RISE
 			return false;
 		}
 
-		struct ConfirmedSheet
+			struct ConfirmedSheet
 		{
 			const IObject* pObj;
 			Scalar ior;
@@ -3784,6 +3898,73 @@ namespace RISE
 
 			ConfirmedSheet() : pObj( 0 ), ior( 0 ), closedInner( 0 ), keep( false ) {}
 		};
+
+		inline const IMaterial* ConfirmedSheetMaterial( const ConfirmedSheet& cs )
+		{
+			if( cs.entryCtx.pMaterial ) {
+				return cs.entryCtx.pMaterial;
+			}
+			return SingleRefractiveObjectMaterial( cs.pObj );
+		}
+
+		inline const IMaterial* ResolveCrossingMaterialAtHit(
+			const IScene* pScene,
+			const IObject* pObj,
+			const RayIntersectionGeometric& ri
+			)
+		{
+			if( !pObj || !pScene || !pScene->GetObjects() || !IsSceneObject( pScene->GetObjects(), pObj ) ) {
+				return 0;
+			}
+			if( const IMaterial* pDirect = pObj->GetMaterial() ) {
+				return pDirect;
+			}
+			if( const IMaterial* pSingle = SingleRefractiveObjectMaterial( pObj ) ) {
+				return pSingle;
+			}
+			// Multi-material CSG composite (`GetMaterial() == nullptr` with >= 2
+			// distinct refractive operand materials): cast one short local ray
+			// across `ri.ptIntersection` along `ri.ray.Dir()` on `pObj` to recover
+			// the exact operand `pMaterial`.
+			Vector3 d = ri.ray.Dir();
+			const Scalar dLenSq = Vector3Ops::SquaredModulus( d );
+			if( !( dLenSq > Scalar( 0 ) ) ) {
+				return 0;
+			}
+			d = d * ( Scalar( 1.0 ) / std::sqrt( dLenSq ) );
+			const Scalar scale = std::max( Scalar( 1.0 ),
+				std::max( std::fabs( ri.ptIntersection.x ),
+				std::max( std::fabs( ri.ptIntersection.y ), std::fabs( ri.ptIntersection.z ) ) ) );
+			const Scalar eps = Scalar( 1e-4 ) * scale;
+			RayIntersection probe( Ray( Point3Ops::mkPoint3( ri.ptIntersection, d * ( -eps ) ), d ), nullRasterizerState );
+			pObj->IntersectRay( probe, Scalar( 4.0 ) * eps, true, true, false );
+			return probe.geometric.bHit ? probe.pMaterial : 0;
+		}
+
+		inline const IMaterial* StackSheetMaterial( const IORStack& stack, const std::size_t idx )
+		{
+			if( idx == 0 || idx >= stack.Depth() ) {
+				return 0;
+			}
+			const IORStack::EntryContext& ctx = stack.ContextAt( idx );
+			if( ctx.pMaterial ) {
+				return ctx.pMaterial;
+			}
+			const IObject* pObj = stack.ObjectAt( idx );
+			const IScene* pScene = stack.MediumProbeScene();
+			if( !pObj || !pScene || !pScene->GetObjects() || !IsSceneObject( pScene->GetObjects(), pObj ) ) {
+				return 0;
+			}
+			if( const IMaterial* pSingle = SingleRefractiveObjectMaterial( pObj ) ) {
+				return pSingle;
+			}
+			if( ctx.bHasContext ) {
+				RayIntersectionGeometric rig( Ray( ctx.ptIntersection, ctx.rayDir ), ctx.rast );
+				ctx.PopulateGeometric( rig );
+				return ResolveCrossingMaterialAtHit( pScene, pObj, rig );
+			}
+			return 0;
+		}
 
 		//! DL-622 Gap 5: confirms all active candidate sheets in a planar
 		//! `OpenSheetNormalGroup` with ONE shared scene ray walk along
@@ -4224,8 +4405,8 @@ namespace RISE
 					if( aInB && bInA ) {
 						declineSheets = true;
 					} else if( !aInB && !bInA ) {
-						const IMaterial* ma = confirmed[a].pObj->GetMaterial();
-						const IMaterial* mb = confirmed[b].pObj->GetMaterial();
+						const IMaterial* ma = ConfirmedSheetMaterial( confirmed[a] );
+						const IMaterial* mb = ConfirmedSheetMaterial( confirmed[b] );
 						if( ma && ma == mb && confirmed[a].ior == confirmed[b].ior ) {
 							// `confirmed` is sorted nearer-first above, so `a` is
 							// always the geometrically nearer sibling.
@@ -4612,7 +4793,7 @@ namespace RISE
 					const IMaterial* pMat = 0;
 					if( ctx.bHasContext ) {
 						ctx.PopulateGeometric( hitRi.geometric );
-						pMat = ctx.pMaterial ? ctx.pMaterial : pObj->GetMaterial();
+						pMat = ctx.pMaterial ? ctx.pMaterial : ResolveCrossingMaterialAtHit( pProbeScene, pObj, hitRi.geometric );
 					}
 					if( !pMat ) {
 						// No context, or a composite object (no material of its
@@ -5002,7 +5183,7 @@ namespace RISE
 					}
 					return false;
 				};
-				const IMaterial* pMat = pObj->GetMaterial();
+				const IMaterial* pMat = ConfirmedSheetMaterial( *csSelf );
 				if( pStack ) {
 					for( std::size_t i = 1; i < pStack->Depth(); ++i ) {
 						const IObject* pExisting = pStack->ObjectAt( i );
@@ -5025,9 +5206,15 @@ namespace RISE
 								break;
 							}
 						}
-						if( csExisting && pMat && pExisting->GetMaterial() == pMat &&
-							!passes( *csSelf, pExisting ) && !passes( *csExisting, pObj ) ) {
-							return 0;
+						if( csExisting ) {
+							const IMaterial* pExistingMat = StackSheetMaterial( *pStack, i );
+							if( !pExistingMat ) {
+								pExistingMat = ConfirmedSheetMaterial( *csExisting );
+							}
+							if( pMat && pExistingMat == pMat &&
+								!passes( *csSelf, pExisting ) && !passes( *csExisting, pObj ) ) {
+								return 0;
+							}
 						}
 					}
 				}
@@ -5051,16 +5238,29 @@ namespace RISE
 				if( decline ) {
 					return false;
 				}
-				const IMaterial* pMat = pY->GetMaterial();
 				for( std::size_t c = 0; c < confirmed.size(); ++c ) {
-					const ConfirmedSheet& cs = confirmed[c];
-					if( !cs.keep ) {
-						continue;
-					}
-					if( cs.pObj == pY ) {
+					if( confirmed[c].keep && confirmed[c].pObj == pY ) {
 						return true;
 					}
-					if( cs.pObj == pSheet || !pMat || cs.pObj->GetMaterial() != pMat ) {
+				}
+				const IMaterial* pMat = 0;
+				if( pStack ) {
+					for( std::size_t i = pStack->Depth(); i > 1; --i ) {
+						if( pStack->ObjectAt( i - 1 ) == pY ) {
+							pMat = StackSheetMaterial( *pStack, i - 1 );
+							break;
+						}
+					}
+				}
+				if( !pMat ) {
+					pMat = SingleRefractiveObjectMaterial( pY );
+				}
+				if( !pMat ) {
+					return false;
+				}
+				for( std::size_t c = 0; c < confirmed.size(); ++c ) {
+					const ConfirmedSheet& cs = confirmed[c];
+					if( !cs.keep || cs.pObj == pSheet || ConfirmedSheetMaterial( cs ) != pMat ) {
 						continue;
 					}
 					bool onStack = false;
@@ -5208,10 +5408,13 @@ namespace RISE
 				}
 				c.bEntering = true;
 				c.etaFrom = dest.top();
-				// The crossing's record, for a companion lane's re-index.  A
-				// null @a pMat is resolved by the consumer (which checks the
-				// key is a scene object before dereferencing it).
-				dest.pushOpenSheet( sheetIOR, IORStack::EntryContext::FromGeometric( ri, pMat, false ) );
+				// Record the crossing's effective material (resolving operand-material
+				// CSG sheets when the caller passed null @a pMat, after verifying the
+				// current key is a registered scene object).
+				const IMaterial* effMat = pMat
+					? pMat
+					: ResolveCrossingMaterialAtHit( dest.MediumProbeScene(), dest.currentObject(), ri );
+				dest.pushOpenSheet( sheetIOR, IORStack::EntryContext::FromGeometric( ri, effMat, false ) );
 				c.etaTo = sheetIOR;
 			} else {
 				const IObject* pSelf = dest.currentObject();
@@ -5231,8 +5434,6 @@ namespace RISE
 				ResolveUnpushedExitWithMedia( ri, pSelf, dest, nm, media, checkSelfEnclosure );
 				const bool wasPushed = dest.containsCurrent();
 				const bool wasTopSelf = ( dest.topObject() == pSelf );
-				const bool hadInnerClosedTop = ( dest.Depth() > 1 && !dest.topIsOpenSheet() );
-				const Scalar prevTop = dest.top();
 				if( wasPushed ) {
 					dest.pop();
 					if( wasTopSelf && pScene && pScene->GetObjects() && dest.Depth() > 1 && dest.topIsOpenSheet() ) {
@@ -5262,13 +5463,13 @@ namespace RISE
 								return false;
 							}
 						}
-						const IMaterial* pEntryMat = pEntryObj->GetMaterial();
+						const IMaterial* pEntryMat = StackSheetMaterial( dest, idx );
 						if( !pEntryMat ) {
 							return false;
 						}
 						for( std::size_t k = 0; k < media.confirmed.size(); ++k ) {
 							const ConfirmedSheet& csSub = media.confirmed[k];
-							if( !csSub.keep || csSub.pObj == pSelf || csSub.pObj->GetMaterial() != pEntryMat ) {
+							if( !csSub.keep || csSub.pObj == pSelf || ConfirmedSheetMaterial( csSub ) != pEntryMat ) {
 								continue;
 							}
 							bool onStack = false;
@@ -5291,13 +5492,20 @@ namespace RISE
 							break;
 						}
 					}
-					dest.InsertOpenSheetAt( insIdx, pSelf, sheetIOR, IORStack::EntryContext::FromGeometric( ri, pMat, false ) );
+					const IMaterial* effMat = pMat
+						? pMat
+						: ( cs->entryCtx.pMaterial
+							? cs->entryCtx.pMaterial
+							: ResolveCrossingMaterialAtHit( pScene, pSelf, ri ) );
+					dest.InsertOpenSheetAt( insIdx, pSelf, sheetIOR, IORStack::EntryContext::FromGeometric( ri, effMat, false ) );
 				}
 				c.bEntering = false;
-				const bool hadInnerAboveSelf = wasPushed
-					? !wasTopSelf
-					: ( hadInnerClosedTop && !dest.topIsOpenSheet() && dest.Depth() > 1 );
-				c.etaFrom = hadInnerAboveSelf ? prevTop : sheetIOR;
+				// Reciprocal open-sheet face rule (DL-345): immediately on the back
+				// side of `pSelf`, `pSelf` is at distance 0 (innermost, matching
+				// `bFront`'s `c.etaTo = sheetIOR`), and `dest.top()` is the post-exit
+				// ambient medium on `pSelf`'s front side (matching `bFront`'s
+				// `c.etaFrom = dest.top()`).
+				c.etaFrom = sheetIOR;
 				c.etaTo = dest.top();
 			}
 			return c;

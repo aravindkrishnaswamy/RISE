@@ -1691,6 +1691,67 @@ static void TestCsgCertificateBitsEpochInvalidation()
 		safe_release( oPlane );
 	}
 
+	// N4: Round 8: With `TimeIndexed::tlsSlots != nullptr` (active across the entire pass on any
+	// motion-blurred frame where a camera or light moves), a depth-30 shared-operand CSG DAG
+	// (`2^30` paths, 31 unique nodes) must stay O(|V|) cold / O(1) hot on `CertificateBits()`,
+	// `Realize()`, `ShapeRevision()`, and `EnumerateEffectiveMaterials()`.
+	{
+		IPainter* pGrey = nullptr;
+		RISE_API_CreateUniformColorPainter( &pGrey, RISEPel( 0.5, 0.5, 0.5 ) );
+		IMaterial* pMatte = nullptr;
+		RISE_API_CreateLambertianMaterial( &pMatte, *pGrey );
+
+		Object* leafDag = new Object( gBoxA );
+		leafDag->AssignMaterial( *pMatte );
+		leafDag->FinalizeTransformations();
+		IObjectPriv* cur = leafDag;
+		cur->addref();
+		for( int d = 0; d < 30; ++d ) {
+			CSGObject* node = new CSGObject( CSG_UNION );
+			node->AssignObjects( cur, cur );
+			node->FinalizeTransformations();
+			cur->release();
+			cur = node;
+		}
+		CSGObject* rootDag = dynamic_cast<CSGObject*>( cur );
+
+		struct CountMats : public IEnumCallback<IMaterial>
+		{
+			int count = 0;
+			bool operator()( const IMaterial& ) override { ++count; return true; }
+		};
+
+		const TimeIndexed::ThreadSlots activeFrameSlots = { nullptr, 0, nullptr };
+		const TimeIndexed::ThreadSlots* prevSlots = TimeIndexed::tlsSlots;
+		TimeIndexed::tlsSlots = &activeFrameSlots;
+
+		const auto t0 = std::chrono::steady_clock::now();
+		CountMats cm;
+		const bool enumOk = rootDag && rootDag->EnumerateEffectiveMaterials( cm );
+		rootDag->Realize();
+		const uint64_t revSlot = rootDag ? rootDag->ShapeRevision() : 0;
+		bool certOk = ( rootDag && revSlot != 0 && rootDag->IsCertifiedWatertight() && !rootDag->IsProvablyOpenSheet( true ) );
+		for( int q = 0; q < 200; ++q ) {
+			if( !rootDag->IsCertifiedWatertight() || rootDag->IsProvablyOpenSheet( true ) || rootDag->ShapeRevision() != revSlot ) {
+				certOk = false;
+				break;
+			}
+		}
+		const double ms = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - t0 ).count();
+
+		TimeIndexed::tlsSlots = prevSlots;
+
+		Check( enumOk && cm.count == 1 && certOk && ms < 200.0,
+			"N4: depth-30 shared-operand CSG DAG under TimeIndexed::tlsSlots != nullptr completes EnumerateEffectiveMaterials + Realize + 201 CertificateBits/ShapeRevision in < 200 ms (got " +
+			std::to_string( ms ) + " ms, matCount=" + std::to_string( cm.count ) + ")" );
+
+		safe_release( cur );
+		safe_release( leafDag );
+		safe_release( pMatte );
+		safe_release( pGrey );
+	}
+
 	safe_release( gBoxB );
 	safe_release( gBoxA );
 	safe_release( gQuad );

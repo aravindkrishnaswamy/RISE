@@ -64,6 +64,12 @@ namespace RISE
 		if( !forceExtendedPrefix && norm.size() < 240 ) {
 			return raw;
 		}
+		// Strip any non-root trailing backslash before prepending `\\?\` so
+		// literal Win32 directory APIs (`RemoveDirectoryW`, `GetFileAttributesExW`)
+		// accept directory paths passed with a trailing separator (preserving `C:\`).
+		while( norm.size() > 3 && norm.back() == L'\\' && norm[norm.size() - 2] != L':' ) {
+			norm.pop_back();
+		}
 		if( norm.rfind( L"\\\\", 0 ) == 0 ) {
 			return std::filesystem::path( L"\\\\?\\UNC\\" + norm.substr( 2 ) );
 		}

@@ -2237,11 +2237,31 @@ bool CSGObject::IsTopologicallyClosed() const
 	return ( CertificateBits() & kTopologicallyClosed ) != 0;
 }
 
+namespace
+{
+	struct CsgCertBitsTlsMemo
+	{
+		std::uint64_t epochSum;
+		unsigned long long threadPoseEpoch;
+		const TimeIndexed::ThreadSlots* tlsSlots;
+		std::unordered_map<const CSGObject*, int> memo;
+
+		CsgCertBitsTlsMemo() :
+		  epochSum( 0 ),
+		  threadPoseEpoch( 0 ),
+		  tlsSlots( 0 )
+		{}
+	};
+
+	inline CsgCertBitsTlsMemo& ThreadCsgCertBitsMemo()
+	{
+		static thread_local CsgCertBitsTlsMemo m;
+		return m;
+	}
+}
+
 int CSGObject::CertificateBits() const
 {
-	if( TimeIndexed::tlsSlots ) {
-		return ComputeCertificateBits();
-	}
 	// Combine all three strictly non-decreasing global epochs (`PatchCertificateEpoch`,
 	// `GlobalGeometryShapeEpoch`, `GlobalTransformPoseEpoch`) so any patch/mesh edit,
 	// keyframed geometry deformation, nested CSG/Object edit, hierarchy rebake, or
@@ -2251,6 +2271,32 @@ int CSGObject::CertificateBits() const
 		static_cast<std::uint64_t>( GeometricUtilities::PatchCertificateEpoch() ) +
 		Geometry::GlobalGeometryShapeEpoch() +
 		Transformable::GlobalTransformPoseEpoch();
+
+	if( TimeIndexed::tlsSlots ) {
+		// Under TimeIndexedMotionBlur (e.g. animated camera/lights alongside static
+		// nested/shared-DAG CSG objects), memoize per thread keyed on `(epochSum,
+		// ThreadTransformPoseEpoch(), TimeIndexed::tlsSlots)` so shared-operand DAGs
+		// stay O(|V|) cold / O(1) hot per ray without cross-thread slot pollution.
+		CsgCertBitsTlsMemo& tls = ThreadCsgCertBitsMemo();
+		const unsigned long long tPoseEpoch = Transformable::ThreadTransformPoseEpoch();
+		const TimeIndexed::ThreadSlots* curSlots = TimeIndexed::tlsSlots;
+		if( tls.epochSum != epochSum ||
+			tls.threadPoseEpoch != tPoseEpoch ||
+			tls.tlsSlots != curSlots ) {
+			tls.epochSum = epochSum;
+			tls.threadPoseEpoch = tPoseEpoch;
+			tls.tlsSlots = curSlots;
+			tls.memo.clear();
+		}
+		const std::unordered_map<const CSGObject*, int>::const_iterator it = tls.memo.find( this );
+		if( it != tls.memo.end() ) {
+			return it->second;
+		}
+		const int bits = ComputeCertificateBits();
+		tls.memo[this] = bits;
+		return bits;
+	}
+
 	// Epoch in bits 32..62 (31 bits, so the packed value stays positive and
 	// -1 keeps meaning "not computed"), flags in bits 0..30.
 	const long long epoch = static_cast<long long>( epochSum & 0x7fffffffULL );
@@ -4340,12 +4386,38 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 
 void CSGObject::Realize() const
 {
+	struct RealizeDagState
+	{
+		unsigned int depth = 0;
+		std::unordered_set<const CSGObject*> visited;
+	};
+	static thread_local RealizeDagState tlsRealize;
+	if( tlsRealize.depth > 0 && tlsRealize.visited.find( this ) != tlsRealize.visited.end() ) {
+		return;
+	}
+	struct RealizeDepthGuard
+	{
+		RealizeDagState& s;
+		explicit RealizeDepthGuard( RealizeDagState& s_, const CSGObject* self ) : s( s_ )
+		{
+			++s.depth;
+			s.visited.insert( self );
+		}
+		~RealizeDepthGuard()
+		{
+			if( --s.depth == 0 ) {
+				s.visited.clear();
+			}
+		}
+	} guard( tlsRealize, this );
+
 	// Our two operands are registered in the ObjectManager but world-INVISIBLE
 	// (AssignObjects sets SetWorldVisible(false)), so RayCaster's realize pass —
 	// which walks EnumerateObjects, filtering on IsWorldVisible() — never reaches
 	// them.  Cascade explicitly.  Children dispatch virtually: a plain Object
-	// realizes its geometry; a nested CSGObject recurses.  Const + idempotent,
-	// so this is safe to call on every render.
+	// realizes its geometry; a nested CSGObject recurses (in O(|V|) across shared
+	// DAG operands via `tlsRealize.visited`).  Const + idempotent, so this is
+	// safe to call on every render.
 	if( pObjectA ) {
 		pObjectA->Realize();
 	}
@@ -5518,4 +5590,74 @@ unsigned long long CSGObject::ShapeRevision() const
 		tls.callMemo[this] = h;
 	}
 	return h;
+}
+
+bool CSGObject::EnumerateEffectiveMaterials( IEnumCallback<IMaterial>& cb ) const
+{
+	struct MatDagState
+	{
+		unsigned int depth = 0;
+		std::unordered_set<const IObject*> visitedObjs;
+		std::unordered_set<const IMaterial*> visitedMats;
+	};
+	static thread_local MatDagState tlsMat;
+
+	struct UniqueMatCallback : public IEnumCallback<IMaterial>
+	{
+		IEnumCallback<IMaterial>& inner;
+		std::unordered_set<const IMaterial*>& seen;
+		UniqueMatCallback( IEnumCallback<IMaterial>& i_, std::unordered_set<const IMaterial*>& s_ ) :
+		  inner( i_ ), seen( s_ ) {}
+		bool operator()( const IMaterial& m ) override
+		{
+			if( !seen.insert( &m ).second ) {
+				return true;
+			}
+			return inner( m );
+		}
+	};
+
+	const bool isRootCall = ( tlsMat.depth == 0 );
+	if( !isRootCall && !tlsMat.visitedObjs.insert( this ).second ) {
+		return true;
+	}
+	struct MatDepthGuard
+	{
+		MatDagState& s;
+		explicit MatDepthGuard( MatDagState& s_, const IObject* self ) : s( s_ )
+		{
+			if( s.depth == 0 ) {
+				s.visitedObjs.insert( self );
+			}
+			++s.depth;
+		}
+		~MatDepthGuard()
+		{
+			if( --s.depth == 0 ) {
+				s.visitedObjs.clear();
+				s.visitedMats.clear();
+			}
+		}
+	} guard( tlsMat, this );
+
+	UniqueMatCallback rootDedupCb( cb, tlsMat.visitedMats );
+	IEnumCallback<IMaterial>& activeCb = isRootCall ? static_cast<IEnumCallback<IMaterial>&>( rootDedupCb ) : cb;
+
+	// Outermost material override wins (`CSGObject::IntersectRay` stamps
+	// `this->pMaterial` over any child operand's material).
+	if( const IMaterial* m = GetMaterial() ) {
+		return activeCb( *m );
+	}
+
+	if( pObjectA && ( dynamic_cast<const CSGObject*>( pObjectA ) != 0 || tlsMat.visitedObjs.insert( pObjectA ).second ) ) {
+		if( !pObjectA->EnumerateEffectiveMaterials( activeCb ) ) {
+			return false;
+		}
+	}
+	if( pObjectB && ( dynamic_cast<const CSGObject*>( pObjectB ) != 0 || tlsMat.visitedObjs.insert( pObjectB ).second ) ) {
+		if( !pObjectB->EnumerateEffectiveMaterials( activeCb ) ) {
+			return false;
+		}
+	}
+	return true;
 }

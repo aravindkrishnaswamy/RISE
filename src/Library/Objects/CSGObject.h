@@ -244,6 +244,7 @@ namespace RISE
 			bool IsTopologicallyClosed() const;
 			bool HasNegativeOpenSignedVolume() const;
 			unsigned long long ShapeRevision() const;
+			bool EnumerateEffectiveMaterials( IEnumCallback<IMaterial>& cb ) const;
 
 		protected:
 			//! THE DIAGONAL OF THIS COMPOSITE'S OWN LOCAL BOX -- A's box
