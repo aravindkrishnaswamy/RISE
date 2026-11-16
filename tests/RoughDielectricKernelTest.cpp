@@ -167,7 +167,7 @@ static void AdjacentIndicesAndEndpoints()
 		const auto lowerRadial=RD::Draw(Vector3(0,0,1),0.1,0.1,1.5,u,0,0.5,false);
 		Check(lowerRadial.valid && lowerRadial.transmission,
 			"normal incidence accepts lower radial endpoint at both azimuth endpoints");
-		const auto upperRadial=RD::Draw(Unit(1,0,1e-10),0.1,0.1,1.5,u,upper,0.5,false);
+		const auto upperRadial=RD::Draw(Unit(1,0,1e-10),0.1,0.1,1.5,u,upper,0,false);
 		Check(upperRadial.valid && upperRadial.transmission,
 			"grazing incidence accepts known valid upper radial and azimuth endpoint transmissions");
 	}
@@ -268,11 +268,14 @@ static void ExtremeScaleArithmetic()
 		"tiny-width draw has independently predicted finite value and density");
 
 	// Normalize the stretched incident vector analytically before applying
-	// the normal-incidence GGX stretch. All reference algebra is order one;
+	// the projected-disk warp and GGX stretch. Reference algebra is order one;
 	// only the final direction's z component is multiplied by the tiny width.
-	const double vh=1/std::sqrt(2.0), capZ=1-0.4*(1+vh);
-	const double capR=std::sqrt((1-capZ)*(1+capZ));
-	const double cx=vh+capR*std::cos(TWO_PI*0.2), cz=(1+vh)*0.6;
+	// Independent ordinary projected-disk equations at Vh=(1,0,1)/sqrt(2).
+	const double vh=1/std::sqrt(2.0), diskX=std::sqrt(0.4)*std::cos(TWO_PI*0.2);
+	const double diskY=std::sqrt(0.4)*std::sin(TWO_PI*0.2), blend=(1+vh)/2;
+	const double warpedY=(1-blend)*std::sqrt(1-diskX*diskX)+blend*diskY;
+	const double alignedZ=std::sqrt(1-diskX*diskX-warpedY*warpedY);
+	const double cx=vh*(alignedZ-warpedY), cy=diskX, cz=vh*(alignedZ+warpedY);
 	const double ratio=1+2*cx/cz;
 	const double expectedWeight=ratio*(1+std::sqrt(2.0))/(ratio*std::sqrt(2.0)+std::sqrt(1+ratio*ratio));
 	for(double width : {1e-160,1e-170,1e-200,1e-300}) {
@@ -288,7 +291,8 @@ static void ExtremeScaleArithmetic()
 		Check(s.valid && std::isfinite(s.weight) && Close(s.weight,reference,1e-12),
 			"subnormal projected lengths retain dimensionless masking ratios for the returned direction");
 		if(width==std::numeric_limits<double>::denorm_min()) {
-			Check(s.wo.z==3*width,"normalization rounds a subnormal component once, after dividing by its length");
+			const auto normalized=RD::NormalizeScaled(Vector3(0.75,0,1),Vector3(width,1,1));
+			Check(normalized.x==width,"normalization rounds a subnormal component once, after dividing by its length");
 		}
 	}
 
@@ -299,7 +303,7 @@ static void ExtremeScaleArithmetic()
 		smooth.f==0.5*expectedRadiance && smooth.wo.x/width==-1 && smooth.wo.z==-1,
 		"extreme-index smooth Snell direction and representable radiance throughput survive eta-squared overflow");
 	const auto rough=RD::Draw(Vector3(1,0,width),width,width,eta,0.2,0.4,0,true);
-	const double cy=capR*std::sin(TWO_PI*0.2), a=1+cx/cz;
+	const double a=1+cx/cz;
 	const double q=1+(cx/cz)*(cx/cz)+(cy/cz)*(cy/cz);
 	const double rp=(a-1)/(a+1), F=0.5*(1+rp*rp);
 	const double referenceRadiance=2*(1-F)*a/(PI*q*q*(1+std::sqrt(2.0)));
@@ -309,6 +313,55 @@ static void ExtremeScaleArithmetic()
 	const auto directional=RD::Evaluate(Vector3(1,0,width),rough.wo,width,width,eta,true);
 	Check(Close(directional.f,referenceRadiance,1e-12),
 		"extreme-index direction-only BSDF agrees with the independent scaled radiance reference");
+}
+
+static void GrazingAdjacentIndicesAndDiskEndpoints()
+{
+	for(double eta : {std::nextafter(1.0,0.0),std::nextafter(1.0,2.0),1-1e-12,1+1e-12})
+	for(double z : {1e-8,1.6e-8,1e-7,2e-6}) {
+		const Vector3 wi(std::sqrt((1-z)*(1+z)),0,z);
+		const double delta=(eta-1)*(eta+1)+z*z;
+		for(double width : {0.0,1e-30}) {
+			if(delta<=0) {
+				const auto s=RD::Draw(wi,width,width,eta,0.2,0,0.5,false);
+				Check(s.valid && !s.transmission,"grazing adjacent-index critical crossing is TIR only on the analytic side");
+			} else {
+				const double ct=std::sqrt(delta)/eta;
+				const double rs=(z-eta*ct)/(z+eta*ct),rp=(eta*z-ct)/(eta*z+ct);
+				const double F=(rs*rs+rp*rp)/2, T=1-F;
+				const double u=T<F?T/2:(1+F)/2;
+				const auto s=RD::Draw(wi,width,width,eta,0.2,0,u,false);
+				Check(s.valid && s.transmission && Close(s.wo.z/(-ct),1,1e-12) &&
+					Close(s.wo.x,-wi.x/eta,1e-12) && Close(Vector3Ops::SquaredModulus(s.wo),1,1e-12),
+					"grazing adjacent-index Snell direction retains the small incident cosine");
+				if(width==0) Check(Close(s.pdf/T,1,1e-12),"grazing adjacent-index Fresnel mass matches independent analytic contrast");
+			}
+		}
+	}
+	const double v=std::nextafter(1.0,0.0), phi=PI, r=std::sqrt(v);
+	const double q=std::sqrt((1-v)+v*std::sin(phi)*std::sin(phi)),d=r*std::sin(phi);
+	// Vh=(1,0,0), T1=(0,1,0), T2=(0,0,1). Independent
+	// projected-disk reference, with the small q-d difference factored.
+	const double y=(q+d)/2, x=std::sqrt((0.5*(1-v)/(q+d))*(q+y));
+	const Vector3 normal=Unit(x,r*std::cos(phi),y);
+	const double ct=std::sqrt(1-(1-normal.x*normal.x)/2.25);
+	const Vector3 expected=Vector3(-1/1.5,0,0)+normal*(normal.x/1.5-ct);
+	const auto anti=RD::Draw(Vector3(1,0,1e-300),1,1,1.5,0.5,v,0,false);
+	Check(anti.valid && anti.transmission && Close(anti.wo.x,expected.x,1e-12) &&
+		Close(anti.wo.y,expected.y,1e-12) && Close(anti.wo.z/expected.z,1,1e-12),
+		"anti-aligned grazing VNDF endpoint matches independent projected-disk direction");
+	const auto horizon=RD::Draw(Vector3(1,0,1e-300),1,1,1.5,0.75,v,0,false);
+	Check(horizon.valid && !horizon.transmission && horizon.wo.z>0 && Close(horizon.wo.z/(1-v),0.5,1e-10),
+		"grazing disk warp preserves its tiny positive horizon height");
+	const auto tilted=RD::Draw(Unit(std::sqrt(0.75),0,0.5),1,1,1.5,0.75,v,0.5,false);
+	Check(tilted.valid && tilted.transmission && tilted.pdf>0,"tilted-view disk boundary retains a positive sampled density");
+	for(double z : {0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9}) {
+		const Vector3 wi=Unit(std::sqrt((1-z)*(1+z)),0,z);
+		const auto first=RD::Draw(wi,1,1,1.5,0.75,v,0,false);
+		const auto second=RD::Draw(wi,1,1,1.5,0.75,v,0.5,false);
+		Check((first.valid && first.transmission && first.pdf>0) || (second.valid && second.transmission && second.pdf>0),
+			"positive disk-boundary transmission survives across view tilts");
+	}
 }
 
 static void LowIndexNearNormal()
@@ -384,6 +437,7 @@ int main()
 	BoundaryCases();
 	ExtremeScaleArithmetic();
 	LowIndexNearNormal();
+	GrazingAdjacentIndicesAndDiskEndpoints();
 	ProbabilityAndFurnace();
 	std::cout << passed << " passed, " << failed << " failed\n";
 	return failed ? 1 : 0;

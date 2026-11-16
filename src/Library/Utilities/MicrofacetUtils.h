@@ -16,6 +16,8 @@
 //      Microfacet-Based BRDFs", JCGT 3(2), 2014
 //    - Dupuy & Benyoub, "Sampling Visible GGX Normals with
 //      Spherical Caps", HPG 2023
+//    - Heitz, "Sampling the GGX Distribution of Visible Normals",
+//      JCGT 7(4), 2018 (the rough-dielectric projected-disk sampler)
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 28, 2026
@@ -520,11 +522,23 @@ namespace RISE
 
 			inline Scalar Fresnel( Scalar cosI, Scalar sinI, Scalar eta, Scalar& cosT, Scalar& transmission )
 			{
-				// Preserve sin(theta) independently of a cosine rounded to 1.
-				// Dividing sine also avoids squaring an extreme eta.
-				const Scalar sinT = sinI / eta;
-				if( sinT >= 1 ) { cosT = 0; transmission = 0; return 1; }
-				cosT = std::sqrt( ( 1 - sinT ) * ( 1 + sinT ) );
+				// Retain the smaller angular component: sine near normal,
+				// cosine near grazing. Neither is recovered from a rounded 1.
+				if( cosI >= sinI ) {
+					if( sinI >= eta ) { cosT = 0; transmission = 0; return 1; }
+					cosT = std::sqrt(((eta-sinI)/eta)*(1+sinI/eta));
+				} else if( eta >= 1 ) {
+					cosT = std::hypot(cosI/eta,std::sqrt(((eta-1)/eta)*(1+1/eta)));
+				} else {
+					const Scalar p = eta*eta;
+					// Grazing cosI^2 < 1/2: p < 1/2 guarantees TIR.
+					// Otherwise p-1 is exact (Sterbenz). FMA retains the
+					// cosine-square residual and prevents fast-math from
+					// reassociating the small contrast into (p+q)-1.
+					const Scalar delta = std::fma(cosI,cosI,p-1)+std::fma(eta,eta,-p);
+					if( p < Scalar(0.5) || delta <= 0 ) { cosT = 0; transmission = 0; return 1; }
+					cosT = std::sqrt(delta)/eta;
+				}
 				// Scale each ratio by the larger index, avoiding eta*cos
 				// overflow without changing the Fresnel equations.
 				const Scalar a = eta >= 1 ? cosI/eta : cosI;
@@ -613,13 +627,30 @@ namespace RISE
 				result.delta = ax == 0 || eta == 1;
 				Vector3 m( 0, 0, 1 );
 				if( !result.delta ) {
-					// Dupuy-Benyoub spherical-cap VNDF, in the local frame.
+					// Heitz 2018 projected-disk VNDF. Unlike adding a cap point
+					// to its nearly antipodal view vector, this constructs a unit
+					// hemisphere normal before the anisotropic stretch.
 					const Vector3 vh = NormalizeScaled( wi, Vector3(ax,ay,1) );
-					const Scalar z = 1 - uNormal2 * ( 1 + vh.z );
-					const Scalar r = std::sqrt( r_max( Scalar(0), ( 1 - z ) * ( 1 + z ) ) );
+					const Scalar vt = std::hypot(vh.x,vh.y);
+					const Vector3 t1 = vt > 0 ? Vector3(-vh.y/vt,vh.x/vt,0) : Vector3(1,0,0);
+					const Vector3 t2 = Cross(vh,t1);
+					const Scalar r = std::sqrt(uNormal2);
 					const Scalar phi = TWO_PI * uNormal1;
-					m = NormalizeScaled( Vector3( vh.x + r * std::cos( phi ),
-						vh.y + r * std::sin( phi ), ( 1 + vh.z ) * ( 1 - uNormal2 ) ), Vector3(ax,ay,1) );
+					const Scalar diskX = r*std::cos(phi), diskY = r*std::sin(phi);
+					const Scalar remaining = 1-uNormal2;
+					const Scalar q = std::sqrt(remaining+uNormal2*std::sin(phi)*std::sin(phi));
+					const Scalar plus = diskY < 0 ? remaining/(q-diskY) : q+diskY;
+					const Scalar minus = diskY > 0 ? remaining/(q+diskY) : q-diskY;
+					const Scalar s = (1+vh.z)*Scalar(0.5);
+					const Scalar oneMinusVz = (vt/(1+vh.z))*vt;
+					const Scalar a = s*minus, b = oneMinusVz*q+s*plus;
+					const Scalar alignedZ = std::sqrt(a*b);
+					const Scalar warpedY = s*plus-vh.z*q;
+					Vector3 nh = t1*diskX+t2*warpedY+vh*alignedZ;
+					// Positive-factor form of warpedY*vt + alignedZ*vh.z.
+					// It preserves a tiny height at the grazing disk boundary.
+					nh.z = s*plus*((vt*alignedZ+oneMinusVz*q+vh.z*a)/(alignedZ+vt*q));
+					m = NormalizeScaled(nh,Vector3(ax,ay,1));
 				}
 				const Scalar ci = Vector3Ops::Dot( wi, m );
 				const Vector3 plane = Cross(wi,m);

@@ -88,6 +88,9 @@ unit Snell transmission when the incident cosine has rounded to one.
 Extreme-index normal-incidence cases also pin tiny Fresnel transmission tails,
 sampling them as the first CDF interval and retaining events whose positive
 scaled density underflows on conversion to `Scalar`.
+Grazing adjacent-index critical-angle crossings use an independent cosine/
+contrast reference; anti-aligned projected-disk endpoints require analytic
+directions, positive horizon height, and positive sampled density.
 It does not exercise a material, importer, IOR stack, or renderer integration.
 
 ```sh

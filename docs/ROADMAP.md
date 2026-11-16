@@ -55,7 +55,8 @@ High-impact rendering capabilities that close the remaining physical-transport a
 ### 1.1 Rough Dielectric BSDF (`BTDF`, Walter et al. 2007) + Remaining glTF Extensions
 
 **Started 2026-11-16 — transport kernel only.** `MicrofacetUtils::RoughDielectric`
-provides anisotropic GGX VNDF reflection/refraction, an aggregate solid-angle
+provides anisotropic GGX VNDF reflection/refraction (Heitz projected-disk
+sampling), an aggregate solid-angle
 PDF, height-correlated Smith masking, exact smooth/equal-index delta limits,
 and explicit radiance versus importance scaling. Its supported GGX widths are
 `(0,1]` on both axes, or both zero for smooth scattering; larger widths and
@@ -73,8 +74,9 @@ Dimensionless masking fractions are formed before rounding subnormal lengths;
 refraction uses a contrast correction near unity and a tangent/normal Snell
 decomposition outside that interval. Radiance scaling divides by IOR twice
 instead of forming a potentially overflowing IOR square.
-Incident sine is retained from the vectors independently of a cosine rounded
-to one, preserving low-index near-normal TIR and unit Snell directions.
+Incident sine is retained near normal, while a factored cosine/IOR-contrast
+form preserves grazing critical-angle information. The projected-disk warp
+uses positive-factor horizon heights rather than a cancelling cap-vector sum.
 Small Fresnel reflection/transmission tails are evaluated directly and selected
 first. `Evaluation::positiveDensity` retains scaled-density positivity when its
 `Scalar` conversion underflows, avoiding artificial rejection of that draw.
