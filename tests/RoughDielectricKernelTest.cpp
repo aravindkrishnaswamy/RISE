@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <random>
 
 using namespace RISE;
@@ -264,6 +265,34 @@ static void ExtremeScaleArithmetic()
 			Close(grazing.wo.z/width,ratio,1e-12) && Close(grazing.weight,expectedWeight,1e-12),
 			"subnormal-squared stretches preserve the sampled direction and finite analytic G2/G1 throughput");
 	}
+	for(double width : {std::numeric_limits<double>::denorm_min(),1e-320,1e-310}) {
+		const auto s=RD::Draw(Vector3(1,0,width),width,width,1.5,0.2,0.4,0.5,false);
+		const double zRatio=s.wo.z/width;
+		const double reference=zRatio*(1+std::sqrt(2.0))/(zRatio*std::sqrt(2.0)+std::sqrt(1+zRatio*zRatio));
+		Check(s.valid && std::isfinite(s.weight) && Close(s.weight,reference,1e-12),
+			"subnormal projected lengths retain dimensionless masking ratios for the returned direction");
+		if(width==std::numeric_limits<double>::denorm_min()) {
+			Check(s.wo.z==3*width,"normalization rounds a subnormal component once, after dividing by its length");
+		}
+	}
+
+	const double eta=1e160, width=1e-160;
+	const double expectedRadiance=(1/eta)/eta;
+	const auto smooth=RD::Draw(Vector3(1,0,width),0,0,eta,0.2,0.4,0.9,true);
+	Check(smooth.valid && smooth.transmission && smooth.weight>0 && smooth.weight==expectedRadiance &&
+		smooth.f==0.5*expectedRadiance && smooth.wo.x/width==-1 && smooth.wo.z==-1,
+		"extreme-index smooth Snell direction and representable radiance throughput survive eta-squared overflow");
+	const auto rough=RD::Draw(Vector3(1,0,width),width,width,eta,0.2,0.4,0.9,true);
+	const double cy=capR*std::sin(TWO_PI*0.2), a=1+cx/cz;
+	const double q=1+(cx/cz)*(cx/cz)+(cy/cz)*(cy/cz);
+	const double rp=(a-1)/(a+1), F=0.5*(1+rp*rp);
+	const double referenceRadiance=2*(1-F)*a/(PI*q*q*(1+std::sqrt(2.0)));
+	Check(rough.valid && rough.transmission && rough.weight>0 && rough.weight==expectedRadiance &&
+		Close(rough.f,referenceRadiance,1e-12) && Close(rough.wo.x/width,-a,1e-12) && Close(rough.wo.y/width,-cy/cz,1e-12),
+		"extreme-index rough direction, radiance BSDF, and finite throughput match scaled analytic refraction");
+	const auto directional=RD::Evaluate(Vector3(1,0,width),rough.wo,width,width,eta,true);
+	Check(Close(directional.f,referenceRadiance,1e-12),
+		"extreme-index direction-only BSDF agrees with the independent scaled radiance reference");
 }
 
 static void ProbabilityAndFurnace()

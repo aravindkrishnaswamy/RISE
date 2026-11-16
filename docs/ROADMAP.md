@@ -68,6 +68,10 @@ NDF products keep binary exponents separate until conversion, and sampling/
 throughput formulas avoid squared-norm and grazing-product underflow. True
 densities beyond `Scalar` range can still overflow; sample throughput is
 evaluated independently rather than dividing such values.
+Dimensionless masking fractions are formed before rounding subnormal lengths;
+refraction uses a contrast correction near unity and a tangent/normal Snell
+decomposition outside that interval. Radiance scaling divides by IOR twice
+instead of forming a potentially overflowing IOR square.
 This scalar kernel is shared groundwork for Pel/NM/HWSS, not a new material.
 It implements single scattering with null events; multiscatter compensation,
 material/IOR-stack integration, public API/parser/editor support, showcase

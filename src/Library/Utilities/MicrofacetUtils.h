@@ -404,11 +404,6 @@ namespace RISE
 					eta > 0 && ( ( ax > 0 && ax <= 1 && ay > 0 && ay <= 1 ) || ( ax == 0 && ay == 0 ) );
 			}
 
-			inline Scalar ProjectedLength( const Vector3& w, Scalar ax, Scalar ay )
-			{
-				return std::hypot( w.z, std::hypot( ax * w.x, ay * w.y ) );
-			}
-
 			// Keep positive products as mantissa/exponent pairs until their
 			// final conversion. Individual NDF factors can overflow even when
 			// the final BSDF/PDF is representable. No wider arithmetic or clamps.
@@ -449,9 +444,20 @@ namespace RISE
 					any = true;
 				}
 				if( !any ) return Vector3( 0, 0, 0 );
-				for( int i = 0; i < 3; ++i ) parts[i] = std::scalbn( parts[i], powers[i] - maxPower );
-				const Scalar length = std::sqrt( parts[0]*parts[0] + parts[1]*parts[1] + parts[2]*parts[2] );
-				return Vector3( parts[0]/length, parts[1]/length, parts[2]/length );
+				Scalar scaled[3];
+				for( int i = 0; i < 3; ++i ) scaled[i] = std::scalbn( parts[i], powers[i] - maxPower );
+				const Scalar length = std::sqrt( scaled[0]*scaled[0] + scaled[1]*scaled[1] + scaled[2]*scaled[2] );
+				// Divide before the final scaling: an intermediate component
+				// below denorm_min can become representable after normalization.
+				return Vector3( std::scalbn(parts[0]/length,powers[0]-maxPower),
+					std::scalbn(parts[1]/length,powers[1]-maxPower), std::scalbn(parts[2]/length,powers[2]-maxPower) );
+			}
+
+			inline Scalar VisibleFraction( const Vector3& w, Scalar ax, Scalar ay )
+			{
+				// zi/(zi+li), without rounding a subnormal li first.
+				const Scalar cosine = std::abs( NormalizeScaled(w,Vector3(ax,ay,1)).z );
+				return cosine/(1+cosine);
 			}
 
 			inline PositiveProduct DistributionProduct( const Vector3& m, Scalar ax, Scalar ay )
@@ -513,14 +519,13 @@ namespace RISE
 				if( !reflection && F == 1 ) return result;
 				PositiveProduct f = DistributionProduct( m, ax, ay ), pdf = f;
 				const Scalar zi = wi.z, zo = std::abs( wo.z );
-				const Scalar li = ProjectedLength( wi, ax, ay ), lo = ProjectedLength( wo, ax, ay );
-				const Scalar ai = zi/(zi+li), ao = zo/(zo+lo);
+				const Scalar ai = VisibleFraction(wi,ax,ay), ao = VisibleFraction(wo,ax,ay);
 				// common = (zi+li)*(zo+lo)*(ai+ao-2*ai*ao). Keep
 				// these factors separate so grazing products cannot underflow.
 				const Scalar mask = ai + ao - 2*ai*ao;
 				if( reflection ) {
-					f.Multiply(F); f.Divide(2); f.Divide(zi+li); f.Divide(zo+lo); f.Divide(mask);
-					pdf.Multiply(F); pdf.Divide(2); pdf.Divide(zi+li);
+					f.Multiply(F); f.Divide(2); f.Multiply(ai); f.Divide(zi); f.Multiply(ao); f.Divide(zo); f.Divide(mask);
+					pdf.Multiply(F); pdf.Divide(2); pdf.Multiply(ai); pdf.Divide(zi);
 				} else {
 					// co + ci/eta cancels at eta ~= 1. Snell's identity gives
 					// the same denominator as a factored difference of squares.
@@ -529,9 +534,9 @@ namespace RISE
 						( std::abs( co ) + ci * invEta );
 					if( denom == 0 ) return result;
 					f.Multiply(2); f.Multiply(1-F); f.Multiply(ci); f.Multiply(std::abs(co));
-					f.Divide(std::abs(denom)); f.Divide(std::abs(denom)); f.Divide(zi+li);
+					f.Divide(std::abs(denom)); f.Divide(std::abs(denom)); f.Multiply(ai); f.Divide(zi);
 					pdf = f;
-					f.Divide(zo+lo); f.Divide(mask);
+					f.Multiply(ao); f.Divide(zo); f.Divide(mask);
 					if( radiance ) { f.Divide(eta); f.Divide(eta); }
 				}
 				result.f = f.Value(); result.pdf = pdf.Value();
@@ -582,27 +587,41 @@ namespace RISE
 					// Preserve 1-eta BEFORE rounding its reciprocal. Express
 					// refraction as a correction to -wi, so even normal-incidence
 					// adjacent-index transmission stays exactly straight through.
-					const Scalar contrast = ( 1 - eta ) / eta;
-					const Scalar normalRatio = ( invEta + 1 ) / ( ci * invEta + cosT );
-					result.wo = -wi + ( m * normalRatio - wi ) * contrast;
+					if( eta >= Scalar(0.5) && eta <= Scalar(2) ) {
+						// Sterbenz's interval: subtraction from 1 is exact.
+						const Scalar contrast = ( 1 - eta ) / eta;
+						const Scalar normalRatio = ( invEta + 1 ) / ( ci * invEta + cosT );
+						result.wo = -wi + ( m * normalRatio - wi ) * contrast;
+					} else {
+						// Far from unity, use Snell's tangent/normal decomposition
+						// to avoid cancelling the entire incident vector.
+						const Vector3 tangent( std::fma(-ci,m.x,wi.x), std::fma(-ci,m.y,wi.y), std::fma(-ci,m.z,wi.z) );
+						result.wo = tangent * (-invEta) - m * cosT;
+					}
 				} else {
 					result.wo = m * ( 2 * ci ) - wi;
 				}
 				if( result.transmission ? result.wo.z >= 0 : result.wo.z <= 0 ) return result;
 				if( result.delta ) {
 					result.pdf = result.transmission ? 1 - F : F;
-					result.weight = result.transmission && radiance ? 1 / ( eta * eta ) : 1;
+					PositiveProduct weight;
+					if( result.transmission && radiance ) { weight.Divide(eta); weight.Divide(eta); }
+					result.weight = weight.Value();
 					result.f = result.pdf * result.weight / std::abs( result.wo.z );
 				} else {
 					const Evaluation evaluated = EvaluateWithNormal( wi, result.wo, m, ax, ay, eta, radiance );
 					result.f = evaluated.f;
 					result.pdf = evaluated.pdf;
-					const Scalar zi = wi.z, zo = std::abs( result.wo.z );
-					const Scalar li = ProjectedLength( wi, ax, ay ), lo = ProjectedLength( result.wo, ax, ay );
 					// G2/G1(wi), after cancelling Fresnel and the refractive Jacobian.
-					const Scalar ai = zi/(zi+li), ao = zo/(zo+lo);
+					const Scalar ai = VisibleFraction(wi,ax,ay), ao = VisibleFraction(result.wo,ax,ay);
 					result.weight = ao / ( ai + ao - 2*ai*ao );
-					if( result.transmission && radiance ) result.weight /= eta * eta;
+					if( result.transmission && radiance ) {
+						// Exponent scaling also prevents fast-math reassociation
+						// from recreating an overflowing eta*eta intermediate.
+						PositiveProduct weight;
+						weight.Multiply(result.weight); weight.Divide(eta); weight.Divide(eta);
+						result.weight = weight.Value();
+					}
 				}
 				result.valid = result.pdf > 0;
 				return result;

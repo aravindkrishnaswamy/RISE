@@ -80,6 +80,9 @@ Tiny-width regressions check representable NDF/value/PDF results despite
 overflowing intermediate factors and compare grazing samples against a scaled
 analytic direction/throughput reference. A true density beyond `Scalar` range
 can overflow; its throughput is computed separately.
+Subnormal-width masking is compared with dimensionless reference ratios for
+the returned direction; extreme-index smooth/rough refraction separately pins
+direction, representable radiance throughput, and a scaled analytic BSDF value.
 It does not exercise a material, importer, IOR stack, or renderer integration.
 
 ```sh
