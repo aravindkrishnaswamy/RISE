@@ -2459,9 +2459,14 @@ namespace RISE
 			if( !ordered || orderedCount == 0 || !crossedVec ) {
 				return;
 			}
+			const Scalar kSeedEps = Scalar( 1e-4 );
+			const Point3 hitPt = Point3Ops::mkPoint3( origin, normal * hitDist );
 			for( std::size_t m = 0; m < orderedCount; ++m ) {
 				const IObject* pClosed = ordered[m] ? ordered[m]->pObj : 0;
 				if( !pClosed || std::find( crossedVec->begin(), crossedVec->end(), pClosed ) != crossedVec->end() ) {
+					continue;
+				}
+				if( !PointNearBox( hitPt, pClosed->getBoundingBox(), Scalar( 2.5 ) * kSeedEps ) ) {
 					continue;
 				}
 				RayIntersection coRi( Ray( origin, normal ), nullRasterizerState );
@@ -2593,13 +2598,34 @@ namespace RISE
 			}
 			// An EXIT hit (`TrueGeomFacing > 0`) on a non-open obstacle other
 			// than `pSeedObject`'s first exit means `pos` is strictly inside a
-			// closed opaque room (`A1`, `A12`, `A21`, `A22`, `A25`, `A26`):
-			// reject in 0 rays.
+			// closed opaque room (`A1`, `A12`, `A21`, `A22`, `A25`, `A26`) --
+			// UNLESS an earlier `probe.Advance(kSeedEps)` step jumped over
+			// `pObstacle`'s flush entry face (`obsDist > range + 0.5 * kSeedEps`,
+			// `A68b`), in which case `Ray(pos, normal)` on `pObstacle` meets an
+			// entry face (`TrueGeomFacing <= 0`) first and `obstacleHit` is
+			// already `pObstacle`'s exit (`initialObstacleParity = 0`).
+			const Scalar kSeedEps = Scalar( 1e-4 );
+			const Scalar obsDist = Vector3Ops::Dot(
+				Vector3Ops::mkVector3( obstacleHit.geometric.ptIntersection, pos ), normal );
+			int initialObstacleParity = obstacleIsSeedExit ? 0 : -1;
 			if( !obstacleIsSeedExit &&
 				obstacleHit.geometric.TrueGeomFacing( normal ) > 0 &&
 				!obstacleHit.geometric.bProvablyNoInterior &&
 				!obstacleHit.geometric.bOpenSheet ) {
-				return false;
+				bool skippedFlushEntry = false;
+				if( obsDist > obstacleHit.geometric.range + Scalar( 0.5 ) * kSeedEps ) {
+					RayIntersection checkEntry( Ray( pos, normal ), nullRasterizerState );
+					pObstacle->IntersectRay( checkEntry, obsDist + kSeedEps, true, true, false );
+					if( checkEntry.geometric.bHit &&
+						checkEntry.geometric.range < obsDist - Scalar( 0.25 ) * kSeedEps &&
+						checkEntry.geometric.TrueGeomFacing( normal ) <= 0 ) {
+						skippedFlushEntry = true;
+						initialObstacleParity = 0;
+					}
+				}
+				if( !skippedFlushEntry ) {
+					return false;
+				}
 			}
 			// Without `pSeedObject`, check if `pos` sits on `pObstacle`'s own
 			// surface (`A18` standing torus hole backed off by 1e-12): a hit on
@@ -2624,8 +2650,6 @@ namespace RISE
 			const BoundingBox localTargetBox = pTargetBox ? *pTargetBox :
 				( ( expectedSheetCrossings == 1 && targetAloneDist >= Scalar( 0 ) ) ? BoundingBox() : pSheet->getBoundingBox() );
 			const BoundingBox& targetBox = pTargetBox ? *pTargetBox : localTargetBox;
-			const Scalar obsDist = Vector3Ops::Dot(
-				Vector3Ops::mkVector3( obstacleHit.geometric.ptIntersection, pos ), normal );
 			const Scalar targetColDist = ( expectedSheetCrossings == 1 && targetAloneDist >= Scalar( 0 ) )
 				? ( targetAloneDist - obsDist )
 				: Scalar( -1 );
@@ -2633,15 +2657,17 @@ namespace RISE
 			struct OpaqueParity { const IObject* pObj; int parity; };
 			std::vector<OpaqueParity> opaqueObjs;
 			if( !obstacleHit.geometric.bProvablyNoInterior && !obstacleHit.geometric.bOpenSheet ) {
-				opaqueObjs.push_back( { pObstacle, obstacleIsSeedExit ? 0 : -1 } );
+				opaqueObjs.push_back( { pObstacle, initialObstacleParity } );
 			}
 
-			const Scalar kSeedEps = Scalar( 1e-4 );
 			const int maxSteps = MaxSceneWalkSteps( pObjects );
 			const bool chargeColumnWalk = ( pColumnWalkUsed && *pColumnWalkUsed );
 			if( pColumnWalkUsed ) {
 				*pColumnWalkUsed = true;
 			}
+			RecordCoplanarOrderedExitsAt(
+				ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+				normal, Scalar( 0 ), nm, &vertCrossed );
 			Ray vertProbe( obstacleHit.geometric.ptIntersection, normal );
 			vertProbe.Advance( kSeedEps );
 			int vertSheetCrossings = 0;
@@ -2789,13 +2815,28 @@ namespace RISE
 							if( std::find( vertPassed.begin(), vertPassed.end(), vri.pObject ) == vertPassed.end() ) {
 								vertPassed.push_back( vri.pObject );
 							}
-							RecordCoplanarOrderedExitsAt(
-								ordered, orderedCount, obstacleHit.geometric.ptIntersection,
-								normal, vDist, nm, &vertCrossed );
 						} else if( std::find( vertCrossed.begin(), vertCrossed.end(), vri.pObject ) == vertCrossed.end() ) {
 							vertCrossed.push_back( vri.pObject );
 						}
+						RecordCoplanarOrderedExitsAt(
+							ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+							normal, vDist, nm, &vertCrossed );
 					}
+				} else {
+					const Scalar vDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
+						normal );
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+						normal, vDist, nm, &vertCrossed );
+				}
+				if( vMem == kMembershipBlock ) {
+					const Scalar vDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
+						normal );
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+						normal, vDist, nm, &vertCrossed );
 				}
 				vertProbe = Ray( vri.geometric.ptIntersection, normal );
 				vertProbe.Advance( kSeedEps );
@@ -3036,11 +3077,28 @@ namespace RISE
 			if( !obstacleIsSeedExit && pSeedObject && pObstacle == pSeedObject ) {
 				return;
 			}
+			const Scalar kSeedEps = Scalar( 1e-4 );
+			const Scalar obsDist = Vector3Ops::Dot(
+				Vector3Ops::mkVector3( obstacleHit.geometric.ptIntersection, pos ), normal );
+			int initialObstacleParity = obstacleIsSeedExit ? 0 : -1;
 			if( !obstacleIsSeedExit &&
 				obstacleHit.geometric.TrueGeomFacing( normal ) > 0 &&
 				!obstacleHit.geometric.bProvablyNoInterior &&
 				!obstacleHit.geometric.bOpenSheet ) {
-				return;
+				bool skippedFlushEntry = false;
+				if( obsDist > obstacleHit.geometric.range + Scalar( 0.5 ) * kSeedEps ) {
+					RayIntersection checkEntry( Ray( pos, normal ), nullRasterizerState );
+					pObstacle->IntersectRay( checkEntry, obsDist + kSeedEps, true, true, false );
+					if( checkEntry.geometric.bHit &&
+						checkEntry.geometric.range < obsDist - Scalar( 0.25 ) * kSeedEps &&
+						checkEntry.geometric.TrueGeomFacing( normal ) <= 0 ) {
+						skippedFlushEntry = true;
+						initialObstacleParity = 0;
+					}
+				}
+				if( !skippedFlushEntry ) {
+					return;
+				}
 			}
 			if( !pSeedObject ) {
 				RayIntersection backSelf(
@@ -3080,12 +3138,14 @@ namespace RISE
 			struct OpaqueParity { const IObject* pObj; int parity; };
 			std::vector<OpaqueParity> opaqueObjs;
 			if( !obstacleHit.geometric.bProvablyNoInterior && !obstacleHit.geometric.bOpenSheet ) {
-				opaqueObjs.push_back( { pObstacle, obstacleIsSeedExit ? 0 : -1 } );
+				opaqueObjs.push_back( { pObstacle, initialObstacleParity } );
 			}
-			const Scalar kSeedEps = Scalar( 1e-4 );
 			const int maxSteps = MaxSceneWalkSteps( pObjects );
 			int raysSpent = 0;
 			const int rayBudget = Diagnostics::GroupDetourRayBudget();
+			RecordCoplanarOrderedExitsAt(
+				ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+				normal, Scalar( 0 ), nm, &vertCrossed );
 			Ray vertProbe( obstacleHit.geometric.ptIntersection, normal );
 			vertProbe.Advance( kSeedEps );
 			for( int step = 0; step < maxSteps && open > 0; ++step ) {
@@ -3105,6 +3165,9 @@ namespace RISE
 					const Scalar colDist = Vector3Ops::Dot(
 						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
 						normal );
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+						normal, colDist, nm, &vertCrossed );
 					struct CoColHit { std::size_t idx; Scalar dist; };
 					std::vector<CoColHit> coHits;
 					for( std::size_t idx = 0; idx < n; ++idx ) {
@@ -3143,11 +3206,6 @@ namespace RISE
 								break;
 							}
 							obsBox.Include( coBlockRi.pObject->getBoundingBox() );
-						}
-						if( vMem == kMembershipSheetBack ) {
-							RecordCoplanarOrderedExitsAt(
-								ordered, orderedCount, obstacleHit.geometric.ptIntersection,
-								normal, colDist, nm, &vertCrossed );
 						}
 						bool parityClear = true;
 						for( std::size_t k = 0; k < opaqueObjs.size(); ++k ) {
@@ -3232,6 +3290,21 @@ namespace RISE
 					}
 				} else if( vMem == kMembershipSheetFront ) {
 					break;
+				} else {
+					const Scalar skipDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
+						normal );
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+						normal, skipDist, nm, &vertCrossed );
+				}
+				if( vMem == kMembershipBlock ) {
+					const Scalar blkDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
+						normal );
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+						normal, blkDist, nm, &vertCrossed );
 				}
 				vertProbe = Ray( vri.geometric.ptIntersection, normal );
 				vertProbe.Advance( kSeedEps );
@@ -3436,6 +3509,8 @@ namespace RISE
 							}
 							const Scalar wDist = Vector3Ops::Dot(
 								Vector3Ops::mkVector3( ri.geometric.ptIntersection, wm ), normal );
+							RecordCoplanarOrderedExitsAt(
+								ordered, orderedCount, wm, normal, wDist, nm, &wCrossed );
 							struct CoSegHit { std::size_t idx; Scalar ior; IORStack::EntryContext ctx; };
 							std::vector<CoSegHit> coHits;
 							for( std::size_t c = 0; c < cluster.size(); ++c ) {
@@ -3464,10 +3539,6 @@ namespace RISE
 									0, Scalar( 0 ), coBlockRi );
 								if( coBlockMem == kMembershipSheetFront || coBlockMem == kMembershipBlock ) {
 									break;
-								}
-								if( membership == kMembershipSheetBack ) {
-									RecordCoplanarOrderedExitsAt(
-										ordered, orderedCount, wm, normal, wDist, nm, &wCrossed );
 								}
 								std::vector<const IObject*> planeHits;
 								if( membership == kMembershipSheetBack ) {
@@ -3657,11 +3728,17 @@ namespace RISE
 					if( sheetCrossingsSeen >= expectedSheetCrossings ) {
 						return sheetNetParity > 0;
 					}
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, pos, normal, hitDist, nm, crossedClosed );
 					probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
 					probe.Advance( kSeedEps );
 					continue;
 				}
 				if( membership == kMembershipBlock ) {
+					const Scalar blkDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( ri.geometric.ptIntersection, pos ), normal );
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, pos, normal, blkDist, nm, crossedClosed );
 					// DL-622 Gap 4 / DL-626 (4): an explicit `pSeedObject` is
 					// exempt on its near-origin self-hit; when its first non-self
 					// hit along `normal` is an exit face (`TrueGeomFacing > 0`),
@@ -3721,6 +3798,8 @@ namespace RISE
 											std::find( crossedClosed->begin(), crossedClosed->end(), ri.pObject ) == crossedClosed->end() ) {
 											crossedClosed->push_back( ri.pObject );
 										}
+										RecordCoplanarOrderedExitsAt(
+											ordered, orderedCount, pos, normal, hitDist, nm, crossedClosed );
 										return runDetour( coBlockRi, coSeedExit );
 									}
 									return false;
@@ -3753,14 +3832,19 @@ namespace RISE
 								std::find( passedSheets->begin(), passedSheets->end(), ri.pObject ) == passedSheets->end() ) {
 								passedSheets->push_back( ri.pObject );
 							}
-							RecordCoplanarOrderedExitsAt(
-								ordered, orderedCount, pos, normal, hitDist, nm, crossedClosed );
 						} else if( membership == kMembershipTransparent && crossedClosed ) {
 							if( std::find( crossedClosed->begin(), crossedClosed->end(), ri.pObject ) == crossedClosed->end() ) {
 								crossedClosed->push_back( ri.pObject );
 							}
 						}
+						RecordCoplanarOrderedExitsAt(
+							ordered, orderedCount, pos, normal, hitDist, nm, crossedClosed );
 					}
+				} else {
+					const Scalar skipDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( ri.geometric.ptIntersection, pos ), normal );
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, pos, normal, skipDist, nm, crossedClosed );
 				}
 				probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
 				probe.Advance( kSeedEps );
@@ -3938,7 +4022,7 @@ namespace RISE
 			const Scalar eps = Scalar( 1e-4 ) * scale;
 			RayIntersection probe( Ray( Point3Ops::mkPoint3( ri.ptIntersection, d * ( -eps ) ), d ), nullRasterizerState );
 			pObj->IntersectRay( probe, Scalar( 4.0 ) * eps, true, true, false );
-			return probe.geometric.bHit ? probe.pMaterial : 0;
+			return ( probe.geometric.bHit && probe.geometric.range <= Scalar( 4.0 ) * eps ) ? probe.pMaterial : 0;
 		}
 
 		inline const IMaterial* StackSheetMaterial( const IORStack& stack, const std::size_t idx )
@@ -4071,12 +4155,18 @@ namespace RISE
 				}
 				SpecularInfo info;
 				const MembershipHit membership = ClassifyMembershipHit( ri, probe.Dir(), nm, info );
+				const Scalar hitDist = Vector3Ops::Dot(
+					Vector3Ops::mkVector3( ri.geometric.ptIntersection, pos ), normal );
 				if( membership == kMembershipSkip ) {
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, pos, normal, hitDist, nm, &crossedSoFar );
 					probe = Ray( ri.geometric.ptIntersection, probe.Dir() );
 					probe.Advance( kSeedEps );
 					continue;
 				}
 				if( membership == kMembershipBlock ) {
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, pos, normal, hitDist, nm, &crossedSoFar );
 					bool seedExitDetour = false;
 					if( pSeedObject && ri.pObject == pSeedObject ) {
 						if( !ownChecked && !selfHitSkipped && ri.geometric.range < selfTol ) {
@@ -4099,8 +4189,8 @@ namespace RISE
 						std::find( crossedSoFar.begin(), crossedSoFar.end(), ri.pObject ) == crossedSoFar.end() ) {
 						crossedSoFar.push_back( ri.pObject );
 					}
-					const Scalar hitDist = Vector3Ops::Dot(
-						Vector3Ops::mkVector3( ri.geometric.ptIntersection, pos ), normal );
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, pos, normal, hitDist, nm, &crossedSoFar );
 					struct CoGrpHit { std::size_t idx; Scalar ior; IORStack::EntryContext ctx; };
 					std::vector<CoGrpHit> coHits;
 					for( std::size_t idx = 0; idx < activeObjects.size(); ++idx ) {
@@ -4145,10 +4235,6 @@ namespace RISE
 							}
 							runGroupDetour( coBlockRi, coSeedExit );
 							break;
-						}
-						if( membership == kMembershipSheetBack ) {
-							RecordCoplanarOrderedExitsAt(
-								ordered, orderedCount, pos, normal, hitDist, nm, &crossedSoFar );
 						}
 						std::vector<const IObject*> planeHits;
 						if( membership == kMembershipSheetBack ) {

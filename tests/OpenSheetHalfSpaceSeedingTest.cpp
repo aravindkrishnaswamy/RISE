@@ -3216,6 +3216,107 @@ static void PartA()
 		}
 	}
 
+	// A68: Round 9 adversarial review pins:
+	//   A68a: `SeedFromPoint` inside closed dielectric `B(1.8)` (`y = -1 .. +1`) with an open
+	//         sheet `S(1.33)` above (`y = 3.0`) and a flush adjacent closed dielectric `C(1.5)`
+	//         (`y = +1 .. +2`) sharing `y = 1.0` must order `[env(1.0), S(1.33), B(1.8)]`
+	//         (`top() == 1.8`) in BOTH TLAS leaf orders (`RecordCoplanarOrderedExitsAt` on
+	//         `kMembershipTransparent`).
+	//   A68b: Same with a flush small opaque obstacle `R` (`y = 1.0 .. 1.2`, `|x|,|z| <= 0.3`)
+	//         sitting on `B`'s top face `y = 1.0` (exercising `RecordCoplanarOrderedExitsAt`
+	//         on `kMembershipBlock` -> `HasFreeSpaceDetourToSheets`) in BOTH TLAS leaf orders.
+	//   A68c: Per-operand-material `csg_object` open sheet trimmed by a refractive solid
+	//         (`CSG_SUBTRACTION(sheet_glass15, box_glass18)`) keeps `SingleRefractiveObjectMaterial`
+	//         == `glass15` (`CrossingMedia::Keeps` without `EntryContext`).
+	{
+		auto makeFlushStacked = [&]( bool revNames, bool withObstacle, bool twoSheets ) -> std::string {
+			const char* bName = revNames ? "z_bot_block" : "a_bot_block";
+			const char* topName = revNames ? "a_flush_top" : "z_flush_top";
+			std::string sc = Header()
+				+ "box_geometry\n{\n\tname g_b68\n\twidth 4\n\theight 2\n\tdepth 4\n}\n\n"
+				+ "box_geometry\n{\n\tname g_c68\n\twidth 4\n\theight 1\n\tdepth 4\n}\n\n"
+				+ "box_geometry\n{\n\tname g_r68\n\twidth 0.6\n\theight 0.2\n\tdepth 0.6\n}\n\n"
+				+ HSheet( "g_s68", 3.0, 5.0, true );
+			const std::string bChunk = Obj( bName, "g_b68", "glass18", "0 0 0" );
+			const std::string topChunk = withObstacle
+				? Obj( topName, "g_r68", "matte", "0 1.1 0" )
+				: Obj( topName, "g_c68", "glass15", "0 1.5 0" );
+			sc += revNames ? ( topChunk + bChunk ) : ( bChunk + topChunk );
+			sc += Obj( "m_sheet68", "g_s68", "glass133" );
+			if( twoSheets ) {
+				sc += HSheet( "g_s68b", 3.5, 5.0, true ) + Obj( "m_sheet68b", "g_s68b", "glass133" );
+			}
+			return sc;
+		};
+
+		Loaded fA1( makeFlushStacked( false, false, false ) );
+		Loaded fB1( makeFlushStacked( true,  false, false ) );
+		Loaded fA2( makeFlushStacked( false, false, true ) );
+		Loaded fB2( makeFlushStacked( true,  false, true ) );
+		Check( fA1.ok && fB1.ok && fA2.ok && fB2.ok,
+			"A68a [DL-626] flush closed-dielectric stack under 1 & 2 open sheets loads in both TLAS orders" );
+		if( fA1.ok && fB1.ok && fA2.ok && fB2.ok ) {
+			const IORStack stA1 = fA1.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stB1 = fB1.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stA2 = fA2.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stB2 = fB2.Seed( Point3( 0, 0, 0 ) );
+			Check( stA1.Depth() == 3 && stB1.Depth() == 3 &&
+				Close( IorAt( stA1, 1 ), 1.33 ) && Close( stA1.top(), 1.8 ) &&
+				Close( IorAt( stB1, 1 ), 1.33 ) && Close( stB1.top(), 1.8 ) &&
+				stA2.Depth() == 4 && stB2.Depth() == 4 &&
+				Close( IorAt( stA2, 1 ), 1.33 ) && Close( IorAt( stA2, 2 ), 1.33 ) && Close( stA2.top(), 1.8 ) &&
+				Close( IorAt( stB2, 1 ), 1.33 ) && Close( IorAt( stB2, 2 ), 1.33 ) && Close( stB2.top(), 1.8 ),
+				"A68a [DL-626]: flush adjacent closed dielectric at B's exit face preserves outer sheet(1.33) and inner B(1.8) in both TLAS orders" );
+		}
+
+		Loaded oA1( makeFlushStacked( false, true, false ) );
+		Loaded oB1( makeFlushStacked( true,  true, false ) );
+		Loaded oA2( makeFlushStacked( false, true, true ) );
+		Loaded oB2( makeFlushStacked( true,  true, true ) );
+		Check( oA1.ok && oB1.ok && oA2.ok && oB2.ok,
+			"A68b [DL-626] flush opaque obstacle on closed-dielectric top face loads in both TLAS orders" );
+		if( oA1.ok && oB1.ok && oA2.ok && oB2.ok ) {
+			const IORStack stOA1 = oA1.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stOB1 = oB1.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stOA2 = oA2.Seed( Point3( 0, 0, 0 ) );
+			const IORStack stOB2 = oB2.Seed( Point3( 0, 0, 0 ) );
+			Check( stOA1.Depth() == 3 && stOB1.Depth() == 3 &&
+				Close( IorAt( stOA1, 1 ), 1.33 ) && Close( stOA1.top(), 1.8 ) &&
+				Close( IorAt( stOB1, 1 ), 1.33 ) && Close( stOB1.top(), 1.8 ) &&
+				stOA2.Depth() == 4 && stOB2.Depth() == 4 &&
+				Close( IorAt( stOA2, 1 ), 1.33 ) && Close( IorAt( stOA2, 2 ), 1.33 ) && Close( stOA2.top(), 1.8 ) &&
+				Close( IorAt( stOB2, 1 ), 1.33 ) && Close( IorAt( stOB2, 2 ), 1.33 ) && Close( stOB2.top(), 1.8 ),
+				"A68b [DL-626]: flush opaque obstacle detour at B's exit face preserves outer sheet(1.33) and inner B(1.8) in both TLAS orders" );
+		}
+
+		Loaded t68( Header()
+			+ HSheet( "g_top68", 1.0, 4.0, true ) + Obj( "top_sh68", "g_top68", "glass15" )
+			+ "box_geometry\n{\n\tname g_cut68\n\twidth 0.6\n\theight 4.0\n\tdepth 0.6\n}\n\n"
+			+ Obj( "cut_box68", "g_cut68", "glass18", "3.2 1.0 3.2" )
+			+ "csg_object\n{\n\tname trim_sh68\n\tobja top_sh68\n\tobjb cut_box68\n\toperation subtraction\n}\n\n"
+			+ HSheet( "g_mid68", 0.0, 4.0, true ) + Obj( "mid_sh68", "g_mid68", "glass15" ) );
+		Check( t68.ok, "A68c [DL-626] glass15 sheet trimmed by glass18 solid loads" );
+		if( t68.ok ) {
+			const IObject* pTrim = t68.O( "trim_sh68" );
+			const IObject* pMid = t68.O( "mid_sh68" );
+			Ray rUp68( Point3( 0, -0.1, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitMid68( rUp68, nullRasterizerState );
+			pMid->IntersectRay( hitMid68, 1.0, true, true, false );
+			// Push `trim_sh68` WITHOUT EntryContext (mirroring `SMSDomainReplay::RefreshLegacySeedFallbackNM`):
+			IORStack noCtxWalk( 1.0 );
+			noCtxWalk.SetMediumProbeScene( &t68.Scene() );
+			noCtxWalk.SetCurrentObject( pTrim );
+			noCtxWalk.pushOpenSheet( 1.5 );
+			noCtxWalk.SetCurrentObject( pMid );
+			const auto cMid68 = IORStackSeeding::ResolveOpenSheetCrossing(
+				hitMid68.geometric, 1.5, noCtxWalk, pMid->GetMaterial(), 0 );
+			Check( hitMid68.geometric.bHit && noCtxWalk.Depth() == 2 &&
+				noCtxWalk.ObjectAt( 1 ) == pTrim &&
+				Close( cMid68.etaFrom, 1.5 ) && Close( cMid68.etaTo, 1.5 ),
+				"A68c [DL-626]: kTrimSheetA ignores solid trimmer's glass18 material so context-free CrossingMedia::Keeps retains trim_sh68(1.5)" );
+		}
+	}
+
 	const int dl626NewFails = failCount - dl626FailBefore;
 	std::cout << "[DL-626-SUMMARY] " << ( dl626NewFails == 0 ? "PASS" : "FAIL" )
 		<< " (new_failures=" << dl626NewFails << ")" << std::endl;

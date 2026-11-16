@@ -56,6 +56,7 @@
 #include <iostream>
 #include <string>
 #include <iterator>
+#include <map>
 #include <set>
 #include <sstream>
 #include <system_error>
@@ -1406,10 +1407,21 @@ int main()
 						const size_t commentPos = line.find( "//" );
 						if( commentPos != std::string::npos && commentPos < tokPos ) { continue; }
 						const size_t retPos = line.find( "return" );
-						if( retPos == std::string::npos || retPos > tokPos ) { continue; }
+						bool isSentinel = ( retPos != std::string::npos && retPos < tokPos );
+						if( !isSentinel ) {
+							for( size_t cp = line.find( ':' ); cp != std::string::npos && cp < tokPos; cp = line.find( ':', cp + 1 ) ) {
+								const bool prevColon = ( cp > 0 && line[cp - 1] == ':' );
+								const bool nextColon = ( cp + 1 < line.size() && line[cp + 1] == ':' );
+								if( !prevColon && !nextColon && line.find( '?' ) != std::string::npos ) {
+									isSentinel = true;
+									break;
+								}
+							}
+						}
+						if( !isSentinel ) { continue; }
 						offenders.push_back(
 							relLabel + ":" + std::to_string( lineNo )
-							+ "  ->  return " + tok );
+							+ "  ->  sentinel " + tok );
 					}
 				}
 				if( nl == std::string::npos ) { break; }
@@ -5637,8 +5649,228 @@ int main()
 		const std::string cmakeTests = SlurpFile( repoRoot / "build" / "cmake" / "rise-tests" / "CMakeLists.txt" );
 		Check( cmakeTests.find( "\"${VCPKG_INCLUDE}/OpenEXR\"" ) != std::string::npos
 		       && cmakeTests.find( "\"${VCPKG_INCLUDE}/Imath\"" ) != std::string::npos
-		       && cmakeTests.find( "/UNDEBUG" ) != std::string::npos,
-		       "win-cmake-tests: build/cmake/rise-tests/CMakeLists.txt includes OpenEXR/Imath vcpkg paths and /UNDEBUG for non-vacuous Release test assertions" );
+		       && cmakeTests.find( "/UNDEBUG" ) != std::string::npos
+		       && cmakeTests.find( "/utf-8" ) != std::string::npos,
+		       "win-cmake-tests: build/cmake/rise-tests/CMakeLists.txt includes OpenEXR/Imath vcpkg paths, /utf-8, and /UNDEBUG" );
+
+		// ---- Five-project `src/Library/` parity + MSVC `/utf-8` / ODR flags ----
+		{
+			const fs::path libDir = repoRoot / "src" / "Library";
+			const std::string filelistTxt = SlurpFile( repoRoot / "build" / "make" / "rise" / "Filelist" );
+			const std::string androidCmake = SlurpFile( repoRoot / "build" / "cmake" / "rise-android" / "rise_sources.cmake" );
+			const std::string libVcx = SlurpFile( repoRoot / "build" / "VS2022" / "Library" / "Library.vcxproj" );
+			const std::string libFlt = SlurpFile( repoRoot / "build" / "VS2022" / "Library" / "Library.vcxproj.filters" );
+			const std::string cliVcx = SlurpFile( repoRoot / "build" / "VS2022" / "RISE-CLI" / "RISE-CLI.vcxproj" );
+			const std::string pbxTxt = SlurpFile( repoRoot / "build" / "XCode" / "rise" / "rise.xcodeproj" / "project.pbxproj" );
+
+			Check( libVcx.find( "/utf-8" ) != std::string::npos
+			       && cliVcx.find( "/utf-8" ) != std::string::npos
+			       && vcxproj.find( "/utf-8" ) != std::string::npos
+			       && vcxproj.find( "RISE_ENABLE_OIDN" ) != std::string::npos
+			       && vcxproj.find( "RISE_ENABLE_OPENPGL" ) != std::string::npos,
+			       "win-msvc-flags: Library.vcxproj, RISE-CLI.vcxproj, and RISE-GUI.vcxproj enable /utf-8 and RISE-GUI matches OIDN/OpenPGL ABI defines" );
+
+			auto parseVcxSet = []( const std::string& xml, const char* tag, std::set<std::string>& out ) {
+				const std::string needle = std::string( "<" ) + tag + " Include=\"";
+				for( std::size_t p = xml.find( needle ); p != std::string::npos;
+				     p = xml.find( needle, p + needle.size() ) ) {
+					const std::size_t s = p + needle.size();
+					const std::size_t e = xml.find( '"', s );
+					if( e == std::string::npos ) break;
+					std::string rel = xml.substr( s, e - s );
+					for( char& ch : rel ) { if( ch == '\\' ) ch = '/'; }
+					const std::size_t lp = rel.find( "src/Library/" );
+					if( lp != std::string::npos ) {
+						out.insert( rel.substr( lp + 12 ) );
+					}
+				}
+			};
+			std::set<std::string> vcxCpp, vcxH, fltCpp, fltH;
+			parseVcxSet( libVcx, "ClCompile", vcxCpp );
+			parseVcxSet( libVcx, "ClInclude", vcxH );
+			parseVcxSet( libFlt, "ClCompile", fltCpp );
+			parseVcxSet( libFlt, "ClInclude", fltH );
+			Check( !vcxCpp.empty() && vcxCpp == fltCpp && !vcxH.empty() && vcxH == fltH,
+			       "five-project-parity: Library.vcxproj and Library.vcxproj.filters match 1-to-1 on ClCompile and ClInclude" );
+
+			// Expand `PATH* = $(PATHLIBRARY)...` in `build/make/rise/Filelist`.
+			std::map<std::string, std::string> pathVars;
+			pathVars["PATHLIBRARY"] = "";
+			{
+				std::size_t ls = 0;
+				while( ls <= filelistTxt.size() ) {
+					const std::size_t nl = filelistTxt.find( '\n', ls );
+					const std::size_t le = ( nl == std::string::npos ) ? filelistTxt.size() : nl;
+					const std::string ln = filelistTxt.substr( ls, le - ls );
+					const std::size_t eq = ln.find( '=' );
+					const std::size_t pl = ln.find( "$(PATHLIBRARY)" );
+					if( eq != std::string::npos && pl != std::string::npos && eq < pl ) {
+						std::string lhs = ln.substr( 0, eq );
+						while( !lhs.empty() && std::isspace( static_cast<unsigned char>( lhs.back() ) ) ) lhs.pop_back();
+						std::size_t a = 0;
+						while( a < lhs.size() && std::isspace( static_cast<unsigned char>( lhs[a] ) ) ) ++a;
+						lhs = lhs.substr( a );
+						std::string rhs = ln.substr( pl + 14 );
+						while( !rhs.empty() && std::isspace( static_cast<unsigned char>( rhs.back() ) ) ) rhs.pop_back();
+						while( !rhs.empty() && rhs.front() == '/' ) rhs.erase( rhs.begin() );
+						if( !rhs.empty() && rhs.back() != '/' ) rhs.push_back( '/' );
+						if( !lhs.empty() ) pathVars[lhs] = rhs;
+					}
+					if( nl == std::string::npos ) break;
+					ls = nl + 1;
+				}
+			}
+			std::set<std::string> flCpp;
+			for( std::size_t p = filelistTxt.find( "$(" ); p != std::string::npos; p = filelistTxt.find( "$(", p + 2 ) ) {
+				const std::size_t rp = filelistTxt.find( ')', p + 2 );
+				if( rp == std::string::npos ) break;
+				const std::string var = filelistTxt.substr( p + 2, rp - ( p + 2 ) );
+				auto it = pathVars.find( var );
+				if( it != pathVars.end() ) {
+					std::size_t q = rp + 1;
+					if( q < filelistTxt.size() && filelistTxt[q] == '/' ) ++q;
+					const std::size_t s = q;
+					while( q < filelistTxt.size() &&
+					       ( std::isalnum( static_cast<unsigned char>( filelistTxt[q] ) ) ||
+					         filelistTxt[q] == '_' || filelistTxt[q] == '/' || filelistTxt[q] == '.' || filelistTxt[q] == '-' ) ) {
+						++q;
+					}
+					const std::string tail = filelistTxt.substr( s, q - s );
+					if( ( tail.size() > 4 && tail.substr( tail.size() - 4 ) == ".cpp" ) ||
+					    ( tail.size() > 3 && tail.substr( tail.size() - 3 ) == ".mm" ) ) {
+						flCpp.insert( it->second + tail );
+					}
+				}
+			}
+
+			std::set<std::string> cmCpp;
+			const std::string cmNeedle = "${RISE_LIB}/";
+			for( std::size_t p = androidCmake.find( cmNeedle ); p != std::string::npos;
+			     p = androidCmake.find( cmNeedle, p + cmNeedle.size() ) ) {
+				std::size_t q = p + cmNeedle.size();
+				const std::size_t s = q;
+				while( q < androidCmake.size() &&
+				       ( std::isalnum( static_cast<unsigned char>( androidCmake[q] ) ) ||
+				         androidCmake[q] == '_' || androidCmake[q] == '/' || androidCmake[q] == '.' || androidCmake[q] == '-' ) ) {
+					++q;
+				}
+				cmCpp.insert( androidCmake.substr( s, q - s ) );
+			}
+
+			std::set<std::string> pbxBasenames;
+			for( std::size_t p = pbxTxt.find( "isa = PBXFileReference;" ); p != std::string::npos;
+			     p = pbxTxt.find( "isa = PBXFileReference;", p + 23 ) ) {
+				const std::size_t lineEnd = pbxTxt.find( '\n', p );
+				const std::string ln = pbxTxt.substr( p, ( lineEnd == std::string::npos ) ? std::string::npos : ( lineEnd - p ) );
+				const std::size_t pp = ln.find( "path = " );
+				if( pp == std::string::npos ) continue;
+				std::size_t s = pp + 7;
+				const std::size_t semi = ln.find( ';', s );
+				if( semi == std::string::npos ) continue;
+				std::string val = ln.substr( s, semi - s );
+				if( val.size() >= 2 && val.front() == '"' && val.back() == '"' ) {
+					val = val.substr( 1, val.size() - 2 );
+				}
+				const std::size_t slash = val.rfind( '/' );
+				pbxBasenames.insert( slash == std::string::npos ? val : val.substr( slash + 1 ) );
+			}
+
+			const std::set<std::string> flExempt = {
+				"Agent/TlsTransportUnsupported.cpp",
+				"Agent/TlsTransportWin.cpp",
+				"DetectorSpheres/AdaptiveDetectorSphere.cpp",
+				"DetectorSpheres/CircularDiskDetector.cpp",
+				"Functions/CubicFunction.cpp",
+				"Functions/KleinBottleParametricFunctions.cpp",
+				"Functions/LinearFunction.cpp",
+				"Functions/ParametricSurface.cpp",
+				"Functions/QuadraticFunction.cpp",
+				"Functions/QuarticFunction.cpp",
+				"Geometry/TriangleMeshLoaderPSurf.cpp",
+				"ManagedJob.cpp",
+				"Rendering/PixelBasedSpectralIntegratingRasterizerRGB.cpp",
+				"Rendering/Win32WindowRasterizerOutput.cpp",
+				"Utilities/Log/Win32Console.cpp",
+				"Utilities/Math3D/Math3D.cpp",
+				"Utilities/Threads/ThreadsWin32.cpp",
+				"pch.cpp"
+			};
+			const std::set<std::string> cmExempt = {
+				"Agent/TlsTransportMac.mm",
+				"Agent/TlsTransportWin.cpp",
+				"DetectorSpheres/AdaptiveDetectorSphere.cpp",
+				"DetectorSpheres/CircularDiskDetector.cpp",
+				"Functions/CubicFunction.cpp",
+				"Functions/KleinBottleParametricFunctions.cpp",
+				"Functions/LinearFunction.cpp",
+				"Functions/ParametricSurface.cpp",
+				"Functions/QuadraticFunction.cpp",
+				"Functions/QuarticFunction.cpp",
+				"Geometry/TriangleMeshLoaderPSurf.cpp",
+				"ManagedJob.cpp",
+				"Rendering/PixelBasedSpectralIntegratingRasterizerRGB.cpp",
+				"Rendering/Win32WindowRasterizerOutput.cpp",
+				"Utilities/Communications/ClientSocketCommunicator.cpp",
+				"Utilities/Communications/ServerSocketCommunicator.cpp",
+				"Utilities/Communications/SocketCommunications.cpp",
+				"Utilities/Communications/SocketCommunicator.cpp",
+				"Utilities/Log/Win32Console.cpp",
+				"Utilities/Math3D/Math3D.cpp",
+				"Utilities/Threads/ThreadsWin32.cpp",
+				"pch.cpp"
+			};
+			const std::set<std::string> vcxExempt = {
+				"Agent/TlsTransportMac.mm",
+				"Agent/TlsTransportUnsupported.cpp",
+				"ManagedJob.cpp"
+			};
+			const std::set<std::string> pbxCppExempt = {
+				"Agent/TlsTransportUnsupported.cpp",
+				"Agent/TlsTransportWin.cpp",
+				"ManagedJob.cpp",
+				"Rendering/PixelBasedSpectralIntegratingRasterizerRGB.cpp",
+				"Rendering/Win32WindowRasterizerOutput.cpp",
+				"Utilities/Log/Win32Console.cpp",
+				"Utilities/Threads/ThreadsWin32.cpp"
+			};
+			const std::set<std::string> pbxHdrExempt = {
+				"Utilities/Log/Win32Console.h"
+			};
+
+			std::vector<std::string> missingBuildRefs;
+			for( const fs::directory_entry& de : fs::recursive_directory_iterator( libDir ) ) {
+				if( !de.is_regular_file() ) continue;
+				const std::string ext = de.path().extension().string();
+				std::string rel = fs::relative( de.path(), libDir ).generic_string();
+				const std::string base = de.path().filename().string();
+				if( ext == ".cpp" || ext == ".mm" ) {
+					if( flExempt.find( rel ) == flExempt.end() && flCpp.find( rel ) == flCpp.end() ) {
+						missingBuildRefs.push_back( "Filelist missing: " + rel );
+					}
+					if( cmExempt.find( rel ) == cmExempt.end() && cmCpp.find( rel ) == cmCpp.end() ) {
+						missingBuildRefs.push_back( "rise_sources.cmake missing: " + rel );
+					}
+					if( vcxExempt.find( rel ) == vcxExempt.end() && vcxCpp.find( rel ) == vcxCpp.end() ) {
+						missingBuildRefs.push_back( "Library.vcxproj missing: " + rel );
+					}
+					if( pbxCppExempt.find( rel ) == pbxCppExempt.end() && pbxBasenames.find( base ) == pbxBasenames.end() ) {
+						missingBuildRefs.push_back( "project.pbxproj missing: " + rel );
+					}
+				} else if( ext == ".h" ) {
+					if( vcxH.find( rel ) == vcxH.end() ) {
+						missingBuildRefs.push_back( "Library.vcxproj ClInclude missing: " + rel );
+					}
+					if( pbxHdrExempt.find( rel ) == pbxHdrExempt.end() && pbxBasenames.find( base ) == pbxBasenames.end() ) {
+						missingBuildRefs.push_back( "project.pbxproj header missing: " + rel );
+					}
+				}
+			}
+			for( const std::string& m : missingBuildRefs ) {
+				std::cout << "  build-parity: " << m << std::endl;
+			}
+			Check( missingBuildRefs.empty(),
+			       "five-project-parity: every non-exempt src/Library/**/*.{cpp,mm,h} appears across Filelist, rise_sources.cmake, Library.vcxproj, Library.vcxproj.filters, and project.pbxproj" );
+		}
 	}
 
 	std::cout << std::endl

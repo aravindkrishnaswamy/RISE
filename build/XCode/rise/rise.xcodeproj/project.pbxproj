@@ -2024,6 +2024,52 @@
 		FF11FFFF000000000000F1A7 /* Film.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A6 /* Film.cpp */; };
 		FF11FFFF000000000000F1A8 /* Film.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A6 /* Film.cpp */; };
 		FF6F2FF372416EB54D24CE1F /* MappingPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */; };
+		F96F28D398EE7B188AF466F6 /* Profiling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F95D435F04092BE4C62DA966 /* Profiling.cpp */; };
+		F9283202CD42F3BC145CF3BB /* Profiling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F95D435F04092BE4C62DA966 /* Profiling.cpp */; };
+		F9052A5E809A12D8F62F4B47 /* IAtmosphere.h in Headers */ = {isa = PBXBuildFile; fileRef = F9B205C70912272622C92403 /* IAtmosphere.h */; };
+		F9915099FB371956E6E685A3 /* IBSDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F937672FA6AC8D3D32572A93 /* IBSDF.h */; };
+		F9FD5F919CA42D1AC14A1F3A /* IMedium.h in Headers */ = {isa = PBXBuildFile; fileRef = F9FFE84AA108DD2E4A4494FC /* IMedium.h */; };
+		F95DBB94C5C1C03201D18C0A /* IPhaseFunction.h in Headers */ = {isa = PBXBuildFile; fileRef = F999DC413A60C6176BB7DC0C /* IPhaseFunction.h */; };
+		F9DECB87E7B99713A46706F2 /* IShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F9C54109010D37E1F6B83816 /* IShaderOp.h */; };
+		F9336723ADEB2CCDAD77D1DD /* IShaderOpManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F9EF7BC79CDD0155F3EEF307 /* IShaderOpManager.h */; };
+		F995B615700F5800E2A033D6 /* ISubSurfaceDiffusionProfile.h in Headers */ = {isa = PBXBuildFile; fileRef = F9CD1BEDD6AF9E0BA713BB3E /* ISubSurfaceDiffusionProfile.h */; };
+		F971607129391EB99198E4F9 /* ISubSurfaceExtinctionFunction.h in Headers */ = {isa = PBXBuildFile; fileRef = F9A82477462FA0EEC09698C2 /* ISubSurfaceExtinctionFunction.h */; };
+		F9A207DD6B7DFE47C77B4224 /* SpecularInfo.h in Headers */ = {isa = PBXBuildFile; fileRef = F9C48BB75D7DB730DEAD5DE6 /* SpecularInfo.h */; };
+		F9BE08F2B189651F4C55E180 /* ShaderOpManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F984D29C30ED351260DF6D30 /* ShaderOpManager.h */; };
+		F945B11B3CAECB85586FE5C9 /* IsotropicPhaseFunction.h in Headers */ = {isa = PBXBuildFile; fileRef = F9454E8686EE51CEB37D4BB8 /* IsotropicPhaseFunction.h */; };
+		F927660579C279B858C44513 /* RandomWalkSSSMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F9DE2B064425A8B8055D1D44 /* RandomWalkSSSMaterial.h */; };
+		F988C73032357E29BB75174B /* MortonRasterizeSequence.h in Headers */ = {isa = PBXBuildFile; fileRef = F9A958414000DD657941C24F /* MortonRasterizeSequence.h */; };
+		F93552B21F7B90E01693F705 /* PixelBasedSpectralIntegratingRasterizerRGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F9AB67DC2A639AF51ED33480 /* PixelBasedSpectralIntegratingRasterizerRGB.h */; };
+		F9457461BD154305E1C5514D /* ProgressiveFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F9927EF5EF33877954838D30 /* ProgressiveFilm.h */; };
+		F9D470F25FBF17B2ADC6B0A6 /* RasterizeDispatchers.h in Headers */ = {isa = PBXBuildFile; fileRef = F95D66D53F68428932226808 /* RasterizeDispatchers.h */; };
+		F9833616198B4D658EFF7F02 /* SobolSequence.h in Headers */ = {isa = PBXBuildFile; fileRef = F93DA5FD7CBD402530F5B92A /* SobolSequence.h */; };
+		F95B7FF7BC8956F3452413D9 /* BSSRDFEntryAdapters.h in Headers */ = {isa = PBXBuildFile; fileRef = F9875915DD81C04E5E83784C /* BSSRDFEntryAdapters.h */; };
+		F9E8054FC0765B3DB5709933 /* FinalGatherInterpolation.h in Headers */ = {isa = PBXBuildFile; fileRef = F933C697D1EBD7F3FE8D4231 /* FinalGatherInterpolation.h */; };
+		F92BB984C38C06229CE9F1A6 /* AP1RGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F93A24E60148A5E251C160EC /* AP1RGB.h */; };
+		F91F725CCE9C470A1B820B1C /* ColorConversion.h in Headers */ = {isa = PBXBuildFile; fileRef = F9630E68AF59BFFB187828D4 /* ColorConversion.h */; };
+		F9523CA9D61384C14AB46211 /* ColorMath.h in Headers */ = {isa = PBXBuildFile; fileRef = F923DDB3817507F01AFD4B83 /* ColorMath.h */; };
+		F942BC84F5365F2F3B3A0F3A /* ColorOperators.h in Headers */ = {isa = PBXBuildFile; fileRef = F918C1FF197EA5D0925B4D9D /* ColorOperators.h */; };
+		F96FA577DBB477BA0C1792FB /* ProPhotoRGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F90247F7EBDDFA8110E138DF /* ProPhotoRGB.h */; };
+		F9B82BF098D44343F4543135 /* ROMMRGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F9F1465BE062B9FE7155ABF2 /* ROMMRGB.h */; };
+		F9B8E8CCDFEA25C205DAFC51 /* Rec709RGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F96C9AA8F169AAE1DD7E6755 /* Rec709RGB.h */; };
+		F93608793E5AD0A9DCF0FD6E /* SampledWavelengths.h in Headers */ = {isa = PBXBuildFile; fileRef = F90AF42F05CF4AD03A15649C /* SampledWavelengths.h */; };
+		F9560182A894C0909A9019B0 /* ScaleColorOperator.h in Headers */ = {isa = PBXBuildFile; fileRef = F94783CB3BE75E897CBF8B00 /* ScaleColorOperator.h */; };
+		F924AC0088F758848B6219B1 /* ShiftColorOperator.h in Headers */ = {isa = PBXBuildFile; fileRef = F97614727286C99AC8D588B1 /* ShiftColorOperator.h */; };
+		F93B1DD3F69E6DFFEABD26D9 /* EquiangularSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F9BCF226CF0307AF10EFA8A7 /* EquiangularSampler.h */; };
+		F91690AC420123FFE0748956 /* ISampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F9EF621714FABAA411A1DE98 /* ISampler.h */; };
+		F9EDB236DE18EBA71286DF72 /* IndependentSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F92B7E69FE06E5B936C23F0D /* IndependentSampler.h */; };
+		F9F8A4B69E50505272A49E3C /* MISWeights.h in Headers */ = {isa = PBXBuildFile; fileRef = F9702C9AF2EC9D45DA98AD8E /* MISWeights.h */; };
+		F9DD77BCDD0057A42D6FBABC /* MortonCode.h in Headers */ = {isa = PBXBuildFile; fileRef = F9C518E9999C21BEB2A3DE14 /* MortonCode.h */; };
+		F94C6BB543672DF452251996 /* Primes.h in Headers */ = {isa = PBXBuildFile; fileRef = F9304798AAB9117C62F25462 /* Primes.h */; };
+		F99145F78473458E05202865 /* Profiling.h in Headers */ = {isa = PBXBuildFile; fileRef = F94C19AA91622B54A204637C /* Profiling.h */; };
+		F91A54B9DFF268D35987CC5D /* RasterSanityScan.h in Headers */ = {isa = PBXBuildFile; fileRef = F93AD3951A1C23D67FDB7820 /* RasterSanityScan.h */; };
+		F9A244FD91D33A0A1123AFCC /* RuntimeContext.h in Headers */ = {isa = PBXBuildFile; fileRef = F9943ADFF7375A293B00D9EE /* RuntimeContext.h */; };
+		F9F0D4094D50F543E82221CC /* SSSCoefficients.h in Headers */ = {isa = PBXBuildFile; fileRef = F909DC15110BD872B6395BF1 /* SSSCoefficients.h */; };
+		F949EC3BF6394CBFC0B60196 /* SobolSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F974DFD920D5303C22E39A22 /* SobolSampler.h */; };
+		F906F4C16B6C467C0977EAB7 /* StabilityConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F9C05CA0835843CAFA9784EC /* StabilityConfig.h */; };
+		F92134AB162D0550F2183283 /* ZSobolSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F9DEBE7B82A18DD3C46224C5 /* ZSobolSampler.h */; };
+		F990E718DD40B6888AC735AD /* VolumeAccessor_Painter.h in Headers */ = {isa = PBXBuildFile; fileRef = F940B2B2310EB5AAF01277C5 /* VolumeAccessor_Painter.h */; };
+		F9698A868636198289A3C0C3 /* VolumeAccessor_TriCubic.h in Headers */ = {isa = PBXBuildFile; fileRef = F9EAA67E50B22F06285E9D35 /* VolumeAccessor_TriCubic.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -3124,6 +3170,51 @@
 		FF11FFFF000000000000F1A1 /* IFilm.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IFilm.h; sourceTree = "<group>"; };
 		FF11FFFF000000000000F1A4 /* Film.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Film.h; sourceTree = "<group>"; };
 		FF11FFFF000000000000F1A6 /* Film.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Film.cpp; sourceTree = "<group>"; };
+		F95D435F04092BE4C62DA966 /* Profiling.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = Profiling.cpp; sourceTree = "<group>"; };
+		F9B205C70912272622C92403 /* IAtmosphere.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IAtmosphere.h; sourceTree = "<group>"; };
+		F937672FA6AC8D3D32572A93 /* IBSDF.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IBSDF.h; sourceTree = "<group>"; };
+		F9FFE84AA108DD2E4A4494FC /* IMedium.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IMedium.h; sourceTree = "<group>"; };
+		F999DC413A60C6176BB7DC0C /* IPhaseFunction.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IPhaseFunction.h; sourceTree = "<group>"; };
+		F9C54109010D37E1F6B83816 /* IShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IShaderOp.h; sourceTree = "<group>"; };
+		F9EF7BC79CDD0155F3EEF307 /* IShaderOpManager.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IShaderOpManager.h; sourceTree = "<group>"; };
+		F9CD1BEDD6AF9E0BA713BB3E /* ISubSurfaceDiffusionProfile.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ISubSurfaceDiffusionProfile.h; sourceTree = "<group>"; };
+		F9A82477462FA0EEC09698C2 /* ISubSurfaceExtinctionFunction.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ISubSurfaceExtinctionFunction.h; sourceTree = "<group>"; };
+		F9C48BB75D7DB730DEAD5DE6 /* SpecularInfo.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SpecularInfo.h; sourceTree = "<group>"; };
+		F984D29C30ED351260DF6D30 /* ShaderOpManager.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ShaderOpManager.h; sourceTree = "<group>"; };
+		F9454E8686EE51CEB37D4BB8 /* IsotropicPhaseFunction.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IsotropicPhaseFunction.h; sourceTree = "<group>"; };
+		F9DE2B064425A8B8055D1D44 /* RandomWalkSSSMaterial.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RandomWalkSSSMaterial.h; sourceTree = "<group>"; };
+		F9A958414000DD657941C24F /* MortonRasterizeSequence.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MortonRasterizeSequence.h; sourceTree = "<group>"; };
+		F9AB67DC2A639AF51ED33480 /* PixelBasedSpectralIntegratingRasterizerRGB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = PixelBasedSpectralIntegratingRasterizerRGB.h; sourceTree = "<group>"; };
+		F9927EF5EF33877954838D30 /* ProgressiveFilm.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ProgressiveFilm.h; sourceTree = "<group>"; };
+		F95D66D53F68428932226808 /* RasterizeDispatchers.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RasterizeDispatchers.h; sourceTree = "<group>"; };
+		F93DA5FD7CBD402530F5B92A /* SobolSequence.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SobolSequence.h; sourceTree = "<group>"; };
+		F9875915DD81C04E5E83784C /* BSSRDFEntryAdapters.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = BSSRDFEntryAdapters.h; sourceTree = "<group>"; };
+		F933C697D1EBD7F3FE8D4231 /* FinalGatherInterpolation.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = FinalGatherInterpolation.h; sourceTree = "<group>"; };
+		F93A24E60148A5E251C160EC /* AP1RGB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = AP1RGB.h; sourceTree = "<group>"; };
+		F9630E68AF59BFFB187828D4 /* ColorConversion.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ColorConversion.h; sourceTree = "<group>"; };
+		F923DDB3817507F01AFD4B83 /* ColorMath.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ColorMath.h; sourceTree = "<group>"; };
+		F918C1FF197EA5D0925B4D9D /* ColorOperators.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ColorOperators.h; sourceTree = "<group>"; };
+		F90247F7EBDDFA8110E138DF /* ProPhotoRGB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ProPhotoRGB.h; sourceTree = "<group>"; };
+		F9F1465BE062B9FE7155ABF2 /* ROMMRGB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ROMMRGB.h; sourceTree = "<group>"; };
+		F96C9AA8F169AAE1DD7E6755 /* Rec709RGB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Rec709RGB.h; sourceTree = "<group>"; };
+		F90AF42F05CF4AD03A15649C /* SampledWavelengths.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SampledWavelengths.h; sourceTree = "<group>"; };
+		F94783CB3BE75E897CBF8B00 /* ScaleColorOperator.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ScaleColorOperator.h; sourceTree = "<group>"; };
+		F97614727286C99AC8D588B1 /* ShiftColorOperator.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ShiftColorOperator.h; sourceTree = "<group>"; };
+		F9BCF226CF0307AF10EFA8A7 /* EquiangularSampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = EquiangularSampler.h; sourceTree = "<group>"; };
+		F9EF621714FABAA411A1DE98 /* ISampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ISampler.h; sourceTree = "<group>"; };
+		F92B7E69FE06E5B936C23F0D /* IndependentSampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = IndependentSampler.h; sourceTree = "<group>"; };
+		F9702C9AF2EC9D45DA98AD8E /* MISWeights.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MISWeights.h; sourceTree = "<group>"; };
+		F9C518E9999C21BEB2A3DE14 /* MortonCode.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MortonCode.h; sourceTree = "<group>"; };
+		F9304798AAB9117C62F25462 /* Primes.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Primes.h; sourceTree = "<group>"; };
+		F94C19AA91622B54A204637C /* Profiling.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Profiling.h; sourceTree = "<group>"; };
+		F93AD3951A1C23D67FDB7820 /* RasterSanityScan.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RasterSanityScan.h; sourceTree = "<group>"; };
+		F9943ADFF7375A293B00D9EE /* RuntimeContext.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RuntimeContext.h; sourceTree = "<group>"; };
+		F909DC15110BD872B6395BF1 /* SSSCoefficients.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SSSCoefficients.h; sourceTree = "<group>"; };
+		F974DFD920D5303C22E39A22 /* SobolSampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SobolSampler.h; sourceTree = "<group>"; };
+		F9C05CA0835843CAFA9784EC /* StabilityConfig.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = StabilityConfig.h; sourceTree = "<group>"; };
+		F9DEBE7B82A18DD3C46224C5 /* ZSobolSampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ZSobolSampler.h; sourceTree = "<group>"; };
+		F940B2B2310EB5AAF01277C5 /* VolumeAccessor_Painter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VolumeAccessor_Painter.h; sourceTree = "<group>"; };
+		F9EAA67E50B22F06285E9D35 /* VolumeAccessor_TriCubic.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VolumeAccessor_TriCubic.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -3566,6 +3657,15 @@
 				F27F08A2069C428F0069C9E5 /* IVolumeAccessor.h */,
 				F27F08A3069C428F0069C9E5 /* IVolumeOperation.h */,
 				F27F08A4069C428F0069C9E5 /* IWriteBuffer.h */,
+				F9B205C70912272622C92403 /* IAtmosphere.h */,
+				F937672FA6AC8D3D32572A93 /* IBSDF.h */,
+				F9FFE84AA108DD2E4A4494FC /* IMedium.h */,
+				F999DC413A60C6176BB7DC0C /* IPhaseFunction.h */,
+				F9C54109010D37E1F6B83816 /* IShaderOp.h */,
+				F9EF7BC79CDD0155F3EEF307 /* IShaderOpManager.h */,
+				F9CD1BEDD6AF9E0BA713BB3E /* ISubSurfaceDiffusionProfile.h */,
+				F9A82477462FA0EEC09698C2 /* ISubSurfaceExtinctionFunction.h */,
+				F9C48BB75D7DB730DEAD5DE6 /* SpecularInfo.h */,
 			);
 			path = Interfaces;
 			sourceTree = "<group>";
@@ -3627,6 +3727,7 @@
 				F27F08CC069C42900069C9E5 /* PainterManager.h */,
 				FA1ABFR10000000000000008 /* ScalarPainterManager.h */,
 				F27F08CD069C42900069C9E5 /* ShaderManager.h */,
+				F984D29C30ED351260DF6D30 /* ShaderOpManager.h */,
 			);
 			path = Managers;
 			sourceTree = "<group>";
@@ -3781,6 +3882,8 @@
 				F27F091B069C42900069C9E5 /* WardIsotropicGaussianSPF.cpp */,
 				F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */,
 				A17802120000000000000003 /* WardSelectionQuadrature.h */,
+				F9454E8686EE51CEB37D4BB8 /* IsotropicPhaseFunction.h */,
+				F9DE2B064425A8B8055D1D44 /* RandomWalkSSSMaterial.h */,
 			);
 			path = Materials;
 			sourceTree = "<group>";
@@ -4130,6 +4233,10 @@
 				F27F09AC069C42900069C9E5 /* RayCaster.h */,
 				F27F09AD069C42900069C9E5 /* ScanlineRasterizeSequence.h */,
 				F27F09AF069C42900069C9E5 /* Win32WindowRasterizerOutput.h */,
+				F9A958414000DD657941C24F /* MortonRasterizeSequence.h */,
+				F9AB67DC2A639AF51ED33480 /* PixelBasedSpectralIntegratingRasterizerRGB.h */,
+				F9927EF5EF33877954838D30 /* ProgressiveFilm.h */,
+				F95D66D53F68428932226808 /* RasterizeDispatchers.h */,
 			);
 			path = Rendering;
 			sourceTree = "<group>";
@@ -4175,6 +4282,7 @@
 				F27F09D0069C42900069C9E5 /* UniformSampling2D.cpp */,
 				F27F09D1069C42900069C9E5 /* UniformSampling2D.h */,
 				F27F09D2069C42900069C9E5 /* WindowedSincPixelFilter.h */,
+				F93DA5FD7CBD402530F5B92A /* SobolSequence.h */,
 			);
 			path = Sampling;
 			sourceTree = "<group>";
@@ -4240,6 +4348,8 @@
 				F298C65207B14247007CDF08 /* StandardShader.h */,
 				F27F09D6069C42900069C9E5 /* DirectVolumeRenderingShader.cpp */,
 				F27F09D7069C42900069C9E5 /* DirectVolumeRenderingShader.h */,
+				F9875915DD81C04E5E83784C /* BSSRDFEntryAdapters.h */,
+				F933C697D1EBD7F3FE8D4231 /* FinalGatherInterpolation.h */,
 			);
 			path = Shaders;
 			sourceTree = "<group>";
@@ -4357,6 +4467,20 @@
 				F2EE005300000000000000A1 /* RadianceMapConfig.h */,
 				F2EE005400000000000000A1 /* SMSConfig.h */,
 				F2EE005500000000000000A1 /* SpectralConfig.h */,
+				F95D435F04092BE4C62DA966 /* Profiling.cpp */,
+				F9BCF226CF0307AF10EFA8A7 /* EquiangularSampler.h */,
+				F9EF621714FABAA411A1DE98 /* ISampler.h */,
+				F92B7E69FE06E5B936C23F0D /* IndependentSampler.h */,
+				F9702C9AF2EC9D45DA98AD8E /* MISWeights.h */,
+				F9C518E9999C21BEB2A3DE14 /* MortonCode.h */,
+				F9304798AAB9117C62F25462 /* Primes.h */,
+				F94C19AA91622B54A204637C /* Profiling.h */,
+				F93AD3951A1C23D67FDB7820 /* RasterSanityScan.h */,
+				F9943ADFF7375A293B00D9EE /* RuntimeContext.h */,
+				F909DC15110BD872B6395BF1 /* SSSCoefficients.h */,
+				F974DFD920D5303C22E39A22 /* SobolSampler.h */,
+				F9C05CA0835843CAFA9784EC /* StabilityConfig.h */,
+				F9DEBE7B82A18DD3C46224C5 /* ZSobolSampler.h */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -4385,6 +4509,16 @@
 				F27F09F4069C42900069C9E5 /* SpectralPacket_Template.h */,
 				F27F09F5069C42900069C9E5 /* sRGB.h */,
 				F2EE005600000000000000A1 /* SpectralValueTraits.h */,
+				F93A24E60148A5E251C160EC /* AP1RGB.h */,
+				F9630E68AF59BFFB187828D4 /* ColorConversion.h */,
+				F923DDB3817507F01AFD4B83 /* ColorMath.h */,
+				F918C1FF197EA5D0925B4D9D /* ColorOperators.h */,
+				F90247F7EBDDFA8110E138DF /* ProPhotoRGB.h */,
+				F9F1465BE062B9FE7155ABF2 /* ROMMRGB.h */,
+				F96C9AA8F169AAE1DD7E6755 /* Rec709RGB.h */,
+				F90AF42F05CF4AD03A15649C /* SampledWavelengths.h */,
+				F94783CB3BE75E897CBF8B00 /* ScaleColorOperator.h */,
+				F97614727286C99AC8D588B1 /* ShiftColorOperator.h */,
 			);
 			path = Color;
 			sourceTree = "<group>";
@@ -4467,6 +4601,8 @@
 				F27F0A57069C42900069C9E5 /* VolumeOp_LMIP.h */,
 				F27F0A58069C42900069C9E5 /* VolumeOp_MIP.h */,
 				F27F0A59069C42900069C9E5 /* ZuckerHummelOperator.h */,
+				F940B2B2310EB5AAF01277C5 /* VolumeAccessor_Painter.h */,
+				F9EAA67E50B22F06285E9D35 /* VolumeAccessor_TriCubic.h */,
 			);
 			path = Volume;
 			sourceTree = "<group>";
@@ -5280,6 +5416,50 @@
 				6DFD32F00A0FBB1D00E99FBE /* CPU.h in Headers */,
 				6DFD32F70A0FBBAA00E99FBE /* EXRReader.h in Headers */,
 				6DFD32F90A0FBBAA00E99FBE /* EXRWriter.h in Headers */,
+				F9052A5E809A12D8F62F4B47 /* IAtmosphere.h in Headers */,
+				F9915099FB371956E6E685A3 /* IBSDF.h in Headers */,
+				F9FD5F919CA42D1AC14A1F3A /* IMedium.h in Headers */,
+				F95DBB94C5C1C03201D18C0A /* IPhaseFunction.h in Headers */,
+				F9DECB87E7B99713A46706F2 /* IShaderOp.h in Headers */,
+				F9336723ADEB2CCDAD77D1DD /* IShaderOpManager.h in Headers */,
+				F995B615700F5800E2A033D6 /* ISubSurfaceDiffusionProfile.h in Headers */,
+				F971607129391EB99198E4F9 /* ISubSurfaceExtinctionFunction.h in Headers */,
+				F9A207DD6B7DFE47C77B4224 /* SpecularInfo.h in Headers */,
+				F9BE08F2B189651F4C55E180 /* ShaderOpManager.h in Headers */,
+				F945B11B3CAECB85586FE5C9 /* IsotropicPhaseFunction.h in Headers */,
+				F927660579C279B858C44513 /* RandomWalkSSSMaterial.h in Headers */,
+				F988C73032357E29BB75174B /* MortonRasterizeSequence.h in Headers */,
+				F93552B21F7B90E01693F705 /* PixelBasedSpectralIntegratingRasterizerRGB.h in Headers */,
+				F9457461BD154305E1C5514D /* ProgressiveFilm.h in Headers */,
+				F9D470F25FBF17B2ADC6B0A6 /* RasterizeDispatchers.h in Headers */,
+				F9833616198B4D658EFF7F02 /* SobolSequence.h in Headers */,
+				F95B7FF7BC8956F3452413D9 /* BSSRDFEntryAdapters.h in Headers */,
+				F9E8054FC0765B3DB5709933 /* FinalGatherInterpolation.h in Headers */,
+				F92BB984C38C06229CE9F1A6 /* AP1RGB.h in Headers */,
+				F91F725CCE9C470A1B820B1C /* ColorConversion.h in Headers */,
+				F9523CA9D61384C14AB46211 /* ColorMath.h in Headers */,
+				F942BC84F5365F2F3B3A0F3A /* ColorOperators.h in Headers */,
+				F96FA577DBB477BA0C1792FB /* ProPhotoRGB.h in Headers */,
+				F9B82BF098D44343F4543135 /* ROMMRGB.h in Headers */,
+				F9B8E8CCDFEA25C205DAFC51 /* Rec709RGB.h in Headers */,
+				F93608793E5AD0A9DCF0FD6E /* SampledWavelengths.h in Headers */,
+				F9560182A894C0909A9019B0 /* ScaleColorOperator.h in Headers */,
+				F924AC0088F758848B6219B1 /* ShiftColorOperator.h in Headers */,
+				F93B1DD3F69E6DFFEABD26D9 /* EquiangularSampler.h in Headers */,
+				F91690AC420123FFE0748956 /* ISampler.h in Headers */,
+				F9EDB236DE18EBA71286DF72 /* IndependentSampler.h in Headers */,
+				F9F8A4B69E50505272A49E3C /* MISWeights.h in Headers */,
+				F9DD77BCDD0057A42D6FBABC /* MortonCode.h in Headers */,
+				F94C6BB543672DF452251996 /* Primes.h in Headers */,
+				F99145F78473458E05202865 /* Profiling.h in Headers */,
+				F91A54B9DFF268D35987CC5D /* RasterSanityScan.h in Headers */,
+				F9A244FD91D33A0A1123AFCC /* RuntimeContext.h in Headers */,
+				F9F0D4094D50F543E82221CC /* SSSCoefficients.h in Headers */,
+				F949EC3BF6394CBFC0B60196 /* SobolSampler.h in Headers */,
+				F906F4C16B6C467C0977EAB7 /* StabilityConfig.h in Headers */,
+				F92134AB162D0550F2183283 /* ZSobolSampler.h in Headers */,
+				F990E718DD40B6888AC735AD /* VolumeAccessor_Painter.h in Headers */,
+				F9698A868636198289A3C0C3 /* VolumeAccessor_TriCubic.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -5767,6 +5947,7 @@
 				6DFD32F60A0FBBAA00E99FBE /* EXRReader.cpp in Sources */,
 				6DFD32F80A0FBBAA00E99FBE /* EXRWriter.cpp in Sources */,
 				F2C5D5812F6EA5B300546C97 /* PSSMLTSampler.cpp in Sources */,
+				F96F28D398EE7B188AF466F6 /* Profiling.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -6705,6 +6886,7 @@
 				F24B745F2F52A632008304C4 /* VolumeOp_LMIP.h in Sources */,
 				F24B74602F52A632008304C4 /* VolumeOp_MIP.h in Sources */,
 				F24B74612F52A632008304C4 /* ZuckerHummelOperator.h in Sources */,
+				F9283202CD42F3BC145CF3BB /* Profiling.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

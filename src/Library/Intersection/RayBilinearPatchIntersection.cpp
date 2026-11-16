@@ -357,7 +357,7 @@ namespace RISE
 		)
 	{
 		hit.bHit = false;
-		hit.dRange = RISE_INFINITY;
+		hit.u = hit.v = hit.dRange = -2;
 		hit.dRange2 = RISE_INFINITY;
 		if( !bHitFrontFaces && !bHitBackFaces ) {
 			return;
@@ -420,8 +420,6 @@ namespace RISE
 		coeff[0] = A2*C1 - A1*C2;
 		coeff[1] = A2*D1 - A1*D2 + B2*C1 - B1*C2;
 		coeff[2] = B2*D1 - B1*D2;
-
-		hit.u = hit.v = hit.dRange = -2;
 
 		Scalar sol[2] = {0};
 		const int numSol = Polynomial::SolveQuadricWithinRange( coeff, sol, -NEARZERO, 1.0+NEARZERO );

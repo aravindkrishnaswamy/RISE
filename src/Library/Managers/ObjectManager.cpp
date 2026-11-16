@@ -43,6 +43,7 @@
 #include "../Materials/WeaveMaterial.h"
 #include "../Materials/OrenNayarMaterial.h"
 #include "../Materials/CookTorranceMaterial.h"
+#include <unordered_set>
 #include "../Materials/IsotropicPhongMaterial.h"
 #include "../Materials/AshikminShirleyAnisotropicPhongMaterial.h"
 #include "../Materials/SchlickMaterial.h"
@@ -137,17 +138,24 @@ bool AuditedMaterialGraph(const IMaterial& material)
 // ineligible. A remote supported caster cannot repair that missing coverage.
 // This is distinct from composite mode selection: rejection keeps PT and
 // disables SMS at the anchor; composites retain the entire legacy mode.
-bool ObjectHasClearTransmission(const IObject& object)
+bool ObjectHasClearTransmissionImpl(const IObject& object, std::unordered_set<const CSGObject*>& visited)
 {
     const IMaterial* material = object.GetMaterial();
     if(material && !AuditedMaterialGraph(*material)) return true;
     const ISPF* spf = material ? material->GetSPF() : nullptr;
     if(dynamic_cast<const DielectricSPF*>(spf) || dynamic_cast<const PerfectRefractorSPF*>(spf)
         || (material && (material->CouldLightPassThrough() || material->HasDeltaPassThrough()))) return true;
-    if(const auto* csg = dynamic_cast<const CSGObject*>(&object))
-        return (csg->GetOperandA() && ObjectHasClearTransmission(*csg->GetOperandA()))
-            || (csg->GetOperandB() && ObjectHasClearTransmission(*csg->GetOperandB()));
+    if(const auto* csg = dynamic_cast<const CSGObject*>(&object)) {
+        if(!visited.insert(csg).second) return false;
+        return (csg->GetOperandA() && ObjectHasClearTransmissionImpl(*csg->GetOperandA(), visited))
+            || (csg->GetOperandB() && ObjectHasClearTransmissionImpl(*csg->GetOperandB(), visited));
+    }
     return false;
+}
+bool ObjectHasClearTransmission(const IObject& object)
+{
+    std::unordered_set<const CSGObject*> visited;
+    return ObjectHasClearTransmissionImpl(object, visited);
 }
 bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
 {
@@ -214,31 +222,30 @@ bool IsClearTransmissiveMaterial(const IMaterial* material, bool& outBroadProof)
         || dynamic_cast<const PerfectRefractorMaterial*>(proofMaterial);
     return true;
 }
-void CollectCSGClearMaterials(const CSGObject& csg, const IMaterial* inheritedMat, bool& anyClear, bool& allBroadProof)
+void CollectCSGClearMaterials(const CSGObject& csg, bool& anyClear, bool& allBroadProof)
 {
-    // The OUTERMOST material override wins: CSGObject::IntersectRay stamps
-    // its own pMaterial after the child composite has stamped its own, so
-    // an enclosing composite's material is what renders.
-    const IMaterial* effMat=inheritedMat ? inheritedMat : csg.GetMaterial();
-    for(const IObject* operand : {csg.GetOperandA(),csg.GetOperandB()}) {
-        if(!operand) continue;
-        if(const auto* childCsg=dynamic_cast<const CSGObject*>(operand)) {
-            CollectCSGClearMaterials(*childCsg,effMat,anyClear,allBroadProof);
-        } else {
-            const IMaterial* opMat=effMat ? effMat : operand->GetMaterial();
-            bool broad=false;
-            if(IsClearTransmissiveMaterial(opMat,broad)) {
-                anyClear=true;
-                if(!broad) allBroadProof=false;
+    struct ClearMatScan : public IEnumCallback<IMaterial>
+    {
+        bool& anyClearRef;
+        bool& allBroadRef;
+        ClearMatScan(bool& a_, bool& b_) : anyClearRef(a_), allBroadRef(b_) {}
+        bool operator()(const IMaterial& mat) override
+        {
+            bool broad = false;
+            if(IsClearTransmissiveMaterial(&mat, broad)) {
+                anyClearRef = true;
+                if(!broad) allBroadRef = false;
             }
+            return true;
         }
-    }
+    } scan(anyClear, allBroadProof);
+    csg.EnumerateEffectiveMaterials(scan);
 }
 int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
 {
     if(const auto* csg=dynamic_cast<const CSGObject*>(&object)) {
         bool anyClear=false, allBroadProof=true;
-        CollectCSGClearMaterials(*csg,nullptr,anyClear,allBroadProof);
+        CollectCSGClearMaterials(*csg,anyClear,allBroadProof);
         if(!anyClear) return 0;
         if(csg->IsCertifiedWatertight()) return 0;
         if(allBroadProof && csg->IsProvablyOpenSheet(true))
@@ -266,14 +273,20 @@ int ObjectUncertifiedOpenTransmissiveMesh(const IObject& object)
     if(const auto* plane=dynamic_cast<const ClippedPlaneGeometry*>(geometry)) return plane->IsPlanarConvexQuad() ? 0 : 3;
     return 0;
 }
-bool ObjectWrapsComposite(const IObject& object)
+bool ObjectWrapsCompositeImpl(const IObject& object, std::unordered_set<const CSGObject*>& visited)
 {
     if(WrapsComposite(object.GetMaterial())) return true;
     if(const auto* csg = dynamic_cast<const CSGObject*>(&object)) {
-        return (csg->GetOperandA() && ObjectWrapsComposite(*csg->GetOperandA()))
-            || (csg->GetOperandB() && ObjectWrapsComposite(*csg->GetOperandB()));
+        if(!visited.insert(csg).second) return false;
+        return (csg->GetOperandA() && ObjectWrapsCompositeImpl(*csg->GetOperandA(), visited))
+            || (csg->GetOperandB() && ObjectWrapsCompositeImpl(*csg->GetOperandB(), visited));
     }
     return false;
+}
+bool ObjectWrapsComposite(const IObject& object)
+{
+    std::unordered_set<const CSGObject*> visited;
+    return ObjectWrapsCompositeImpl(object, visited);
 }
 
 // Process-wide monotonic source for spatial-structure generation values.

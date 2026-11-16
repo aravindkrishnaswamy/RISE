@@ -45,6 +45,7 @@
 
 #include "../src/Library/Polygon.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Utilities/IORStackSeeding.h"
 #include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
@@ -1729,10 +1730,41 @@ static void TestCsgCertificateBitsEpochInvalidation()
 		CountMats cm;
 		const bool enumOk = rootDag && rootDag->EnumerateEffectiveMaterials( cm );
 		rootDag->Realize();
+		rootDag->ResetRuntimeData();
+		const BoundingBox bbDag = rootDag->getBoundingBox();
+		Object* snapDag = rootDag->CloneSnapshot();
+		const BoundingBox bbSnap = snapDag ? snapDag->getBoundingBox() : BoundingBox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) );
+		safe_release( snapDag );
+
+		// Also register the 31-node depth-30 shared DAG in an `ObjectManager` + `Scene`
+		// and run `PrepareForRendering()` + `IORStackSeeding::SeedFromPoint()`!
+		ObjectManager* pMgr = new ObjectManager( true, false, 100, 24 );
+		char nameBuf[32];
+		pMgr->AddItem( leafDag, "dag_leaf" );
+		// Walk down `pObjectA` spine to register every unique CSG node just as `Job` does:
+		{
+			const CSGObject* walk = rootDag;
+			int idx = 0;
+			while( walk ) {
+				std::snprintf( nameBuf, sizeof(nameBuf), "dag_node_%d", idx++ );
+				pMgr->AddItem( const_cast<CSGObject*>( walk ), nameBuf );
+				walk = dynamic_cast<const CSGObject*>( walk->GetOperandA() );
+			}
+		}
+		pMgr->PrepareForRendering();
+		IScenePriv* pScene = nullptr;
+		RISE_API_CreateScene( &pScene );
+		pMgr->addref();
+		pScene->SetObjectManager( pMgr );
+		IORStack seededDag( 1.0 );
+		IORStackSeeding::SeedFromPoint( seededDag, Point3( 0, 0, -5 ), *pScene );
+
 		const uint64_t revSlot = rootDag ? rootDag->ShapeRevision() : 0;
 		bool certOk = ( rootDag && revSlot != 0 && rootDag->IsCertifiedWatertight() && !rootDag->IsProvablyOpenSheet( true ) );
 		for( int q = 0; q < 200; ++q ) {
-			if( !rootDag->IsCertifiedWatertight() || rootDag->IsProvablyOpenSheet( true ) || rootDag->ShapeRevision() != revSlot ) {
+			if( !rootDag->IsCertifiedWatertight() || rootDag->IsProvablyOpenSheet( true ) ||
+				rootDag->ShapeRevision() != revSlot ||
+				std::fabs( rootDag->getBoundingBox().ur.x - bbDag.ur.x ) > 1e-12 ) {
 				certOk = false;
 				break;
 			}
@@ -1742,14 +1774,117 @@ static void TestCsgCertificateBitsEpochInvalidation()
 
 		TimeIndexed::tlsSlots = prevSlots;
 
-		Check( enumOk && cm.count == 1 && certOk && ms < 200.0,
-			"N4: depth-30 shared-operand CSG DAG under TimeIndexed::tlsSlots != nullptr completes EnumerateEffectiveMaterials + Realize + 201 CertificateBits/ShapeRevision in < 200 ms (got " +
+		Check( enumOk && cm.count == 1 && certOk &&
+			std::fabs( bbDag.ur.x - 2.0 ) < 1e-9 &&
+			std::fabs( bbSnap.ur.x - 2.0 ) < 1e-9 &&
+			seededDag.Depth() == 1 && ms < 200.0,
+			"N4: depth-30 shared-operand CSG DAG in ObjectManager/Scene under TimeIndexed::tlsSlots != nullptr completes PrepareForRendering + SeedFromPoint + CloneSnapshot + ResetRuntimeData + getBoundingBox + CertificateBits/ShapeRevision in < 200 ms (got " +
 			std::to_string( ms ) + " ms, matCount=" + std::to_string( cm.count ) + ")" );
 
+		safe_release( pScene );
+		safe_release( pMgr );
 		safe_release( cur );
 		safe_release( leafDag );
 		safe_release( pMatte );
 		safe_release( pGrey );
+	}
+
+	// N5: Round 9: `CSGObject::EnumerateEffectiveMaterials` skips non-surface-contributing
+	// solid trim operands on `kTrimSheetA` / `kTrimSheetB` composites and is safe under
+	// re-entrant nested calls inside a callback.
+	{
+		IPainter* pWhite = nullptr;
+		RISE_API_CreateUniformColorPainter( &pWhite, RISEPel( 1.0, 1.0, 1.0 ) );
+		IScalarPainter* pIor15 = nullptr;
+		RISE_API_CreateUniformScalarPainter( &pIor15, 1.5 );
+		IScalarPainter* pIor18 = nullptr;
+		RISE_API_CreateUniformScalarPainter( &pIor18, 1.8 );
+		IMaterial* pGlass15 = nullptr;
+		RISE_API_CreatePerfectRefractorMaterial( &pGlass15, *pWhite, *pIor15 );
+		IMaterial* pGlass18 = nullptr;
+		RISE_API_CreatePerfectRefractorMaterial( &pGlass18, *pWhite, *pIor18 );
+		IMaterial* pMatte2 = nullptr;
+		RISE_API_CreateLambertianMaterial( &pMatte2, *pWhite );
+
+		Point3 flatPts[4] = {
+			Point3( -2.0, -2.0, 0.0 ),
+			Point3(  2.0, -2.0, 0.0 ),
+			Point3(  2.0,  2.0, 0.0 ),
+			Point3( -2.0,  2.0, 0.0 )
+		};
+		ClippedPlaneGeometry* gFlat = new ClippedPlaneGeometry( flatPts, true );
+
+		Object* oSheetGlass = new Object( gFlat );
+		oSheetGlass->AssignMaterial( *pGlass15 );
+		oSheetGlass->FinalizeTransformations();
+
+		Object* oSheetMatte = new Object( gFlat );
+		oSheetMatte->AssignMaterial( *pMatte2 );
+		oSheetMatte->FinalizeTransformations();
+
+		Object* oSolidGlass = new Object( gBoxA );
+		oSolidGlass->AssignMaterial( *pGlass18 );
+		oSolidGlass->FinalizeTransformations();
+
+		// kTrimSheetA: CSG_SUBTRACTION(sheet_glass15, solid_glass18) -> only pGlass15!
+		CSGObject* trimGlassA = new CSGObject( CSG_SUBTRACTION );
+		trimGlassA->AssignObjects( oSheetGlass, oSolidGlass );
+		trimGlassA->FinalizeTransformations();
+
+		// kTrimSheetB: CSG_INTERSECTION(solid_glass18, sheet_matte) -> only pMatte2!
+		CSGObject* trimMatteB = new CSGObject( CSG_INTERSECTION );
+		trimMatteB->AssignObjects( oSolidGlass, oSheetMatte );
+		trimMatteB->FinalizeTransformations();
+
+		struct ReentrantCheck : public IEnumCallback<IMaterial>
+		{
+			const CSGObject* innerTarget = nullptr;
+			std::vector<const IMaterial*> outerSeen;
+			int innerCount = 0;
+			const IMaterial* innerFirst = nullptr;
+			bool operator()( const IMaterial& m ) override
+			{
+				outerSeen.push_back( &m );
+				if( innerTarget ) {
+					struct InnerCb : public IEnumCallback<IMaterial>
+					{
+						int& cnt;
+						const IMaterial*& first;
+						InnerCb( int& c_, const IMaterial*& f_ ) : cnt( c_ ), first( f_ ) {}
+						bool operator()( const IMaterial& im ) override
+						{
+							if( cnt == 0 ) first = &im;
+							++cnt;
+							return true;
+						}
+					} icb( innerCount, innerFirst );
+					innerTarget->EnumerateEffectiveMaterials( icb );
+				}
+				return true;
+			}
+		} rc;
+		rc.innerTarget = trimMatteB;
+		trimGlassA->EnumerateEffectiveMaterials( rc );
+
+		Check( rc.outerSeen.size() == 1 && rc.outerSeen[0] == pGlass15 &&
+			rc.innerCount == 1 && rc.innerFirst == pMatte2 &&
+			IORStackSeeding::SingleRefractiveObjectMaterial( trimGlassA ) == pGlass15 &&
+			!IORStackSeeding::ObjectMayBeTrackable( *trimMatteB ) &&
+			!IORStackSeeding::ObjectMayRefract( *trimMatteB ),
+			"N5: CSGObject::EnumerateEffectiveMaterials skips solid trim masks on kTrimSheetA/kTrimSheetB and supports re-entrant nested calls" );
+
+		safe_release( trimMatteB );
+		safe_release( trimGlassA );
+		safe_release( oSolidGlass );
+		safe_release( oSheetMatte );
+		safe_release( oSheetGlass );
+		safe_release( gFlat );
+		safe_release( pMatte2 );
+		safe_release( pGlass18 );
+		safe_release( pGlass15 );
+		safe_release( pIor18 );
+		safe_release( pIor15 );
+		safe_release( pWhite );
 	}
 
 	safe_release( gBoxB );

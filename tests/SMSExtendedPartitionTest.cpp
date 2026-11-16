@@ -1148,7 +1148,7 @@ int main(int argc,char** argv)
         const double wall=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
         g_countNew.store(false);const auto allocations=g_newCalls.load();
         const auto solves=counters.canonicalSolves.load();
-        const double perSolve=solves?double(allocations)/solves:std::numeric_limits<double>::infinity();
+        const double perSolve=solves?double(allocations)/solves:1e300;
         Check(value>=0&&std::isfinite(value)&&solves>0,"DL-500 instrumented extended image completes");
         if(std::isfinite(allocationLimit))
             Check(g_newAvailable&&perSolve<=allocationLimit,"DL-500 ordinary-new allocation budget per canonical solve");

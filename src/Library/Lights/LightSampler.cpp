@@ -46,14 +46,20 @@ using namespace RISE::Implementation;
 static bool HasEffectiveAlphaCoverage( const IObject* object )
 {
     if( !object ) return false;
-    if( const IMaterial* material = object->GetMaterial() ) {
-        return material->GetAlphaMode() != eAlphaOpaque;
-    }
-    if( const CSGObject* csg = dynamic_cast<const CSGObject*>(object) ) {
-        return HasEffectiveAlphaCoverage(csg->GetOperandA()) ||
-            HasEffectiveAlphaCoverage(csg->GetOperandB());
-    }
-    return false;
+    struct AlphaScan : public IEnumCallback<IMaterial>
+    {
+        bool found = false;
+        bool operator()( const IMaterial& material ) override
+        {
+            if( material.GetAlphaMode() != eAlphaOpaque ) {
+                found = true;
+                return false;
+            }
+            return true;
+        }
+    } scan;
+    object->EnumerateEffectiveMaterials( scan );
+    return scan.found;
 }
 
 // ----------------------------------------------------------------

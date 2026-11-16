@@ -1261,6 +1261,153 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\RenderETAEstimator.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Animation\KeyframableHelper.cpp">
+      <Filter>Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Cameras\CameraUtilities.cpp">
+      <Filter>Camera</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Lights\LightBVH.cpp">
+      <Filter>Non Mesh Lights</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Lights\LightSampler.cpp">
+      <Filter>Non Mesh Lights</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\BurleyNormalizedDiffusionProfile.cpp">
+      <Filter>Materials\BioSpec</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\CompositeEmitter.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\DonnerJensenSkinDiffusionProfile.cpp">
+      <Filter>Materials\BioSpec</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\GGXBRDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\GGXSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HeterogeneousMedium.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HomogeneousMedium.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\IMaterial.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\MultipoleDiffusion.cpp">
+      <Filter>Materials\BioSpec</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SubSurfaceScatteringBSDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SubSurfaceScatteringSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\ReactionDiffusion3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\WaveletNoise3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\ReactionDiffusion3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Wavelet3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\AOVBuffers.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\BDPTPelRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\BDPTRasterizerBase.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\BDPTSpectralRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\EnvironmentSampler.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\Film.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\FilteredFilm.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\MLTRasterizer.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\MLTSpectralRasterizer.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\OIDNDenoiser.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingPelRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingSpectralRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizerRGB.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\SplatFilm.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\BDPTIntegrator.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\PathTracingIntegrator.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\SMSShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\SSS\DonnerJensenSkinSSSShaderOp.cpp">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\BSSRDFSampling.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\CompletePathGuide.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\MajorantGrid.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\ManifoldSolver.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Math3D\Math3D.cpp">
+      <Filter>Utilities\Math3D</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\MediumTransport.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\OptimalMISAccumulator.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\PSSMLTSampler.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\PathGuidingField.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Profiling.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\RandomWalkSSS.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\..\src\Library\Utilities\BoundingBox.h">

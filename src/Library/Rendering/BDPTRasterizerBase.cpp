@@ -1239,9 +1239,18 @@ void BDPTRasterizerBase::RasterizeScene(
 		// runtime).
 #ifdef RISE_ENABLE_OPENPGL
 		if( pCombineAccum ) {
-			const Scalar finalWeight = skipFinalPass ?
-				static_cast<Scalar>( 0 ) :
-				static_cast<Scalar>( pSampling ? pSampling->GetNumSamples() : 0 );
+			Scalar finalWeight = static_cast<Scalar>( 0 );
+			if( !skipFinalPass ) {
+				const uint64_t completedTotal = mTotalAdaptiveSamples.load( std::memory_order_relaxed );
+				if( progressiveConfig.enabled ) {
+					const uint64_t regionPx = RegionalPixelCount( width, height, pRect );
+					finalWeight = ( completedTotal > 0 && regionPx > 0 )
+						? static_cast<Scalar>( static_cast<double>( completedTotal ) / static_cast<double>( regionPx ) )
+						: static_cast<Scalar>( 0 );
+				} else {
+					finalWeight = static_cast<Scalar>( pSampling ? pSampling->GetNumSamples() : 0 );
+				}
+			}
 			FinalizeVarianceAwareCombine(
 				*pImage,
 				*pCombineAccum,

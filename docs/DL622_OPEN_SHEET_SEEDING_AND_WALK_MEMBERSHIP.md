@@ -1,7 +1,7 @@
 # DL-622: Walk-Carried Medium Membership and Open-Sheet Seeding Architecture
 
 **Status:** Implemented; revised by the 2026-10-16 review round (section 5 -- read it first: it supersedes parts of sections 2 and 3)  
-**Ledger item:** `DL-622` (`docs/DEBT_LEDGER.md` line 384)  
+**Ledger item:** `DL-622` (`docs/DEBT_LEDGER.md` line 350)  
 **Primary files:**
 - `src/Library/Utilities/IORStack.h`
 - `src/Library/Utilities/IORStackSeeding.h`
@@ -643,7 +643,8 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
 
 1. **AABB-preserving shape mutations (`A51`, `A61b`):** Added monotonic
    `IGeometry::ShapeRevision()` (`Geometry::BumpShapeRevision()` +
-   `GlobalGeometryShapeEpoch()` across all shape-mutable geometries —
+   `GlobalGeometryShapeEpoch()` across all 14 shape-mutable geometry families /
+   15 concrete `Geometry` classes —
    `ClippedPlane`, `InfinitePlane`, `Box`, `Sphere`, `Ellipsoid`, `Cylinder`,
    `Torus`, `CircularDisk`, `SDF`, `BezierPatch`, `BilinearPatch`,
    `TriangleMesh*`, `HairGeometry`, and `DisplacedGeometry`) plus
@@ -655,7 +656,7 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    world AABB so corner/vertex/radius/keyframe edits that leave both the
    transform and world AABB unchanged still re-describe the sheet without
    flushing `OpenSheetCatalogEpoch`.
-2. **Declaration-order / TLAS-order invariance, coplanar ties & detour ray budgets (`A52a`, `A52b`, `A56`, `A60a`, `A60b`, `A61a`–`A61c`, `A62`, `A63a`, `A63b`, `A64a`, `A64b`, `A66a`):**
+2. **Declaration-order / TLAS-order invariance, coplanar ties & detour ray budgets (`A52a`, `A52b`, `A56`, `A60a`, `A60b`, `A61a`–`A61c`, `A62`, `A63a`, `A63b`, `A64a`, `A64b`, `A66a`, `A68a`–`A68b`):**
    `SheetGeomKeyLess` orders `OpenSheetsOf`, `OpenSheetCatalog::closedTrackable`,
    `OpenSheetNormalGroup` members, `SeedFromPointImpl`'s equal-`firstExitStep`
    `ordered` ties, `HasFreeSpaceDetourToSheets` column reach (`Snapshot::columnDist`,
@@ -663,8 +664,8 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    deduplication by NaN-safe strict-weak-ordering geometric keys (`ScalarTotalLess`
    over world AABB, normal, and `GetFinalTransformMatrix()`, falling back to
    `std::less<const IObject*>{}` total pointer ordering only for identical coincident clones),
-   while `ConfirmOpenSheetsAt` caches per-confirmation group pose + `SameBox` validity once in
-   $O(N)$, breaks equal-distance confirmation ties via its inline `hitHeight` /
+   while `ConfirmOpenSheetsAt` reads epoch-cached `cat.confirmGroupPoseValid` in
+   $O(1)$ on static passes (recomputing in $O(N)$ only on epoch invalidation or non-catalog sheet vectors), breaks equal-distance confirmation ties via its inline `hitHeight` /
    `entryCtx` / `SheetGeomKeyLess` comparator (`A56`), passes exact scalar ray-hit
    distances (`aloneDist` / `activeDists` / `sheetColDists`) from
    `CheckSheetAloneAlongRay` into `ConfirmSharedNormalRay`, `HasFreeSpaceDetourToSheets`,
@@ -713,7 +714,7 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    normal prisms of a planar sheet, point-based `SeedFromPoint` ==
    `ResolveUnpushedExit` parity (§5.2, `B5`: PT/BDPT `0.9969 +/- 0.0103` vs
    walk-history `0.7905`) remains the deliberate reciprocal convention.
-   `OpenSheetHalfSpaceSeedingTest`: **265 passed, 0 failed** (`250/0` Part A +
+   `OpenSheetHalfSpaceSeedingTest`: **271 passed, 0 failed** (`256/0` Part A +
    `15/0` Part B; `red_prove.sh` RED -> GREEN on `DL-626-SUMMARY`).
 
 **`DL-631` (hot-path overhead on scenes without open sheets):**

@@ -132,26 +132,214 @@ IObjectPriv* CSGObject::CloneGeometric()
 
 namespace
 {
-	// Snapshot-clone one CSG operand to an INDEPENDENT object.  Operands are
-	// IObjectPriv*; downcast to the concrete Object to reach the virtual
-	// CloneSnapshot (a CSGObject operand recurses correctly through it).  The
-	// returned object carries one reference the caller owns.  Falls back to
+	struct SnapshotCloneDagState
+	{
+		unsigned int depth = 0;
+		std::unordered_map<const IObjectPriv*, IObjectPriv*> memo;
+	};
+
+	inline SnapshotCloneDagState& ThreadSnapshotCloneDagState()
+	{
+		static thread_local SnapshotCloneDagState tls;
+		return tls;
+	}
+
+	// Snapshot-clone one CSG operand to an INDEPENDENT object, preserving DAG
+	// sharing across multi-consumer operands in O(|V|) instead of Theta(2^D).
+	// The returned object carries one reference the caller owns.  Falls back to
 	// addref if the operand is somehow not an Implementation::Object.
 	IObjectPriv* SnapshotCloneOperand( IObjectPriv* operand )
 	{
 		if( !operand ) {
 			return 0;
 		}
+		SnapshotCloneDagState& tls = ThreadSnapshotCloneDagState();
+		const std::unordered_map<const IObjectPriv*, IObjectPriv*>::const_iterator it = tls.memo.find( operand );
+		if( it != tls.memo.end() ) {
+			it->second->addref();
+			return it->second;
+		}
 		if( Object* concrete = dynamic_cast<Object*>( operand ) ) {
-			return concrete->CloneSnapshot();   // refcount 1, recurses for nested CSG
+			Object* cloned = concrete->CloneSnapshot();   // refcount 1, recurses for nested CSG
+			tls.memo[operand] = cloned;
+			cloned->addref();                             // one ref retained in memo until root exits
+			return cloned;
 		}
 		operand->addref();
 		return operand;
+	}
+
+	struct CsgBoundsEntry
+	{
+		BoundingBox worldBox;
+		Scalar localDiag = Scalar( 0 );
+		bool diagValid = false;
+	};
+
+	struct CsgBoundsTlsMemo
+	{
+		unsigned long long shapeEpoch = 0;
+		unsigned long long globalPoseEpoch = 0;
+		unsigned long long threadPoseEpoch = 0;
+		const TimeIndexed::ThreadSlots* tlsSlots = 0;
+		unsigned int activeDepth = 0;
+		std::unordered_map<const CSGObject*, CsgBoundsEntry> epochMemo;
+		std::unordered_map<const CSGObject*, CsgBoundsEntry> callMemo;
+	};
+
+	inline CsgBoundsTlsMemo& ThreadCsgBoundsMemo()
+	{
+		static thread_local CsgBoundsTlsMemo memo;
+		return memo;
+	}
+
+	inline bool IsBoundsOperandEpochTracked( const IObjectPriv* pChild, const CSGObject*& outCsg )
+	{
+		outCsg = 0;
+		if( !pChild ) {
+			return true;
+		}
+		outCsg = dynamic_cast<const CSGObject*>( pChild );
+		if( outCsg ) {
+			return true;
+		}
+		if( !dynamic_cast<const Implementation::Object*>( pChild ) ) {
+			return false;
+		}
+		const IGeometry* pGeom = pChild->GetGeometry();
+		return !pGeom || dynamic_cast<const Implementation::Geometry*>( pGeom ) != 0;
+	}
+
+	inline bool ComputeLocalDiagFromBox( const BoundingBox& bbLocal, Scalar& outDiag )
+	{
+		const Scalar kMaxSaneExtent = Scalar( 1e30 );
+		const Scalar ex = bbLocal.ur.x - bbLocal.ll.x;
+		const Scalar ey = bbLocal.ur.y - bbLocal.ll.y;
+		const Scalar ez = bbLocal.ur.z - bbLocal.ll.z;
+		if( !( ex >= Scalar( 0 ) && ey >= Scalar( 0 ) && ez >= Scalar( 0 ) ) ||
+		    !std::isfinite( ex ) || !std::isfinite( ey ) || !std::isfinite( ez ) ||
+		    ex >= kMaxSaneExtent || ey >= kMaxSaneExtent || ez >= kMaxSaneExtent ) {
+			outDiag = Scalar( 0 );
+			return false;
+		}
+		const Scalar diag = std::sqrt( ex*ex + ey*ey + ez*ez );
+		if( !std::isfinite( diag ) || !( diag > Scalar( 0 ) ) ) {
+			outDiag = Scalar( 0 );
+			return false;
+		}
+		outDiag = diag;
+		return true;
+	}
+
+	inline const CsgBoundsEntry& EvaluateCsgBounds(
+		const CSGObject* self,
+		const IObjectPriv* pObjectA,
+		const IObjectPriv* pObjectB,
+		const CSG_OP op
+		)
+	{
+		CsgBoundsTlsMemo& tls = ThreadCsgBoundsMemo();
+		const unsigned long long sEpoch = Geometry::GlobalGeometryShapeEpoch();
+		const unsigned long long gPoseEpoch = Transformable::GlobalTransformPoseEpoch();
+		const unsigned long long tPoseEpoch = Transformable::ThreadTransformPoseEpoch();
+		const TimeIndexed::ThreadSlots* curSlots = TimeIndexed::tlsSlots;
+		if( tls.shapeEpoch != sEpoch ||
+			tls.globalPoseEpoch != gPoseEpoch ||
+			tls.threadPoseEpoch != tPoseEpoch ||
+			tls.tlsSlots != curSlots ) {
+			tls.shapeEpoch = sEpoch;
+			tls.globalPoseEpoch = gPoseEpoch;
+			tls.threadPoseEpoch = tPoseEpoch;
+			tls.tlsSlots = curSlots;
+			tls.epochMemo.clear();
+		}
+
+		const std::unordered_map<const CSGObject*, CsgBoundsEntry>::const_iterator itEpoch = tls.epochMemo.find( self );
+		if( itEpoch != tls.epochMemo.end() ) {
+			return itEpoch->second;
+		}
+		if( tls.activeDepth > 0 ) {
+			const std::unordered_map<const CSGObject*, CsgBoundsEntry>::const_iterator itCall = tls.callMemo.find( self );
+			if( itCall != tls.callMemo.end() ) {
+				return itCall->second;
+			}
+		}
+
+		struct CallDepthGuard
+		{
+			CsgBoundsTlsMemo& m;
+			explicit CallDepthGuard( CsgBoundsTlsMemo& m_ ) : m( m_ ) { ++m.activeDepth; }
+			~CallDepthGuard()
+			{
+				if( --m.activeDepth == 0 && !m.callMemo.empty() ) {
+					m.callMemo.clear();
+				}
+			}
+		} depthGuard( tls );
+
+		const CSGObject* childCsgA = 0;
+		const CSGObject* childCsgB = 0;
+		const bool leafTrackedA = IsBoundsOperandEpochTracked( pObjectA, childCsgA );
+		const bool leafTrackedB = IsBoundsOperandEpochTracked( pObjectB, childCsgB );
+
+		BoundingBox bbLocal = pObjectA->getBoundingBox();
+		if( op != CSG_SUBTRACTION && pObjectB ) {
+			bbLocal.Include( pObjectB->getBoundingBox() );
+		}
+
+		CsgBoundsEntry entry;
+		entry.diagValid = ComputeLocalDiagFromBox( bbLocal, entry.localDiag );
+
+		const Point3 corners[8] = {
+			Point3( bbLocal.ll.x, bbLocal.ll.y, bbLocal.ll.z ),
+			Point3( bbLocal.ll.x, bbLocal.ll.y, bbLocal.ur.z ),
+			Point3( bbLocal.ll.x, bbLocal.ur.y, bbLocal.ll.z ),
+			Point3( bbLocal.ll.x, bbLocal.ur.y, bbLocal.ur.z ),
+			Point3( bbLocal.ur.x, bbLocal.ll.y, bbLocal.ll.z ),
+			Point3( bbLocal.ur.x, bbLocal.ll.y, bbLocal.ur.z ),
+			Point3( bbLocal.ur.x, bbLocal.ur.y, bbLocal.ll.z ),
+			Point3( bbLocal.ur.x, bbLocal.ur.y, bbLocal.ur.z )
+		};
+		BoundingBox transformed(
+			Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+			Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY )
+		);
+		const Matrix4 mxFinal = self->GetFinalTransformMatrix();
+		for( unsigned int i = 0; i < 8; i++ ) {
+			transformed.Include( Point3Ops::Transform( mxFinal, corners[i] ) );
+		}
+		transformed.SanityCheck();
+		entry.worldBox = transformed;
+
+		const bool trackedA = childCsgA ? ( tls.epochMemo.find( childCsgA ) != tls.epochMemo.end() ) : leafTrackedA;
+		const bool trackedB = ( op == CSG_SUBTRACTION )
+			? ( childCsgB ? ( Geometry::CustomCsgOperandSeen() == 0 ) : leafTrackedB )
+			: ( childCsgB ? ( tls.epochMemo.find( childCsgB ) != tls.epochMemo.end() ) : leafTrackedB );
+
+		if( trackedA && trackedB ) {
+			return tls.epochMemo.insert( std::make_pair( self, entry ) ).first->second;
+		}
+		return tls.callMemo.insert( std::make_pair( self, entry ) ).first->second;
 	}
 }
 
 Object* CSGObject::CloneSnapshot() const
 {
+	struct SnapshotRootGuard
+	{
+		SnapshotCloneDagState& s;
+		explicit SnapshotRootGuard( SnapshotCloneDagState& s_ ) : s( s_ ) { ++s.depth; }
+		~SnapshotRootGuard()
+		{
+			if( --s.depth == 0 ) {
+				for( std::unordered_map<const IObjectPriv*, IObjectPriv*>::iterator it = s.memo.begin(); it != s.memo.end(); ++it ) {
+					safe_release( it->second );
+				}
+				s.memo.clear();
+			}
+		}
+	} guard( ThreadSnapshotCloneDagState() );
+
 	// Snapshot-clone the operands to INDEPENDENT objects FIRST, then build a
 	// fresh CSGObject with the same operation and assign them.  This is what
 	// makes the clone a real CSGObject (not a sliced plain Object) with its
@@ -186,36 +374,7 @@ const BoundingBox CSGObject::getBoundingBox() const
 		return BoundingBox( Point3(0,0,0), Point3(0,0,0) );
 	}
 
-	BoundingBox bbox = pObjectA->getBoundingBox();
-
-	// Unions and intersections must enclose both child volumes. Subtraction
-	// can never extend beyond object A.
-	if( op != CSG_SUBTRACTION ) {
-		bbox.Include( pObjectB->getBoundingBox() );
-	}
-
-	const Point3 corners[8] = {
-		Point3( bbox.ll.x, bbox.ll.y, bbox.ll.z ),
-		Point3( bbox.ll.x, bbox.ll.y, bbox.ur.z ),
-		Point3( bbox.ll.x, bbox.ur.y, bbox.ll.z ),
-		Point3( bbox.ll.x, bbox.ur.y, bbox.ur.z ),
-		Point3( bbox.ur.x, bbox.ll.y, bbox.ll.z ),
-		Point3( bbox.ur.x, bbox.ll.y, bbox.ur.z ),
-		Point3( bbox.ur.x, bbox.ur.y, bbox.ll.z ),
-		Point3( bbox.ur.x, bbox.ur.y, bbox.ur.z )
-	};
-
-	BoundingBox transformed(
-		Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
-		Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY )
-	);
-
-	for( unsigned int i=0; i<8; i++ ) {
-		transformed.Include( Point3Ops::Transform( m_mxFinalTrans, corners[i] ) );
-	}
-
-	transformed.SanityCheck();
-	return transformed;
+	return EvaluateCsgBounds( this, pObjectA, pObjectB, op ).worldBox;
 }
 
 bool CSGObject::AssignObjects( IObjectPriv* objA, IObjectPriv* objB )
@@ -4433,11 +4592,38 @@ void CSGObject::Realize() const
 
 void CSGObject::ResetRuntimeData() const
 {
+	struct ResetDagState
+	{
+		unsigned int depth = 0;
+		std::unordered_set<const IObject*> visited;
+	};
+	static thread_local ResetDagState tlsReset;
+	if( tlsReset.depth > 0 && !tlsReset.visited.insert( this ).second ) {
+		return;
+	}
+	struct ResetDepthGuard
+	{
+		ResetDagState& s;
+		explicit ResetDepthGuard( ResetDagState& s_, const IObject* self ) : s( s_ )
+		{
+			if( s.depth == 0 ) {
+				s.visited.insert( self );
+			}
+			++s.depth;
+		}
+		~ResetDepthGuard()
+		{
+			if( --s.depth == 0 ) {
+				s.visited.clear();
+			}
+		}
+	} guard( tlsReset, this );
+
 	Object::ResetRuntimeData();
-	if( pObjectA ) {
+	if( pObjectA && ( dynamic_cast<const CSGObject*>( pObjectA ) != 0 || tlsReset.visited.insert( pObjectA ).second ) ) {
 		pObjectA->ResetRuntimeData();
 	}
-	if( pObjectB ) {
+	if( pObjectB && ( dynamic_cast<const CSGObject*>( pObjectB ) != 0 || tlsReset.visited.insert( pObjectB ).second ) ) {
 		pObjectB->ResetRuntimeData();
 	}
 }
@@ -4840,10 +5026,6 @@ namespace
 	//! to invent, and inventing one here would walk a landing into the
 	//! phantom set.
 	const Scalar kCsgSeamGradient = Scalar( 1e-12 );
-
-	//! RISE's own unbounded-coordinate sentinel, the same screen
-	//! `Geometry::BoundingBoxRootFloor` and `SelfHitRootFloor` apply.
-	const Scalar kCsgMaxSaneExtent = Scalar( 1e30 );
 }
 
 bool CSGObject::LocalBoxDiagonal( Scalar& outDiag ) const
@@ -4872,24 +5054,15 @@ bool CSGObject::LocalBoxDiagonal( Scalar& outDiag ) const
 	// under-states into a graceful fallback, so A's box stays the bound
 	// and the other is an accepted residual (docs/CLOTH_FABRIC_DESIGN.md
 	// debt 25).
-	BoundingBox bbLocal = pObjectA->getBoundingBox();
-	if( op != CSG_SUBTRACTION && pObjectB ) {
-		bbLocal.Include( pObjectB->getBoundingBox() );
+	if( pObjectB ) {
+		const CsgBoundsEntry& entry = EvaluateCsgBounds( this, pObjectA, pObjectB, op );
+		if( !entry.diagValid ) {
+			return false;
+		}
+		outDiag = entry.localDiag;
+		return true;
 	}
-	const Scalar ex = bbLocal.ur.x - bbLocal.ll.x;
-	const Scalar ey = bbLocal.ur.y - bbLocal.ll.y;
-	const Scalar ez = bbLocal.ur.z - bbLocal.ll.z;
-	if( !( ex >= Scalar( 0 ) && ey >= Scalar( 0 ) && ez >= Scalar( 0 ) ) ||
-	    !std::isfinite( ex ) || !std::isfinite( ey ) || !std::isfinite( ez ) ||
-	    ex >= kCsgMaxSaneExtent || ey >= kCsgMaxSaneExtent || ez >= kCsgMaxSaneExtent ) {
-		return false;
-	}
-	const Scalar diag = std::sqrt( ex*ex + ey*ey + ez*ez );
-	if( !std::isfinite( diag ) || !( diag > Scalar( 0 ) ) ) {
-		return false;
-	}
-	outDiag = diag;
-	return true;
+	return ComputeLocalDiagFromBox( pObjectA->getBoundingBox(), outDiag );
 }
 
 namespace
@@ -5597,10 +5770,11 @@ bool CSGObject::EnumerateEffectiveMaterials( IEnumCallback<IMaterial>& cb ) cons
 	struct MatDagState
 	{
 		unsigned int depth = 0;
+		const IEnumCallback<IMaterial>* activeInternalCb = 0;
 		std::unordered_set<const IObject*> visitedObjs;
 		std::unordered_set<const IMaterial*> visitedMats;
 	};
-	static thread_local MatDagState tlsMat;
+	static thread_local MatDagState* tlsActiveMat = 0;
 
 	struct UniqueMatCallback : public IEnumCallback<IMaterial>
 	{
@@ -5617,31 +5791,40 @@ bool CSGObject::EnumerateEffectiveMaterials( IEnumCallback<IMaterial>& cb ) cons
 		}
 	};
 
-	const bool isRootCall = ( tlsMat.depth == 0 );
-	if( !isRootCall && !tlsMat.visitedObjs.insert( this ).second ) {
+	const bool isInternalCall = ( tlsActiveMat != 0 && tlsActiveMat->activeInternalCb == &cb );
+	MatDagState rootFrame;
+	UniqueMatCallback rootDedupCb( cb, rootFrame.visitedMats );
+
+	struct MatFrameGuard
+	{
+		MatDagState* prev;
+		MatDagState* cur;
+		bool isRoot;
+		MatFrameGuard( MatDagState*& slot, MatDagState* rootPtr, const IEnumCallback<IMaterial>* internalCb, const IObject* self, bool root ) :
+		  prev( slot ), cur( root ? rootPtr : slot ), isRoot( root )
+		{
+			if( isRoot ) {
+				cur->activeInternalCb = internalCb;
+				cur->visitedObjs.insert( self );
+				slot = cur;
+			}
+			++cur->depth;
+		}
+		~MatFrameGuard()
+		{
+			--cur->depth;
+			if( isRoot ) {
+				tlsActiveMat = prev;
+			}
+		}
+	};
+
+	if( isInternalCall && !tlsActiveMat->visitedObjs.insert( this ).second ) {
 		return true;
 	}
-	struct MatDepthGuard
-	{
-		MatDagState& s;
-		explicit MatDepthGuard( MatDagState& s_, const IObject* self ) : s( s_ )
-		{
-			if( s.depth == 0 ) {
-				s.visitedObjs.insert( self );
-			}
-			++s.depth;
-		}
-		~MatDepthGuard()
-		{
-			if( --s.depth == 0 ) {
-				s.visitedObjs.clear();
-				s.visitedMats.clear();
-			}
-		}
-	} guard( tlsMat, this );
 
-	UniqueMatCallback rootDedupCb( cb, tlsMat.visitedMats );
-	IEnumCallback<IMaterial>& activeCb = isRootCall ? static_cast<IEnumCallback<IMaterial>&>( rootDedupCb ) : cb;
+	MatFrameGuard guard( tlsActiveMat, &rootFrame, &rootDedupCb, this, !isInternalCall );
+	IEnumCallback<IMaterial>& activeCb = isInternalCall ? cb : static_cast<IEnumCallback<IMaterial>&>( rootDedupCb );
 
 	// Outermost material override wins (`CSGObject::IntersectRay` stamps
 	// `this->pMaterial` over any child operand's material).
@@ -5649,12 +5832,22 @@ bool CSGObject::EnumerateEffectiveMaterials( IEnumCallback<IMaterial>& cb ) cons
 		return activeCb( *m );
 	}
 
-	if( pObjectA && ( dynamic_cast<const CSGObject*>( pObjectA ) != 0 || tlsMat.visitedObjs.insert( pObjectA ).second ) ) {
+	// On `kTrimSheetA` / `kTrimSheetB` composites, `WalkTrimmedSheet` only ever
+	// emits surface hits from the trimmed open-sheet operand (`pObjectA` for
+	// `kTrimSheetA`, `pObjectB` for `kTrimSheetB`); the solid trim mask never
+	// owns a surface hit (`IObject::EnumerateEffectiveMaterials` contract).
+	const int certBits = CertificateBits();
+	const bool skipA = ( certBits & kTrimSheetB ) != 0;
+	const bool skipB = ( certBits & kTrimSheetA ) != 0;
+
+	if( !skipA && pObjectA &&
+		( dynamic_cast<const CSGObject*>( pObjectA ) != 0 || tlsActiveMat->visitedObjs.insert( pObjectA ).second ) ) {
 		if( !pObjectA->EnumerateEffectiveMaterials( activeCb ) ) {
 			return false;
 		}
 	}
-	if( pObjectB && ( dynamic_cast<const CSGObject*>( pObjectB ) != 0 || tlsMat.visitedObjs.insert( pObjectB ).second ) ) {
+	if( !skipB && pObjectB &&
+		( dynamic_cast<const CSGObject*>( pObjectB ) != 0 || tlsActiveMat->visitedObjs.insert( pObjectB ).second ) ) {
 		if( !pObjectB->EnumerateEffectiveMaterials( activeCb ) ) {
 			return false;
 		}

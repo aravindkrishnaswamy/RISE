@@ -117,19 +117,11 @@ bool CredentialStore::remove(const QString& account)
 
 bool CredentialStore::exists(const QString& account)
 {
-    if (account.trimmed().isEmpty()) return false;
-    const std::wstring target = targetNameForAccount(account);
-
-    PCREDENTIALW pcred = nullptr;
-    if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &pcred) || !pcred) {
-        return false;
+    QString val = read(account);
+    const bool nonEmpty = !val.isEmpty();
+    if (!val.isEmpty()) {
+        SecureZeroMemory(val.data(), static_cast<SIZE_T>(val.size()) * sizeof(QChar));
     }
-
-    const bool nonEmpty = (pcred->CredentialBlob != nullptr && pcred->CredentialBlobSize > 0);
-    if (pcred->CredentialBlob && pcred->CredentialBlobSize > 0) {
-        SecureZeroMemory(pcred->CredentialBlob, pcred->CredentialBlobSize);
-    }
-    CredFree(pcred);
     return nonEmpty;
 }
 

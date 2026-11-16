@@ -378,20 +378,20 @@ namespace {
 	// shadow rays -- the pre-DL-05 behaviour, never a double count.
 	bool ObjectHasDeltaPassThrough( const RISE::IObject& obj )
 	{
-		const RISE::IMaterial* pMat = obj.GetMaterial();
-		if( pMat && pMat->HasDeltaPassThrough() ) {
-			return true;
-		}
-		const RISE::Implementation::CSGObject* pCsg =
-			dynamic_cast<const RISE::Implementation::CSGObject*>( &obj );
-		if( pCsg ) {
-			const RISE::IObject* a = pCsg->GetOperandA();
-			const RISE::IObject* b = pCsg->GetOperandB();
-			if( ( a && ObjectHasDeltaPassThrough( *a ) ) || ( b && ObjectHasDeltaPassThrough( *b ) ) ) {
+		struct DeltaScan : public RISE::IEnumCallback<RISE::IMaterial>
+		{
+			bool found = false;
+			bool operator()( const RISE::IMaterial& mat ) override
+			{
+				if( mat.HasDeltaPassThrough() ) {
+					found = true;
+					return false;
+				}
 				return true;
 			}
-		}
-		return false;
+		} scan;
+		obj.EnumerateEffectiveMaterials( scan );
+		return scan.found;
 	}
 
 	class DeltaPassThroughScan : public RISE::IEnumCallback<RISE::IObject>
