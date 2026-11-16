@@ -12,7 +12,7 @@ Last updated 2026-11-15. Design and evidence: [formation–oxidation draft](FIRE
 - **Burnout is about half.** Of the soot formed, about 45% leaves the flame unburned (net smoke yield about 0.0135);
   NIST reports escaping methane soot below detection.
 - The flow is unchanged by soot: centreline temperature with and without soot agrees within 2% at every height.
-- The full 25 s tier-8 window with the accepted r271 candidate plus this yield started 2026-11-15 06:09 UTC.
+- The full 25 s tier-8 window with the accepted r271 candidate plus this yield finished 2026-11-16 and confirms these numbers; the preview movie is rendered (§5). It does not yet look like a sooty fire.
 
 ## 1. Closure (uncommitted opt-in)
 
@@ -73,12 +73,31 @@ Soot budget at y = 0.01 (`soot_y010_budget_15.98_16.98s.txt`):
 - The draft's instruction for this case is to report the failure before adding a richness or temperature formation
   function, and not to add a cold-cell eraser. No such term was added.
 
-## 4. Full window
+## 4. Full window (finished 2026-11-16)
 
 `/Volumes/SSD/RISE/fire_production_calibration/r272_soot/tier8_y030`, launcher `tools/fire/r272/run_tier8.sh`:
 `FireSequenceTest --fire-production-temporal-capstone 8 0.0625`, compact stencil, limited carrier,
-`RISE_FIRE_VREMAN_ZONE=below:16:0.2857`, floor emissivity 1, yield 0.03. About 30 h. It writes 235 frames,
-checkpoints and the sequence manifest the r242 renderer reads.
+`RISE_FIRE_VREMAN_ZONE=below:16:0.2857`, floor emissivity 1, yield 0.03.
+
+- Completed: 15,367 steps to 25.091 s in 28.3 h, no retries, 235 frames, sealed summary and manifest
+  (`sequence_manifest_sha256=ad6b3eb8…`).
+- Heat release 32.2 kW over the statistics window (10.47–25.09 s); radiative fraction 0.201; puffing 3.41 Hz.
+- **The linear scaling held.** Mean of the last 10 s (160 frames): centreline Y_soot 3.06e-4 at 0.14 m (predicted
+  3.1e-4), 1.8e-4 at 0.63 m, 1.5e-4 at 0.75 m; centreline volume fraction 0.039 ppm in the flame.
+- **Escaping smoke.** Soot formed 19.7 mg/s (0.657 g/s of fuel); upward flux is level at 8.8 mg/s from 1.1 m to the
+  top. 45% escapes; net smoke yield 0.0134 kg/kg.
+- Data: `tier8_y030_centreline_last10s.txt`, `tier8_y030_budget_last10s.txt`.
+
+## 5. Movie
+
+`r272_soot/movie/r272_soot_128x192.mov` (235 frames, 16 fps, 14.69 s; decode check passed), rendered by
+`tools/fire/r272/render_movie.py` with the r242 spectral preview scene pointed at the new manifest.
+
+- Soot now gives a bright white-pink flame core at the base, about 0.5 m tall. It is overexposed at the scene's
+  fixed exposure.
+- The column above it is blue, as it was in the soot-free r251 preview. The blue is therefore not soot; its source
+  in the renderer (gas emission channels or exposure) was not investigated.
+- The escaping smoke does not read as dark smoke: the scene has no light for it to absorb or scatter.
 
 ## Open
 
