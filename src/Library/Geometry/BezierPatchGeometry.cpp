@@ -64,7 +64,7 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// Seed hit.dRange with the current closest-hit distance so the analytic
 	// solver can reject far (u*,v*) roots immediately inside AccumulateRoot.
 	bh.dRange = ri.range;
-	RayBezierPatchIntersection( ri.ray, bh, *elem.pPatch );
+	RayBezierPatchIntersection( ri.ray, bh, *elem.pPatch, bHitFrontFaces, bHitBackFaces );
 
 	if( !bh.bHit || bh.dRange >= ri.range ) return;
 
@@ -208,7 +208,7 @@ bool BezierPatchGeometry::RayElementIntersection_IntersectionOnly( const Ray& ra
 	// Seeding hit.dRange = dHowFar lets AccumulateRoot reject any root
 	// beyond the light's distance without running Newton + patch-eval on it.
 	bh.dRange = dHowFar;
-	RayBezierPatchIntersection( ray, bh, *elem.pPatch );
+	RayBezierPatchIntersection( ray, bh, *elem.pPatch, bHitFrontFaces, bHitBackFaces );
 	if( !bh.bHit ) return false;
 	// AccumulateRoot already applies the Bezier self-hit epsilon when
 	// populating bh.dRange, so no second NEARZERO gate is needed here.

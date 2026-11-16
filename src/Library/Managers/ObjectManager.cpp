@@ -43,6 +43,7 @@
 #include "../Materials/WeaveMaterial.h"
 #include "../Materials/OrenNayarMaterial.h"
 #include "../Materials/CookTorranceMaterial.h"
+#include <unordered_map>
 #include <unordered_set>
 #include "../Materials/IsotropicPhongMaterial.h"
 #include "../Materials/AshikminShirleyAnisotropicPhongMaterial.h"
@@ -138,7 +139,7 @@ bool AuditedMaterialGraph(const IMaterial& material)
 // ineligible. A remote supported caster cannot repair that missing coverage.
 // This is distinct from composite mode selection: rejection keeps PT and
 // disables SMS at the anchor; composites retain the entire legacy mode.
-bool ObjectHasClearTransmissionImpl(const IObject& object, std::unordered_set<const CSGObject*>& visited)
+bool ObjectHasClearTransmissionMemo(const IObject& object, std::unordered_map<const CSGObject*, bool>& memo)
 {
     const IMaterial* material = object.GetMaterial();
     if(material && !AuditedMaterialGraph(*material)) return true;
@@ -146,18 +147,17 @@ bool ObjectHasClearTransmissionImpl(const IObject& object, std::unordered_set<co
     if(dynamic_cast<const DielectricSPF*>(spf) || dynamic_cast<const PerfectRefractorSPF*>(spf)
         || (material && (material->CouldLightPassThrough() || material->HasDeltaPassThrough()))) return true;
     if(const auto* csg = dynamic_cast<const CSGObject*>(&object)) {
-        if(!visited.insert(csg).second) return false;
-        return (csg->GetOperandA() && ObjectHasClearTransmissionImpl(*csg->GetOperandA(), visited))
-            || (csg->GetOperandB() && ObjectHasClearTransmissionImpl(*csg->GetOperandB(), visited));
+        const auto it = memo.find(csg);
+        if(it != memo.end()) return it->second;
+        memo.emplace(csg, false);
+        const bool res = (csg->GetOperandA() && ObjectHasClearTransmissionMemo(*csg->GetOperandA(), memo))
+            || (csg->GetOperandB() && ObjectHasClearTransmissionMemo(*csg->GetOperandB(), memo));
+        memo[csg] = res;
+        return res;
     }
     return false;
 }
-bool ObjectHasClearTransmission(const IObject& object)
-{
-    std::unordered_set<const CSGObject*> visited;
-    return ObjectHasClearTransmissionImpl(object, visited);
-}
-bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
+bool ObjectHasRejectedTransmissiveCaster(const IObject& object, std::unordered_map<const CSGObject*, bool>& clearTransMemo)
 {
     const IMaterial* material = object.GetMaterial();
     if(material && !AuditedMaterialGraph(*material)) return true;
@@ -178,7 +178,7 @@ bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
     // itself has no material. Its complete surface has no uniform-sampling
     // API, so even individually supported operands cannot give the required
     // positive proposal mass for that effective caster.
-    if(dynamic_cast<const CSGObject*>(&object) && ObjectHasClearTransmission(object)) return true;
+    if(dynamic_cast<const CSGObject*>(&object) && ObjectHasClearTransmissionMemo(object, clearTransMemo)) return true;
     return false;
 }
 // Native mesh intersections may orient their geometric normal to authored
@@ -282,11 +282,6 @@ bool ObjectWrapsCompositeImpl(const IObject& object, std::unordered_set<const CS
             || (csg->GetOperandB() && ObjectWrapsCompositeImpl(*csg->GetOperandB(), visited));
     }
     return false;
-}
-bool ObjectWrapsComposite(const IObject& object)
-{
-    std::unordered_set<const CSGObject*> visited;
-    return ObjectWrapsCompositeImpl(object, visited);
 }
 
 // Process-wide monotonic source for spatial-structure generation values.
@@ -2654,11 +2649,14 @@ void ObjectManager::PrepareForRendering() const
     // or IOR history can certify their absence under DL-407.
     smsHasComposite = false;
     smsFirstCompositeObject.clear();
-    for(const auto& item : items) {
-        if(ObjectWrapsComposite(*item.second.first)) {
-            smsHasComposite = true;
-            smsFirstCompositeObject = item.first.c_str();
-            break;
+    {
+        std::unordered_set<const CSGObject*> compositeVisited;
+        for(const auto& item : items) {
+            if(ObjectWrapsCompositeImpl(*item.second.first, compositeVisited)) {
+                smsHasComposite = true;
+                smsFirstCompositeObject = item.first.c_str();
+                break;
+            }
         }
     }
     smsHasObjectMedium = false;
@@ -2675,11 +2673,12 @@ void ObjectManager::PrepareForRendering() const
     smsRejectedTransmissiveCaster = false;
     smsUncertainNormalOrientation = false;
     if(!smsHasComposite) {
+        std::unordered_map<const CSGObject*, bool> clearTransMemo;
         for(const auto& item : items) {
             const IObject* object = item.second.first;
             if(object->IsWorldVisible() && ObjectHasUncertainSMSNormalOrientation(*object))
                 smsUncertainNormalOrientation = true;
-            if(object->IsWorldVisible() && ObjectHasRejectedTransmissiveCaster(*object))
+            if(object->IsWorldVisible() && ObjectHasRejectedTransmissiveCaster(*object, clearTransMemo))
                 smsRejectedTransmissiveCaster = true;
             if(object->IsWorldVisible() && object->GetGeometry()
                 && object->GetGeometry()->CanBeAreaLight() && object->GetMaterial()

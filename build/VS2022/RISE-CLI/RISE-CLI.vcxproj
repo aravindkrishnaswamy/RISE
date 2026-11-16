@@ -52,8 +52,8 @@
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;NOMINMAX;IMATH_HALF_NO_LOOKUP_TABLE;RISE_ENABLE_OIDN;RISE_ENABLE_OPENPGL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;$(SolutionDir)..\..\extlib\oidn\install\include;C:\Dev\openpgl-install\include;$(SolutionDir)..\..\src\Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4250;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalOptions>/Zc:__cplusplus /permissive- /utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -71,8 +71,8 @@
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <Optimization>Full</Optimization>
-      <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;RISE_ENABLE_PROFILING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;NOMINMAX;IMATH_HALF_NO_LOOKUP_TABLE;RISE_ENABLE_OIDN;RISE_ENABLE_OPENPGL;RISE_ENABLE_PROFILING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;$(SolutionDir)..\..\extlib\oidn\install\include;C:\Dev\openpgl-install\include;$(SolutionDir)..\..\src\Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4250;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalOptions>/Zc:__cplusplus /permissive- /utf-8 %(AdditionalOptions)</AdditionalOptions>

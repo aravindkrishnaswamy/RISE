@@ -3317,6 +3317,77 @@ static void PartA()
 		}
 	}
 
+	// A69: Round 10 adversarial review pin: `LambertianLuminaireMaterial` and
+	// `PhongLuminaireMaterial` forward `CouldLightPassThrough`, `GetSpecularInfo{,NM}`,
+	// `IsVolumetric`, `GetGradedIORField`, `Pdf{,NM}`, and `ScattersFullSphere` to
+	// their wrapped base material, so emissive dielectric closed solids and emissive
+	// dielectric open sheets participate identically in `SeedFromPoint`,
+	// `ResolveOpenSheetCrossing`, and `ReindexStackForWavelength`.
+	{
+		const std::string dispLumHeader = Header()
+			+ "uniformcolor_painter\n{\n\tname p_emit69\n\tcolor 1.0 0.8 0.5\n}\n\n"
+			+ "scalar_painter\n{\n\tname p_phong_n69\n\tvalue 8.0\n}\n\n"
+			+ "scalar_painter\n{\n\tname p_disp_ior69\n\tvalues 1.45 1.55 1.75\n}\n\n"
+			+ "dielectric_material\n{\n\tname disp_glass69\n\ttau 1.0\n\tior p_disp_ior69\n\tscattering 1000000\n}\n\n"
+			+ "lambertian_luminaire_material\n{\n\tname lum_lamb_glass18\n\texitance p_emit69\n\tmaterial glass18\n\tscale 2.0\n}\n\n"
+			+ "phong_luminaire_material\n{\n\tname lum_phong_disp\n\texitance p_emit69\n\tmaterial disp_glass69\n\tN p_phong_n69\n\tscale 1.5\n}\n\n";
+
+		Loaded s69( dispLumHeader
+			+ "sphere_geometry\n{\n\tname g_sph69\n\tradius 0.8\n}\n\n"
+			+ Obj( "ball_lum69", "g_sph69", "lum_lamb_glass18", "0 0 0" )
+			+ HSheet( "g_top69", 2.0, 4.0, true ) + Obj( "top_lum69", "g_top69", "lum_phong_disp" )
+			+ HSheet( "g_bot69", -2.0, 4.0, false ) + Obj( "bot_lum69", "g_bot69", "lum_phong_disp" ) );
+		Check( s69.ok, "A69 [DL-626] luminaire-wrapped dielectric closed sphere + dispersive open-sheet slab load" );
+		if( s69.ok ) {
+			const IObject* pBall = s69.O( "ball_lum69" );
+			const IObject* pTop = s69.O( "top_lum69" );
+			const IMaterial* pPhongLum = pTop->GetMaterial();
+			RayIntersectionGeometric qRig( Ray( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+			qRig.bHit = true;
+			qRig.vNormal = Vector3( 0, 1, 0 );
+			qRig.vGeomNormal = Vector3( 0, 1, 0 );
+			const IORStack qAir( 1.0 );
+			const Scalar ior550 = pPhongLum->GetSpecularInfoNM( qRig, qAir, 550.0 ).ior;
+			const Scalar ior420 = pPhongLum->GetSpecularInfoNM( qRig, qAir, 420.0 ).ior;
+
+			// 1. Seed inside `ball_lum69(1.8)` enclosed by dispersive `lum_phong_disp` slab at 550 nm:
+			IORStack stInsideBall( 1.0 );
+			IORStackSeeding::SeedFromPoint( stInsideBall, Point3( 0, 0, 0 ), s69.Scene(), 550.0 );
+			Check( pPhongLum->CouldLightPassThrough() &&
+				pBall->GetMaterial()->CouldLightPassThrough() &&
+				stInsideBall.Depth() == 3 &&
+				Close( IorAt( stInsideBall, 1 ), ior550 ) &&
+				stInsideBall.ObjectAt( 2 ) == pBall &&
+				Close( stInsideBall.top(), 1.8 ),
+				"A69-1 [DL-626]: SeedFromPoint tracks both PhongLuminaire open-sheet slab and LambertianLuminaire closed sphere" );
+
+			// 2. ReindexStackForWavelength re-evaluates `lum_phong_disp` at 420 nm while keeping `ball_lum69` at 1.8:
+			IORStack st420( 1.0 );
+			const bool reidxOk = IORStackSeeding::ReindexStackForWavelength(
+				stInsideBall, st420, 420.0, Point3( 0, 0, 0 ), &s69.Scene() );
+			Check( reidxOk && std::fabs( ior420 - ior550 ) > 0.02 &&
+				st420.Depth() == 3 &&
+				Close( IorAt( st420, 1 ), ior420 ) &&
+				Close( st420.top(), 1.8 ),
+				"A69-2 [DL-626]: ReindexStackForWavelength re-evaluates dispersive PhongLuminaireMaterial open sheet" );
+
+			// 3. Back-face crossing of `top_lum69` at y = 2.0 exits to air(1.0) with reciprocal etaFrom == ior550:
+			Ray rUp69( Point3( 0, 1.5, 0 ), Vector3( 0, 1, 0 ) );
+			RayIntersection hitTop69( rUp69, nullRasterizerState );
+			pTop->IntersectRay( hitTop69, 1.0, true, true, false );
+			IORStack walk69( 1.0 );
+			walk69.SetMediumProbeScene( &s69.Scene() );
+			walk69.SetCurrentObject( pTop );
+			walk69.pushOpenSheet( ior550 );
+			walk69.SetCurrentObject( pTop );
+			const auto cExit69 = IORStackSeeding::ResolveOpenSheetCrossing(
+				hitTop69.geometric, ior550, walk69, pPhongLum, 550.0 );
+			Check( hitTop69.geometric.bHit && walk69.Depth() == 1 &&
+				Close( cExit69.etaFrom, ior550 ) && Close( cExit69.etaTo, 1.0 ),
+				"A69-3 [DL-626]: ResolveOpenSheetCrossing exits PhongLuminaireMaterial open sheet reciprocally" );
+		}
+	}
+
 	const int dl626NewFails = failCount - dl626FailBefore;
 	std::cout << "[DL-626-SUMMARY] " << ( dl626NewFails == 0 ? "PASS" : "FAIL" )
 		<< " (new_failures=" << dl626NewFails << ")" << std::endl;

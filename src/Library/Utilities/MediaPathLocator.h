@@ -42,8 +42,31 @@ namespace RISE
 			return raw;
 		}
 		const std::wstring& w = raw.native();
+		auto stripPrefixedTrailingSlash = []( std::wstring& s ) {
+			const bool isUnc = ( s.rfind( L"\\\\?\\UNC\\", 0 ) == 0 || s.rfind( L"\\\\.\\UNC\\", 0 ) == 0 );
+			if( isUnc ) {
+				// Preserve `\\?\UNC\server\share` (5 backslashes total); strip deeper trailing `\`.
+				while( s.size() > 8 && s.back() == L'\\' ) {
+					std::size_t slashes = 0;
+					for( std::size_t i = 0; i + 1 < s.size(); ++i ) {
+						if( s[i] == L'\\' ) ++slashes;
+					}
+					if( slashes < 5 ) break;
+					s.pop_back();
+				}
+			} else {
+				while( s.size() > 7 && s.back() == L'\\' && s[s.size() - 2] != L':' ) {
+					s.pop_back();
+				}
+			}
+		};
 		if( w.rfind( L"\\\\?\\", 0 ) == 0 || w.rfind( L"\\\\.\\", 0 ) == 0 ) {
-			return raw;
+			std::wstring norm = w;
+			for( wchar_t& ch : norm ) {
+				if( ch == L'/' ) ch = L'\\';
+			}
+			stripPrefixedTrailingSlash( norm );
+			return std::filesystem::path( norm );
 		}
 		// Only fast-return short paths BEFORE `absolute()` when `raw` is already
 		// fully absolute (`is_absolute()` requires both root-name and root-dir
@@ -59,6 +82,7 @@ namespace RISE
 		}
 		std::wstring norm = absPath.lexically_normal().make_preferred().native();
 		if( norm.rfind( L"\\\\?\\", 0 ) == 0 || norm.rfind( L"\\\\.\\", 0 ) == 0 ) {
+			stripPrefixedTrailingSlash( norm );
 			return std::filesystem::path( norm );
 		}
 		if( !forceExtendedPrefix && norm.size() < 240 ) {

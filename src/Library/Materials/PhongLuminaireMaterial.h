@@ -66,6 +66,20 @@ namespace RISE
 			//! DL-471: GetBSDF()/GetSPF() forward the base material verbatim.
 			inline unsigned int ConnectionScatterTypes() const { return pMaterial.ConnectionScatterTypes(); }
 			inline bool HasConnectionTypeSplit() const { return pMaterial.HasConnectionTypeSplit(); }
+			//! Forward scattering/interior/medium/PDF traits of the wrapped base material
+			//! so refractive, volumetric, SSS, graded-index, and full-sphere luminaires
+			//! participate identically in IORStackSeeding, SMS, NEE, and MIS.
+			inline bool CouldLightPassThrough() const { return pMaterial.CouldLightPassThrough(); }
+			inline bool IsVolumetric() const { return pMaterial.IsVolumetric(); }
+			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return pMaterial.GetDiffusionProfile(); }
+			inline const RandomWalkSSSParams* GetRandomWalkSSSParams() const { return pMaterial.GetRandomWalkSSSParams(); }
+			inline bool GetRandomWalkSSSParamsNM( const Scalar nm, RandomWalkSSSParams& params_out ) const { return pMaterial.GetRandomWalkSSSParamsNM( nm, params_out ); }
+			inline SpecularInfo GetSpecularInfo( const RayIntersectionGeometric& ri, const IORStack& ior_stack ) const { return pMaterial.GetSpecularInfo( ri, ior_stack ); }
+			inline SpecularInfo GetSpecularInfoNM( const RayIntersectionGeometric& ri, const IORStack& ior_stack, const Scalar nm ) const { return pMaterial.GetSpecularInfoNM( ri, ior_stack, nm ); }
+			inline const IScalarPainter* GetGradedIORField() const { return pMaterial.GetGradedIORField(); }
+			inline Scalar Pdf( const Vector3& wo, const RayIntersectionGeometric& ri, const IORStack& ior_stack ) const { return pMaterial.Pdf( wo, ri, ior_stack ); }
+			inline Scalar PdfNM( const Vector3& wo, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack& ior_stack ) const { return pMaterial.PdfNM( wo, ri, nm, ior_stack ); }
+			inline bool ScattersFullSphere() const { return pMaterial.ScattersFullSphere(); }
 
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter

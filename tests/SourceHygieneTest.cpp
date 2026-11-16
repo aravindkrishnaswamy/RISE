@@ -5666,9 +5666,13 @@ int main()
 			Check( libVcx.find( "/utf-8" ) != std::string::npos
 			       && cliVcx.find( "/utf-8" ) != std::string::npos
 			       && vcxproj.find( "/utf-8" ) != std::string::npos
+			       && cliVcx.find( "RISE_ENABLE_OIDN" ) != std::string::npos
+			       && cliVcx.find( "RISE_ENABLE_OPENPGL" ) != std::string::npos
+			       && cliVcx.find( "IMATH_HALF_NO_LOOKUP_TABLE" ) != std::string::npos
+			       && cliVcx.find( "include\\OpenEXR" ) != std::string::npos
 			       && vcxproj.find( "RISE_ENABLE_OIDN" ) != std::string::npos
 			       && vcxproj.find( "RISE_ENABLE_OPENPGL" ) != std::string::npos,
-			       "win-msvc-flags: Library.vcxproj, RISE-CLI.vcxproj, and RISE-GUI.vcxproj enable /utf-8 and RISE-GUI matches OIDN/OpenPGL ABI defines" );
+			       "win-msvc-flags: Library.vcxproj, RISE-CLI.vcxproj, and RISE-GUI.vcxproj enable /utf-8 and match OIDN/OpenPGL/Imath ABI defines" );
 
 			auto parseVcxSet = []( const std::string& xml, const char* tag, std::set<std::string>& out ) {
 				const std::string needle = std::string( "<" ) + tag + " Include=\"";
@@ -5757,22 +5761,131 @@ int main()
 				cmCpp.insert( androidCmake.substr( s, q - s ) );
 			}
 
-			std::set<std::string> pbxBasenames;
-			for( std::size_t p = pbxTxt.find( "isa = PBXFileReference;" ); p != std::string::npos;
-			     p = pbxTxt.find( "isa = PBXFileReference;", p + 23 ) ) {
-				const std::size_t lineEnd = pbxTxt.find( '\n', p );
-				const std::string ln = pbxTxt.substr( p, ( lineEnd == std::string::npos ) ? std::string::npos : ( lineEnd - p ) );
-				const std::size_t pp = ln.find( "path = " );
-				if( pp == std::string::npos ) continue;
-				std::size_t s = pp + 7;
-				const std::size_t semi = ln.find( ';', s );
-				if( semi == std::string::npos ) continue;
-				std::string val = ln.substr( s, semi - s );
-				if( val.size() >= 2 && val.front() == '"' && val.back() == '"' ) {
-					val = val.substr( 1, val.size() - 2 );
+			auto pbxSection = [&]( const char* secName ) -> std::string {
+				const std::string beg = std::string( "/* Begin " ) + secName + " section */";
+				const std::string end = std::string( "/* End " ) + secName + " section */";
+				const std::size_t b = pbxTxt.find( beg );
+				if( b == std::string::npos ) return std::string();
+				const std::size_t e = pbxTxt.find( end, b );
+				return ( e == std::string::npos ) ? pbxTxt.substr( b ) : pbxTxt.substr( b, e - b );
+			};
+			auto isHex24 = []( const std::string& s, std::size_t pos ) -> bool {
+				if( pos + 24 > s.size() ) return false;
+				for( std::size_t k = 0; k < 24; ++k ) {
+					if( !std::isxdigit( static_cast<unsigned char>( s[pos + k] ) ) ) return false;
 				}
-				const std::size_t slash = val.rfind( '/' );
-				pbxBasenames.insert( slash == std::string::npos ? val : val.substr( slash + 1 ) );
+				return true;
+			};
+
+			std::set<std::string> pbxBasenames;
+			std::map<std::string, std::string> pbxFileRefToBase;
+			{
+				const std::string frSec = pbxSection( "PBXFileReference" );
+				std::size_t cur = 0;
+				while( cur < frSec.size() ) {
+					const std::size_t isaPos = frSec.find( "isa = PBXFileReference;", cur );
+					if( isaPos == std::string::npos ) break;
+					const std::size_t blkOpen = frSec.rfind( '{', isaPos );
+					const std::size_t blkClose = frSec.find( "};", isaPos );
+					if( blkOpen == std::string::npos || blkClose == std::string::npos ) break;
+					std::string uuid;
+					std::size_t lineStart = frSec.rfind( '\n', blkOpen );
+					lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
+					while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( frSec[lineStart] ) ) ) ++lineStart;
+					if( isHex24( frSec, lineStart ) ) {
+						uuid = frSec.substr( lineStart, 24 );
+					}
+					const std::string body = frSec.substr( blkOpen, blkClose - blkOpen );
+					const std::size_t pp = body.find( "path =" );
+					if( pp != std::string::npos ) {
+						std::size_t s = pp + 6;
+						while( s < body.size() && std::isspace( static_cast<unsigned char>( body[s] ) ) ) ++s;
+						const std::size_t semi = body.find( ';', s );
+						if( semi != std::string::npos ) {
+							std::string val = body.substr( s, semi - s );
+							while( !val.empty() && std::isspace( static_cast<unsigned char>( val.back() ) ) ) val.pop_back();
+							if( val.size() >= 2 && val.front() == '"' && val.back() == '"' ) {
+								val = val.substr( 1, val.size() - 2 );
+							}
+							const std::size_t slash = val.rfind( '/' );
+							const std::string base = ( slash == std::string::npos ) ? val : val.substr( slash + 1 );
+							pbxBasenames.insert( base );
+							if( !uuid.empty() ) {
+								pbxFileRefToBase[uuid] = base;
+							}
+						}
+					}
+					cur = blkClose + 2;
+				}
+			}
+
+			std::map<std::string, std::string> pbxBuildFileToRef;
+			{
+				const std::string bfSec = pbxSection( "PBXBuildFile" );
+				std::size_t cur = 0;
+				while( cur < bfSec.size() ) {
+					const std::size_t isaPos = bfSec.find( "isa = PBXBuildFile;", cur );
+					if( isaPos == std::string::npos ) break;
+					const std::size_t blkOpen = bfSec.rfind( '{', isaPos );
+					const std::size_t blkClose = bfSec.find( "};", isaPos );
+					if( blkOpen == std::string::npos || blkClose == std::string::npos ) break;
+					std::size_t lineStart = bfSec.rfind( '\n', blkOpen );
+					lineStart = ( lineStart == std::string::npos ) ? 0 : ( lineStart + 1 );
+					while( lineStart < blkOpen && std::isspace( static_cast<unsigned char>( bfSec[lineStart] ) ) ) ++lineStart;
+					if( isHex24( bfSec, lineStart ) ) {
+						const std::string bfUuid = bfSec.substr( lineStart, 24 );
+						const std::string body = bfSec.substr( blkOpen, blkClose - blkOpen );
+						const std::size_t fp = body.find( "fileRef =" );
+						if( fp != std::string::npos ) {
+							std::size_t s = fp + 9;
+							while( s < body.size() && std::isspace( static_cast<unsigned char>( body[s] ) ) ) ++s;
+							if( isHex24( body, s ) ) {
+								pbxBuildFileToRef[bfUuid] = body.substr( s, 24 );
+							}
+						}
+					}
+					cur = blkClose + 2;
+				}
+			}
+
+			std::vector<std::set<std::string>> pbxSourcesPhases;
+			{
+				const std::string spSec = pbxSection( "PBXSourcesBuildPhase" );
+				std::size_t cur = 0;
+				while( cur < spSec.size() ) {
+					const std::size_t isaPos = spSec.find( "isa = PBXSourcesBuildPhase;", cur );
+					if( isaPos == std::string::npos ) break;
+					const std::size_t blkClose = spSec.find( "};", isaPos );
+					if( blkClose == std::string::npos ) break;
+					const std::string body = spSec.substr( isaPos, blkClose - isaPos );
+					const std::size_t fp = body.find( "files = (" );
+					if( fp != std::string::npos ) {
+						const std::size_t fe = body.find( ");", fp );
+						if( fe != std::string::npos ) {
+							std::set<std::string> phaseBases;
+							const std::string listTxt = body.substr( fp + 9, fe - ( fp + 9 ) );
+							for( std::size_t i = 0; i + 24 <= listTxt.size(); ) {
+								if( isHex24( listTxt, i ) &&
+								    ( i == 0 || !std::isxdigit( static_cast<unsigned char>( listTxt[i - 1] ) ) ) &&
+								    ( i + 24 == listTxt.size() || !std::isxdigit( static_cast<unsigned char>( listTxt[i + 24] ) ) ) ) {
+									const std::string bfId = listTxt.substr( i, 24 );
+									auto bfIt = pbxBuildFileToRef.find( bfId );
+									if( bfIt != pbxBuildFileToRef.end() ) {
+										auto frIt = pbxFileRefToBase.find( bfIt->second );
+										if( frIt != pbxFileRefToBase.end() ) {
+											phaseBases.insert( frIt->second );
+										}
+									}
+									i += 24;
+								} else {
+									++i;
+								}
+							}
+							pbxSourcesPhases.push_back( std::move( phaseBases ) );
+						}
+					}
+					cur = blkClose + 2;
+				}
 			}
 
 			const std::set<std::string> flExempt = {
@@ -5853,8 +5966,15 @@ int main()
 					if( vcxExempt.find( rel ) == vcxExempt.end() && vcxCpp.find( rel ) == vcxCpp.end() ) {
 						missingBuildRefs.push_back( "Library.vcxproj missing: " + rel );
 					}
-					if( pbxCppExempt.find( rel ) == pbxCppExempt.end() && pbxBasenames.find( base ) == pbxBasenames.end() ) {
-						missingBuildRefs.push_back( "project.pbxproj missing: " + rel );
+					if( pbxCppExempt.find( rel ) == pbxCppExempt.end() ) {
+						if( pbxBasenames.find( base ) == pbxBasenames.end() ) {
+							missingBuildRefs.push_back( "project.pbxproj missing PBXFileReference: " + rel );
+						}
+						for( std::size_t pi = 0; pi < pbxSourcesPhases.size(); ++pi ) {
+							if( pbxSourcesPhases[pi].find( base ) == pbxSourcesPhases[pi].end() ) {
+								missingBuildRefs.push_back( "project.pbxproj PBXSourcesBuildPhase[" + std::to_string( pi ) + "] missing: " + rel );
+							}
+						}
 					}
 				} else if( ext == ".h" ) {
 					if( vcxH.find( rel ) == vcxH.end() ) {
@@ -5865,11 +5985,35 @@ int main()
 					}
 				}
 			}
+			// Reverse build -> disk checks: catch deleted files left dangling in build manifests.
+			for( const std::string& r : flCpp ) {
+				if( !fs::is_regular_file( libDir / r ) ) {
+					missingBuildRefs.push_back( "Filelist dangling (not on disk): " + r );
+				}
+			}
+			for( const std::string& r : cmCpp ) {
+				if( !fs::is_regular_file( libDir / r ) ) {
+					missingBuildRefs.push_back( "rise_sources.cmake dangling (not on disk): " + r );
+				}
+			}
+			for( const std::string& r : vcxCpp ) {
+				if( !fs::is_regular_file( libDir / r ) ) {
+					missingBuildRefs.push_back( "Library.vcxproj ClCompile dangling (not on disk): " + r );
+				}
+			}
+			for( const std::string& r : vcxH ) {
+				if( !fs::is_regular_file( libDir / r ) ) {
+					missingBuildRefs.push_back( "Library.vcxproj ClInclude dangling (not on disk): " + r );
+				}
+			}
+			if( pbxSourcesPhases.size() < 2 ) {
+				missingBuildRefs.push_back( "project.pbxproj expected >= 2 PBXSourcesBuildPhase blocks" );
+			}
 			for( const std::string& m : missingBuildRefs ) {
 				std::cout << "  build-parity: " << m << std::endl;
 			}
 			Check( missingBuildRefs.empty(),
-			       "five-project-parity: every non-exempt src/Library/**/*.{cpp,mm,h} appears across Filelist, rise_sources.cmake, Library.vcxproj, Library.vcxproj.filters, and project.pbxproj" );
+			       "five-project-parity: every non-exempt src/Library/**/*.{cpp,mm,h} matches disk 1-to-1 across Filelist, rise_sources.cmake, Library.vcxproj, Library.vcxproj.filters, and project.pbxproj (refs + Sources phases)" );
 		}
 	}
 

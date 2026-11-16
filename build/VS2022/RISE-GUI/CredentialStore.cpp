@@ -8,6 +8,7 @@
 #include "CredentialStore.h"
 
 #include <QByteArray>
+#include <QChar>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -79,7 +80,7 @@ QString CredentialStore::read(const QString& account)
 bool CredentialStore::write(const QString& account, const QString& secret)
 {
     if (account.trimmed().isEmpty()) return false;
-    const QString trimmed = secret.trimmed();
+    QString trimmed = secret.trimmed();
     if (trimmed.isEmpty()) {
         return remove(account);
     }
@@ -87,10 +88,17 @@ bool CredentialStore::write(const QString& account, const QString& secret)
     const std::wstring target = targetNameForAccount(account);
     const qsizetype byteCount = trimmed.size() * static_cast<qsizetype>(sizeof(char16_t));
     if (byteCount <= 0 || static_cast<size_t>(byteCount) > CRED_MAX_CREDENTIAL_BLOB_SIZE) {
+        if (trimmed.isDetached()) {
+            SecureZeroMemory(trimmed.data(), static_cast<SIZE_T>(trimmed.size()) * sizeof(QChar));
+        }
         return false;
     }
     QByteArray utf16Bytes(byteCount, Qt::Uninitialized);
     std::memcpy(utf16Bytes.data(), trimmed.utf16(), static_cast<size_t>(byteCount));
+    if (trimmed.isDetached()) {
+        SecureZeroMemory(trimmed.data(), static_cast<SIZE_T>(trimmed.size()) * sizeof(QChar));
+    }
+    trimmed.clear();
 
     CREDENTIALW cred = {};
     cred.Flags = 0;
@@ -117,12 +125,43 @@ bool CredentialStore::remove(const QString& account)
 
 bool CredentialStore::exists(const QString& account)
 {
-    QString val = read(account);
-    const bool nonEmpty = !val.isEmpty();
-    if (!val.isEmpty()) {
-        SecureZeroMemory(val.data(), static_cast<SIZE_T>(val.size()) * sizeof(QChar));
+    if (account.trimmed().isEmpty()) return false;
+    const std::wstring target = targetNameForAccount(account);
+
+    PCREDENTIALW pcred = nullptr;
+    if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &pcred) || !pcred) {
+        return false;
     }
-    return nonEmpty;
+
+    bool nonWhitespace = false;
+    if (pcred->CredentialBlob && pcred->CredentialBlobSize > 0) {
+        const DWORD sz = pcred->CredentialBlobSize;
+        if ((sz % sizeof(char16_t)) == 0) {
+            int u16Count = static_cast<int>(sz / sizeof(char16_t));
+            const char16_t* u16 = reinterpret_cast<const char16_t*>(pcred->CredentialBlob);
+            while (u16Count > 0 && u16[u16Count - 1] == u'\0') {
+                --u16Count;
+            }
+            for (int i = 0; i < u16Count; ++i) {
+                if (!QChar(u16[i]).isSpace()) {
+                    nonWhitespace = true;
+                    break;
+                }
+            }
+        } else {
+            const unsigned char* bytes = static_cast<const unsigned char*>(pcred->CredentialBlob);
+            for (DWORD i = 0; i < sz; ++i) {
+                const unsigned char b = bytes[i];
+                if (b != 0 && b != ' ' && b != '\t' && b != '\r' && b != '\n' && b != '\v' && b != '\f') {
+                    nonWhitespace = true;
+                    break;
+                }
+            }
+        }
+        SecureZeroMemory(pcred->CredentialBlob, pcred->CredentialBlobSize);
+    }
+    CredFree(pcred);
+    return nonWhitespace;
 }
 
 #else

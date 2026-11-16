@@ -57,7 +57,9 @@
 #include "ThreadLocalSplatBuffer.h"
 #include "../Interfaces/IOptions.h"
 #include "../Utilities/Threads/Threads.h"
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 
 // L7 follow-up — `FrameStore.h` needed unconditionally for the AOV
 // propagation utility.  See MLTRasterizer.cpp for the same fix.
@@ -332,10 +334,13 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	// it might consume beyond the lens, and the actual lens sample
 	// reaches the aperture via GenerateRayWithLensSample to keep
 	// small PSSMLT mutations continuous.
+	const Scalar kMaxUnitBelow1 = std::nextafter( Scalar( 1.0 ), Scalar( 0.0 ) );
+	const Scalar clampedFx = std::min( std::max( filmSample.x, Scalar( 0.0 ) ), kMaxUnitBelow1 );
+	const Scalar clampedFy = std::min( std::max( filmSample.y, Scalar( 0.0 ) ), kMaxUnitBelow1 );
 	const unsigned int fxBits = static_cast<unsigned int>(
-		filmSample.x * static_cast<Scalar>( 4294967296.0 ) );
+		clampedFx * static_cast<Scalar>( 4294967296.0 ) );
 	const unsigned int fyBits = static_cast<unsigned int>(
-		filmSample.y * static_cast<Scalar>( 4294967296.0 ) );
+		clampedFy * static_cast<Scalar>( 4294967296.0 ) );
 	const unsigned int sampleSeed = fxBits * 2654435761u + fyBits;
 	RandomNumberGenerator localRNG( sampleSeed );
 	ScopedMediumTileSeed mediumSeed( sampleSeed );

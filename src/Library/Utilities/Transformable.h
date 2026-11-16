@@ -264,6 +264,42 @@ namespace RISE
 			{
 				++ThreadPoseEpochRef();
 			}
+			//! Per-thread epoch bumped ONLY when a `CSGObject`, a consumed CSG
+			//! operand (`Object::IsConsumed()`), an unslotted `Object` finalize
+			//! (`TimeIndexed::tlsSlots == nullptr`), or a `TimeIndexedThread`
+			//! scope transition runs -- NOT when animated lights or standalone
+			//! non-CSG `Object` clones are posed per pixel sample.
+			static inline unsigned long long& ThreadCsgPoseEpochRef()
+			{
+				static thread_local unsigned long long epoch = 1;
+				return epoch;
+			}
+			static inline unsigned long long ThreadCsgPoseEpoch()
+			{
+				return ThreadCsgPoseEpochRef();
+			}
+			static inline void BumpThreadCsgPoseEpoch()
+			{
+				++ThreadCsgPoseEpochRef();
+			}
+			//! Per-thread epoch bumped ONLY when a trackable/refractive/CSG
+			//! `Object` is finalized, an unslotted `Object` finalize runs, or a
+			//! `TimeIndexedThread` scope transition runs -- keeping
+			//! `IORStackSeeding::EnsureCatalogPoseState` O(1) hot when animated
+			//! lights, cameras, or opaque non-CSG objects move per pixel sample.
+			static inline unsigned long long& ThreadTrackablePoseEpochRef()
+			{
+				static thread_local unsigned long long epoch = 1;
+				return epoch;
+			}
+			static inline unsigned long long ThreadTrackablePoseEpoch()
+			{
+				return ThreadTrackablePoseEpochRef();
+			}
+			static inline void BumpThreadTrackablePoseEpoch()
+			{
+				++ThreadTrackablePoseEpochRef();
+			}
 		};
 	}
 }

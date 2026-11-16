@@ -38,6 +38,7 @@
 #include "pch.h"
 #include "PSSMLTSampler.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -107,24 +108,32 @@ Scalar PSSMLTSampler::Mutate( const Scalar value )
 	const Scalar delta = s2 * exp( logRatio * u );
 
 	// Randomly add or subtract the perturbation
+	Scalar result;
 	if( rng.CanonicalRandom() < 0.5 )
 	{
 		// Positive perturbation, wrap to [0,1)
-		Scalar result = value + delta;
+		result = value + delta;
 		if( result >= 1.0 ) {
 			result -= 1.0;
 		}
-		return result;
 	}
 	else
 	{
 		// Negative perturbation, wrap to [0,1)
-		Scalar result = value - delta;
+		result = value - delta;
 		if( result < 0.0 ) {
 			result += 1.0;
 		}
-		return result;
 	}
+	// Sub-ULP wrap (`value - delta` in `(-0.5*ulp(1), 0)` + `1.0`) can round
+	// to `1.0` exact; clamp into strict `[0, 1)` to honour the PrimarySample
+	// contract (`Get1D() in [0, 1)`).
+	if( result >= Scalar( 1.0 ) ) {
+		result = std::nextafter( Scalar( 1.0 ), Scalar( 0.0 ) );
+	} else if( result < Scalar( 0.0 ) ) {
+		result = Scalar( 0.0 );
+	}
+	return result;
 }
 
 //////////////////////////////////////////////////////////////////////

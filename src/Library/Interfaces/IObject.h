@@ -335,7 +335,6 @@ namespace RISE
 
 #include "../Intersection/RayIntersection.h"
 #include "IMaterial.h"
-#include "IEnumCallback.h"
 
 namespace RISE
 {

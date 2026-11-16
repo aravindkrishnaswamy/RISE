@@ -60,7 +60,7 @@ private:
 QColor withAlpha(const QColor& c, double alphaFraction)
 {
     QColor result = c;
-    result.setAlphaF(alphaFraction);
+    result.setAlphaF(static_cast<float>(alphaFraction));
     return result;
 }
 

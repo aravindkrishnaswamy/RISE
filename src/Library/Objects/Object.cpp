@@ -584,6 +584,7 @@ void Object::CopySnapshotStateInto( Object& dst, const bool bCloneMaterial ) con
 	dst.m_sigmaSource          = m_sigmaSource;
 	dst.m_sigmaExact           = m_sigmaExact;
 	dst.m_patchCertState.store( m_patchCertState.load( std::memory_order_acquire ), std::memory_order_release );
+	dst.m_mayAffectIorCatalog  = m_mayAffectIorCatalog;
 
 	// --- Transform BUILDING BLOCKS (Transformable protected state) ---
 	// Copying these is what makes the clone independent: a later
@@ -650,13 +651,49 @@ Object* Object::ClonePoseHolder() const
 	return pClone;
 }
 
+void Object::RefreshIorCatalogFlag()
+{
+	if( pInteriorMedium ) {
+		m_mayAffectIorCatalog = true;
+		return;
+	}
+	if( !pMaterial ) {
+		m_mayAffectIorCatalog = false;
+		return;
+	}
+	if( pMaterial->CouldLightPassThrough() ||
+		pMaterial->IsVolumetric() ||
+		pMaterial->GetGradedIORField() != 0 ) {
+		m_mayAffectIorCatalog = true;
+		return;
+	}
+	static const RasterizerState kNullRast = { 0, 0 };
+	RayIntersectionGeometric rig( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), kNullRast );
+	rig.bHit = true;
+	rig.vNormal = Vector3( 0, 0, 1 );
+	rig.vGeomNormal = Vector3( 0, 0, 1 );
+	static const IORStack kQueryStack( Scalar( 1.0 ) );
+	const SpecularInfo info = pMaterial->GetSpecularInfo( rig, kQueryStack );
+	if( info.valid && ( info.canRefract || info.hasInterior ) ) {
+		m_mayAffectIorCatalog = true;
+		return;
+	}
+	const SpecularInfo infoNM = pMaterial->GetSpecularInfoNM( rig, kQueryStack, Scalar( 550 ) );
+	m_mayAffectIorCatalog = infoNM.valid && ( infoNM.canRefract || infoNM.hasInterior );
+}
+
 bool Object::AssignMaterial( const IMaterial& pMat )
 {
+	const bool hadMaterial = ( pMaterial != 0 );
 	safe_release( pMaterial );
 
 	pMaterial = &pMat;
 	pMaterial->addref();
 	m_patchCertState.store( -1, std::memory_order_release );
+	RefreshIorCatalogFlag();
+	if( hadMaterial || IsConsumed() || m_isCsgObject ) {
+		BumpMaterialBindingEpoch();
+	}
 
 	return false;
 }
@@ -735,18 +772,28 @@ void Object::SetShadowParams( const bool bCasts, const bool bReceives )
 
 bool Object::AssignInteriorMedium( const IMedium& medium )
 {
+	const bool hadMedium = ( pInteriorMedium != 0 );
 	safe_release( pInteriorMedium );
 
 	pInteriorMedium = &medium;
 	pInteriorMedium->addref();
+	RefreshIorCatalogFlag();
+	if( hadMedium || IsConsumed() || m_isCsgObject ) {
+		BumpMaterialBindingEpoch();
+	}
 
 	return true;
 }
 
 void Object::ClearInteriorMedium()
 {
+	const bool hadMedium = ( pInteriorMedium != 0 );
 	safe_release( pInteriorMedium );
 	pInteriorMedium = 0;
+	RefreshIorCatalogFlag();
+	if( hadMedium || IsConsumed() || m_isCsgObject ) {
+		BumpMaterialBindingEpoch();
+	}
 }
 
 void Object::ClearShader()
@@ -757,9 +804,14 @@ void Object::ClearShader()
 
 void Object::ClearMaterial()
 {
+	const bool hadMaterial = ( pMaterial != 0 );
 	safe_release( pMaterial );
 	pMaterial = 0;
 	m_patchCertState.store( -1, std::memory_order_release );
+	RefreshIorCatalogFlag();
+	if( hadMaterial || IsConsumed() || m_isCsgObject ) {
+		BumpMaterialBindingEpoch();
+	}
 }
 
 void Object::ClearModifier()
@@ -2113,6 +2165,12 @@ void Object::ResetRuntimeData() const
 void Object::FinalizeTransformations( const Matrix4& parentWorld )
 {
 	Transformable::FinalizeTransformations( parentWorld );
+	if( !TimeIndexed::tlsSlots || IsConsumed() || m_isCsgObject ) {
+		BumpThreadCsgPoseEpoch();
+		BumpThreadTrackablePoseEpoch();
+	} else if( m_mayAffectIorCatalog ) {
+		BumpThreadTrackablePoseEpoch();
+	}
 
 	// Everything below is derived from m_mxFinalTrans, which is now the
 	// COMPOSED world matrix `parentWorld * local`.  That is what makes the

@@ -83,6 +83,8 @@
 #include "MLTRasterizer.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Utilities/Profiling.h"
+#include <algorithm>
+#include <cmath>
 #include "../Utilities/RTime.h"
 #include "../Utilities/ThreadPool.h"
 #include "ThreadLocalSplatBuffer.h"
@@ -366,10 +368,13 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	// still get different local RNG states — without that, any
 	// non-lens random the camera happened to consume would reuse
 	// the same stream across sub-pixel mutations.
+	const Scalar kMaxUnitBelow1 = std::nextafter( Scalar( 1.0 ), Scalar( 0.0 ) );
+	const Scalar clampedFx = std::min( std::max( filmSample.x, Scalar( 0.0 ) ), kMaxUnitBelow1 );
+	const Scalar clampedFy = std::min( std::max( filmSample.y, Scalar( 0.0 ) ), kMaxUnitBelow1 );
 	const unsigned int fxBits = static_cast<unsigned int>(
-		filmSample.x * static_cast<Scalar>( 4294967296.0 ) );
+		clampedFx * static_cast<Scalar>( 4294967296.0 ) );
 	const unsigned int fyBits = static_cast<unsigned int>(
-		filmSample.y * static_cast<Scalar>( 4294967296.0 ) );
+		clampedFy * static_cast<Scalar>( 4294967296.0 ) );
 	const unsigned int sampleSeed = fxBits * 2654435761u + fyBits;
 	RandomNumberGenerator localRNG( sampleSeed );
 	ScopedMediumTileSeed mediumSeed( sampleSeed );

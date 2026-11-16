@@ -390,6 +390,10 @@ namespace RISE
 			//! even without a prior `ObjectManager::PrepareForRendering()` pass, while
 			//! keeping opaque patch objects completely certification-free.
 			mutable std::atomic<long long>					m_patchCertState{ -1 };
+			bool											m_isCsgObject{ false };
+			bool											m_mayAffectIorCatalog{ false };
+
+			void RefreshIorCatalogFlag();
 
 			virtual ~Object( );
 
@@ -647,6 +651,20 @@ namespace RISE
 				{ const Object* c = TimeClone(); return c ? c->m_mxFinalTrans : m_mxFinalTrans; }
 			Matrix4 const GetFinalInverseTransformMatrix( ) const override
 				{ const Object* c = TimeClone(); return c ? c->m_mxInvFinalTrans : m_mxInvFinalTrans; }
+
+			static inline std::atomic<unsigned long long>& MaterialBindingEpochCounter()
+			{
+				static std::atomic<unsigned long long> epoch( 1 );
+				return epoch;
+			}
+			static inline unsigned long long MaterialBindingEpoch()
+			{
+				return MaterialBindingEpochCounter().load( std::memory_order_acquire );
+			}
+			static inline void BumpMaterialBindingEpoch()
+			{
+				MaterialBindingEpochCounter().fetch_add( 1, std::memory_order_acq_rel );
+			}
 		};
 	}
 }

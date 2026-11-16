@@ -1887,6 +1887,188 @@ static void TestCsgCertificateBitsEpochInvalidation()
 		safe_release( pWhite );
 	}
 
+	// N6: Round 10: General diamond CSG DAG (`pObjectA != pObjectB` at every node:
+	// `D_{k+1} = Union(Union(D_k, sideA), Union(D_k, sideB))`, depth 26 => >6.7e7 paths!)
+	// with refractive `pGlass15`, registered in `ObjectManager` / `Scene`:
+	//   1. `PrepareForRendering()` runs in O(|V|).
+	//   2. Under active `TimeIndexed::tlsSlots != nullptr` AND per-sample posing of a
+	//      standalone moving opaque `Object` (`FinalizeTransformations()` + `BumpThreadTransformPoseEpoch()`),
+	//      `SeedFromPoint` + `getBoundingBox` + `CertificateBits` + `ShapeRevision` stay O(1) hot!
+	//   3. Real `IntersectRay` (both with and without ray differentials), `IntersectRay_IntersectionOnly`,
+	//      `OperandContainsPoint`, `SelfHitRootFloor`, `SignedDistanceLower`, and `DistanceToSurface`
+	//      all evaluate in O(|V|) (< 250 ms total instead of hanging on 6.7e7 paths).
+	{
+		IPainter* pWhite6 = nullptr;
+		RISE_API_CreateUniformColorPainter( &pWhite6, RISEPel( 1.0, 1.0, 1.0 ) );
+		IScalarPainter* pIor15_6 = nullptr;
+		RISE_API_CreateUniformScalarPainter( &pIor15_6, 1.5 );
+		IMaterial* pGlass6 = nullptr;
+		RISE_API_CreatePerfectRefractorMaterial( &pGlass6, *pWhite6, *pIor15_6 );
+		IMaterial* pOpaque6 = nullptr;
+		RISE_API_CreateLambertianMaterial( &pOpaque6, *pWhite6 );
+
+		SphereGeometry* gSphCenter = new SphereGeometry( 1.0 );
+		SphereGeometry* gSphSideA  = new SphereGeometry( 0.25 );
+		SphereGeometry* gSphSideB  = new SphereGeometry( 0.25 );
+
+		Object* oCenter = new Object( gSphCenter );
+		oCenter->AssignMaterial( *pGlass6 );
+		oCenter->FinalizeTransformations();
+
+		Object* oSideA = new Object( gSphSideA );
+		oSideA->AssignMaterial( *pGlass6 );
+		oSideA->SetPosition( Point3( 3.0, 0.0, 0.0 ) );
+		oSideA->FinalizeTransformations();
+
+		Object* oSideB = new Object( gSphSideB );
+		oSideB->AssignMaterial( *pGlass6 );
+		oSideB->SetPosition( Point3( -3.0, 0.0, 0.0 ) );
+		oSideB->FinalizeTransformations();
+
+		Object* oMovingOpaque = new Object( gBoxA );
+		oMovingOpaque->AssignMaterial( *pOpaque6 );
+		oMovingOpaque->SetPosition( Point3( 0.0, 10.0, 0.0 ) );
+		oMovingOpaque->FinalizeTransformations();
+
+		ObjectManager* pMgr6 = new ObjectManager( true, false, 100, 24 );
+		pMgr6->AddItem( oCenter, "dag6_center" );
+		pMgr6->AddItem( oSideA, "dag6_sideA" );
+		pMgr6->AddItem( oSideB, "dag6_sideB" );
+		pMgr6->AddItem( oMovingOpaque, "dag6_moving_opaque" );
+
+		std::vector<CSGObject*> dagNodes;
+		IObjectPriv* curD = oCenter;
+		for( int k = 0; k < 26; ++k ) {
+			CSGObject* left = new CSGObject( CSG_UNION );
+			left->AssignObjects( curD, oSideA );
+			left->FinalizeTransformations();
+			pMgr6->AddItem( left, ( "dag6_L_" + std::to_string( k ) ).c_str() );
+			dagNodes.push_back( left );
+
+			CSGObject* right = new CSGObject( CSG_UNION );
+			right->AssignObjects( curD, oSideB );
+			right->FinalizeTransformations();
+			pMgr6->AddItem( right, ( "dag6_R_" + std::to_string( k ) ).c_str() );
+			dagNodes.push_back( right );
+
+			CSGObject* join = new CSGObject( CSG_UNION );
+			join->AssignObjects( left, right );
+			join->FinalizeTransformations();
+			pMgr6->AddItem( join, ( "dag6_J_" + std::to_string( k ) ).c_str() );
+			dagNodes.push_back( join );
+
+			curD = join;
+		}
+		CSGObject* rootDiamond = dagNodes.back();
+
+		IScenePriv* pScene6 = nullptr;
+		RISE_API_CreateScene( &pScene6 );
+		pMgr6->addref();
+		pScene6->SetObjectManager( pMgr6 );
+
+		const auto t0 = std::chrono::steady_clock::now();
+		pMgr6->PrepareForRendering();
+
+		const void* dummyPtr = nullptr;
+		const TimeIndexed::ThreadSlots fakeSlots = { &dummyPtr, 0u, nullptr };
+		struct TlsGuard6
+		{
+			const TimeIndexed::ThreadSlots* prev;
+			explicit TlsGuard6( const TimeIndexed::ThreadSlots* s ) : prev( TimeIndexed::tlsSlots )
+			{
+				TimeIndexed::tlsSlots = s;
+				Transformable::BumpThreadTransformPoseEpoch();
+				Transformable::BumpThreadCsgPoseEpoch();
+				Transformable::BumpThreadTrackablePoseEpoch();
+			}
+			~TlsGuard6()
+			{
+				TimeIndexed::tlsSlots = prev;
+				Transformable::BumpThreadTransformPoseEpoch();
+				Transformable::BumpThreadCsgPoseEpoch();
+				Transformable::BumpThreadTrackablePoseEpoch();
+			}
+		} tlsGuard6( &fakeSlots );
+
+		// Simulate 64 motion-blurred pixel samples posing a moving light + moving opaque Object:
+		IORStack seedInside( 1.0 );
+		for( int s = 0; s < 64; ++s ) {
+			Transformable::BumpThreadTransformPoseEpoch(); // simulated animated light FinalizeTransformations
+			oMovingOpaque->SetPosition( Point3( Scalar( s ) * 0.01, 10.0, 0.0 ) );
+			oMovingOpaque->FinalizeTransformations();      // simulated animated opaque clone FinalizeTransformations
+			seedInside = IORStack( 1.0 );
+			IORStackSeeding::SeedFromPoint( seedInside, Point3( 0.0, 0.0, 0.0 ), *pScene6, 0 );
+			(void)rootDiamond->getBoundingBox();
+			(void)rootDiamond->ShapeRevision();
+		}
+
+		// Real ray + containment + floor + signed/unsigned proximity queries on the depth-26 diamond DAG:
+		Ray camRay( Point3( 0.0, 0.0, -5.0 ), Vector3( 0.0, 0.0, 1.0 ) );
+		RayIntersection riNoDiff( camRay, nullRasterizerState );
+		rootDiamond->IntersectRay( riNoDiff, RISE_INFINITY, true, true, true );
+
+		Ray diffRay = camRay;
+		diffRay.hasDifferentials = true;
+		diffRay.diffs.rxOrigin = Vector3( 0.01, 0.0, 0.0 );
+		diffRay.diffs.ryOrigin = Vector3( 0.0, 0.01, 0.0 );
+		diffRay.diffs.rxDir = Vector3( 0.0, 0.0, 0.0 );
+		diffRay.diffs.ryDir = Vector3( 0.0, 0.0, 0.0 );
+		RayIntersection riWithDiff( diffRay, nullRasterizerState );
+		rootDiamond->IntersectRay( riWithDiff, RISE_INFINITY, true, true, true );
+
+		const bool occHit = rootDiamond->IntersectRay_IntersectionOnly( camRay, 10.0, true, true );
+		const bool occMiss = rootDiamond->IntersectRay_IntersectionOnly(
+			Ray( Point3( 0.0, 5.0, -5.0 ), Vector3( 0.0, 0.0, 1.0 ) ), 10.0, true, true );
+		const int inCenter = CSGObject::OperandContainsPoint( rootDiamond, Point3( 0.0, 0.0, 0.0 ), Vector3( 0.0, 0.0, 1.0 ), 2.0 );
+		const int outFar   = CSGObject::OperandContainsPoint( rootDiamond, Point3( 0.0, 5.0, 0.0 ), Vector3( 0.0, 0.0, 1.0 ), 2.0 );
+		const Scalar floorVal = rootDiamond->SelfHitRootFloor( Point3( 0.0, 0.0, -1.0 ), Vector3( 0.0, 0.0, 1.0 ), Vector3( 0.0, 0.0, -1.0 ) );
+		Scalar sDist = 0.0, uDist = 0.0;
+		bool sExact = false;
+		const bool sOk = rootDiamond->SignedDistanceLower( Point3( 0.0, 3.0, 0.0 ), 10.0, sDist, sExact );
+		const bool uOk = rootDiamond->DistanceToSurface( Point3( 0.0, 3.0, 0.0 ), 10.0, uDist );
+
+		// Also verifydegenerate self-subtraction `X \ X` is empty:
+		CSGObject* selfSub = new CSGObject( CSG_SUBTRACTION );
+		selfSub->AssignObjects( rootDiamond, rootDiamond );
+		selfSub->FinalizeTransformations();
+		RayIntersection riSelfSub( camRay, nullRasterizerState );
+		selfSub->IntersectRay( riSelfSub, RISE_INFINITY, true, true, true );
+		const bool selfSubOcc = selfSub->IntersectRay_IntersectionOnly( camRay, 10.0, true, true );
+		const int selfSubContains = CSGObject::OperandContainsPoint( selfSub, Point3( 0.0, 0.0, 0.0 ), Vector3( 0.0, 0.0, 1.0 ), 2.0 );
+
+		const double ms6 = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - t0 ).count();
+
+		Check( seedInside.Depth() == 2 && std::fabs( seedInside.top() - 1.5 ) < 1e-6 &&
+			riNoDiff.geometric.bHit && std::fabs( riNoDiff.geometric.range - 4.0 ) < 1e-5 &&
+			riWithDiff.geometric.bHit && std::fabs( riWithDiff.geometric.range - 4.0 ) < 1e-5 &&
+			occHit && !occMiss &&
+			inCenter > 0 && outFar < 0 &&
+			std::isfinite( floorVal ) && floorVal > 0.0 &&
+			sOk && std::fabs( sDist - 2.0 ) < 1e-4 &&
+			uOk && std::fabs( uDist - 2.0 ) < 1e-4 &&
+			!riSelfSub.geometric.bHit && !selfSubOcc && selfSubContains < 0 &&
+			ms6 < 350.0,
+			"N6: depth-26 refractive diamond CSG DAG (pObjectA != pObjectB) + 64 TimeIndexed pose samples + ray/shadow/contains/floor/SDF queries complete in < 350 ms (got " +
+			std::to_string( ms6 ) + " ms, range=" + std::to_string( riNoDiff.geometric.range ) + ")" );
+
+		safe_release( selfSub );
+		for( CSGObject* n : dagNodes ) safe_release( n );
+		safe_release( pScene6 );
+		safe_release( pMgr6 );
+		safe_release( oMovingOpaque );
+		safe_release( oSideB );
+		safe_release( oSideA );
+		safe_release( oCenter );
+		safe_release( gSphSideB );
+		safe_release( gSphSideA );
+		safe_release( gSphCenter );
+		safe_release( pOpaque6 );
+		safe_release( pGlass6 );
+		safe_release( pIor15_6 );
+		safe_release( pWhite6 );
+	}
+
 	safe_release( gBoxB );
 	safe_release( gBoxA );
 	safe_release( gQuad );

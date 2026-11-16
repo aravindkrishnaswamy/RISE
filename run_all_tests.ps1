@@ -226,12 +226,14 @@ if (-not (Test-Path -LiteralPath $cacheFile)) {
 $built = 0
 $buildFailed = 0
 $buildFailures = @()
+$buildRc = 0
 
 if (-not $NoBuild) {
     $buildLog = Join-Path $LogDir 'build.log'
     Write-Host ('Building {0} test(s) [{1}, tier={2}]...' -f $total, $Config, $Tier)
     $bs = Get-Date
 
+    $failedTargets = @{}
     if ($Filter -or $Tier -eq 'extended') {
         # Filtered or extended subset: build each matching target individually so
         # we don't over-build. msbuild startup overhead is acceptable for small subsets.
@@ -240,19 +242,25 @@ if (-not $NoBuild) {
         foreach ($src in $testSources) {
             & $cmake --build $CmakeBuildDir --config $Config --target $src.BaseName *>&1 |
                 Out-File -FilePath $buildLog -Encoding utf8 -Append
+            if ($LASTEXITCODE -ne 0) {
+                $failedTargets[$src.BaseName] = $true
+                $buildRc = 1
+            }
         }
     } else {
         & $cmake --build $CmakeBuildDir --config $Config --target rise_all_tests --parallel *>&1 |
             Out-File -FilePath $buildLog -Encoding utf8
+        $buildRc = $LASTEXITCODE
     }
-    $buildRc = $LASTEXITCODE
     $bd = [int]((Get-Date) - $bs).TotalSeconds
 
     # Walk the test list and check which exes were produced. Source-newer-than-exe
-    # signals a stale binary from a previous build whose current rebuild failed.
+    # or an explicit per-target cmake failure signals a broken rebuild even when a
+    # header-only edit left a stale binary newer than its test .cpp.
     foreach ($src in $testSources) {
         $exe = Join-Path $BinDir "$($src.BaseName).exe"
-        if ((Test-Path -LiteralPath $exe) -and `
+        if ((-not $failedTargets.ContainsKey($src.BaseName)) -and `
+            (Test-Path -LiteralPath $exe) -and `
             ((Get-Item -LiteralPath $exe).LastWriteTime -ge $src.LastWriteTime)) {
             $built++
         } else {
@@ -389,7 +397,7 @@ if ($runFailures.Count -gt 0) {
     foreach ($f in $runFailures) { Write-Host "  - $($f.Name)" }
 }
 
-if ($failed -ne 0 -or $buildFailed -ne 0) {
+if ($failed -ne 0 -or $buildFailed -ne 0 -or $buildRc -ne 0) {
     exit 1
 }
 Write-Host "All $found tests passed"

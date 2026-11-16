@@ -221,6 +221,14 @@ namespace RISE
 		const BezierPatch& patch
 		);
 
+	extern void RayBezierPatchIntersection( 
+		const Ray& ray, 
+		BEZIER_HIT& hit,
+		const BezierPatch& patch,
+		const bool bHitFrontFaces,
+		const bool bHitBackFaces
+		);
+
 	extern void RayBilinearPatchIntersection( 
 		const Ray& ray, 
 		BILINEAR_HIT& hit,

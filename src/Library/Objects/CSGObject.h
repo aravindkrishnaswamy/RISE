@@ -103,6 +103,7 @@ namespace RISE
 			//! it; every flag must stay inside the low 31 bits (an int).
 			static_assert( kCertBitsEnd <= ( 1 << 30 ), "CSGObject certificate flags overflow their 31-bit field" );
 			mutable std::atomic<long long>			m_certBits;
+			mutable std::atomic<std::uint64_t>		m_realizedEpoch{ 0 };
 			int CertificateBits() const;
 			int ComputeCertificateBits() const;
 
@@ -257,15 +258,13 @@ namespace RISE
 			//! `m_mxFinalTrans` is NOT applied -- unlike `getBoundingBox`,
 			//! which answers in the PARENT's.
 			//!
-			//! COMPUTED LAZILY PER CALL, NEVER CACHED, and that is
-			//! deliberate: the operands' boxes move under
-			//! `FinalizeTransformations` (every animation frame and
-			//! hierarchy re-bake) and under an operand's own incremental
-			//! re-point, and the CST re-point path calls `AssignObjects`
-			//! BEFORE `SetOperation`, so any cache filled at assignment is
-			//! stale in the OVER-READ direction (a stale-large diagonal
-			//! inflates the probe step).  `SelfHitRootFloor` pays the same
-			//! `getBoundingBox` per call for the same reason.
+			//! Memoized per thread via `EvaluateCsgBounds` (`CsgBoundsTlsMemo`),
+			//! keyed on `(GlobalGeometryShapeEpoch, GlobalTransformPoseEpoch,
+			//! ThreadCsgPoseEpoch, TimeIndexed::tlsSlots)`: O(|V|) cold across
+			//! shared-operand CSG DAGs and O(1) hot per node, automatically
+			//! invalidated on any geometry edit, `AssignObjects` / `SetOperation`,
+			//! hierarchy re-bake, or CSG transform finalization (falling back to a
+			//! per-call `callMemo` when custom non-epoch operands are present).
 			//! \return FALSE when no usable box exists.
 			bool LocalBoxDiagonal( Scalar& outDiag ) const;
 

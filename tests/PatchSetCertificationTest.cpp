@@ -3016,6 +3016,102 @@ static void TestRound7StandalonePatchAndBilinearFixes()
 			"L2d: BilinearPatchGeometry rejects zero-normal collapsed pole hits while preserving interior hits" );
 		safe_release( gPole );
 	}
+
+	// L3: Round 10: 5-arg `RayBezierPatchIntersection` + `BezierPatchGeometry` per-root
+	// sidedness (`bHitFrontFaces` / `bHitBackFaces`) and collapsed-pole (`nLen < 1e-20`)
+	// filtering:
+	//   L3a: Curved parabolic Bezier arch `P(u, v) = ( 2*u - 1, v - 0.5, 4 - 8*u*(1 - u) )`
+	//        (degree-elevated from quadratic `4 - 8*u + 8*u^2` in u, linear in v):
+	//        Along Ray((0, 0, 0), (+0.5, 0, 1)/sqrt(1.25))? Even simpler: fold u in x so a
+	//        +z ray along (0, 0, 0) -> (0, 0, +1) hits TWO distinct u roots!
+	//        Specifically, degree-elevate quadratic-in-u `x(u) = (u - 0.25)*(u - 0.75) = u^2 - u + 3/16`,
+	//        `y(u, v) = v - 0.5`, `z(u) = 2 + 4*u`:
+	//          - At u = 0.25, v = 0.5: P = (0, 0, 3.0), du P = (-0.5, 0, 4), dv P = (0, 1, 0),
+	//            N = du P x dv P = (-4, 0, -0.5) -> dot(N, +z) < 0 (FRONT face at t = 3.0).
+	//          - At u = 0.75, v = 0.5: P = (0, 0, 5.0), du P = (+0.5, 0, 4), dv P = (0, 1, 0),
+	//            N = du P x dv P = (-4, 0, +0.5) -> dot(N, +z) > 0 (BACK face at t = 5.0).
+	//        Under `bHitFrontFaces = false, bHitBackFaces = true`, the nearer front-face root at
+	//        `t = 3.0` MUST NOT mask the farther back-face root at `t = 5.0`!
+	//   L3b: Curved polar Bezier patch whose `u = 0` row is collapsed to a pole `(0, 0, 2.0)`
+	//        (`c[0].pts[0..3] = (0, 0, 2.0)` -> `dv P = 0` -> `N = 0` at `u = 0`), folding back
+	//        through `(0, 0, 4.0)` at an interior `(u > 0, v = 0.5)` root with non-zero normal:
+	//        a ray along `(0, 0, 0) -> +z` grazes the degenerate pole at `t = 2.0` (`N = 0`) and
+	//        MUST still find the valid interior root!
+	{
+		// Exact cubic Bernstein control points of:
+		//   x(u)    = u^2 - u + 3/16              -> bx = { 3/16, -7/48, -7/48, 3/16 } (roots u = 0.25, 0.75)
+		//   y(u, v) = (v - 0.5) + 0.2*(u - 0.5)   -> roots (u, v) = (0.25, 0.55) and (0.75, 0.45)
+		//   z(u)    = 2 + 4*u                     -> bz = { 2, 10/3, 14/3, 6 } (t = 3.0 front, t = 5.0 back)
+		const Scalar bx[4] = { 3.0 / 16.0, -7.0 / 48.0, -7.0 / 48.0, 3.0 / 16.0 };
+		const Scalar buLin[4] = { 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0 };
+		const Scalar bz[4] = { 2.0, 10.0 / 3.0, 14.0 / 3.0, 6.0 };
+		BezierPatch foldPatch;
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				const Scalar vj = Scalar( j ) / 3.0;
+				foldPatch.c[i].pts[j] = Point3(
+					bx[i],
+					( vj - 0.5 ) + 0.2 * ( buLin[i] - 0.5 ),
+					bz[i] );
+			}
+		}
+
+		BezierPatchGeometry* gFold = new BezierPatchGeometry( 8, 8, false );
+		gFold->AddPatch( foldPatch );
+		gFold->Prepare();
+
+		const Ray rAxis( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+		RayIntersectionGeometric rigBoth( rAxis, nullRasterizerState );
+		gFold->IntersectRay( rigBoth, true, true, false );
+		RayIntersectionGeometric rigFront( rAxis, nullRasterizerState );
+		gFold->IntersectRay( rigFront, true, false, false );
+		RayIntersectionGeometric rigBack( rAxis, nullRasterizerState );
+		gFold->IntersectRay( rigBack, false, true, false );
+
+		Check( rigBoth.bHit && std::fabs( rigBoth.range - 3.0 ) < 1e-4 &&
+			rigFront.bHit && std::fabs( rigFront.range - 3.0 ) < 1e-4 &&
+			rigBack.bHit && std::fabs( rigBack.range - 5.0 ) < 1e-4 &&
+			gFold->IntersectRay_IntersectionOnly( rAxis, 4.0, true, false ) &&
+			!gFold->IntersectRay_IntersectionOnly( rAxis, 4.0, false, true ) &&
+			gFold->IntersectRay_IntersectionOnly( rAxis, 6.0, false, true ),
+			"L3a: BezierPatchGeometry honours per-root front/back culling on two-root curved Bezier patch (back range=" +
+			std::to_string( rigBack.range ) + ")" );
+		safe_release( gFold );
+
+		// L3b: Valid smooth root at `u = 0.25, v = 0.5` (`t = 5.0`, `|N| > 1.0`, visited in `[0, 0.5]`)
+		// and closer zero-normal singular root at `u = 0.75, v = 0.5` (`t = 3.5 < 5.0`, `|dv P| = 3*|u-0.75|^3 < 1e-29`):
+		//   x(u)    = 3 * (u - 0.25) * (u - 0.75)       (simple sign-crossing roots; |f1| < 1e-10 => |u - 0.75| < 1e-10)
+		//   y(u, v) = (u - 0.75)^3 * 3 * (v - 0.5)      (exact dyadic Bernstein control points; |dv P| <= 3e-30 << 1e-20)
+		//   z(u)    = 5.75 - 3*u                        (z(0.25) = 5.0, z(0.75) = 3.5)
+		// Raw 3-arg `RayBezierPatchIntersection` (no per-root normal filter) selects the closer `t = 3.5`
+		// singular root; `BezierPatchGeometry` (5-arg per-root `nLen >= 1e-20` filter) skips `t = 3.5` and
+		// recovers the valid `t = 5.0` hit instead of dropping the patch altogether.
+		const Scalar cxB[4]  = {   9.0 / 16.0, -7.0 / 16.0, -7.0 / 16.0,  9.0 / 16.0 };
+		const Scalar cu3B[4] = { -27.0 / 64.0,  9.0 / 64.0, -3.0 / 64.0,  1.0 / 64.0 };
+		const Scalar bv1[4]  = {  -1.5,        -0.5,         0.5,         1.5        };
+		const Scalar czB[4]  = {   5.75,        4.75,        3.75,        2.75       };
+		BezierPatch poleFold;
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				poleFold.c[i].pts[j] = Point3( cxB[i], cu3B[i] * bv1[j], czB[i] );
+			}
+		}
+		BEZIER_HIT rawPoleHit{};
+		RayBezierPatchIntersection( rAxis, rawPoleHit, poleFold );
+		BezierPatchGeometry* gPoleFold = new BezierPatchGeometry( 8, 8, false );
+		gPoleFold->AddPatch( poleFold );
+		gPoleFold->Prepare();
+		RayIntersectionGeometric rigPoleBody( rAxis, nullRasterizerState );
+		gPoleFold->IntersectRay( rigPoleBody, true, true, false );
+		Check( rawPoleHit.bHit && std::fabs( rawPoleHit.dRange - 3.5 ) < 1e-4 &&
+			rigPoleBody.bHit && std::fabs( rigPoleBody.range - 5.0 ) < 1e-4 &&
+			gPoleFold->IntersectRay_IntersectionOnly( rAxis, 6.0, true, true ) &&
+			!gPoleFold->IntersectRay_IntersectionOnly( rAxis, 4.0, true, true ),
+			"L3b: BezierPatchGeometry skips closer zero-normal singular root (raw t=" +
+			std::to_string( rawPoleHit.dRange ) + ") and hits valid root (t=5, got " +
+			std::to_string( rigPoleBody.range ) + ")" );
+		safe_release( gPoleFold );
+	}
 }
 
 int main()

@@ -1563,7 +1563,7 @@ namespace RISE
 			}
 			const unsigned long long buildShapeEpoch = Implementation::Geometry::GlobalGeometryShapeEpoch();
 			const unsigned long long buildGlobalPoseEpoch = Implementation::Transformable::GlobalTransformPoseEpoch();
-			const unsigned long long buildThreadPoseEpoch = Implementation::Transformable::ThreadTransformPoseEpoch();
+			const unsigned long long buildThreadPoseEpoch = Implementation::Transformable::ThreadTrackablePoseEpoch();
 			const TimeIndexed::ThreadSlots* buildTlsSlots = TimeIndexed::tlsSlots;
 
 			catalog.pObjects = pObjects;
@@ -1832,7 +1832,7 @@ namespace RISE
 		{
 			const unsigned long long sEpoch = Implementation::Geometry::GlobalGeometryShapeEpoch();
 			const unsigned long long gPoseEpoch = Implementation::Transformable::GlobalTransformPoseEpoch();
-			const unsigned long long tPoseEpoch = Implementation::Transformable::ThreadTransformPoseEpoch();
+			const unsigned long long tPoseEpoch = Implementation::Transformable::ThreadTrackablePoseEpoch();
 			const TimeIndexed::ThreadSlots* curSlots = TimeIndexed::tlsSlots;
 			if( cat.allObjectsEpochTracked &&
 				Implementation::Geometry::CustomCsgOperandSeen() == 0 &&
@@ -2755,11 +2755,18 @@ namespace RISE
 							opaqueObjs.push_back( { vri.pObject, deltaParity } );
 						}
 					}
+					const Scalar blkDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
+						normal );
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+						normal, blkDist, nm, &vertCrossed );
 				} else if( vMem == kMembershipSheetFront ) {
 					return false;
-				} else if( vMem == kMembershipSheetBack || vMem == kMembershipTransparent ) {
-					// Check if target `pSheet` is coplanar within `2 * kSeedEps`
-					// before `vertProbe.Advance(kSeedEps)` steps past its plane.
+				} else {
+					// `kMembershipSheetBack` or `kMembershipTransparent`: check if
+					// target `pSheet` is coplanar within `2 * kSeedEps` before
+					// `vertProbe.Advance(kSeedEps)` steps past its plane.
 					const Scalar vDist = Vector3Ops::Dot(
 						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
 						normal );
@@ -2822,21 +2829,6 @@ namespace RISE
 							ordered, orderedCount, obstacleHit.geometric.ptIntersection,
 							normal, vDist, nm, &vertCrossed );
 					}
-				} else {
-					const Scalar vDist = Vector3Ops::Dot(
-						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
-						normal );
-					RecordCoplanarOrderedExitsAt(
-						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
-						normal, vDist, nm, &vertCrossed );
-				}
-				if( vMem == kMembershipBlock ) {
-					const Scalar vDist = Vector3Ops::Dot(
-						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
-						normal );
-					RecordCoplanarOrderedExitsAt(
-						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
-						normal, vDist, nm, &vertCrossed );
 				}
 				vertProbe = Ray( vri.geometric.ptIntersection, normal );
 				vertProbe.Advance( kSeedEps );
@@ -3288,6 +3280,12 @@ namespace RISE
 							break;
 						}
 					}
+					const Scalar blkDist = Vector3Ops::Dot(
+						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
+						normal );
+					RecordCoplanarOrderedExitsAt(
+						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
+						normal, blkDist, nm, &vertCrossed );
 				} else if( vMem == kMembershipSheetFront ) {
 					break;
 				} else {
@@ -3297,14 +3295,6 @@ namespace RISE
 					RecordCoplanarOrderedExitsAt(
 						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
 						normal, skipDist, nm, &vertCrossed );
-				}
-				if( vMem == kMembershipBlock ) {
-					const Scalar blkDist = Vector3Ops::Dot(
-						Vector3Ops::mkVector3( vri.geometric.ptIntersection, obstacleHit.geometric.ptIntersection ),
-						normal );
-					RecordCoplanarOrderedExitsAt(
-						ordered, orderedCount, obstacleHit.geometric.ptIntersection,
-						normal, blkDist, nm, &vertCrossed );
 				}
 				vertProbe = Ray( vri.geometric.ptIntersection, normal );
 				vertProbe.Advance( kSeedEps );
