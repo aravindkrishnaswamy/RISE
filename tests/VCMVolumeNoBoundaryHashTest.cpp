@@ -60,12 +60,13 @@ int main() {
             "uniformcolor_painter\n{\n\tname p_lo\n\tcolor 0 0 0\n}\n"
             "uniformcolor_painter\n{\n\tname p_alb\n\tcolor 0.8 0.8 0.8\n}\n"
             "perlin3d_painter\n{\n\tname p_dens\n\tpersistence 0.65\n\toctaves 3\n\tcolora p_lo\n\tcolorb p_hi\n\tscale 3 3 3\n\tshift 0 0 0\n}\n"
-            "heterogeneous_medium\n{\n\tname g_het\n\tmax_absorption 1.5 1.5 1.5\n\tmax_scattering 0.5 0.5 0.5\n\tphase isotropic\n\tdensity_painter p_dens\n\tvol_bbox_min -4 -4 -4\n\tvol_bbox_max 4 4 4\n\tgrid_resolution 16\n}\n"
+            "painter_heterogeneous_medium\n{\n\tname g_het\n\tabsorption 1.5 1.5 1.5\n\tscattering 0.5 0.5 0.5\n\tphase isotropic\n\tdensity_painter p_dens\n\tbbox_min -4 -4 -4\n\tbbox_max 4 4 4\n\tresolution 16\n}\n"
             "global_medium\n{\n\tmedium g_het\n}\n"
             "lambertian_material\n{\n\tname m_wall\n\treflectance p_alb\n}\n"
             "clippedplane_geometry\n{\n\tname g_wall\n\tpta -3 -3 0\n\tptb 3 -3 0\n\tptc 3 3 0\n\tptd -3 3 0\n}\n"
             "standard_object\n{\n\tname wall\n\tgeometry g_wall\n\tmaterial m_wall\n}\n"
-            "omni_light\n{\n\tname l0\n\tpower 40\n\tcolor p_hi\n\tposition 0.5 0.5 2.0\n}\n"
+            "omni_light\n{\n\tname l0\n\tpower 40\n\tcolor 1 1 1\n\tposition 0.5 0.5 2.0\n}\n"
+            "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n"
             + std::string( rastBlock );
         const std::string p = WriteScene( hetScene, "het_sp_seed" );
         IJobPriv* j = nullptr;
@@ -78,6 +79,7 @@ int main() {
         j->RemoveRasterizerOutputs();
         auto* c = new CapturingRasterizerOutput();
         j->GetRasterizer()->AddRasterizerOutput( c );
+        GlobalRNG().Reseed( 999u );
         std::srand( libcSeed );
         const bool ok = j->Rasterize() && !c->pixels.empty();
         uint64_t h = 14695981039346656037ull;
@@ -97,9 +99,9 @@ int main() {
         return h;
     };
     const char* kPtBlock =
-        "pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tmax_recursion 2\n}\n";
+        "pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n";
     const char* kBdptBlock =
-        "bdpt_pel_rasterizer\n{\n\tsamples 2\n\tmax_eye_depth 2\n\tmax_light_depth 1\n}\n";
+        "bdpt_pel_rasterizer\n{\n\tsamples 1\n\tmax_eye_depth 2\n\tmax_light_depth 1\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n";
     const uint64_t ptA1 = renderHetHash( kPtBlock, 101u );
     const uint64_t ptA2 = renderHetHash( kPtBlock, 101u );
     const uint64_t ptB  = renderHetHash( kPtBlock, 202u );

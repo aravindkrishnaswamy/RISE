@@ -53,18 +53,26 @@ void BilinearPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 	const BilinearPatch&	patch = *elem;
 
     BILINEAR_HIT	h;
-	RayBilinearPatchIntersection( ri.ray, h, patch );
+	RayBilinearPatchIntersection( ri.ray, h, patch, bHitFrontFaces, bHitBackFaces );
 
 	if( h.bHit ) {
+		if( ri.bHit && h.dRange >= ri.range ) {
+			return;
+		}
+		const Vector3 rawN = GeometricUtilities::BilinearPatchNormalAt( patch, h.u, h.v );
+		const Scalar nLen = Vector3Ops::Magnitude( rawN );
+		if( nLen < 1e-20 ) {
+			return;
+		}
 		// If there is an intersection, compute the point of intersection, the normal and the
 		// texture co-ordinates
 		ri.bHit = true;
 		ri.range = h.dRange;
 		ri.ptIntersection = ri.ray.PointAtLength( h.dRange );
 		ri.ptCoord = Point2( h.u, h.v );
-		ri.vNormal = Vector3Ops::Normalize(GeometricUtilities::BilinearPatchNormalAt( patch, h.u, h.v ));
+		ri.vNormal = rawN * ( Scalar( 1 ) / nLen );
 		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
-		if( m_bProvablyOpenSheet.load( std::memory_order_relaxed ) ) {
+		if( m_bProvablyOpenSheet.load( std::memory_order_acquire ) ) {
 			ri.bProvablyNoInterior = true;
 		}
 
@@ -115,9 +123,11 @@ bool BilinearPatchGeometry::RayElementIntersection_IntersectionOnly( const Ray& 
 	const BilinearPatch&	patch = *elem;
 
     BILINEAR_HIT	h;
-	RayBilinearPatchIntersection( ray, h, patch );
+	RayBilinearPatchIntersection( ray, h, patch, bHitFrontFaces, bHitBackFaces );
 
-	if( h.bHit && (h.dRange < NEARZERO || h.dRange > dHowFar) ) {
+	// Self-intersection floor (`tMin`) is already applied inside
+	// RayBilinearPatchIntersection; only bound the upper range here.
+	if( h.bHit && (h.dRange <= 0.0 || h.dRange > dHowFar) ) {
 		h.bHit = false;
 	}
 
@@ -149,7 +159,8 @@ BilinearPatchGeometry::BilinearPatchGeometry(
   m_certComputedGeneration( 0 ),
   m_bCertifiedWatertight( false ),
   m_bProvablyOpenSheet( false ),
-  m_bNegativeOpenSignedVolume( false )
+  m_bNegativeOpenSignedVolume( false ),
+  m_topologicalOpenness( -2 )
 {
 }
 
@@ -480,6 +491,7 @@ void BilinearPatchGeometry::InvalidateCertificate()
 	m_bCertifiedWatertight.store( false, std::memory_order_release );
 	m_bProvablyOpenSheet.store( false, std::memory_order_release );
 	m_bNegativeOpenSignedVolume.store( false, std::memory_order_release );
+	m_topologicalOpenness.store( -2, std::memory_order_release );
 	m_certGeneration.fetch_add( 1, std::memory_order_acq_rel );
 	GeometricUtilities::BumpPatchCertificateEpoch();	// cached composite certificates are stale
 	BumpShapeRevision();
@@ -506,5 +518,16 @@ void BilinearPatchGeometry::EnsureCertified() const
 
 int BilinearPatchGeometry::TopologicalOpenness() const
 {
-	return GeometricUtilities::BilinearPatchSetOpenness( patches );
+	const int cached = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( cached != -2 ) {
+		return cached;
+	}
+	std::lock_guard<std::mutex> lock( m_opennessMutex );
+	const int recheck = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( recheck != -2 ) {
+		return recheck;
+	}
+	const int computed = GeometricUtilities::BilinearPatchSetOpenness( patches );
+	m_topologicalOpenness.store( computed, std::memory_order_release );
+	return computed;
 }

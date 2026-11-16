@@ -284,7 +284,7 @@ keeps every DL-622 gap fix that has a red-proof and changes the following.
   above it) or `SetContextAt` builds a new list.  `std::stack` was made a
   PROTECTED base of `MyIORStack` in this round (later superseded in `DL-631`,
   §5.8, by a private inline `IORDATA m_inline[4]` small-buffer + optional
-  `std::vector<IORDATA> m_heap`), so no caller can push or erase around
+  `std::vector<IORDATA>* m_heap`), so no caller can push or erase around
   `pushEntry` / `find_and_destroy` and desynchronise the indices.  A42 pins
   copy independence and re-indexing (green before and after; red under a
   mutation that writes through the shared list).
@@ -680,19 +680,21 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    and enforces a shared per-step `GroupDetourRayBudget()` counter plus
    `columnWalkUsed` (charging every `vertProbe` column walk after the first normal)
    across `sheet.normal` + `auxNormals` in `OpenSheetHoldsPoint` (`A62`, `A64a`).
-3. **Multi-fold curved/pleated sheet crossings (`A53`, `A57a`–`A57c`, `A65`, `A66b`):** When a ray
+3. **Multi-fold curved/pleated sheet crossings (`A53`, `A57a`–`A57c`, `A65`, `A66b`, `A66c`):** When a ray
    crosses an inner fold's back face on a non-planar certified open sheet while
    an overhanging outer fold of that same sheet still encloses
    `PointPastBackFaceCrossing(ri, d)`, `ResolveOpenSheetCrossing` pops unenclosed
    top entries above `pSelf` (filtering `!cs.keep` / `!csSub.keep` sibling entries
-   in `CrossingMedia::Keeps` and stand-in nesting `A66b`), runs
+   in `CrossingMedia::Keeps` and stand-in nesting `A66b`, and peeling any stale
+   unconfirmed open sheets exposed underneath when `pSelf` was on top `A66c`), runs
    `CrossingMedia::ConfirmAt(..., pExclude = 0)`,
    and repositions/inserts `pSelf` in outer-to-inner order against both closed
    (`cs->crossed`) and open (`cs->passed` / stand-in) stack entries
-   (`FindRetainedSelf` requiring matching `GetMaterial()` before substituting a
-   deduplicated sibling sheet `A57c`, and `A65` verifying outer-to-inner
-   repositioning below an intermediate open sheet on both pushed and unpushed walks)
-   so pushed and unpushed walks agree with `SeedFromPoint`.
+   (`FindRetainedSelf` requiring matching `GetMaterial()` and a confirmed stack
+   sibling before substituting a deduplicated sibling sheet `A57c`/`A66c`, and `A65`
+   verifying outer-to-inner repositioning below an intermediate open sheet on
+   both pushed and unpushed walks) so pushed and unpushed walks agree with
+   `SeedFromPoint`.
 4. **Luminaire seed self-exit vs enclosing room ceiling (`A55`):**
    `DetourOriginForSeedExit` steps `detourOrigin` slightly into the `-normal`
    free-space side of `pSeedObject`'s entry face (up to `2 * selfSkin`, or halfway
@@ -708,7 +710,7 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
    normal prisms of a planar sheet, point-based `SeedFromPoint` ==
    `ResolveUnpushedExit` parity (§5.2, `B5`: PT/BDPT `0.9969 +/- 0.0103` vs
    walk-history `0.7905`) remains the deliberate reciprocal convention.
-   `OpenSheetHalfSpaceSeedingTest`: **249 passed, 0 failed** (`234/0` Part A +
+   `OpenSheetHalfSpaceSeedingTest`: **250 passed, 0 failed** (`235/0` Part A +
    `15/0` Part B; `red_prove.sh` RED -> GREEN on `DL-626-SUMMARY`).
 
 **`DL-631` (hot-path overhead on scenes without open sheets):**
@@ -718,10 +720,11 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
   SBO (spilling to heap only above depth 4, plus `noexcept` move
   construction/assignment and self-assignment safety on `IORStack::operator=`;
   copy-on-write `MyIORStack::ContextList` stays out-of-line and is allocated
-  only for open-sheet pushes), added 8-entry inline SBO (`inlineRecs[8]`) in
-  `LaneSeed` (`SeedLanesFromPoint`), and used `static const IORStack kQueryStack(1.0)`
-  in `ClassifyMembershipHit` / `MaterialMayRefract` (`sample` `malloc` frames
-  **584 -> 205 (-65 %)**, `free` **198 -> 71 (-64 %)**).
+  only for open-sheet pushes, `IORStackTest` **33/0**), added 8-entry inline SBO
+  (`inlineRecs[8]`) in `LaneSeed` (`SeedLanesFromPoint`), and used
+  `static const IORStack kQueryStack(1.0)` in `ClassifyMembershipHit` /
+  `MaterialMayRefract` (`sample` `malloc` frames **584 -> 205 (-65 %)**, `free`
+  **198 -> 71 (-64 %)**).
 - Added `!cat.hasTrackableMedia` 0-ray immediate return on all-opaque scenes
   (`A59`), a `!cat.hasSheets` fast path in `SeedFromPointImpl` using a single
   32-entry stack buffer (`ProbeEntry[32]`, `kMaxProbeEntries = kMaxProbeSteps = 32`,
@@ -729,8 +732,8 @@ interleaved n = 8: master 248.8 +/- 1.5 s, now 249.9 +/- 2.3 s (+0.5 %).
   with immediate return when the forward `TallyProbe` finds `!anyCandidate`,
   `TallyProbe` reuse of `info.ior` for `laneIor[0]` when `pLanes->nm[0] == nm`,
   and $O(1)$ epoch-validated `EnsureCatalogPoseState` + `CatalogBoxBvh`
-  (`closedTrackableBvh` / `sheetBoxBvh`, zero per-ray heap allocations or virtual
-  calls `A66a`).
+  (`closedTrackableBvh` / `sheetBoxBvh`, zero per-ray heap allocations for
+  $K_{\text{box}} \le 32$ overlapping AABBs and zero virtual AABB calls `A66a`).
 - Seeded all 4 HWSS lanes once in `PathTracingIntegrator::IntegrateRayHWSS`
   (`SeedLanesFromPoint`, binding `IORStack& iorStack = laneStacks[0]` with zero
   extra stack copy) and forwarded `preseededOriginLanes_` into

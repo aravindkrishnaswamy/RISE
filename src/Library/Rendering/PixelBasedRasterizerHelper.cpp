@@ -17,6 +17,7 @@
 #include "PixelBasedRasterizerHelper.h"
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <vector>
 #include "../Utilities/RTime.h"
 #include "../Utilities/Profiling.h"
@@ -1007,11 +1008,12 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		seq.Begin( startx, endx, starty, endy );
 
 		const unsigned int numseq = seq.NumRegions();
+		const bool hasMedium = SceneHasParticipatingMedium( scene );
 		unsigned long long progressBits = 0;
 		std::memcpy( &progressBits, &mProgressBase, sizeof( progressBits ) );
-		const unsigned int baseMediumSeed = DeriveSeed(
+		const unsigned int baseMediumSeed = hasMedium ? DeriveSeed(
 			LockedLibcRand(),
-			progressBits ^ ( static_cast<unsigned long long>( pass ) * 0x9E3779B97F4A7C15ULL ) );
+			progressBits ^ ( static_cast<unsigned long long>( pass ) * 0x9E3779B97F4A7C15ULL ) ) : 0u;
 		bool completed = true;
 
 		for( unsigned int i=0; i<numseq; i++ ) {
@@ -1035,7 +1037,7 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 			const unsigned long long tileKey =
 				( static_cast<unsigned long long>( rect.top ) << 32 ) |
 				static_cast<unsigned long long>( rect.left );
-			ScopedMediumTileSeed mediumSeed( DeriveSeed( baseMediumSeed, tileKey ) );
+			ScopedMediumTileSeed mediumSeed( hasMedium ? DeriveSeed( baseMediumSeed, tileKey ) : 0u, hasMedium );
 			SPRasterizeSingleBlock( rc, image, scene, rect, height );
 			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
 				completed = false;
@@ -1662,11 +1664,12 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 		seq.Begin( startx, endx, starty, endy );
 		const unsigned int numseq = seq.NumRegions();
+		const bool hasMedium = SceneHasParticipatingMedium( pScene );
 		unsigned long long animProgressBits = 0;
 		std::memcpy( &animProgressBits, &mProgressBase, sizeof( animProgressBits ) );
-		const unsigned int baseAnimMediumSeed = DeriveSeed(
+		const unsigned int baseAnimMediumSeed = hasMedium ? DeriveSeed(
 			LockedLibcRand(),
-			animProgressBits ^ ( static_cast<unsigned long long>( pass ) * 0x9E3779B97F4A7C15ULL ) ^ 0x517CC1B727220A95ULL );
+			animProgressBits ^ ( static_cast<unsigned long long>( pass ) * 0x9E3779B97F4A7C15ULL ) ^ 0x517CC1B727220A95ULL ) : 0u;
 		bool completed = true;
 
 		for( unsigned int i=0; i<numseq; i++ ) {
@@ -1696,7 +1699,7 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 			const unsigned long long tileKey =
 				( static_cast<unsigned long long>( rect.top ) << 32 ) |
 				static_cast<unsigned long long>( rect.left );
-			ScopedMediumTileSeed mediumSeed( DeriveSeed( baseAnimMediumSeed, tileKey ) );
+			ScopedMediumTileSeed mediumSeed( hasMedium ? DeriveSeed( baseAnimMediumSeed, tileKey ) : 0u, hasMedium );
 			SPRasterizeSingleBlockOfAnimation( rc, image, pScene, rect, height, framedata );
 			if( pProgressFunc && pProgressFunc->IsCancelled() ) {
 				completed = false;
@@ -2154,11 +2157,19 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			RasterizerScopeExit pPassSeqOwner( [&]() {
 				safe_release( pPassSeq );
 			} );
-			RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, *pPassSeq, passFrameData );
+			const int resolveFieldParity = ( field == FIELD_BOTH ) ? -1 : static_cast<int>( field );
+			const bool passCompleted = RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, *pPassSeq, passFrameData );
 			safe_release( pPassSeq );
 
 			samplingOverride.Restore();
 			safe_release( pPassSampling );
+
+			if( !passCompleted ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"RenderFrameOfAnimation:: cancelled during pass %u/%u",
+					passIdx+1, numPasses );
+				break;
+			}
 
 			accumulatedFrameProgress += static_cast<double>( animNumTiles ) * static_cast<double>( passSPP );
 
@@ -2176,7 +2187,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 					num   = static_cast<double>(passIdx+1);
 					denom = static_cast<double>(numPasses);
 				}
-				if( !pProgressFunc->Progress( num, denom ) ) {
+				if( pProgressFunc->IsCancelled() || !pProgressFunc->Progress( num, denom ) ) {
 					GlobalLog()->PrintEx( eLog_Event,
 						"RenderFrameOfAnimation:: cancelled after pass %u/%u",
 						passIdx+1, numPasses );
@@ -2193,7 +2204,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 				{
 					// L6e-1.1 — bracket via RAII.
 					FrameStoreBulkBracket bracket( mFrameStore, image );
-					progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
+					progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect, resolveFieldParity );
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( image, PreviewCompositionRegion() );
@@ -2206,11 +2217,13 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		}
 
 		// Ensure `image` carries the final progressive state even when
-		// the loop exited early (cancellation) without a final preview.
-		{
+		// the loop exited early (cancellation) without a final preview,
+		// skipping Resolve when cancelled before any pixel completed.
+		if( progFilm.CountDone( 1, pRect ) > 0 ) {
+			const int resolveFieldParity = ( field == FIELD_BOTH ) ? -1 : static_cast<int>( field );
 			// L6e-1.1 — bracket via RAII.
 			FrameStoreBulkBracket bracket( mFrameStore, image );
-			progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect );
+			progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples(), pRect, resolveFieldParity );
 		}
 
 		// Normalize per-pixel AOV by progressive-film alpha sum so the

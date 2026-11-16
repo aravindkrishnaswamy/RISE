@@ -18,6 +18,7 @@
 #endif
 #include <windows.h>
 #include <wincred.h>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -43,14 +44,36 @@ QString CredentialStore::read(const QString& account)
 
     QString secret;
     if (pcred->CredentialBlob && pcred->CredentialBlobSize > 0) {
-        secret = QString::fromUtf8(
-            reinterpret_cast<const char*>(pcred->CredentialBlob),
-            static_cast<int>(pcred->CredentialBlobSize));
+        const DWORD sz = pcred->CredentialBlobSize;
+        // Standard Win32 `CRED_TYPE_GENERIC` blobs (Credential Manager UI,
+        // `cmdkey.exe`, and `CredentialStore::write` below) are UTF-16LE
+        // `wchar_t` code units without a trailing NUL.
+        if ((sz % sizeof(char16_t)) == 0) {
+            int u16Count = static_cast<int>(sz / sizeof(char16_t));
+            const char16_t* u16 = reinterpret_cast<const char16_t*>(pcred->CredentialBlob);
+            while (u16Count > 0 && u16[u16Count - 1] == u'\0') {
+                --u16Count;
+            }
+            secret = QString::fromUtf16(u16, u16Count);
+        } else {
+            secret = QString::fromUtf8(
+                reinterpret_cast<const char*>(pcred->CredentialBlob),
+                static_cast<int>(sz));
+        }
         SecureZeroMemory(pcred->CredentialBlob, pcred->CredentialBlobSize);
     }
     CredFree(pcred);
 
-    return secret.trimmed().isEmpty() ? QString() : secret;
+    if (secret.trimmed().isEmpty()) {
+        if (!secret.isEmpty()) {
+            if (secret.isDetached()) {
+                secret.fill(QChar(0));
+            }
+            secret.clear();
+        }
+        return QString();
+    }
+    return secret;
 }
 
 bool CredentialStore::write(const QString& account, const QString& secret)
@@ -62,24 +85,23 @@ bool CredentialStore::write(const QString& account, const QString& secret)
     }
 
     const std::wstring target = targetNameForAccount(account);
-    QByteArray utf8 = trimmed.toUtf8();
-    if (utf8.isEmpty() || static_cast<size_t>(utf8.size()) > CRED_MAX_CREDENTIAL_BLOB_SIZE) {
-        if (!utf8.isEmpty()) {
-            SecureZeroMemory(utf8.data(), static_cast<SIZE_T>(utf8.size()));
-        }
+    const qsizetype byteCount = trimmed.size() * static_cast<qsizetype>(sizeof(char16_t));
+    if (byteCount <= 0 || static_cast<size_t>(byteCount) > CRED_MAX_CREDENTIAL_BLOB_SIZE) {
         return false;
     }
+    QByteArray utf16Bytes(byteCount, Qt::Uninitialized);
+    std::memcpy(utf16Bytes.data(), trimmed.utf16(), static_cast<size_t>(byteCount));
 
     CREDENTIALW cred = {};
     cred.Flags = 0;
     cred.Type = CRED_TYPE_GENERIC;
     cred.TargetName = const_cast<LPWSTR>(target.c_str());
-    cred.CredentialBlobSize = static_cast<DWORD>(utf8.size());
-    cred.CredentialBlob = reinterpret_cast<LPBYTE>(utf8.data());
+    cred.CredentialBlobSize = static_cast<DWORD>(byteCount);
+    cred.CredentialBlob = reinterpret_cast<LPBYTE>(utf16Bytes.data());
     cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
 
     const BOOL ok = CredWriteW(&cred, 0);
-    SecureZeroMemory(utf8.data(), static_cast<SIZE_T>(utf8.size()));
+    SecureZeroMemory(utf16Bytes.data(), static_cast<SIZE_T>(utf16Bytes.size()));
     return ok != FALSE;
 }
 

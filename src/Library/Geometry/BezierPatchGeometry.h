@@ -114,6 +114,8 @@ namespace RISE
 			mutable std::atomic<bool>	m_bCertifiedWatertight;
 			mutable std::atomic<bool>	m_bProvablyOpenSheet;
 			mutable std::atomic<bool>	m_bNegativeOpenSignedVolume;
+			mutable std::mutex			m_opennessMutex;
+			mutable std::atomic<int>	m_topologicalOpenness;
 			void EnsureCertified() const;
 			void InvalidateCertificate();
 			void EnsureAreaTable() const;

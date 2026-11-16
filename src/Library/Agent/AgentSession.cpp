@@ -3879,11 +3879,13 @@ namespace RISE
 			//! NOT barren, but occlusion-neutral: `rawmesh_geometry` (the
 			//! non-indexed legacy loader) and `bezierpatch_geometry` /
 			//! `bilinearpatch_geometry` have real derivatives, so `curv` reads
-			//! correctly and this predicate does not refuse them -- but they
-			//! publish no occlusion signal provider, so the composition's
-			//! cavity-deepening `occlusion()` term reads neutral there.  The
-			//! curv half of the wear composition still works; only the cavity
-			//! half is inert.
+			//! correctly on front-facing hits (`BezierPatchGeometry` leaves
+			//! `derivatives.valid = false` / `curv = 0` on normal-flipped back-face
+			//! hits so `(dpdu, dpdv, vNormal)` never publishes a left-handed frame)
+			//! and this predicate does not refuse them -- but they publish no
+			//! occlusion signal provider, so the composition's cavity-deepening
+			//! `occlusion()` term reads neutral there.  The curv half of the wear
+			//! composition still works; only the cavity half is inert.
 			bool CurvBarrenGeometryKind_( const std::string& geometryKind )
 			{
 				return geometryKind == "infiniteplane_geometry" ||

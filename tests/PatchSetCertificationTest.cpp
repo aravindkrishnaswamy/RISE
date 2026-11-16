@@ -56,6 +56,11 @@
 #include "../src/Library/Geometry/DisplacedGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+#include "../src/Library/Intersection/RayPrimitiveIntersections.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -880,6 +885,22 @@ static void TestOpenSheetCSG()
 			Check( e.geometric.derivatives.valid && NormalFieldDivergence( e ) > 0,
 				"P2-1: its normal derivatives are re-paired with the outward shading normal" );
 			Check( FrameHonest( e ), "P3-2: the smooth exit's derivative frame is right-handed with its normal" );
+			// Live mirror flip on `smooth_lens`'s mesh operand (`sa`) AFTER the composite
+			// already cached `kMirrorA == 0`: `GlobalTransformPoseEpoch()` must refresh
+			// `CSGObject::CertificateBits()` so `derivatives.valid` stays true on both transitions.
+			Object* saMut = const_cast<Object*>( dynamic_cast<const Object*>( AsCSG( sml )->GetOperandA() ) );
+			if( saMut ) {
+				saMut->SetMirrorAxis( 0 );
+				saMut->FinalizeTransformations();
+				const RayIntersection em = Cast( *sml, Point3( 0.1, 0.1, 0.2 ), down );
+				Check( em.geometric.bHit && em.geometric.derivatives.valid && NormalFieldDivergence( em ) > 0,
+					"R7: live SetMirrorAxis(0) + FinalizeTransformations on CSG mesh operand refreshes kMirrorA and preserves exit derivatives" );
+				saMut->SetMirrorAxis( -1 );
+				saMut->FinalizeTransformations();
+				const RayIntersection eu = Cast( *sml, Point3( 0.1, 0.1, 0.2 ), down );
+				Check( eu.geometric.bHit && eu.geometric.derivatives.valid && FrameHonest( eu ),
+					"R7: clearing SetMirrorAxis(-1) + FinalizeTransformations restores un-mirrored CSG exit frame" );
+			}
 			// Grazing exit near the +x edge of the bottom face: the outward
 			// GEOMETRIC normal is along the ray (the mesh flipped it) while
 			// the outward interpolated SHADING normal, tilted toward +x, is
@@ -2834,6 +2855,169 @@ static void TestShippedWatertightPatchModels_DL630()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// L. Round 7: lazy standalone open-patch proof & two-root bilinear hits
+//////////////////////////////////////////////////////////////////////
+
+static void TestRound7StandalonePatchAndBilinearFixes()
+{
+	std::cout << "L. Round 7 standalone open-patch proof & two-root bilinear intersections" << std::endl;
+
+	// L1: Standalone open BezierPatchGeometry and BilinearPatchGeometry intersected
+	// via `Object::IntersectRay` WITHOUT calling `PrepareForRendering()` or
+	// `IsProvablyOpenSheet()` beforehand:
+	//   - opaque `LambertianMaterial` stays certification-free (`bProvablyNoInterior == false`)
+	//   - `AssignMaterial( *glass )` lazily certifies on the first ray (`bProvablyNoInterior == true`)
+	//   - `ClearMaterial()` reverts `bProvablyNoInterior` to `false`.
+	{
+		UniformColorPainter* white = new UniformColorPainter( RISEPel( 1.0, 1.0, 1.0 ) );
+		UniformScalarPainter* tau1 = new UniformScalarPainter( 1.0 );
+		UniformScalarPainter* ior15 = new UniformScalarPainter( 1.5 );
+		UniformScalarPainter* scat0 = new UniformScalarPainter( 0.0 );
+		LambertianMaterial* matte = new LambertianMaterial( *white );
+		DielectricMaterial* glass = new DielectricMaterial( *tau1, *ior15, *scat0, true );
+
+		BezierPatchGeometry* gBez = new BezierPatchGeometry( 8, 8, false );
+		BezierPatch flatBez;
+		for( int i = 0; i < 4; ++i ) {
+			for( int j = 0; j < 4; ++j ) {
+				flatBez.c[i].pts[j] = Point3( -1.0 + 2.0 * Scalar( j ) / 3.0, -1.0 + 2.0 * Scalar( i ) / 3.0, 2.0 );
+			}
+		}
+		gBez->AddPatch( flatBez );
+		gBez->Prepare();
+
+		BilinearPatchGeometry* gBil = new BilinearPatchGeometry( 8, 8, false );
+		gBil->AddPatch( MakeQuad( Point3( -1, -1, 2 ), Point3( 1, -1, 2 ), Point3( 1, 1, 2 ), Point3( -1, 1, 2 ) ) );
+		gBil->Prepare();
+
+		Object* oBez = new Object( gBez );
+		oBez->AssignMaterial( *matte );
+		oBez->FinalizeTransformations();
+
+		Object* oBil = new Object( gBil );
+		oBil->AssignMaterial( *matte );
+		oBil->FinalizeTransformations();
+
+		const Ray rayZ( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+		{
+			RayIntersection riBez( rayZ, nullRasterizerState );
+			oBez->IntersectRay( riBez, RISE_INFINITY, true, true, false );
+			RayIntersection riBil( rayZ, nullRasterizerState );
+			oBil->IntersectRay( riBil, RISE_INFINITY, true, true, false );
+			Check( riBez.geometric.bHit && !riBez.geometric.bProvablyNoInterior &&
+				riBil.geometric.bHit && !riBil.geometric.bProvablyNoInterior,
+				"L1a: standalone opaque Bezier/Bilinear patch objects report bProvablyNoInterior == false without PrepareForRendering" );
+		}
+
+		oBez->AssignMaterial( *glass );
+		oBil->AssignMaterial( *glass );
+		{
+			RayIntersection riBez( rayZ, nullRasterizerState );
+			oBez->IntersectRay( riBez, RISE_INFINITY, true, true, false );
+			RayIntersection riBil( rayZ, nullRasterizerState );
+			oBil->IntersectRay( riBil, RISE_INFINITY, true, true, false );
+			Check( riBez.geometric.bHit && riBez.geometric.bProvablyNoInterior &&
+				riBil.geometric.bHit && riBil.geometric.bProvablyNoInterior,
+				"L1b: standalone DielectricMaterial Bezier/Bilinear patch objects lazily certify and stamp bProvablyNoInterior == true on first ray" );
+		}
+
+		oBez->ClearMaterial();
+		oBil->ClearMaterial();
+		{
+			RayIntersection riBez( rayZ, nullRasterizerState );
+			oBez->IntersectRay( riBez, RISE_INFINITY, true, true, false );
+			RayIntersection riBil( rayZ, nullRasterizerState );
+			oBil->IntersectRay( riBil, RISE_INFINITY, true, true, false );
+			Check( riBez.geometric.bHit && !riBez.geometric.bProvablyNoInterior &&
+				riBil.geometric.bHit && !riBil.geometric.bProvablyNoInterior,
+				"L1c: ClearMaterial() clears bProvablyNoInterior on already-certified open Bezier/Bilinear patch objects" );
+		}
+
+		safe_release( oBez );
+		safe_release( oBil );
+		safe_release( gBez );
+		safe_release( gBil );
+		safe_release( glass );
+		safe_release( matte );
+		safe_release( scat0 );
+		safe_release( ior15 );
+		safe_release( tau1 );
+		safe_release( white );
+	}
+
+	// L2: Analytic two-root warped BilinearPatch:
+	//   P(u, v) = ( u*(1 - 4*v), u + v - 0.75, 5 - 4*v )
+	// Along Ray((0, 0, 0), (0, 0, 1)):
+	//   sol[0] = 0.25 -> u0 = 0.5, t0 = 4.0, rawN = (-4,  0, +2) (BACK face,  dot(N, +z) > 0)
+	//   sol[1] = 0.75 -> u1 = 0.0, t1 = 2.0, rawN = (-4, -8, -2) (FRONT face, dot(N, +z) < 0)
+	// Exercises:
+	//   - `u > -NEARZERO` on `sol[1]` (`u1 = 0` seam and `u1 = -1e-13` graze), selecting nearer `t1 = 2.0`
+	//   - `tCand > tMin` on `sol[1]` when ray starts ON the `z = 2.0` sheet, skipping self-hit to `t = 2.0` (`z = 4.0`)
+	//   - `BilinearPatchGeometry` `bHitFrontFaces=false, bHitBackFaces=true` selecting farther back-face `t0 = 4.0`
+	//   - `BilinearPatchGeometry` rejecting a collapsed zero-normal pole edge (`pts[0] == pts[1]`).
+	{
+		BilinearPatch saddle;
+		saddle.pts[0] = Point3(  0.0, -0.75, 5.0 );
+		saddle.pts[1] = Point3(  0.0,  0.25, 1.0 );
+		saddle.pts[2] = Point3(  1.0,  0.25, 5.0 );
+		saddle.pts[3] = Point3( -3.0,  1.25, 1.0 );
+
+		BILINEAR_HIT hSeam3, hGraze3;
+		RayBilinearPatchIntersection( Ray( Point3( 0.0, 0.0, 0.0 ), Vector3( 0, 0, 1 ) ), hSeam3, saddle );
+		RayBilinearPatchIntersection( Ray( Point3( 2e-13, 0.0, 0.0 ), Vector3( 0, 0, 1 ) ), hGraze3, saddle );
+		Check( hSeam3.bHit && std::fabs( hSeam3.dRange - 2.0 ) < 1e-6 && std::fabs( hSeam3.u ) < 1e-9 &&
+			hGraze3.bHit && std::fabs( hGraze3.dRange - 2.0 ) < 1e-6,
+			"L2a: 3-arg RayBilinearPatchIntersection accepts nearer sol[1] root on u = 0 seam (got dRange=" +
+			std::to_string( hSeam3.dRange ) + ")" );
+
+		BILINEAR_HIT hSelf;
+		RayBilinearPatchIntersection( Ray( Point3( 0.0, 0.0, 2.0 ), Vector3( 0, 0, 1 ) ), hSelf, saddle );
+		Check( hSelf.bHit && std::fabs( hSelf.dRange - 2.0 ) < 1e-6 && std::fabs( hSelf.v - 0.25 ) < 1e-6,
+			"L2b: RayBilinearPatchIntersection rejects t == 0 self-hit on sol[1] and returns farther root at dRange = 2.0" );
+
+		BilinearPatchGeometry* gSaddle = new BilinearPatchGeometry( 8, 8, false );
+		gSaddle->AddPatch( saddle );
+		gSaddle->Prepare();
+
+		RayIntersectionGeometric rigBoth( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), nullRasterizerState );
+		gSaddle->IntersectRay( rigBoth, true, true, false );
+		RayIntersectionGeometric rigBackOnly( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), nullRasterizerState );
+		gSaddle->IntersectRay( rigBackOnly, false, true, false );
+		RayIntersectionGeometric rigFrontOnly( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), nullRasterizerState );
+		gSaddle->IntersectRay( rigFrontOnly, true, false, false );
+		Check( rigBoth.bHit && std::fabs( rigBoth.range - 2.0 ) < 1e-6 &&
+			rigFrontOnly.bHit && std::fabs( rigFrontOnly.range - 2.0 ) < 1e-6 &&
+			rigBackOnly.bHit && std::fabs( rigBackOnly.range - 4.0 ) < 1e-6 &&
+			Vector3Ops::Dot( rigBackOnly.vGeomNormal, Vector3( 0, 0, 1 ) ) > 0 &&
+			gSaddle->IntersectRay_IntersectionOnly( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), 3.0, true, false ) &&
+			!gSaddle->IntersectRay_IntersectionOnly( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), 3.0, false, true ) &&
+			gSaddle->IntersectRay_IntersectionOnly( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), 5.0, false, true ),
+			"L2c: BilinearPatchGeometry honours front/back culling per root across two-root saddle patches" );
+		safe_release( gSaddle );
+
+		// Collapsed pole edge at u = 0 (`pts[0] == pts[1] == (0, 0, 2)`): `dpdv == 0`, so `rawN == 0` at u = 0.
+		BilinearPatch polePatch;
+		polePatch.pts[0] = Point3( 0.0,  0.0, 2.0 );
+		polePatch.pts[1] = Point3( 0.0,  0.0, 2.0 );
+		polePatch.pts[2] = Point3( 1.0, -1.0, 2.0 );
+		polePatch.pts[3] = Point3( 1.0,  1.0, 2.0 );
+		BilinearPatchGeometry* gPole = new BilinearPatchGeometry( 8, 8, false );
+		gPole->AddPatch( polePatch );
+		gPole->Prepare();
+		RayIntersectionGeometric rigPole( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), nullRasterizerState );
+		gPole->IntersectRay( rigPole, true, true, false );
+		RayIntersectionGeometric rigInterior( Ray( Point3( 0.5, 0.0, 0.0 ), Vector3( 0, 0, 1 ) ), nullRasterizerState );
+		gPole->IntersectRay( rigInterior, true, true, false );
+		Check( !rigPole.bHit &&
+			!gPole->IntersectRay_IntersectionOnly( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), 10.0, true, true ) &&
+			rigInterior.bHit && std::fabs( rigInterior.range - 2.0 ) < 1e-6 &&
+			std::isfinite( rigInterior.vNormal.x ) && std::isfinite( rigInterior.vNormal.z ),
+			"L2d: BilinearPatchGeometry rejects zero-normal collapsed pole hits while preserving interior hits" );
+		safe_release( gPole );
+	}
+}
+
 int main()
 {
 	std::cout << "=== PatchSetCertificationTest (DL-616 / DL-617 / DL-621 / DL-624 / DL-630) ===" << std::endl;
@@ -2849,6 +3033,7 @@ int main()
 	TestMeshAndDisplacedCSG_DL621();
 	TestPolarPatchSets_DL624();
 	TestShippedWatertightPatchModels_DL630();
+	TestRound7StandalonePatchAndBilinearFixes();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }

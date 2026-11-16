@@ -64,16 +64,13 @@ namespace RISE
 			CSG_OP									op;
 
 			//! DL-617 certificate cache (see `ComputeCertificateBits`):
-			//! -1 = not computed, else ((patch-certificate epoch mod 2^31)
-			//! << 32) | the flag mask below.  Recomputed by `Realize` (every
-			//! preparation), dropped by `AssignObjects` / `SetOperation`, and
-			//! STALE whenever `GeometricUtilities::PatchCertificateEpoch()`
-			//! has moved: a patch was added to, or re-prepared in, any patch
-			//! set, or any triangle mesh's vertices / triangles / normals were
-			//! edited (every mesh mutation that drops its cached
-			//! `TopologicalOpenness` bumps the same epoch) -- possibly an
-			//! operand's -- since it was computed.  The operand TRANSFORM
-			//! facts (`kMirrorA/B`) are re-derived by `Realize` only.
+			//! -1 = not computed, else ((combined certificate/shape/pose epoch
+			//! mod 2^31) << 32) | the flag mask below.  Automatically invalidated
+			//! whenever `PatchCertificateEpoch()`, `GlobalGeometryShapeEpoch()`, or
+			//! `GlobalTransformPoseEpoch()` advances (covering patch/mesh edits,
+			//! keyframed `ClippedPlaneGeometry` corners, nested `CSGObject` or
+			//! `Object` geometry edits, `RebakeHierarchy()`, and per-sample CSG
+			//! motion-blur transforms that flip `kMirrorA/B`).
 			enum
 			{
 				kCertWatertight		= 1,	//!< both operands certified closed solids

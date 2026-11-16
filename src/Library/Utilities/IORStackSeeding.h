@@ -1757,8 +1757,8 @@ namespace RISE
 			bool sheetBoxesChanged = ( !cat.poseStateReady || cat.posedSheetBoxes.size() != sheetCount );
 			cat.posedSheets.resize( sheetCount );
 			cat.posedSheetBoxes.resize( sheetCount );
+			OpenSheetCatalogEntry posed;
 			for( std::size_t i = 0; i < sheetCount; ++i ) {
-				OpenSheetCatalogEntry posed;
 				const bool ok = PosedOpenSheet( cat.sheets[i], posed );
 				posed.valid = ok;
 				cat.posedSheets[i] = posed;
@@ -2014,14 +2014,14 @@ namespace RISE
 				// the TLAS tie over a flush closed dielectric face, or two closed
 				// dielectrics share a flush face), `probe.Advance(kSeedEps)` would step
 				// past it.  Query `cat.closedTrackableBvh` in O(log M + K_box) with
-				// O(1) epoch validation, zero per-ray allocations and zero per-ray
-				// virtual calls when no box overlaps `ptIntersection +- 2e-5`.
+				// O(1) epoch validation, zero per-ray allocations for K_box <= 32, and
+				// zero per-ray virtual calls when no box overlaps `ptIntersection +- 2e-5`.
 				if( !closedTrackable.empty() &&
 					!( closedTrackable.size() == 1 && closedTrackable[0].pObj == ri.pObject ) )
 				{
 					EnsureCatalogPoseState( cat );
 					const Scalar kCoTol = Scalar( 1e-5 );
-					static const std::size_t kInlineCands = 8;
+					static const std::size_t kInlineCands = 32;
 					std::size_t inlineCands[kInlineCands];
 					std::size_t candCount = 0;
 					std::vector<std::size_t> overflowCands;
@@ -5010,10 +5010,14 @@ namespace RISE
 							continue;
 						}
 						// Check whether `pExisting` is a confirmed sibling of `pObj`
-						// (neither passed before the other): if so, `pStack` already
-						// holds a representative for that sibling medium.  Nested
-						// sheets of the same material (`passes` true in one direction)
-						// are distinct stack layers in `SeedFromPoint` and both stay.
+						// at `pAfter` (every entry in `confirmed` encloses `pAfter`,
+						// regardless of which sibling `ConfirmOpenSheetsAt` flagged
+						// `keep` for `SeedFromPoint`): if neither passed before the
+						// other, `pStack` already holds a representative for that
+						// sibling medium.  Nested sheets (`passes` true in one
+						// direction) are distinct layers; unconfirmed stack entries
+						// (`csExisting == 0`) do not enclose `pAfter` and cannot
+						// stand in as sibling representatives.
 						const ConfirmedSheet* csExisting = 0;
 						for( std::size_t c = 0; c < confirmed.size(); ++c ) {
 							if( confirmed[c].pObj == pExisting ) {
@@ -5021,12 +5025,8 @@ namespace RISE
 								break;
 							}
 						}
-						if( csExisting ) {
-							if( pMat && pExisting->GetMaterial() == pMat &&
-								!passes( *csSelf, pExisting ) && !passes( *csExisting, pObj ) ) {
-								return 0;
-							}
-						} else if( pMat && pExisting->GetMaterial() == pMat && !passes( *csSelf, pExisting ) ) {
+						if( csExisting && pMat && pExisting->GetMaterial() == pMat &&
+							!passes( *csSelf, pExisting ) && !passes( *csExisting, pObj ) ) {
 							return 0;
 						}
 					}
@@ -5235,6 +5235,9 @@ namespace RISE
 				const Scalar prevTop = dest.top();
 				if( wasPushed ) {
 					dest.pop();
+					if( wasTopSelf && pScene && pScene->GetObjects() && dest.Depth() > 1 && dest.topIsOpenSheet() ) {
+						ResolveUnpushedExitWithMedia( ri, pSelf, dest, nm, media, checkSelfEnclosure );
+					}
 				}
 				if( const ConfirmedSheet* cs = checkSelfEnclosure ? media.FindRetainedSelf( pSelf, &dest ) : 0 ) {
 					auto passedObj = [&]( const IObject* target ) -> bool {

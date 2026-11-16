@@ -282,7 +282,9 @@ static int RunTests()
 		Case( "RAW importer accepts a filename longer than 255 bytes",
 			RISE::TestSupport::ScratchPath( "long_raw.RISEscene" ).c_str(),
 			"RISE ASCII SCENE 7\nrawmesh_geometry\n{\nname mesh\nfile " + mesh.generic_string() + "\n}\n" );
-		fs::remove_all( RISE::LongAwareFsPath( root ) );
+		std::error_code rmEc;
+		fs::remove_all( RISE::LongAwareFsPath( root, true ), rmEc );
+		Check( !rmEc, "clean up long RAW fixture directory" );
 	}
 
 	{

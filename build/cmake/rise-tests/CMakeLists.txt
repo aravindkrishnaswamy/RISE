@@ -325,6 +325,7 @@ foreach(test_src ${TEST_SOURCES})
     target_compile_options(${test_name} PRIVATE
         /Zc:__cplusplus
         /permissive-
+        /UNDEBUG                   # keep <cassert> checks live in Release test runs (matches make builds)
         /wd4250                    # 'inherits via dominance' - benign with diamond inheritance
     )
 

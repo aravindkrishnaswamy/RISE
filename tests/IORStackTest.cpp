@@ -17,7 +17,6 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#include <cassert>
 #include <iostream>
 #include <type_traits>
 #include <utility>
@@ -26,6 +25,22 @@
 #include "TestStubObject.h"
 
 using namespace RISE;
+
+namespace
+{
+	int gPassCount = 0;
+	int gFailCount = 0;
+
+	void Check( const bool cond, const char* label )
+	{
+		if( cond ) {
+			++gPassCount;
+		} else {
+			++gFailCount;
+			std::cerr << "FAIL: " << label << std::endl;
+		}
+	}
+}
 
 static_assert(
 	std::is_nothrow_move_constructible<IORStack>::value,
@@ -58,12 +73,12 @@ static void TestEnvironmentIOR()
 	std::cout << "Running TestEnvironmentIOR..." << std::endl;
 
 	IORStack air( 1.0 );
-	assert( air.top() == 1.0 );
-	assert( !air.containsCurrent() );
-	assert( air.topObject() == 0 );
+	Check( air.top() == 1.0, "air.top() == 1.0" );
+	Check( !air.containsCurrent(), "!air.containsCurrent()" );
+	Check( air.topObject() == 0, "air.topObject() == 0" );
 
 	IORStack water( 1.333 );
-	assert( water.top() == 1.333 );
+	Check( water.top() == 1.333, "water.top() == 1.333" );
 
 	std::cout << "TestEnvironmentIOR passed!" << std::endl;
 }
@@ -75,15 +90,15 @@ static void TestPushPop( const IObject* stub )
 	IORStack stack( 1.0 );
 	stack.SetCurrentObject( stub );
 
-	assert( !stack.containsCurrent() );
+	Check( !stack.containsCurrent(), "!stack.containsCurrent() before push" );
 	stack.push( 1.5 );
-	assert( stack.top() == 1.5 );
-	assert( stack.containsCurrent() );
-	assert( stack.topObject() == stub );
+	Check( stack.top() == 1.5, "stack.top() == 1.5 after push" );
+	Check( stack.containsCurrent(), "stack.containsCurrent() after push" );
+	Check( stack.topObject() == stub, "stack.topObject() == stub" );
 
 	stack.pop();
-	assert( stack.top() == 1.0 );
-	assert( !stack.containsCurrent() );
+	Check( stack.top() == 1.0, "stack.top() == 1.0 after pop" );
+	Check( !stack.containsCurrent(), "!stack.containsCurrent() after pop" );
 
 	std::cout << "TestPushPop passed!" << std::endl;
 }
@@ -97,12 +112,12 @@ static void TestCopyPreservesTop( const IObject* stub )
 	original.push( 1.5 );
 
 	IORStack copy( original );
-	assert( copy.top() == 1.5 );
-	assert( copy.containsCurrent() );
+	Check( copy.top() == 1.5, "copy.top() == 1.5" );
+	Check( copy.containsCurrent(), "copy.containsCurrent()" );
 
 	IORStack assigned( 1.0 );
 	assigned = original;
-	assert( assigned.top() == 1.5 );
+	Check( assigned.top() == 1.5, "assigned.top() == 1.5" );
 
 	std::cout << "TestCopyPreservesTop passed!" << std::endl;
 }
@@ -117,7 +132,7 @@ static void TestCannotPopEnvironment( const IObject* stub )
 	// pop() on a stack with only the environment entry must be a
 	// no-op: top() remains the environment IOR.
 	stack.pop();
-	assert( stack.top() == 1.0 );
+	Check( stack.top() == 1.0, "cannot pop environment IOR" );
 
 	std::cout << "TestCannotPopEnvironment passed!" << std::endl;
 }
@@ -133,14 +148,14 @@ static void TestMoveInlineAndSpilled( const IObject* stub )
 	inlineSrc.push( 1.5 );
 
 	IORStack inlineMoved( std::move( inlineSrc ) );
-	assert( inlineMoved.Depth() == 2 );
-	assert( inlineMoved.top() == 1.5 );
-	assert( inlineMoved.containsCurrent() );
-	assert( inlineMoved.CrossingEtaFrom() == 1.25 );
+	Check( inlineMoved.Depth() == 2, "inlineMoved.Depth() == 2" );
+	Check( inlineMoved.top() == 1.5, "inlineMoved.top() == 1.5" );
+	Check( inlineMoved.containsCurrent(), "inlineMoved.containsCurrent()" );
+	Check( inlineMoved.CrossingEtaFrom() == 1.25, "inlineMoved.CrossingEtaFrom() == 1.25" );
 	// Moved-from stack retains a valid 1-element environment invariant.
-	assert( inlineSrc.Depth() == 1 );
-	assert( inlineSrc.top() == 1.0 );
-	assert( inlineSrc.CrossingEtaFrom() == 0 );
+	Check( inlineSrc.Depth() == 1, "inlineSrc.Depth() == 1" );
+	Check( inlineSrc.top() == 1.0, "inlineSrc.top() == 1.0" );
+	Check( inlineSrc.CrossingEtaFrom() == 0, "inlineSrc.CrossingEtaFrom() == 0" );
 
 	// 2. Spilled stack (> 4 entries + ContextList) move construction & assignment.
 	StubObject* stubs[6];
@@ -160,23 +175,23 @@ static void TestMoveInlineAndSpilled( const IObject* stub )
 				spilledSrc.push( Scalar( 1.3 + 0.05 * i ) );
 			}
 		}
-		assert( spilledSrc.Depth() == 7 );
+		Check( spilledSrc.Depth() == 7, "spilledSrc.Depth() == 7" );
 
 		IORStack spilledMoved( std::move( spilledSrc ) );
-		assert( spilledMoved.Depth() == 7 );
-		assert( spilledMoved.EnvironmentIOR() == Scalar( 1.001 ) );
-		assert( spilledMoved.isOpenSheetAt( 3 ) );
-		assert( spilledMoved.ContextAt( 3 ).bHasContext );
-		assert( spilledSrc.Depth() == 1 );
-		assert( spilledSrc.top() == Scalar( 1.001 ) );
+		Check( spilledMoved.Depth() == 7, "spilledMoved.Depth() == 7" );
+		Check( spilledMoved.EnvironmentIOR() == Scalar( 1.001 ), "spilledMoved.EnvironmentIOR() == 1.001" );
+		Check( spilledMoved.isOpenSheetAt( 3 ), "spilledMoved.isOpenSheetAt(3)" );
+		Check( spilledMoved.ContextAt( 3 ).bHasContext, "spilledMoved.ContextAt(3).bHasContext" );
+		Check( spilledSrc.Depth() == 1, "spilledSrc.Depth() == 1 after move" );
+		Check( spilledSrc.top() == Scalar( 1.001 ), "spilledSrc.top() == 1.001 after move" );
 
 		IORStack target( 1.0 );
 		target = std::move( spilledMoved );
-		assert( target.Depth() == 7 );
-		assert( target.isOpenSheetAt( 3 ) );
-		assert( target.ContextAt( 3 ).bHasContext );
-		assert( spilledMoved.Depth() == 1 );
-		assert( spilledMoved.top() == Scalar( 1.001 ) );
+		Check( target.Depth() == 7, "target.Depth() == 7" );
+		Check( target.isOpenSheetAt( 3 ), "target.isOpenSheetAt(3)" );
+		Check( target.ContextAt( 3 ).bHasContext, "target.ContextAt(3).bHasContext" );
+		Check( spilledMoved.Depth() == 1, "spilledMoved.Depth() == 1 after move assign" );
+		Check( spilledMoved.top() == Scalar( 1.001 ), "spilledMoved.top() == 1.001 after move assign" );
 	}
 	for( int i = 0; i < 6; ++i ) {
 		stubs[i]->release();
@@ -198,6 +213,6 @@ int main()
 
 	stub->release();
 
-	std::cout << "\nAll IORStackTest tests passed!" << std::endl;
-	return 0;
+	std::cout << "\nIORStackTest: " << gPassCount << " passed, " << gFailCount << " failed." << std::endl;
+	return gFailCount == 0 ? 0 : 1;
 }

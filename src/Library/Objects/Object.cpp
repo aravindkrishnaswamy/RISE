@@ -411,6 +411,9 @@ Object::Object( const IGeometry* pGeometry_ ) :
 	}
 	if( pGeometry ) {
 		pGeometry->addref();
+		if( !dynamic_cast<const Geometry*>( pGeometry ) ) {
+			Geometry::NoteCustomCsgOperandSeen();
+		}
 	} else {
 		GlobalLog()->PrintSourceError( "Object:: Geometry ptr was passed in but is invalid", __FILE__, __LINE__ );
 	}
@@ -580,6 +583,7 @@ void Object::CopySnapshotStateInto( Object& dst, const bool bCloneMaterial ) con
 	dst.m_sigmaMin             = m_sigmaMin;
 	dst.m_sigmaSource          = m_sigmaSource;
 	dst.m_sigmaExact           = m_sigmaExact;
+	dst.m_patchCertState.store( m_patchCertState.load( std::memory_order_acquire ), std::memory_order_release );
 
 	// --- Transform BUILDING BLOCKS (Transformable protected state) ---
 	// Copying these is what makes the clone independent: a later
@@ -652,6 +656,7 @@ bool Object::AssignMaterial( const IMaterial& pMat )
 
 	pMaterial = &pMat;
 	pMaterial->addref();
+	m_patchCertState.store( -1, std::memory_order_release );
 
 	return false;
 }
@@ -668,6 +673,10 @@ bool Object::AssignGeometry( const IGeometry& pGeom )
 
 	pGeometry = &pGeom;
 	pGeometry->addref();
+	if( !dynamic_cast<const Geometry*>( &pGeom ) ) {
+		Geometry::NoteCustomCsgOperandSeen();
+	}
+	m_patchCertState.store( -1, std::memory_order_release );
 	Geometry::BumpGlobalGeometryShapeEpoch();
 	ResetWorldAreaSampling();
 	// A swapped geometry can never match the old entries: retire them now
@@ -750,6 +759,7 @@ void Object::ClearMaterial()
 {
 	safe_release( pMaterial );
 	pMaterial = 0;
+	m_patchCertState.store( -1, std::memory_order_release );
 }
 
 void Object::ClearModifier()
@@ -771,6 +781,11 @@ void Object::ClearGeometry()
 	// see getBoundingBox()'s comment for the (now reachable) call-graph note.
 	safe_release( pGeometry );
 	pGeometry = 0;
+	m_patchCertState.store( -1, std::memory_order_release );
+	Geometry::BumpGlobalGeometryShapeEpoch();
+	ResetWorldAreaSampling();
+	PruneWorldAreaSampling();
+	m_warnedAreaFallback.store( false );
 }
 
 const IMaterial* Object::GetMaterial() const
@@ -1074,7 +1089,43 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	}
 
 	pGeometry->IntersectRay( ri.geometric, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
-    if(ri.geometric.bHit && ri.geometric.bProvablyNoInterior) {
+    if( ri.geometric.bHit && !ri.geometric.bProvablyNoInterior ) {
+        // Lazy patch-set open-sheet proof for clear refractive materials:
+        // BezierPatchGeometry / BilinearPatchGeometry compute their topology &
+        // embedding certificate lazily so opaque patch objects never pay for it.
+        // Force it on the first hit of a clear-refractive object and cache the
+        // epoch+flag pair atomically so every ray sees a consistent answer even
+        // when `ObjectManager::PrepareForRendering()` was not called first.
+        const long long certEp = static_cast<long long>( GeometricUtilities::PatchCertificateEpoch() & 0x7fffffffu );
+        const long long cached = m_patchCertState.load( std::memory_order_acquire );
+        if( cached >= 0 && ( cached >> 32 ) == certEp ) {
+            if( ( cached & 1LL ) != 0 ) {
+                ri.geometric.bProvablyNoInterior = true;
+            }
+        } else {
+            bool openClearPatch = false;
+            const IMaterial* proofMaterial = pMaterial;
+            while( proofMaterial ) {
+                if( const auto* lum = dynamic_cast<const LambertianLuminaireMaterial*>( proofMaterial ) ) {
+                    proofMaterial = &lum->GetBaseMaterial();
+                } else if( const auto* lum = dynamic_cast<const PhongLuminaireMaterial*>( proofMaterial ) ) {
+                    proofMaterial = &lum->GetBaseMaterial();
+                } else break;
+            }
+            if( dynamic_cast<const DielectricMaterial*>( proofMaterial ) ||
+                dynamic_cast<const PerfectRefractorMaterial*>( proofMaterial ) ) {
+                if( const auto* bez = dynamic_cast<const BezierPatchGeometry*>( pGeometry ) ) {
+                    openClearPatch = bez->IsProvablyOpenSheet();
+                } else if( const auto* bil = dynamic_cast<const BilinearPatchGeometry*>( pGeometry ) ) {
+                    openClearPatch = bil->IsProvablyOpenSheet();
+                }
+            }
+            if( openClearPatch ) {
+                ri.geometric.bProvablyNoInterior = true;
+            }
+            m_patchCertState.store( ( certEp << 32 ) | ( openClearPatch ? 1LL : 0LL ), std::memory_order_release );
+        }
+    } else if(ri.geometric.bHit && ri.geometric.bProvablyNoInterior) {
         // Scope by scattering material identity. Luminaires preserve their
         // base's scattering law, but a composite may forward a sole layer's
         // SPF: it must retain its frozen legacy record even under luminaires.

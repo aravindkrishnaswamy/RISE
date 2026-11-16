@@ -79,7 +79,9 @@ namespace
     void scrubSecretString(QString& s)
     {
         if (!s.isEmpty()) {
-            s.fill(QChar(0));
+            if (s.isDetached()) {
+                s.fill(QChar(0));
+            }
             s.clear();
         }
     }
@@ -1784,7 +1786,7 @@ void ChatPanel::updateKeyControls()
     if (!m_keySourceLabel) return;
 
     const QColor labelColor = (needsKey && m_keySaveNoticeIsWarning && !m_keySaveNotice.isEmpty())
-        ? Theme::warning
+        ? Theme::warn
         : Theme::textDim;
     m_keySourceLabel->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(labelColor)));
 

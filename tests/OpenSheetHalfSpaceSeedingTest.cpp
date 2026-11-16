@@ -2722,7 +2722,7 @@ static void PartA()
 		// A64b: 40 parallel 45-degree tilted non-overlapping `glass15` panes spaced 0.25
 		// apart along normal (0, 1/sqrt(2), 1/sqrt(2)) above an opaque rock at (0, 0.6, 0.6)
 		// over seed (0, 0, 0).  Their 3D world AABBs overlap heavily, yet scalar distance
-		// pre-filtering + sorted group PlaneBands perform 0 coplanar object ray casts!
+		// pre-filtering + CatalogBoxBvh perform 0 coplanar object ray casts!
 		std::string tiltStack = Header()
 			+ "box_geometry\n{\n\tname g_trock\n\twidth 0.8\n\theight 0.3\n\tdepth 0.3\n}\n\n"
 			+ Obj( "trock", "g_trock", "matte", "0 0.6 0.6" );
@@ -2923,6 +2923,67 @@ static void PartA()
 				Check( walk.Depth() == 2 && seededAfter.Depth() == 2 &&
 					walk.ObjectAt( 1 ) == pRoof && Close( cExit.etaTo, 1.5 ),
 					"A66b [DL-626]: CrossingMedia::Keeps ignores keep=false sibling so unconfirmed pane66 pops cleanly to [env, roof66]" );
+
+				// A66c: Stale non-enclosing open sheet `pane66c` (`y = 0.5`, `glass15`) sitting
+				// directly beneath a multi-fold `pleat66` (`glass15`, folds at `y = 1.25` and `y = 3.25`)
+				// on `staleWalk` (`[env, pane66c, pleat66]`): crossing `pleat66`'s inner fold back face
+				// upward at `y = 1.25` must peel the exposed unconfirmed `pane66c` and retain `pleat66`
+				// (`[env, pleat66]`), so a subsequent front-face re-entry into `pleat66` does not stack
+				// a duplicate `[env, pane66c, pleat66]` layer.
+				std::ostringstream hs66;
+				hs66 << "indexedmesh_geometry\n{\n\tname g_pleat66\n\tdouble_sided TRUE\n\tface_normals TRUE\n";
+				for( int k = 0; k <= 10; ++k ) {
+					const double th = ( 2.0 * 3.14159265358979323846 * double( k ) ) / 8.0;
+					const double y = 1.0 + 2.0 * ( double( k ) / 8.0 );
+					const double c = std::cos( th ), s = std::sin( th );
+					hs66 << "\tvertex " << ( 0.3 * c ) << " " << y << " " << ( 0.3 * s ) << "\n";
+					hs66 << "\tvertex " << ( 2.5 * c ) << " " << y << " " << ( 2.5 * s ) << "\n";
+				}
+				for( int k = 0; k <= 10; ++k ) {
+					hs66 << "\tuv 0 0\n\tuv 1 0\n";
+				}
+				for( int k = 0; k < 10; ++k ) {
+					const int i0 = 2 * k, o0 = 2 * k + 1;
+					const int i1 = 2 * ( k + 1 ), o1 = 2 * ( k + 1 ) + 1;
+					hs66 << "\ttriangle " << i0 << " " << i1 << " " << o1 << "\n";
+					hs66 << "\ttriangle " << i0 << " " << o1 << " " << o0 << "\n";
+				}
+				hs66 << "}\n\n";
+				Loaded p66( Header()
+					+ hs66.str() + Obj( "pleat66", "g_pleat66", "glass15" )
+					+ HSheet( "g_pane66c", 0.5, 4.0, true ) + Obj( "pane66c", "g_pane66c", "glass15" ) );
+				if( p66.ok ) {
+					const IObject* pPleat66 = p66.O( "pleat66" );
+					const IObject* pPane66c = p66.O( "pane66c" );
+					Ray rInnerUp( Point3( 1.0, 1.05, 1.0 ), Vector3( 0, 1, 0 ) );
+					RayIntersection hitInnerUp( rInnerUp, nullRasterizerState );
+					pPleat66->IntersectRay( hitInnerUp, 1.0, true, true, false );
+					Ray rInnerDown( Point3( 1.0, 1.45, 1.0 ), Vector3( 0, -1, 0 ) );
+					RayIntersection hitInnerDown( rInnerDown, nullRasterizerState );
+					pPleat66->IntersectRay( hitInnerDown, 1.0, true, true, false );
+					if( hitInnerUp.geometric.bHit && hitInnerDown.geometric.bHit ) {
+						IORStack staleWalk( 1.0 );
+						staleWalk.SetMediumProbeScene( &p66.Scene() );
+						staleWalk.SetCurrentObject( pPane66c );
+						staleWalk.pushOpenSheet( 1.5 );
+						staleWalk.SetCurrentObject( pPleat66 );
+						staleWalk.pushOpenSheet( 1.5 );
+						staleWalk.SetCurrentObject( pPleat66 );
+						const auto cInnerBack = IORStackSeeding::ResolveOpenSheetCrossing(
+							hitInnerUp.geometric, 1.5, staleWalk, pPleat66->GetMaterial(), 0 );
+						const IORStack seededMid = p66.Seed( Point3( 1.0, 1.30, 1.0 ) );
+						const bool backOk = ( staleWalk.Depth() == 2 && seededMid.Depth() == 2 &&
+							staleWalk.ObjectAt( 1 ) == pPleat66 &&
+							Close( cInnerBack.etaFrom, 1.5 ) && Close( cInnerBack.etaTo, 1.5 ) );
+						staleWalk.SetCurrentObject( pPleat66 );
+						const auto cInnerFront = IORStackSeeding::ResolveOpenSheetCrossing(
+							hitInnerDown.geometric, 1.5, staleWalk, pPleat66->GetMaterial(), 0 );
+						Check( backOk && staleWalk.Depth() == 2 &&
+							staleWalk.ObjectAt( 1 ) == pPleat66 &&
+							Close( cInnerFront.etaFrom, 1.0 ) && Close( cInnerFront.etaTo, 1.5 ),
+							"A66c [DL-626]: multi-fold back-face crossing peels stale underlying pane66c and retains pleat66 without duplicate layer on re-entry" );
+					}
+				}
 			}
 		}
 	}

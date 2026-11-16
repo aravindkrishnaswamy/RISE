@@ -226,6 +226,14 @@ namespace RISE
 		BILINEAR_HIT& hit,
 		const BilinearPatch& patch
 		);
+
+	extern void RayBilinearPatchIntersection( 
+		const Ray& ray, 
+		BILINEAR_HIT& hit,
+		const BilinearPatch& patch,
+		const bool bHitFrontFaces,
+		const bool bHitBackFaces
+		);
 }
 
 #endif

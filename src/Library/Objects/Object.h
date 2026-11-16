@@ -383,6 +383,13 @@ namespace RISE
 			//! the name-to-object map -- and a diagnostic that cannot name
 			//! the chunk is one an author cannot act on.
 			mutable std::atomic<bool>						m_distanceRefusalWarned;
+			//! Packed ((PatchCertificateEpoch mod 2^31) << 32) | (1 if clear-refractor
+			//! open patch sheet, else 0), or -1 before first evaluation / after
+			//! geometry or material mutation.  Ensures standalone open Bezier/bilinear
+			//! dielectric objects stamp `bProvablyNoInterior` on the very first ray
+			//! even without a prior `ObjectManager::PrepareForRendering()` pass, while
+			//! keeping opaque patch objects completely certification-free.
+			mutable std::atomic<long long>					m_patchCertState{ -1 };
 
 			virtual ~Object( );
 

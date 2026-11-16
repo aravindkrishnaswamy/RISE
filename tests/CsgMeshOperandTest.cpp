@@ -48,6 +48,7 @@
 #include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/ClippedPlaneGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
@@ -1576,6 +1577,125 @@ static void TestSharedCsgDagShapeRevisionComplexity()
 	safe_release( leaf );
 }
 
+//! Round 7: verifies `CSGObject::CertificateBits()` invalidates on all three
+//! monotonic epochs (`PatchCertificateEpoch`, `GlobalGeometryShapeEpoch`,
+//! `GlobalTransformPoseEpoch`) across child `CSGObject::SetOperation`, leaf
+//! `Object::AssignGeometry` / `ClearGeometry`, and `ClippedPlaneGeometry::SetIntermediateValue`.
+static void TestCsgCertificateBitsEpochInvalidation()
+{
+	std::cout << "[N] CSGObject::CertificateBits() invalidation on SetOperation / AssignGeometry / ClearGeometry / SetIntermediateValue" << std::endl;
+
+	Point3 quadPts[4] = {
+		Point3( -1.0, -1.0, 0.0 ),
+		Point3(  1.0, -1.0, 0.0 ),
+		Point3(  1.0,  1.0, 0.0 ),
+		Point3( -1.0,  1.0, 0.0 )
+	};
+	ClippedPlaneGeometry* gQuad = new ClippedPlaneGeometry( quadPts, true );
+	BoxGeometry* gBoxA = new BoxGeometry( 4.0, 4.0, 4.0 );
+	BoxGeometry* gBoxB = new BoxGeometry( 3.0, 3.0, 3.0 );
+
+	// N1: Child CSGObject::SetOperation invalidates outer parent CSGObject::m_certBits.
+	{
+		Object* oSheet = new Object( gQuad );
+		Object* oBoxA = new Object( gBoxA );
+		Object* oBoxB = new Object( gBoxB );
+		oSheet->FinalizeTransformations();
+		oBoxA->FinalizeTransformations();
+		oBoxB->FinalizeTransformations();
+
+		CSGObject* inner = new CSGObject( CSG_INTERSECTION );
+		inner->AssignObjects( oSheet, oBoxA );
+		inner->FinalizeTransformations();
+
+		CSGObject* outer = new CSGObject( CSG_INTERSECTION );
+		outer->AssignObjects( inner, oBoxB );
+		outer->FinalizeTransformations();
+
+		Check( outer->IsProvablyOpenSheet( true ),
+			"N1a: outer CSG_INTERSECTION( CSG_INTERSECTION(sheet, boxA), boxB ) certifies open sheet" );
+
+		inner->SetOperation( CSG_UNION );
+		Check( !outer->IsProvablyOpenSheet( true ),
+			"N1b: child inner->SetOperation(CSG_UNION) invalidates outer CSGObject::CertificateBits() -> false" );
+
+		inner->SetOperation( CSG_INTERSECTION );
+		Check( outer->IsProvablyOpenSheet( true ),
+			"N1c: child inner->SetOperation(CSG_INTERSECTION) restores outer IsProvablyOpenSheet() -> true" );
+
+		safe_release( outer );
+		safe_release( inner );
+		safe_release( oBoxB );
+		safe_release( oBoxA );
+		safe_release( oSheet );
+	}
+
+	// N2: Leaf Object::AssignGeometry and Object::ClearGeometry invalidate parent CSGObject::m_certBits.
+	{
+		Object* leafA = new Object( gBoxA );
+		Object* leafB = new Object( gBoxB );
+		leafA->FinalizeTransformations();
+		leafB->FinalizeTransformations();
+
+		CSGObject* uni = new CSGObject( CSG_UNION );
+		uni->AssignObjects( leafA, leafB );
+		uni->FinalizeTransformations();
+
+		Check( uni->IsCertifiedWatertight(),
+			"N2a: CSG_UNION( boxA, boxB ) initially certifies watertight" );
+
+		leafA->AssignGeometry( *gQuad );
+		Check( !uni->IsCertifiedWatertight(),
+			"N2b: leafA->AssignGeometry( planarSheet ) invalidates parent CSG IsCertifiedWatertight() -> false" );
+
+		leafA->AssignGeometry( *gBoxA );
+		Check( uni->IsCertifiedWatertight(),
+			"N2c: leafA->AssignGeometry( boxA ) restores parent CSG IsCertifiedWatertight() -> true" );
+
+		leafA->ClearGeometry();
+		Check( !uni->IsCertifiedWatertight(),
+			"N2d: leafA->ClearGeometry() invalidates parent CSG IsCertifiedWatertight() -> false" );
+
+		safe_release( uni );
+		safe_release( leafB );
+		safe_release( leafA );
+	}
+
+	// N3: ClippedPlaneGeometry::SetIntermediateValue warping a planar convex quad into a
+	// non-planar saddle invalidates parent CSGObject::m_certBits (`IsPlanarConvexQuad` -> false).
+	{
+		Object* oPlane = new Object( gQuad );
+		Object* oBox = new Object( gBoxA );
+		oPlane->FinalizeTransformations();
+		oBox->FinalizeTransformations();
+
+		CSGObject* trim = new CSGObject( CSG_INTERSECTION );
+		trim->AssignObjects( oPlane, oBox );
+		trim->FinalizeTransformations();
+
+		Check( trim->IsProvablyOpenSheet( true ),
+			"N3a: CSG_INTERSECTION( planar ClippedPlaneGeometry, box ) initially certifies open sheet" );
+
+		IKeyframeParameter* kpC = gQuad->KeyframeFromParameters( "ptc", "1.0 1.0 0.75" );
+		Check( kpC != nullptr, "N3b: ClippedPlaneGeometry ptc keyframe parameter created" );
+		if( kpC ) {
+			gQuad->SetIntermediateValue( *kpC );
+			kpC->release();
+			gQuad->RegenerateData();
+			Check( !gQuad->IsPlanarConvexQuad() && !trim->IsProvablyOpenSheet( true ),
+				"N3c: warping ClippedPlaneGeometry out of plane via SetIntermediateValue invalidates parent CSG open-sheet certificate" );
+		}
+
+		safe_release( trim );
+		safe_release( oBox );
+		safe_release( oPlane );
+	}
+
+	safe_release( gBoxB );
+	safe_release( gBoxA );
+	safe_release( gQuad );
+}
+
 int main()
 {
 	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13 + DL-627) ===" << std::endl;
@@ -1592,6 +1712,7 @@ int main()
 	TestTiesAndSmallBudgets();
 	TestSubtractionMultiLobeResidualsDL627();
 	TestSharedCsgDagShapeRevisionComplexity();
+	TestCsgCertificateBitsEpochInvalidation();
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;
 }

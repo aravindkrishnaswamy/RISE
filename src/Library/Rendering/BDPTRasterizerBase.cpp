@@ -1200,15 +1200,17 @@ void BDPTRasterizerBase::RasterizeScene(
 			pRasterSequence->Begin( startx, endx, starty, endy );
 
 			const unsigned int numseq = pRasterSequence->NumRegions();
+			const bool hasMedium = SceneHasParticipatingMedium( pScene );
 			unsigned long long bdptProgressBits = 0;
 			std::memcpy( &bdptProgressBits, &mProgressBase, sizeof( bdptProgressBits ) );
-			const unsigned int baseBdptMediumSeed = DeriveSeed( LockedLibcRand(), bdptProgressBits );
+			const unsigned int baseBdptMediumSeed = hasMedium ? DeriveSeed( LockedLibcRand(), bdptProgressBits ) : 0u;
 
 			for( unsigned int i=0; i<numseq; i++ ) {
 				const Rect rect = pRasterSequence->GetNextRegion();
 
-				if( pProgressFunc && i>0 ) {
-					if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) ) ) {
+				if( pProgressFunc ) {
+					if( pProgressFunc->IsCancelled() ||
+						( i > 0 && !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) ) ) ) {
 						break;
 					}
 				}
@@ -1216,7 +1218,7 @@ void BDPTRasterizerBase::RasterizeScene(
 				const unsigned long long tileKey =
 					( static_cast<unsigned long long>( rect.top ) << 32 ) |
 					static_cast<unsigned long long>( rect.left );
-				ScopedMediumTileSeed mediumSeed( DeriveSeed( baseBdptMediumSeed, tileKey ) );
+				ScopedMediumTileSeed mediumSeed( hasMedium ? DeriveSeed( baseBdptMediumSeed, tileKey ) : 0u, hasMedium );
 				SPRasterizeSingleBlock( rc, *pImage, pScene, rect, height );
 			}
 

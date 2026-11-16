@@ -2239,9 +2239,21 @@ bool CSGObject::IsTopologicallyClosed() const
 
 int CSGObject::CertificateBits() const
 {
+	if( TimeIndexed::tlsSlots ) {
+		return ComputeCertificateBits();
+	}
+	// Combine all three strictly non-decreasing global epochs (`PatchCertificateEpoch`,
+	// `GlobalGeometryShapeEpoch`, `GlobalTransformPoseEpoch`) so any patch/mesh edit,
+	// keyframed geometry deformation, nested CSG/Object edit, hierarchy rebake, or
+	// per-sample CSG motion-blur transform strictly advances the sum and refreshes
+	// `m_certBits` (including `kMirrorA/B` and `kSingleLobeA/B`).
+	const std::uint64_t epochSum =
+		static_cast<std::uint64_t>( GeometricUtilities::PatchCertificateEpoch() ) +
+		Geometry::GlobalGeometryShapeEpoch() +
+		Transformable::GlobalTransformPoseEpoch();
 	// Epoch in bits 32..62 (31 bits, so the packed value stays positive and
 	// -1 keeps meaning "not computed"), flags in bits 0..30.
-	const long long epoch = static_cast<long long>( GeometricUtilities::PatchCertificateEpoch() & 0x7fffffffu );
+	const long long epoch = static_cast<long long>( epochSum & 0x7fffffffULL );
 	const long long cached = m_certBits.load( std::memory_order_acquire );
 	if( cached >= 0 && ( cached >> 32 ) == epoch ) {
 		return static_cast<int>( cached & 0x7fffffffLL );

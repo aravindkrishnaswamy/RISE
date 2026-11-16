@@ -56,6 +56,7 @@
 #include <iostream>
 #include <string>
 #include <iterator>
+#include <set>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -841,14 +842,18 @@ int main()
 	static const char* const kWin32PosixFuncs[] = {
 		"getpid", "setenv", "unsetenv", "popen", "pclose",
 		"mkfifo", "fork", "usleep", "mkstemp", "mkdtemp", "symlink",
-		"waitpid", "pipe", "dup2", "ftruncate", "lstat", "readlink", "realpath"
+		"waitpid", "pipe", "dup2", "ftruncate", "lstat", "readlink", "realpath",
+		"strcasecmp", "strncasecmp", "localtime_r", "gmtime_r", "strtok_r",
+		"clock_gettime", "gettimeofday"
 	};
 	static const char* const kWin32PosixMathMacros[] = {
 		"M_PI", "M_PI_2", "M_PI_4", "M_1_PI", "M_2_PI", "M_2_SQRTPI",
 		"M_SQRT2", "M_SQRT1_2", "M_E", "M_LOG2E", "M_LOG10E", "M_LN2", "M_LN10"
 	};
 	static const char* const kWin32PosixHeaders[] = {
-		"<unistd.h>", "<sys/wait.h>", "<sys/resource.h>", "<dlfcn.h>", "<pthread.h>"
+		"<unistd.h>", "<sys/wait.h>", "<sys/resource.h>", "<dlfcn.h>", "<pthread.h>",
+		"<sys/time.h>", "<sys/mman.h>", "<dirent.h>", "<strings.h>", "<poll.h>",
+		"<pwd.h>", "<glob.h>", "<fnmatch.h>", "<execinfo.h>"
 	};
 
 	std::function<void(
@@ -5552,8 +5557,10 @@ int main()
 		       && credCpp.find( "CredWriteW" ) != std::string::npos
 		       && credCpp.find( "CredDeleteW" ) != std::string::npos
 		       && credCpp.find( "CredFree" ) != std::string::npos
-		       && credCpp.find( "SecureZeroMemory" ) != std::string::npos,
-		       "win-gui-parity: CredentialStore uses Win32 CredReadW/CredWriteW/CredDeleteW/CredFree + SecureZeroMemory" );
+		       && credCpp.find( "SecureZeroMemory" ) != std::string::npos
+		       && credCpp.find( "fromUtf16" ) != std::string::npos
+		       && credCpp.find( "utf16()" ) != std::string::npos,
+		       "win-gui-parity: CredentialStore uses Win32 CredReadW/CredWriteW/CredDeleteW/CredFree + UTF-16LE + SecureZeroMemory" );
 		Check( chatH.find( "resolveApiKey" ) != std::string::npos
 		       && chatCode.find( "CredentialStore::read" ) != std::string::npos
 		       && chatCode.find( "CredentialStore::write" ) != std::string::npos
@@ -5561,10 +5568,77 @@ int main()
 		       && chatCode.find( "m_apiKeyEdit->setText(" ) == std::string::npos,
 		       "win-gui-parity: ChatPanel resolves/saves/clears via CredentialStore and keeps m_apiKeyEdit write-only (never setText)" );
 
+		// Cross-check every `Theme::<ident>` token/symbol reference across all
+		// `build/VS2022/RISE-GUI/*.{h,cpp}` against `Theme.h` so an undeclared
+		// token (e.g. `Theme::warning` instead of `Theme::warn`) fails on macOS/Linux.
+		{
+			const std::string themeH = SlurpFile( winGuiDir / "Theme.h" );
+			const std::string themeCode = stripLiteralsPreservingLayout( StripCommentsPreservingLayout( themeH ) );
+			std::set<std::string> themeSymbols;
+			const std::size_t nsPos = themeCode.find( "namespace Theme" );
+			if( nsPos != std::string::npos ) {
+				const std::size_t braceOpen = themeCode.find( '{', nsPos );
+				if( braceOpen != std::string::npos ) {
+					int braceDepth = 1;
+					int parenDepth = 0;
+					std::size_t i = braceOpen + 1;
+					while( i < themeCode.size() && braceDepth > 0 ) {
+						const char ch = themeCode[i];
+						if( ch == '{' ) { ++braceDepth; ++i; continue; }
+						if( ch == '}' ) { --braceDepth; ++i; continue; }
+						if( ch == '(' ) { ++parenDepth; ++i; continue; }
+						if( ch == ')' ) { if( parenDepth > 0 ) --parenDepth; ++i; continue; }
+						if( braceDepth == 1 && parenDepth == 0 &&
+						    ( std::isalpha( static_cast<unsigned char>( ch ) ) || ch == '_' ) ) {
+							const std::size_t start = i++;
+							while( i < themeCode.size() &&
+							       ( std::isalnum( static_cast<unsigned char>( themeCode[i] ) ) || themeCode[i] == '_' ) ) {
+								++i;
+							}
+							themeSymbols.insert( themeCode.substr( start, i - start ) );
+						} else {
+							++i;
+						}
+					}
+				}
+			}
+			std::vector<std::string> badThemeRefs;
+			for( const fs::directory_entry& de : fs::directory_iterator( winGuiDir ) ) {
+				if( !de.is_regular_file() ) continue;
+				const std::string ext = de.path().extension().string();
+				if( ext != ".h" && ext != ".cpp" ) continue;
+				const std::string fname = de.path().filename().string();
+				const std::string code = stripLiteralsPreservingLayout(
+					StripCommentsPreservingLayout( SlurpFile( de.path() ) ) );
+				for( std::size_t p = code.find( "Theme::" ); p != std::string::npos;
+				     p = code.find( "Theme::", p + 7 ) ) {
+					if( p > 0 && ( std::isalnum( static_cast<unsigned char>( code[p - 1] ) ) || code[p - 1] == '_' ) ) {
+						continue;
+					}
+					std::size_t q = p + 7;
+					while( q < code.size() && ( std::isalnum( static_cast<unsigned char>( code[q] ) ) || code[q] == '_' ) ) {
+						++q;
+					}
+					if( q > p + 7 ) {
+						const std::string sym = code.substr( p + 7, q - ( p + 7 ) );
+						if( themeSymbols.find( sym ) == themeSymbols.end() ) {
+							badThemeRefs.push_back( fname + ": Theme::" + sym );
+						}
+					}
+				}
+			}
+			for( const std::string& b : badThemeRefs ) {
+				std::cout << "  win-gui-theme-token unknown symbol: " << b << std::endl;
+			}
+			Check( !themeSymbols.empty() && badThemeRefs.empty(),
+			       "win-gui-parity: every Theme::<ident> reference in build/VS2022/RISE-GUI/*.{h,cpp} is declared in Theme.h" );
+		}
+
 		const std::string cmakeTests = SlurpFile( repoRoot / "build" / "cmake" / "rise-tests" / "CMakeLists.txt" );
 		Check( cmakeTests.find( "\"${VCPKG_INCLUDE}/OpenEXR\"" ) != std::string::npos
-		       && cmakeTests.find( "\"${VCPKG_INCLUDE}/Imath\"" ) != std::string::npos,
-		       "win-cmake-tests: build/cmake/rise-tests/CMakeLists.txt includes OpenEXR and Imath vcpkg subdirectories" );
+		       && cmakeTests.find( "\"${VCPKG_INCLUDE}/Imath\"" ) != std::string::npos
+		       && cmakeTests.find( "/UNDEBUG" ) != std::string::npos,
+		       "win-cmake-tests: build/cmake/rise-tests/CMakeLists.txt includes OpenEXR/Imath vcpkg paths and /UNDEBUG for non-vacuous Release test assertions" );
 	}
 
 	std::cout << std::endl

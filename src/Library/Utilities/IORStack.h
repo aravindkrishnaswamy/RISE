@@ -667,9 +667,12 @@ namespace RISE
 		//! allocates for the scattered ray -- the one case where the walk's
 		//! stack does not say which medium the ray left (a sheet reached
 		//! from behind without crossing it).  Read by RadianceEtaScale.
-		//! NOT copied by the copy constructor or assignment: it describes
+		//! NOT copied by the copy constructor or copy assignment: it describes
 		//! one crossing, and the walk's next stack (a copy) must not carry
-		//! it into a later vertex's reflection copy.
+		//! it into a later vertex's reflection copy.  Move construction and
+		//! move assignment DO transfer `crossingEtaFrom` (and zero it on the
+		//! moved-from source) because move transfers ownership of the same
+		//! scattered-ray stack instance.
 		Scalar crossingEtaFrom;
 		const IScene* pProbeScene;
 
