@@ -26,6 +26,7 @@
 #include "../Octree.h"
 
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <atomic>	// two consumers: the proximity AABB snapshot's publish/read edge, and pBVH's DCLP fix (see its own comment below)
@@ -55,6 +56,18 @@ namespace RISE
             mutable std::vector<const IObject*> smsExtendedCasters;
             mutable bool smsRejectedTransmissiveCaster = false;
             mutable bool smsUncertainNormalOrientation = false;
+			//! PrepareForRendering's per-object census memo.  Every SMS /
+			//! DL-382 policy fact that depends only on an object's TYPE and
+			//! on its material's type graph is computed once per (object,
+			//! material) and reused across preparations; geometry and object
+			//! state are still read live.  Without it the census paid ~25
+			//! RTTI queries per object on every preparation, so a NON-spatial
+			//! edit's prepare cost as much as a TLAS rebuild (CstEditCostTest).
+			//! Defined in ObjectManager.cpp; dropped by RemoveItem / Shutdown
+			//! so a cached object pointer always names a live item.
+			struct PrepareCensus;
+			mutable std::unique_ptr<PrepareCensus> prepareCensus;
+			void RefreshPrepareCensus() const;
 			virtual ~ObjectManager();
 
 			// Top-level acceleration: SAH BVH (BVH4-collapsed, SIMD AABB

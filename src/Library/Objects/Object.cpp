@@ -2593,6 +2593,18 @@ bool Object::AcquireWorldAreaView( WorldAreaView& view ) const
 
 void Object::PruneWorldAreaSampling() const
 {
+	// Only an object that has been SAMPLED as an area light owns entries.
+	// Every other object -- almost all of a large scene -- has nothing to
+	// keep or retire, so skip the pose key and the vector churn below.  This
+	// runs for every object on every PrepareForRendering, including the one
+	// after a non-spatial edit (CstEditCostTest).
+	{
+		std::lock_guard<std::mutex> lock( m_worldAreaMutex );
+		if( m_geomOwned.empty() && m_metricOwned.empty() &&
+			m_geomRetired.empty() && m_metricRetired.empty() ) {
+			return;
+		}
+	}
 	WorldAreaKey key;
 	const bool haveKey = pGeometry != 0;
 	if( haveKey ) {
