@@ -1684,6 +1684,16 @@ static void TestRowRangeMetadata()
 //       changes an actual VALUE, not just spacing) must still be
 //       refused -- normalisation must narrow to whitespace, not swallow
 //       real drift.
+//
+// Since e74ed91e3 ("Undo fidelity", 2026-10-17) an Undo/Redo whose owner
+// chunk still holds exactly the text the edit left behind is a VERBATIM
+// chunk swap (RouteCstParamOwnerRestore_): the original's column alignment
+// comes back byte for byte and the drift guard is not consulted.  The guard
+// -- and with it the whitespace normalisation this test exists for -- runs
+// only on the value-replay FALLBACK, taken when the owner chunk changed in
+// some other way since the edit.  So each half first pins the verbatim swap,
+// then forces the fallback with an unrelated out-of-band edit to the same
+// chunk (`interpolation`) and checks the guard there.
 //////////////////////////////////////////////////////////////////////
 static void TestOccurrenceDriftGuardWhitespace()
 {
@@ -1729,30 +1739,62 @@ static void TestOccurrenceDriftGuardWhitespace()
 			Check( edited.find( "stop 0.5 1.0 0.0 0.0" ) != std::string::npos,
 			       "the edit landed, single-spaced (as every write is)" );
 
-			// Undo's own revert-WRITE goes through the same WithParamValue
-			// single-space re-tokenisation as any other write, so it does NOT
-			// restore the original's column alignment -- only its TOKENS.  The
-			// byte-exact expectation is therefore `original` with just the
-			// stop[1] line's spacing collapsed, not `original` verbatim.
-			std::string expectedAfterUndo = original;
+			// Verbatim swap: nothing else touched the chunk, so Undo restores
+			// the original bytes, column alignment included, and Redo the
+			// edited bytes.
+			c.Undo();
+			Check( DocText( *j ) == original,
+			       "Undo (verbatim swap) restores the original chunk byte for byte, column alignment included" );
+			c.Redo();
+			Check( DocText( *j ) == edited,
+			       "Redo (verbatim swap) restores the edited chunk byte for byte" );
+			j->release();
+		}
+		std::remove( tmp );
+	}
+
+	// ---- (a') the same edit/Undo/Redo, forced onto the value-replay
+	// fallback by an unrelated out-of-band edit to the owner chunk.
+	{
+		const char* tmp = "painterintro_occ_drift_ws_a2.RISEscene";
+		Job* j = LoadScene( kSceneAligned, tmp );
+		Check( j != nullptr, "scene loads (aligned fixture, fallback half)" );
+		if( j ) {
+			TestController c( *j );
+			c.SetSelection( SceneEditController::Category::Painter, String( "rmpA" ) );
+			c.Start();
+			Check( c.ForTest_WaitForRenders( 1, 3000 ), "initial render fires" );
+
+			Check( c.SetPropertyForCategory( SceneEditController::Category::Painter,
+				String( "stop[1]" ), String( "0.5 1.0 0.0 0.0" ) ), "occurrence edit applies" );
+			// Unrelated param in the same chunk: the owner no longer holds the
+			// edit's post-text, so Undo/Redo take the value replay + drift guard.
+			Check( j->ApplyCstParamEditChecked( "rmpA", "painter", "interpolation", 0, "smooth" ) > 0,
+			       "the unrelated out-of-band edit to the owner chunk lands" );
+			const std::string beforeUndo = DocText( *j );
+
+			std::string expectedAfterUndo = beforeUndo;
 			{
-				const std::string alignedLine  = "stop 0.5   0.44  0.54  0.64";
+				const std::string editedLine    = "stop 0.5 1.0 0.0 0.0";
 				const std::string collapsedLine = "stop 0.5 0.44 0.54 0.64";
-				const std::size_t pos = expectedAfterUndo.find( alignedLine );
-				Check( pos != std::string::npos, "the aligned stop[1] line is findable in `original`" );
+				const std::size_t pos = expectedAfterUndo.find( editedLine );
+				Check( pos != std::string::npos, "the edited stop[1] line is findable" );
 				if( pos != std::string::npos )
-					expectedAfterUndo.replace( pos, alignedLine.size(), collapsedLine );
+					expectedAfterUndo.replace( pos, editedLine.size(), collapsedLine );
 			}
 
+			// The replay's revert-WRITE goes through WithParamValue's
+			// single-space re-tokenisation, so it restores the prior TOKENS,
+			// not the original's column alignment; the unrelated edit stays.
 			c.Undo();
 			Check( DocText( *j ) == expectedAfterUndo,
 			       "Undo was NOT refused -- restores the prior TOKENS exactly (single-spaced, as any "
-			       "write re-emits them), everything else byte-identical to the original "
+			       "write re-emits them), everything else unchanged "
 			       "(pre-fix: an ends-only trim compared the single-spaced post-Undo line against "
 			       "the captured multi-spaced original and refused this Undo as drifted)" );
 
 			c.Redo();
-			Check( DocText( *j ) == edited,
+			Check( DocText( *j ) == beforeUndo,
 			       "Redo re-applies -- NOT refused by the aligned original's interior spacing "
 			       "(pre-fix: an ends-only trim compared the single-spaced post-Undo line against "
 			       "the captured multi-spaced original and refused this Redo as drifted)" );
@@ -1784,10 +1826,11 @@ static void TestOccurrenceDriftGuardWhitespace()
 			Check( edited.find( "stop 0.5 0.20 0.54 0.64" ) != std::string::npos,
 			       "the write itself is single-spaced regardless of what was sent" );
 
-			// Undo's own revert-write re-tokenises + single-spaces the restored
-			// value too (see (a)'s note), so the line reads back single-spaced
-			// even though the ORIGINAL was column-aligned -- the TOKENS (the
-			// prior value) are what must match, not the original's bytes.
+			// Force the value-replay fallback (see (a')), where the guard
+			// compares the single-spaced Document line against the value as
+			// SENT, interior alignment and all.
+			Check( j->ApplyCstParamEditChecked( "rmpA", "painter", "interpolation", 0, "smooth" ) > 0,
+			       "the unrelated out-of-band edit to the owner chunk lands" );
 			c.Undo();
 			Check( DocText( *j ).find( "stop 0.5 0.44 0.54 0.64" ) != std::string::npos,
 			       "Undo was NOT refused -- the prior value's tokens are back "
