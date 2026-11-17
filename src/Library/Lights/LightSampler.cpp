@@ -1465,6 +1465,7 @@ void LightSampler::Prepare(
 
 	// Build the combined light table from non-mesh lights and mesh luminaries
 	lightEntries.clear();
+	luminaryEntryIndex.clear();
 
 	// Add non-mesh lights with nonzero exitance.
 	// NOTE: we test exitance > 0, NOT CanGeneratePhotons().
@@ -1561,6 +1562,7 @@ void LightSampler::Prepare(
 					&repPos, &repNormal, &repCoord, centerSeed );
 				entry.position = repPos;
 
+				luminaryEntryIndex[ luminaries[li].pLum ] = static_cast<unsigned int>( lightEntries.size() );
 				lightEntries.push_back( entry );
 			}
 		}
@@ -2337,8 +2339,10 @@ Scalar LightSampler::PdfSelectLuminary(
 	}
 
 	// Find the matching entry in the light table
-	for( unsigned int i = 0; i < lightEntries.size(); i++ )
+	const int entryIndex = FindLuminaryIndex( &luminary );	// one hash lookup, not a scan
+	if( entryIndex >= 0 )
 	{
+		const unsigned int i = static_cast<unsigned int>( entryIndex );
 		if( !lightEntries[i].pLight )
 		{
 			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
@@ -2364,16 +2368,10 @@ int LightSampler::FindLuminaryIndex(
 		return -1;
 	}
 
-	for( unsigned int i = 0; i < lightEntries.size(); i++ )
-	{
-		if( !lightEntries[i].pLight &&
-			(*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == pLuminary )
-		{
-			return static_cast<int>( i );
-		}
-	}
-
-	return -1;
+	// One hash lookup: this is asked on every MIS-weighted emitter hit.
+	const std::unordered_map<const IObject*, unsigned int>::const_iterator it =
+		luminaryEntryIndex.find( pLuminary );
+	return it == luminaryEntryIndex.end() ? -1 : static_cast<int>( it->second );
 }
 
 Scalar LightSampler::CachedPdfSelectLuminary(
@@ -2387,8 +2385,10 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 		return 0;
 	}
 
-	for( unsigned int i = 0; i < lightEntries.size(); i++ )
+	const int entryIndex = FindLuminaryIndex( &luminary );	// one hash lookup, not a scan
+	if( entryIndex >= 0 )
 	{
+		const unsigned int i = static_cast<unsigned int>( entryIndex );
 		if( !lightEntries[i].pLight )
 		{
 			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
@@ -2445,17 +2445,26 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 // When the shading object is a luminary in the light table,
 // it is excluded from selection.  For RIS this is done by
 // zeroing the self entry's resampling weight.  For the alias
-// table a rejection draw is used with a (1-p_self) correction.
+// table and the light BVH one draw is made and a self draw
+// contributes nothing: no retry, no correction factor, so every
+// other light keeps its selection pmf.  The light a non-convex
+// emitter casts on itself is then estimated only by the scattered
+// ray that returns to the same object, which the hit side gives
+// full weight (RAY_STATE::pNEESelfObject, DL-633).
 //
 // MIS:
 // - Delta lights (point/spot): w = 1 (no alternative strategy).
-// - Area lights, RIS OFF: power heuristic using the alias-table
-//   selection PDF (converted to solid angle) vs BSDF PDF.
-//   CachedPdfSelectLuminary returns the same alias-table PDF
-//   on the BSDF-hit side in PathTracingShaderOp.
+// - Area lights, RIS OFF: power heuristic using the selection pmf
+//   this draw used (the light BVH's when built, else the alias
+//   table's; converted to solid angle) vs BSDF PDF.
+//   CachedPdfSelectLuminary returns the same value on the BSDF-hit
+//   side (PathTracingIntegrator; EmissionShaderOp for a path-tracer
+//   continuation), or 0 when the luminary cannot be selected, and
+//   the hit then keeps full weight.
 // - Area lights, RIS ON: w = 1 (no MIS).  The exact finite-M
 //   technique density is intractable, so the BSDF-hit emitter
-//   contribution is suppressed in PathTracingShaderOp instead.
+//   contribution is suppressed on the hit side instead, for every
+//   luminary RIS can select.
 //
 
 namespace
@@ -3157,8 +3166,9 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// MIS weight: applied when the selection PDF is
 					// tractable (alias table or BVH).  When RIS is ON
 					// (no BVH), the exact finite-M technique density is
-					// intractable, so we use w=1 and suppress the BSDF-hit
-					// emitter contribution in PathTracingShaderOp.
+					// intractable, so we use w=1 and the hit side suppresses
+					// the BSDF-hit contribution of every emitter RIS can select
+					// (PathTracingIntegrator PART 1).
 					const bool bCanDoMIS = (pLightBVH && pLightBVH->IsBuilt()) ||
 						risCandidates == 0;
 					// DL-171/DL-209: no competing BSDF-sampled strategy in

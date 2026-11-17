@@ -1559,7 +1559,7 @@ owner ruling (2026-10-09)**: no chunk is removed; Phase 1 only marks.
 `ChunkDescriptor::frozen` implies `deprecated`, so every consumer that reads
 only `deprecated` treats a frozen chunk as legacy too.  Bit-identity is pinned
 by `tests/LegacyTierRenderIdentityTest.cpp` (one shipped scene per family,
-hashed against the parent commit `4694f511c`).
+hashed against the parent commit `4694f511c`). Bit-identity covers frozen code itself; a fix in supported code that a frozen render shares (RayCaster, LightSampler, `pathtracing_shaderop`) can still move it, and its pins are then re-pinned (owner ruling #17). Example: DL-633 re-weights emitter hits after a RayCaster volume scatter, which moves a legacy render through a participating medium (no shipped legacy scene has one).
 
 **Frozen** (replacement in brackets):
 

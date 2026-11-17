@@ -4427,30 +4427,36 @@ ConnectAndEvaluateImplCore(
 			// denominator.  Tag that here, where the reason is known, rather
 			// than trying to re-derive it inside the ratio walk.
 			//
-			// The predicate is SET MEMBERSHIP -- null geometry
+			// The predicate is MEMBERSHIP OF THE LIGHT TABLE, which is the
+			// same thing as `eyeEndPdfRev <= 0`: null geometry
 			// (LuminaryManager refuses it), CanBeAreaLight() == false (an
 			// SDF whose sampling mesh proved it misses renderable surface;
-			// see SDFGeometry.h), or a degenerate zero-area emitter -- and
-			// deliberately NOT `eyeEndPdfRev <= 0`.  The two used to differ
-			// when `PdfSelectLuminary` returned the light BVH's
-			// shading-point pmf (zero for an orientation-zeroed cluster);
-			// since DL-348 it returns SampleLight()'s own alias pmf -- the
-			// density the s >= 1 strategies actually root their light
-			// subpaths with, strictly positive for any in-set light -- so
-			// the two agree except for a luminary dropped from the table for
-			// zero average exitance (area > 0, but it emits nothing, so the
-			// difference carries no energy); set membership remains the property
-			// the s >= 1 family depends on, and it is what PT gates on too
-			// (PathTracingIntegrator.cpp:2173, `pEmitGeom &&
-			// pEmitGeom->CanBeAreaLight()` plus its own `area > 0`).
+			// see SDFGeometry.h), a degenerate zero-area emitter, or a
+			// luminary LightSampler::Prepare left out of the table because
+			// its average exitance read zero.  `pdfSelect` is SampleLight()'s
+			// alias pmf (DL-348) -- the density the s >= 1 strategies root
+			// their light subpaths with, positive for every table entry and
+			// independent of the shading point -- so zero means exactly that
+			// no s >= 1 strategy can root on this emitter.  (Before DL-348
+			// the query returned the light BVH's shading-point pmf, a
+			// different quantity from the one the light subpaths use, which
+			// is why the flag was once kept apart from the pdf.)
 			//
-			// For an out-of-set emitter this restores agreement with PT
-			// (which skips its emission-MIS block entirely, leaving
-			// emissionMiWeight = 1) and with VCM (`pdfSelect > 0 ?
-			// wCameraJoint : 0`).  (PT's own zero-BVH-pdf-but-in-set case
-			// is PT's business: its NEE does sample the BVH.)
+			// A luminary dropped from the table is NOT necessarily dark: the
+			// average is 100 stratified samples (or the emitter's own
+			// construction-time average when those all agree), and emission
+			// confined to the gaps between them -- a sparse emission map --
+			// reads zero while the surface still emits.  Until DL-633 the
+			// flag was not set for it and BDPT read 1e-4 of the closed form
+			// (tests/UnlistedEmitterWeightTest.cpp).
+			//
+			// This agrees with PT, which gives the hit weight 1 by skipping
+			// its emission-MIS block for the geometry classes
+			// (`emitterNeeSampleable` in PathTracingIntegrator.cpp) and by
+			// its `p_nee > 0` test for a table-dropped luminary, and with VCM
+			// (`pdfSelect > 0 ? wCameraJoint : 0`).
 			const_cast<BDPTVertex&>( eyeEnd ).lightSamplingStrategyAbsent =
-				( !eyeEndAreaSampleable || area <= 0 );
+				( !eyeEndAreaSampleable || area <= 0 || pdfSelect <= 0 );
 		}
 
 		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
@@ -6933,7 +6939,8 @@ Scalar BDPTIntegrator::MISWeight(
 			//
 			// Result: sumWeights collapses to 1 for such a path, i.e.
 			// weight 1, matching PT (PathTracingIntegrator.cpp skips its
-			// emission-MIS block for a non-NEE-sampleable emitter) and VCM
+			// emission-MIS block for a non-NEE-sampleable emitter, and its
+			// `p_nee > 0` test keeps a table-dropped one whole) and VCM
 			// (VCMIntegrator.cpp's `wCamera = pdfSelect > 0 ? ... : 0`).
 			// Nothing here touches remap0's delta semantics, the power-2
 			// heuristic, or any weight on a path whose emitter IS in the

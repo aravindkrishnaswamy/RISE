@@ -407,7 +407,12 @@ namespace RISE
 				//! BSSRDF/random-walk continuation's exit hit).  Scales the
 				//! FIRST vertex's own NEE training integrand only, never
 				//! the returned radiance.
-				Scalar castRRCompensation_ = 1
+				Scalar castRRCompensation_ = 1,
+				//! DL-633: the object the vertex that produced the ray to
+				//! @a firstHit stood on, when that vertex's light sampling
+				//! excluded it (`RAY_STATE::pNEESelfObject`).  A hit on the
+				//! same object keeps full weight.  Null for a camera ray.
+				const IObject* pNEESelfObject_ = nullptr
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (NM).
@@ -465,7 +470,8 @@ namespace RISE
 				const SMSChainRecord* pSMSChain_ = nullptr,
                 //! Internal HWSS hand-off mode; its RuntimeContext scope also
                 //! carries legacy provenance through NM shader/SSS recasts.
-                bool smsIgnoreExtended_ = false
+                bool smsIgnoreExtended_ = false,
+				const IObject* pNEESelfObject_ = nullptr	///< DL-633 -- see IntegrateFromHit
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (HWSS).
@@ -520,7 +526,8 @@ namespace RISE
 				//! default-constructed `RAY_STATE`, so this is a training-
 				//! consistency fix with no observable effect today).
 				Scalar castRRCompensation_ = 1,
-				const IORStack* preseededOriginLanes_ = 0
+				const IORStack* preseededOriginLanes_ = 0,
+				const IObject* pNEESelfObject_ = nullptr	///< DL-633 -- see IntegrateFromHit
 				) const;
 
 			/// Traces one complete path for a single wavelength.
@@ -607,7 +614,8 @@ namespace RISE
 				const SMSChainRecord* pSMSChain_ = nullptr,
                 //! Internal HWSS hand-off mode; its RuntimeContext scope also
                 //! carries legacy provenance through NM shader/SSS recasts.
-                bool smsIgnoreExtended_ = false	///< DL-372 -- see IntegrateFromHitNM
+                bool smsIgnoreExtended_ = false,	///< DL-372 -- see IntegrateFromHitNM
+				const IObject* pNEESelfObject_ = nullptr	///< DL-633 -- see IntegrateFromHit
 				) const;
 
 			/// Shared body of IntegrateRay / IntegrateRayNM.

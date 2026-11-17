@@ -81,7 +81,8 @@ is_extended_test() {
 		CompositeEnergyConservationTest|LayeredWhiteFurnaceTest|\
 		VolumeAbsorptionAttenuationTest|MediumInsideOutsideInvariantTest|\
 		ExteriorIndexInvarianceTest|SSSExteriorIndexInvarianceTest|\
-		CstDeriveGoldenTest|AgentViewModeRenderTest|AgentProposeRenderTest)
+		CstDeriveGoldenTest|AgentViewModeRenderTest|AgentProposeRenderTest|\
+		UnlistedEmitterWeightTest)
 			return 0
 			;;
 		*)
