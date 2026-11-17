@@ -7,9 +7,13 @@
 // two-build dump comparison (RISE_SMS_LEGACY_DUMP_DIR on the base build,
 // RISE_SMS_LEGACY_REFERENCE_DIR on the candidate); a single run asserts
 // only that they render lit.  The negative control below shows those
-// fixtures would see the change: the SAME fixture rendered by a directly
-// constructed HWSS rasterizer with extended mode ON differs from it with
-// extended mode OFF (and the OFF render repeats bit-identically).
+// fixtures would see the change: a Phase 4 HWSS fixture rendered by a
+// directly constructed HWSS rasterizer with extended mode ON differs from it
+// with extended mode OFF (and the OFF render repeats bit-identically).  The
+// control renders fixture 9's geometry with a LAMBERTIAN receiver (see
+// Phase4ControlScene): since 6c83d1515 (DL-616..620) fixture 9's
+// random-walk floor is not an SMS anchor, so extended and legacy render it
+// identically and it can no longer show sensitivity.
 //
 // DL-453 (2026-10-07, user-approved legacy image change): legacy HWSS + SMS
 // lanes draw their SMS samples from per-lane Sobol' streams, so fixtures 3
@@ -125,6 +129,26 @@ static std::string Phase4HWSSScene(unsigned int fixture)
             "clippedplane_geometry\n{\n name emitter_geo\n pta -0.6 -0.6 3.5\n ptb -0.6 0.6 3.5\n ptc 0.6 0.6 3.5\n ptd 0.6 -0.6 3.5\n doublesided TRUE\n}\n"
             "standard_object\n{\n name emitter\n geometry emitter_geo\n material lum\n}\n";
     }
+    return s;
+}
+
+// The negative control's scene: fixture 9 with its random-walk receiver
+// replaced by the Lambertian `diffuse` it already declares, so the floor is
+// an SMS anchor behind the glass slab.  Fixture 9 itself stopped
+// discriminating at 6c83d1515 (DL-616..620): before it, the random-walk
+// floor rendered ~8x too bright (legacy mean 0.0823 at trial 0; unbiased PT
+// without SMS and BDPT, both HWSS, read 0.0104 / 0.0103 on the same scene)
+// and extended differed from legacy on 12288 of 16384 components; after it
+// the image is right (0.0102) and no fixture-9 vertex is an SMS anchor, so
+// the two modes render it bit-identically.  Fixtures 7 and 8 do not
+// discriminate either (measured: 0 components differ).
+static std::string Phase4ControlScene()
+{
+    std::string s=Phase4HWSSScene(9);
+    const std::string rwFloor="name floor\n geometry floor_geo\n material rw";
+    const auto at=s.find(rwFloor);
+    if(at==std::string::npos) return std::string();
+    s.replace(at,rwFloor.size(),"name floor\n geometry floor_geo\n material diffuse");
     return s;
 }
 
@@ -258,13 +282,14 @@ int main(int argc,char** argv)
         const auto stats=Summarize(seconds);
         std::cout<<"LEGACY timing fixture="<<fixture<<" mean="<<stats.mean<<" sd="<<stats.sd<<" n="<<count<<std::endl;
     }
-    // Negative control for fixtures 7-9 (see the header).  Fixture 9 only
-    // since DL-453: fixture 7's single-sided emitter faces away from the
-    // coat, so SMS contributes nothing there in either mode, and its old
-    // extended-on/off difference was only the per-lane stream layout,
-    // which DL-453 made common to both modes (measured: bit-identical).
+    // Negative control for fixtures 7-9 (see the header and
+    // Phase4ControlScene).  Fixture 7 stopped discriminating at DL-453 (its
+    // single-sided emitter faces away from the coat; its old difference was
+    // only the per-lane stream layout, now common to both modes), fixture 9
+    // at DL-616..620 (its receiver is no longer an SMS anchor).
     for(unsigned fixture:{9u}) {
-        const std::string scene=Phase4HWSSScene(fixture);
+        const std::string scene=Phase4ControlScene();
+        Check(!scene.empty(),"negative control: Phase 4 control scene builds (fixture 9 with a Lambertian receiver)");
         const auto off=RenderDirectHWSS(scene,false), again=RenderDirectHWSS(scene,false), on=RenderDirectHWSS(scene,true);
         bool complete=!off.empty()&&off.size()==again.size()&&off.size()==on.size();
         unsigned long long repeat=0,changed=0,maxULP=0;
