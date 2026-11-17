@@ -89,6 +89,10 @@ BSDF values and throughput are evaluated without those overflowing intermediates
 `rough_dielectric_material` now exposes this kernel through the public factory,
 IJob, descriptor parser, editor slots/templates, and snapshot cloning. Pel uses
 one scalar IOR; spectral scalar-slot views retain dispersion for NM/HWSS.
+HWSS conservatively terminates companions at rough interfaces, including
+non-dispersive ones, because the walkers share a hero medium stack and eta scale.
+This reduces a four-wavelength bundle to one active wavelength; wavelength-specific
+medium tracking is required before retaining companions through rough glass.
 Sampling and stateful evaluation share nested-medium crossing and geometric
 horizon gates. SPF weights exclude eta scaling; the BSDF honors radiance versus
 importance mode, and spectral companion weights use the hero sampling density.

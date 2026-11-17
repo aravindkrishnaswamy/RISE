@@ -59,6 +59,7 @@
 #include <atomic>
 #include <optional>
 #include "BDPTIntegrator.h"
+#include "../Materials/RoughDielectricMaterial.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IBSDF.h"
@@ -9189,8 +9190,9 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 }
 
 //////////////////////////////////////////////////////////////////////
-// HasDispersiveDeltaVertex — checks stored subpath for dispersive
-// delta interactions.
+// Legacy name: also rejects companion replay across rough dielectric
+// interfaces, whose enclosing-medium state and eta scale are hero-only.
+// This shared gate serves BDPT, VCM and MLT, including their splat normalization.
 //
 // At a delta (specular) vertex, the scattering direction is determined
 // by Snell's law / Fresnel reflection.  If the IOR varies between
@@ -9211,6 +9213,9 @@ bool BDPTIntegrator::HasDispersiveDeltaVertex(
 	for( unsigned int i = 0; i < verts.size(); i++ )
 	{
 		const BDPTVertex& v = verts[i];
+		if(v.type == BDPTVertex::SURFACE && RoughDielectricRequiresHeroOnlyHWSS(v.pMaterial)) {
+			return true;
+		}
 		if( !v.isDelta || v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
 			continue;
 		}

@@ -2762,7 +2762,8 @@ bool RayCaster::WalkShadowSegment(
 		// Capability test.  Only a CLEAR transmissive dielectric boundary
 		// (light enters a NON-scattering medium and exits the far side) may
 		// pass a shadow ray straight through.  info.clearTransmission is set
-		// ONLY by DielectricSPF / PerfectRefractorSPF.  It is false for the
+		// by DielectricSPF / PerfectRefractorSPF and index-matched rough
+		// dielectric interfaces. It is false for the
 		// default IMaterial/ISPF (valid=false: opaque/diffuse/rough), for
 		// pure mirrors (canRefract=false), for PolishedSPF (a coat over a
 		// substrate that refracted light hits -> must block), and for smooth

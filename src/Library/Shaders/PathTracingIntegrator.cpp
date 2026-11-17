@@ -17,6 +17,7 @@
 
 #include "pch.h"
 #include "PathTracingIntegrator.h"
+#include "../Materials/RoughDielectricMaterial.h"
 #include "../Utilities/SobolSampler.h"
 #include <atomic>
 #include "../Rendering/LuminaryManager.h"
@@ -6694,6 +6695,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// under clay_lights, matching the Pel/NM loop's behaviour.
 		const IBSDF* pBRDFCur = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF :
 			( ri.pMaterial ? ri.pMaterial->GetBSDF() : 0 );
+
+		// Rough dielectric continuation currently has one medium stack/eta
+		// scale. Terminate companions BEFORE NEE or scattering can read that
+		// hero state as a companion's enclosing medium, including origins
+		// already inside a dispersive solid. Pel and NM need no such fallback.
+		if(!EffectivePathTracingClayOverride(rc,mClayOverride) &&
+			RoughDielectricRequiresHeroOnlyHWSS(ri.pMaterial)) {
+			swl.TerminateSecondary();
+		}
 
 		// If we hit a material without BSDF mid-path (e.g. entered a
 		// dielectric), fall back to per-wavelength NM for remaining path.

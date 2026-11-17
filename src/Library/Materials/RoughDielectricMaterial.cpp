@@ -138,10 +138,10 @@ SpecularInfo RoughDielectricSurface::GetSpecularInfoNM(const RayIntersectionGeom
     info.valid = c.valid;
     info.canRefract = true;
     info.ior = c.index;
-    // Roughness prevents a ballistic shadow/SMS connection. Still advertise
-    // the interior index so closed-volume seeding and HWSS reindexing work.
-    info.isSpecular = false;
-    info.clearTransmission = false;
+    // Equal indices remove the interface, regardless of its roughness.
+    // Otherwise only advertise its interior index, without ballistic shadows.
+    info.isSpecular = c.valid && c.eta == 1;
+    info.clearTransmission = info.isSpecular;
     return info;
 }
 Scalar RoughDielectricSurface::EvaluateLobeFNM(const RayIntersectionGeometric& ri, const Vector3& wo, ScatteredRay::ScatRayType type, Scalar nm, const IORStack& stack) const

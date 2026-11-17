@@ -12,6 +12,9 @@
 #include "../src/Library/Utilities/MicrofacetUtils.h"
 #include "../src/Library/Utilities/ISampler.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
+#include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/Shaders/PathTracingIntegrator.h"
+#include "../src/Library/Shaders/BDPTIntegrator.h"
 #include "TestTempDir.h"
 #include <cmath>
 #include <fstream>
@@ -29,6 +32,11 @@ class Samples : public ISampler {
 public:
     Scalar Get1D() override { return std::generate_canonical<Scalar,53>(rng); }
     Point2 Get2D() override { const Scalar a=Get1D(),b=Get1D(); return Point2(a,b); }
+};
+class ConstantSamples : public ISampler {
+public:
+    Scalar Get1D() override { return 0.5; }
+    Point2 Get2D() override { return Point2(0.5,0.5); }
 };
 class SpectralIndex : public virtual IScalarPainter, public virtual Reference {
 protected:
@@ -168,6 +176,8 @@ int main()
     rough->SetIOR(*equal);
     ScatteredRayContainer delta; rough->GetSPF()->Scatter(ri,sampler,delta,air);
     Check(delta.Count()==1 && delta[0].isDelta && delta[0].pdf==0 && delta[0].kray[0]==1,"equal indices retain straight-through unit delta");
+    const auto matchedInfo=material->GetSpecularInfo(ri,air);
+    Check(matchedInfo.valid && matchedInfo.isSpecular && matchedInfo.clearTransmission,"equal-index metadata agrees with exact delta scattering");
     if(delta.Count()) Check(material->GetSPF()->EvaluateKrayNM(ri,delta[0].ray.Dir(),delta[0].type,550,air,0)==1,"equal-index HWSS delta replay");
     rough->SetIOR(*ior); safe_release(equal);
 
@@ -179,7 +189,10 @@ int main()
         std::ofstream scene(path);
         scene<<"RISE ASCII SCENE 7\nrough_dielectric_material\n{\nname default_glass\n}\n"
             <<"rough_dielectric_material\n{\nname authored_glass\nior 1.5\nalphax 0.2\nalphay 0.4\n}\n"
-            <<"sphere_geometry\n{\nname sphere\nradius 1\n}\nstandard_object\n{\nname solid\ngeometry sphere\nmaterial authored_glass\n}\n";
+            <<"sphere_geometry\n{\nname sphere\nradius 1\n}\nstandard_object\n{\nname solid\ngeometry sphere\nmaterial authored_glass\n}\n"
+            <<"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
+            <<"uniformcolor_painter\n{\nname white\ncolor 1 1 1\n}\nlambertian_luminaire_material\n{\nname glow\nexitance white\nscale 10\nmaterial none\n}\n"
+            <<"sphere_geometry\n{\nname bulb\nradius 0.9\n}\nstandard_object\n{\nname emitter\ngeometry bulb\nmaterial glow\n}\n";
     }
     Check(priv && priv->LoadAsciiSceneViaCst(path.c_str()),"native chunk parses through CST and Job");
     std::remove(path.c_str());
@@ -190,6 +203,37 @@ int main()
     IORStack seeded(1);
     IORStackSeeding::SeedFromPoint(seeded,Point3(0,0,0),*job->GetScene());
     Check(Close(seeded.top(),1.5) && seeded.Depth()==2,"camera/light origins inside rough solids seed the interior IOR");
+    auto* caster=new RayCaster(true,8,*job->GetShaders()->GetItem("global"),true);
+    caster->AttachScene(job->GetScene());
+    auto* parsedRough=dynamic_cast<RoughDielectricMaterial*>(parsed);
+    auto* matchedIndex=new UniformScalarPainter(1);
+    parsedRough->SetIOR(*matchedIndex);
+    RISEPel visibility;
+    Check(!caster->CastShadowRayTransmittance(Ray(Point3(0.95,0,3),Vector3(0,0,-1)),6,false,0,visibility) &&
+        Close(visibility[0],1),"delta-light shadow walk sees through an index-matched rough solid");
+    safe_release(matchedIndex);
+    parsedRough->SetIOR(*spectral);
+    RayIntersection hit(Ray(Point3(0,0,3),Vector3(0,0,-1)),nullRasterizerState);
+    job->GetScene()->GetObjects()->IntersectRay(hit,true,true,false);
+    Check(hit.geometric.bHit && hit.pMaterial==parsed,"integrator fixture starts at rough interface");
+    RandomNumberGenerator rng;
+    RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+    ConstantSamples fixed;
+    auto* pt=new PathTracingIntegrator(ManifoldSolverConfig(),StabilityConfig());
+    pt->SetMaxPathDepth(2);
+    SampledWavelengths wavelengths=SampledWavelengths::SampleEquidistant(0.5,400,700);
+    Scalar bundle[SampledWavelengths::N];
+    IORStack originStack(1);
+    pt->IntegrateFromHitHWSS(rc,nullRasterizerState,hit,wavelengths,*job->GetScene(),*caster,fixed,nullptr,
+        0,originStack,0,true,1,IRayCaster::RAY_STATE::eRayView,0,0,0,0,0,0,bundle);
+    const Scalar single=pt->IntegrateFromHitNM(rc,nullRasterizerState,hit,wavelengths.lambda[0],*job->GetScene(),*caster,fixed,nullptr,
+        0,originStack,0,1,true,1,IRayCaster::RAY_STATE::eRayView,0,0,0,0,0,0,false,false);
+    Check(wavelengths.NumActive()==1,"live HWSS terminates companions before sharing hero medium state");
+    Check(single>0 && Close(bundle[0],single),"live HWSS hero radiance agrees with single-wavelength PT");
+    std::vector<BDPTVertex> vertices(1);
+    vertices[0].type=BDPTVertex::SURFACE; vertices[0].pMaterial=parsed; vertices[0].isDelta=false;
+    Check(BDPTIntegrator::HasDispersiveDeltaVertex(vertices,550,450),"BDPT/VCM/MLT shared gate rejects rough companion replay");
+    safe_release(pt); safe_release(caster);
     Check(!jobBase->AddRoughDielectricMaterial("bad","1.4 1.5 1.6","0.2","0.2"),"Job rejects ambiguous RGB scalar");
     auto* zero=new UniformScalarPainter(0);
     rough->SetAlphaX(*zero);

@@ -28,9 +28,9 @@
 //  they would follow different geometric paths (Snell's law depends
 //  on IOR which depends on wavelength).  After termination, only the
 //  hero survives and the path degenerates to single-wavelength
-//  transport for the dispersive segment.  For rough dispersive BSDFs,
-//  MIS over wavelengths remains valid and companions are not
-//  terminated.
+//  transport for the dispersive segment. Rough dispersive BSDFs can in
+//  principle retain companions. The current rough dielectric instead uses
+//  hero-only transport because the walkers share one medium stack/eta scale.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 9, 2026
@@ -126,8 +126,8 @@ namespace RISE
 		}
 
 		/// Terminate all companion wavelengths (indices 1..N-1).
-		/// Called at specular dispersive interfaces where companions
-		/// would follow different geometric paths.
+		/// Called when companions cannot share the current path's geometry
+		/// or medium state (dispersive deltas and rough dielectric interfaces).
 		/// The hero (index 0) is never terminated.
 		inline void TerminateSecondary()
 		{

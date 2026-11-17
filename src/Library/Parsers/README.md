@@ -532,7 +532,14 @@ sample, while NM/HWSS preserve the full curve. Authored RGB triples are refused.
 produce null scattering. Use `dielectric_material` for a smooth interface.
 The model includes single-scattering reflection and refraction, anisotropy,
 aggregate solid-angle PDFs, nested-media IOR tracking, and hero-density spectral
-companion evaluation. Micronormal and geometric-horizon rejection remain null
+companion evaluation. Current PT/BDPT/VCM/MLT HWSS transport conservatively
+terminates companions at every rough interface, even without dispersion: these
+walkers share one hero medium stack and radiance eta factor. This reduces four
+active wavelengths to one until wavelength-specific medium tracking is added.
+The local spectral evaluator remains available with caller-supplied wavelength
+stacks and hero density. Index-matched interfaces report their exact transparent
+delta behavior to shadow queries. SMS caustic construction for the new material
+is not supported in this increment. Micronormal and geometric-horizon rejection remain null
 events, so rough interfaces lose energy until multiscatter compensation lands.
 Bulk absorption requires a separately assigned medium. World-position IOR
 fields are unsupported and refused. Importers still use their existing glass
